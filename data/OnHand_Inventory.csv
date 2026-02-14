@@ -1,0 +1,4 @@
+material_id,quantity,location,uom,as_of_date
+RM-A01,500000,Warehouse-A,EA,2026-02-13
+RM-A02,200000,Warehouse-A,EA,2026-02-13
+RM-A03,300000,Warehouse-B,EA,2026-02-13

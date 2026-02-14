@@ -1,0 +1,18 @@
+# Flowstate scheduler configuration
+# CLI flags override these defaults. Delete or comment lines to use built-in defaults.
+
+[scheduler]
+time_limit = 120            # Solver time limit in seconds
+min_run_hours = 4           # Min production hours per (line, order) assignment
+max_lines_per_order = 3     # Max parallel lines per order
+planning_start_date = "2026-02-15 00:00:00"  # Horizon anchor datetime
+validate = true             # Auto-run post-solve validation
+
+[cip]
+interval_h = 120            # CIP every N production hours
+duration_h = 6              # CIP block duration (hours)
+
+[objective]
+# Weights for the default objective: minimize(makespan * W1 + changeovers * W2)
+makespan_weight = 1
+changeover_weight = 100

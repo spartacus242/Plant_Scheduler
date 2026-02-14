@@ -3,7 +3,7 @@
 from __future__ import annotations
 import math
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Tuple
+from typing import TYPE_CHECKING, Dict, List, Tuple
 
 import pandas as pd
 
@@ -13,6 +13,25 @@ if TYPE_CHECKING:
     pass
 
 WEEK0_END = 167  # due_end_hour <= 167 -> Week 0
+WEEK1_START = 168
+
+
+def available_hours_line_week(P: Params, data: Data, l: int, week: int) -> int:
+    """Available hours on line l for a single week (168h window)."""
+    if week == 0:
+        w_start, w_end = 0, 168
+    else:
+        w_start, w_end = 168, 336
+    avail_from = int(data.init_map.get(l, {}).get("available_from", 0))
+    blocked = max(0, min(avail_from, w_end) - w_start) if avail_from > w_start else 0
+    for dt in data.downtimes:
+        if dt["line_id"] != l:
+            continue
+        s = max(w_start, dt["start"])
+        e = min(w_end, dt["end"])
+        if e > s:
+            blocked += e - s
+    return max(0, 168 - blocked)
 
 
 def run_diagnostics(P: Params, data: Data, data_dir: Path) -> None:
@@ -122,11 +141,12 @@ def _order_in_week(o: dict, week: int) -> bool:
     return True
 
 
-def run_blockages_diagnostic(P: Params, data: Data, data_dir: Path) -> None:
+def run_blockages_diagnostic(P: Params, data: Data, data_dir: Path, two_phase: bool = False) -> None:
     """
     Identify overloaded (line, week) and suggest concrete changes to
     Capabilities & Rates, DemandPlan, or InitialStates to achieve feasibility.
     Writes diag_blockages.csv and diag_blockages.txt.
+    When two_phase=True, uses per-week (168h) available hours instead of full horizon.
     """
     line_names = data.line_names
     blockages: List[dict] = []
@@ -166,7 +186,12 @@ def run_blockages_diagnostic(P: Params, data: Data, data_dir: Path) -> None:
                 cip_count = 2
             elif carry + required_rounded >= 120:
                 cip_count = 1
-            available_hours = max(0, avail_base - cip_count * P.cip_duration_h)
+            # Use per-week hours in two-phase mode, full horizon otherwise
+            if two_phase:
+                week_avail = available_hours_line_week(P, data, l, week)
+            else:
+                week_avail = avail_base
+            available_hours = max(0, week_avail - cip_count * P.cip_duration_h)
             overflow = max(0, required_rounded - available_hours)
 
             if overflow <= 0:

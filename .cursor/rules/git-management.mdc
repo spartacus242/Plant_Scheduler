@@ -1,0 +1,25 @@
+---
+description: Git workflow and commit management for Flowstate
+alwaysApply: true
+---
+
+# Git Management
+
+The AI manages Git for this project. Follow these rules:
+
+## Branching
+- Work on `main` by default. Create branches only for large, isolated features.
+- Pull from `origin/main` before starting work when remote may have changes.
+
+## Committing
+- **Only commit when the user explicitly says "commit"** (or equivalent).
+- When a feature or logical chunk of work is complete, prompt: "This looks like a good place to commit. Say 'commit' when you're ready and I'll stage and push."
+- Use clear, descriptive commit messages (e.g., "Add CIP-in-gaps validation", "Fix Gantt viewer date parsing").
+
+## Before Commits
+- Run `git status` and `git diff` to verify what will be committed.
+- Avoid committing debug output, temp files, or secrets (respect `.gitignore`).
+
+## Pushing
+- Push to `origin main` after commits, unless the user requests otherwise.
+- If push fails (auth, conflicts), explain the issue and next steps.

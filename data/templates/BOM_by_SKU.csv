@@ -1,0 +1,8 @@
+sku,material_id,qty_per_unit,material_description
+120430,RM-A01,1.0,Base material A
+120431,RM-A01,1.0,Base material A
+120433,RM-A02,1.2,Base material B
+120436,RM-A01,1.0,Base material A
+280256,RM-A03,0.8,Key component C
+280324,RM-A01,1.0,Base material A
+280351,RM-A03,1.0,Key component C

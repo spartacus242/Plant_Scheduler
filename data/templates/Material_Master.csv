@@ -1,0 +1,4 @@
+material_id,material_name,uom,safety_stock_min,lead_time_days
+RM-A01,Base material A,EA,50000,3
+RM-A02,Base material B,EA,30000,5
+RM-A03,Key component C,EA,40000,7

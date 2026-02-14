@@ -1,0 +1,19 @@
+============================================================
+Flowstate Schedule Validation Report
+============================================================
+
+--- Produced vs Bounds ---
+BOUNDS: All orders within qty_min/qty_max. OK.
+
+--- Schedule Overlaps ---
+OVERLAPS: No overlaps detected. OK.
+
+--- CIP Spacing ---
+CIP: All lines within 120 clock-hours between CIPs. OK.
+
+--- Changeover Timing ---
+CHANGEOVERS: All gaps respect setup times. OK.
+
+============================================================
+Checks passed: 4/4    Issues found: 0
+============================================================

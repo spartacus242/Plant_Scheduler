@@ -19,6 +19,7 @@ from ortools.sat.python import cp_model
 from data_loader import Params, Data, Files, available_hours_line
 from diagnostics import run_diagnostics, run_unique_line_load_diagnostic, run_blockages_diagnostic
 from model_builder import build_model
+from validate_schedule import validate_all
 
 
 def _parse_args() -> argparse.Namespace:
@@ -86,23 +87,72 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run Week-0 only, then Week-1 only with Week-1 InitialStates from Week-0; merge into one schedule (shows Week-1 even when qty_min=0).",
     )
+    parser.add_argument(
+        "--objective",
+        choices=("balanced", "min-changeovers", "spread-load"),
+        default=None,
+        help="Objective mode: balanced (default), min-changeovers, spread-load.",
+    )
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Run post-solve validation (bounds, overlaps, CIP, changeovers) after scheduling.",
+    )
+    parser.add_argument(
+        "--rolling",
+        action="store_true",
+        help="Rolling weekly run: auto-load Week-1_InitialStates.csv if it exists, then run --two-phase.",
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Path to flowstate.toml config file for defaults.",
+    )
     return parser.parse_args()
 
 
 _ARGS = _parse_args()
+
+# --- Config file loading (Phase 2.2) ---
+def _load_config(config_path: Path | None, data_dir: Path) -> dict:
+    """Load flowstate.toml if it exists. Returns dict of settings."""
+    cfg: dict = {}
+    candidates = [config_path] if config_path else [data_dir / "flowstate.toml", data_dir.parent / "flowstate.toml"]
+    for p in candidates:
+        if p and p.exists():
+            try:
+                import tomllib  # Python 3.11+
+            except ImportError:
+                try:
+                    import tomli as tomllib  # type: ignore
+                except ImportError:
+                    break
+            with open(p, "rb") as f:
+                cfg = tomllib.load(f)
+            break
+    return cfg
+
+
 DATA_DIR = _ARGS.data_dir.resolve() if _ARGS.data_dir is not None else BASE_DIR
+_CFG = _load_config(_ARGS.config, DATA_DIR)
+_CFG_SCHED = _CFG.get("scheduler", {})
+
 ERR_FILE = DATA_DIR / "solver_error.txt"
 KPI_FILE = DATA_DIR / "solver_kpis.txt"
-TIME_LIMIT = _ARGS.time_limit
+TIME_LIMIT = _ARGS.time_limit or _CFG_SCHED.get("time_limit")
 PHASE = _ARGS.phase
 RELAX_DEMAND = _ARGS.relax_demand
 IGNORE_CHANGEOVERS = _ARGS.ignore_changeovers
 DIAGNOSE = _ARGS.diagnose
-MAX_LINES_PER_ORDER = _ARGS.max_lines_per_order
-MIN_RUN_HOURS_OVERRIDE = _ARGS.min_run_hours
+MAX_LINES_PER_ORDER = _ARGS.max_lines_per_order or _CFG_SCHED.get("max_lines_per_order")
+MIN_RUN_HOURS_OVERRIDE = _ARGS.min_run_hours or _CFG_SCHED.get("min_run_hours")
 NO_WEEK1_IN_WEEK0 = _ARGS.no_week1_in_week0
 INITIAL_STATES_PATH = _ARGS.initial_states
-TWO_PHASE = _ARGS.two_phase
+TWO_PHASE = _ARGS.two_phase or _ARGS.rolling
+VALIDATE = _ARGS.validate or _CFG_SCHED.get("validate", False)
+ROLLING = _ARGS.rolling
+OBJECTIVE_MODE = _ARGS.objective or _CFG_SCHED.get("objective", "balanced")
 
 # Week boundaries (must match model_builder)
 WEEK0_END = 167
@@ -139,14 +189,19 @@ def compute_cip_windows(
     """Place 6h CIP blocks in gaps between production only (no overlap with production).
     CIPs are due every 120 production hours (including carryover); each is placed in the
     first gap after that run-hour mark that has at least 6h free.
+
+    CIP absorption: when a gap already includes changeover dead-time (SKU switch),
+    the CIP absorbs up to cip_duration_h of that changeover. If the gap includes
+    both a changeover and enough room for CIP, the CIP start is offset to fill the
+    gap from the beginning (changeover + CIP overlap).
     """
     interval_h = P.cip_interval_h
     duration_h = P.cip_duration_h
-    by_line: Dict[int, List[Tuple[int, int]]] = {}
+    by_line: Dict[int, List[Tuple[int, int, str]]] = {}  # (start, end, sku)
     line_names: Dict[int, str] = {}
     for row in schedule_rows:
         l = row["line_id"]
-        by_line.setdefault(l, []).append((row["start_hour"], row["end_hour"]))
+        by_line.setdefault(l, []).append((row["start_hour"], row["end_hour"], str(row["sku"])))
         line_names[l] = row.get("line_name", f"L{l}")
 
     cip_rows: List[Dict[str, Any]] = []
@@ -155,30 +210,33 @@ def compute_cip_windows(
         carryover = int(data.init_map.get(l, {}).get("carryover_run_hours", 0))
         name = line_names[l]
 
-        # Gaps between consecutive production segments: (end of seg i, start of seg i+1)
-        gaps: List[Tuple[int, int]] = []
+        # Gaps between consecutive production segments
+        gaps: List[Tuple[int, int, int]] = []  # (g_start, g_end, changeover_hours)
         for i in range(len(segments) - 1):
-            g_start, g_end = segments[i][1], segments[i + 1][0]
+            g_start = segments[i][1]
+            g_end = segments[i + 1][0]
+            sku_from = segments[i][2]
+            sku_to = segments[i + 1][2]
+            co_h = data.setup.get((sku_from, sku_to), 0) if sku_from != sku_to else 0
             if g_end > g_start:
-                gaps.append((g_start, g_end))
+                gaps.append((g_start, g_end, co_h))
 
-        # Run-hours completed before each gap (before gap 0 = after segment 0, etc.)
+        # Run-hours completed before each gap
         run_before_gap: List[int] = []
         run_done = carryover
-        for i, (s, e) in enumerate(segments):
+        for i, (s, e, _sku) in enumerate(segments):
             run_done += e - s
             run_before_gap.append(run_done)
 
-        # How many CIPs are needed (every 120 run-hours from carryover)
-        total_run = run_done - carryover if segments else 0
-        total_run += carryover
+        # How many CIPs are needed
+        total_run = run_done
         n_cip = 0
         r = carryover
         while r + interval_h <= total_run:
             n_cip += 1
             r += interval_h
 
-        # Place each CIP in the first gap that (a) has run_before_gap >= required and (b) length >= 6
+        # Place each CIP; absorb changeover when possible
         used_gap = 0
         for cip_num in range(n_cip):
             required_run = carryover + (cip_num + 1) * interval_h
@@ -186,21 +244,49 @@ def compute_cip_windows(
             for j in range(used_gap, len(gaps)):
                 if run_before_gap[j] < required_run:
                     continue
-                g_start, g_end = gaps[j]
-                if g_end - g_start < duration_h:
+                g_start, g_end, co_h = gaps[j]
+                gap_len = g_end - g_start
+                # CIP absorbs changeover: effective CIP time = max(duration_h, co_h)
+                # (CIP includes the changeover if co_h <= duration_h)
+                effective_cip = max(duration_h, co_h)
+                if gap_len < effective_cip:
                     continue
+                # Place CIP at gap start (absorbs changeover)
+                cip_end = g_start + effective_cip
                 cip_rows.append({
                     "line_id": l,
                     "line_name": name,
                     "start_hour": g_start,
-                    "end_hour": g_start + duration_h,
+                    "end_hour": cip_end,
+                    "absorbed_changeover_h": min(co_h, duration_h),
                 })
                 used_gap = j + 1
                 placed = True
                 break
             if not placed:
-                # No suitable gap (model should have ensured one); skip this CIP in output
                 break
+    return cip_rows
+
+
+def extract_cip_windows(
+    solver: cp_model.CpSolver,
+    data: Data,
+    cip_vars: Dict,
+    hour_offset: int = 0,
+) -> List[Dict[str, Any]]:
+    """Extract CIP positions from solver solution (explicit CIP interval variables)."""
+    cip_rows: List[Dict[str, Any]] = []
+    for l in sorted(cip_vars.keys()):
+        for cip_idx, (s_var, e_var, is_present) in enumerate(cip_vars[l]):
+            if solver.BooleanValue(is_present):
+                s = solver.Value(s_var) + hour_offset
+                e = solver.Value(e_var) + hour_offset
+                cip_rows.append({
+                    "line_id": l,
+                    "line_name": data.line_names.get(l, f"L{l}"),
+                    "start_hour": s,
+                    "end_hour": e,
+                })
     return cip_rows
 
 
@@ -210,8 +296,12 @@ def write_week1_initial_states(
     data: Data,
     P: Params,
     data_dir: Path,
+    set_available_from_schedule: bool = False,
 ) -> None:
-    """Write Week-1_InitialStates.csv: state of each line at end of horizon for use as next run's InitialStates."""
+    """Write Week-1_InitialStates.csv: state of each line at end of schedule.
+    set_available_from_schedule=True: set available_from_hour to last production end (for two-phase Phase 2).
+    set_available_from_schedule=False: set available_from_hour=0 (for rolling/final states).
+    """
     try:
         anchor = datetime.strptime(P.planning_start_date, "%Y-%m-%d %H:%M:%S")
     except Exception:
@@ -226,7 +316,7 @@ def write_week1_initial_states(
     for l, rows in cip_by_line.items():
         last_cip_end_by_line[l] = max(r["end_hour"] for r in rows) if rows else 0
 
-    # Per line: production segments (start_hour, end_hour, run_hours, sku)
+    # Per line: production segments
     prod_by_line: Dict[int, List[Dict[str, Any]]] = {}
     for row in schedule_rows:
         l = row["line_id"]
@@ -247,29 +337,30 @@ def write_week1_initial_states(
             initial_sku = str(data.init_map.get(l, {}).get("initial_sku", "CLEAN"))
             carryover = 0
             last_cip_dt = ""
+            last_end_hour = 0
         else:
-            # Last SKU = SKU of run that ends last
             last_run = max(prods, key=lambda x: x["end_hour"])
             initial_sku = str(last_run["sku"])
-            # Carryover = run hours from last CIP end to end of horizon
             carryover = sum(
                 p["run_hours"] for p in prods
                 if p["start_hour"] >= last_cip_end
             )
-            # Last CIP end datetime (optional)
+            last_end_hour = max(p["end_hour"] for p in prods)
             if last_cip_end > 0 and l in cip_by_line:
                 last_cip_dt = (anchor + timedelta(hours=last_cip_end)).strftime("%Y-%m-%d %H:%M:%S")
             else:
                 last_cip_dt = ""
 
+        avail_from = last_end_hour if set_available_from_schedule else 0
+
         out_rows.append({
             "line_id": l,
             "line_name": line_name,
             "initial_sku": initial_sku,
-            "available_from_hour": 0,
+            "available_from_hour": avail_from,
             "long_shutdown_flag": 0,
             "long_shutdown_extra_setup_hours": 0,
-            "carryover_run_hours_since_last_cip_at_t0": int(min(carryover, 119)),  # cap below 120
+            "carryover_run_hours_since_last_cip_at_t0": int(min(carryover, 119)),
             "last_cip_end_datetime": last_cip_dt,
             "comment": "Auto from week-0 run",
         })
@@ -282,16 +373,27 @@ def _solution_to_rows(
     solver: cp_model.CpSolver,
     data: Data,
     P: Params,
-    present: Dict[Tuple[int, int], Any],
-    run_h: Dict[Tuple[int, int], Any],
-    start: Dict[Tuple[int, int], Any],
-    end: Dict[Tuple[int, int], Any],
-    produced: Dict[int, Any],
+    vars_dict: Dict[str, Any],
     hour_offset: int = 0,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """Build schedule_rows and bounds_rows from solver; hour_offset is added to all hours (for Week-1 merge)."""
+    """Build schedule_rows and bounds_rows from solver.
+
+    hour_offset is added to all hours (for Week-1 merge).
+    Orders split by a CIP produce two schedule rows (same order_id/sku)
+    for seg_a and seg_b respectively.
+    """
     orders = data.orders
     lines = data.lines
+    present = vars_dict["present"]
+    seg_a_start = vars_dict["seg_a_start"]
+    seg_a_end = vars_dict["seg_a_end"]
+    seg_a_run = vars_dict["seg_a_run"]
+    seg_b_present = vars_dict["seg_b_present"]
+    seg_b_start = vars_dict["seg_b_start"]
+    seg_b_end = vars_dict["seg_b_end"]
+    seg_b_run = vars_dict["seg_b_run"]
+    produced = vars_dict["produced"]
+
     try:
         anchor = datetime.strptime(P.planning_start_date, "%Y-%m-%d %H:%M:%S")
     except Exception:
@@ -303,23 +405,46 @@ def _solution_to_rows(
             key = (l, o_idx)
             if not solver.BooleanValue(present[key]):
                 continue
-            s_val = solver.Value(start[key]) + hour_offset
-            e_val = solver.Value(end[key]) + hour_offset
-            rh_val = solver.Value(run_h[key])
             line_name = data.line_names.get(l, f"L{l}")
-            start_dt = anchor + timedelta(hours=s_val)
-            end_dt = anchor + timedelta(hours=e_val)
-            schedule_rows.append({
-                "line_id": l,
-                "line_name": line_name,
-                "order_id": o["order_id"],
-                "sku": o["sku"],
-                "start_hour": s_val,
-                "end_hour": e_val,
-                "run_hours": rh_val,
-                "start_dt": start_dt.strftime("%Y-%m-%d %H:%M:%S"),
-                "end_dt": end_dt.strftime("%Y-%m-%d %H:%M:%S"),
-            })
+
+            # seg_a (always present when order is assigned)
+            sa_s = solver.Value(seg_a_start[key]) + hour_offset
+            sa_e = solver.Value(seg_a_end[key]) + hour_offset
+            sa_r = solver.Value(seg_a_run[key])
+            if sa_r > 0:
+                sa_start_dt = anchor + timedelta(hours=sa_s)
+                sa_end_dt = anchor + timedelta(hours=sa_e)
+                schedule_rows.append({
+                    "line_id": l,
+                    "line_name": line_name,
+                    "order_id": o["order_id"],
+                    "sku": o["sku"],
+                    "start_hour": sa_s,
+                    "end_hour": sa_e,
+                    "run_hours": sa_r,
+                    "start_dt": sa_start_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                    "end_dt": sa_end_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                })
+
+            # seg_b (only when split by CIP — same SKU continues)
+            if solver.BooleanValue(seg_b_present[key]):
+                sb_s = solver.Value(seg_b_start[key]) + hour_offset
+                sb_e = solver.Value(seg_b_end[key]) + hour_offset
+                sb_r = solver.Value(seg_b_run[key])
+                if sb_r > 0:
+                    sb_start_dt = anchor + timedelta(hours=sb_s)
+                    sb_end_dt = anchor + timedelta(hours=sb_e)
+                    schedule_rows.append({
+                        "line_id": l,
+                        "line_name": line_name,
+                        "order_id": o["order_id"],
+                        "sku": o["sku"],
+                        "start_hour": sb_s,
+                        "end_hour": sb_e,
+                        "run_hours": sb_r,
+                        "start_dt": sb_start_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                        "end_dt": sb_end_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                    })
 
     bounds_rows = []
     for o_idx, o in enumerate(orders):
@@ -342,20 +467,21 @@ def write_solution(
     data: Data,
     P: Params,
     data_dir: Path,
-    present: Dict[Tuple[int, int], Any],
-    run_h: Dict[Tuple[int, int], Any],
-    start: Dict[Tuple[int, int], Any],
-    end: Dict[Tuple[int, int], Any],
-    produced: Dict[int, Any],
+    vars_dict: Dict[str, Any],
     hour_offset: int = 0,
 ) -> None:
     """Write schedule_phase2.csv and produced_vs_bounds.csv when solve is FEASIBLE/OPTIMAL."""
     schedule_rows, bounds_rows = _solution_to_rows(
-        solver, data, P, present, run_h, start, end, produced, hour_offset
+        solver, data, P, vars_dict, hour_offset
     )
     if schedule_rows:
         pd.DataFrame(schedule_rows).to_csv(data_dir / "schedule_phase2.csv", index=False)
-        cip_rows = compute_cip_windows(schedule_rows, data, P)
+        # Prefer model-extracted CIPs; fall back to post-solve placement
+        cip_vars = vars_dict.get("cip_vars")
+        if cip_vars:
+            cip_rows = extract_cip_windows(solver, data, cip_vars, hour_offset)
+        else:
+            cip_rows = compute_cip_windows(schedule_rows, data, P)
         if cip_rows:
             pd.DataFrame(cip_rows).to_csv(data_dir / "cip_windows.csv", index=False)
         write_week1_initial_states(schedule_rows, cip_rows or [], data, P, data_dir)
@@ -363,7 +489,12 @@ def write_solution(
 
 
 def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
-    """Run Week-0 only, then Week-1 only with InitialStates from Week-0; merge schedule and write."""
+    """Two-phase solve:
+    Phase 1: Week-0 orders (168h horizon).
+    Phase 2: Week-1 orders on FULL 336h horizon, with line availability from Week-0 end.
+    Week-1 orders can start as soon as each line finishes Week-0 (not waiting until hour 168).
+    CIPs extracted from solver (explicit intervals in model).
+    """
     tl = float(TIME_LIMIT) if TIME_LIMIT is not None else 120.0
     P0 = Params(
         horizon_h=168,
@@ -394,6 +525,7 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
     model0, vars0 = build_model(
         P0, data0, PHASE, RELAX_DEMAND, IGNORE_CHANGEOVERS,
         max_lines_per_order_override=MAX_LINES_PER_ORDER,
+        objective_mode=OBJECTIVE_MODE,
     )
     solver0 = cp_model.CpSolver()
     solver0.parameters.num_search_workers = 8
@@ -405,16 +537,22 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         return
 
     schedule_rows_0, bounds_0 = _solution_to_rows(
-        solver0, data0, P0, vars0["present"], vars0["run_h"], vars0["start"], vars0["end"], vars0["produced"], 0
+        solver0, data0, P0, vars0, 0
     )
-    cip_rows_0 = compute_cip_windows(schedule_rows_0, data0, P0)
-    write_week1_initial_states(schedule_rows_0, cip_rows_0 or [], data0, P0, data_dir)
+    # Extract CIP positions from Week-0 solver
+    cip_rows_0 = extract_cip_windows(solver0, data0, vars0.get("cip_vars", {}), 0)
 
-    # Phase 2: Week-1 with InitialStates from Week-0
+    # Write intermediate InitialStates: available_from = last Week-0 end per line
+    write_week1_initial_states(
+        schedule_rows_0, cip_rows_0, data0, P0, data_dir,
+        set_available_from_schedule=True,  # line availability from Week-0 end
+    )
+
+    # Phase 2: Week-1 on FULL 336h horizon (lines available from Week-0 end)
     F_week1 = Files(data_dir)
     F_week1.init = str(data_dir / "Week-1_InitialStates.csv")
     P1 = Params(
-        horizon_h=168,
+        horizon_h=336,  # Full 2-week horizon (lines blocked until Week-0 end via available_from)
         changeover_penalty=P.changeover_penalty,
         cip_interval_h=P.cip_interval_h,
         cip_duration_h=P.cip_duration_h,
@@ -432,9 +570,10 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
     data1 = Data(P1, F_week1)
     data1.load()
     orders_week1 = [o for o in data1.orders if int(o["due_start"]) >= WEEK1_START]
+    # Allow Week-1 orders to start as soon as line is available (due_start=0)
     for o in orders_week1:
-        o["due_start"] = int(o["due_start"]) - WEEK1_START
-        o["due_end"] = int(o["due_end"]) - WEEK1_START
+        o["due_start"] = 0   # line availability constraint handles actual start
+        # due_end stays at 335 (end of Week-1)
     data1.orders = orders_week1
 
     if not orders_week1:
@@ -445,11 +584,12 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         write_kpi_lines(["Status: TWO_PHASE — Week-0 FEASIBLE, no Week-1 orders"])
         return
 
-    log(f"[two-phase] Phase 2: Week-1 only ({len(orders_week1)} orders), horizon=168, maximize production")
+    log(f"[two-phase] Phase 2: Week-1 ({len(orders_week1)} orders), horizon=336 (full), maximize production")
     model1, vars1 = build_model(
         P1, data1, PHASE, RELAX_DEMAND, IGNORE_CHANGEOVERS,
         max_lines_per_order_override=MAX_LINES_PER_ORDER,
         maximize_production=True,
+        objective_mode=OBJECTIVE_MODE,
     )
     solver1 = cp_model.CpSolver()
     solver1.parameters.num_search_workers = 8
@@ -465,24 +605,43 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         log(f"[two-phase] Week-1 failed: {solver1.StatusName(status1)}")
         return
 
+    # No hour offset: Phase 2 uses absolute hours (0-335)
     schedule_rows_1, bounds_1 = _solution_to_rows(
-        solver1, data1, P1, vars1["present"], vars1["run_h"], vars1["start"], vars1["end"], vars1["produced"], WEEK1_START
+        solver1, data1, P1, vars1, 0
     )
+    # Extract CIPs from Phase 2 solver (covers CIPs for Week-1 portion)
+    cip_rows_1 = extract_cip_windows(solver1, data1, vars1.get("cip_vars", {}), 0)
+
     combined_schedule = schedule_rows_0 + schedule_rows_1
     combined_bounds = bounds_0 + bounds_1
+    combined_cips = cip_rows_0 + cip_rows_1
+
     pd.DataFrame(combined_schedule).to_csv(data_dir / "schedule_phase2.csv", index=False)
     pd.DataFrame(combined_bounds).to_csv(data_dir / "produced_vs_bounds.csv", index=False)
-    cip_combined = compute_cip_windows(combined_schedule, data1, P1)
-    if cip_combined:
-        pd.DataFrame(cip_combined).to_csv(data_dir / "cip_windows.csv", index=False)
-    write_week1_initial_states(combined_schedule, cip_combined or [], data1, P1, data_dir)
+    if combined_cips:
+        pd.DataFrame(combined_cips).to_csv(data_dir / "cip_windows.csv", index=False)
+
+    # Final InitialStates for rolling (available_from=0 for next week)
+    write_week1_initial_states(
+        combined_schedule, combined_cips, data1, P1, data_dir,
+        set_available_from_schedule=False,
+    )
     write_kpi_lines(["Status: TWO_PHASE — Week-0 and Week-1 FEASIBLE"])
     log("[two-phase] Done: combined schedule written")
 
 
 def main() -> None:
     P = Params()
+    # Apply config overrides
+    if _CFG_SCHED.get("planning_start_date"):
+        P = Params(**{**P.__dict__, "planning_start_date": _CFG_SCHED["planning_start_date"]})
     F = Files(DATA_DIR)
+    # Rolling mode: auto-load Week-1_InitialStates.csv if it exists
+    if ROLLING:
+        w1_init = DATA_DIR / "Week-1_InitialStates.csv"
+        if w1_init.exists():
+            F.init = str(w1_init)
+            log(f"[rolling] Using {w1_init} as InitialStates")
     if INITIAL_STATES_PATH is not None:
         p = Path(INITIAL_STATES_PATH)
         F.init = str(p.resolve() if p.is_absolute() else (DATA_DIR / p))
@@ -517,7 +676,7 @@ def main() -> None:
             if DIAGNOSE:
                 run_diagnostics(P, data, DATA_DIR)
                 run_unique_line_load_diagnostic(P, data, DATA_DIR)
-                run_blockages_diagnostic(P, data, DATA_DIR)
+                run_blockages_diagnostic(P, data, DATA_DIR, two_phase=TWO_PHASE)
                 write_kpi_lines([
                     "Status: DIAG COMPLETE (see diag_order_linecap.csv, diag_unique_line_load.csv, diag_blockages.csv / diag_blockages.txt)"
                 ])
@@ -529,6 +688,7 @@ def main() -> None:
                     RELAX_DEMAND,
                     IGNORE_CHANGEOVERS,
                     max_lines_per_order_override=MAX_LINES_PER_ORDER,
+                    objective_mode=OBJECTIVE_MODE,
                 )
                 solver = cp_model.CpSolver()
                 solver.parameters.num_search_workers = 8
@@ -545,15 +705,19 @@ def main() -> None:
                         data,
                         P,
                         DATA_DIR,
-                        vars_dict["present"],
-                        vars_dict["run_h"],
-                        vars_dict["start"],
-                        vars_dict["end"],
-                        vars_dict["produced"],
+                        vars_dict,
                     )
     except Exception:
         log("\n=== FATAL ERROR ===\n" + traceback.format_exc())
         write_kpi_lines(["Status: ERROR — see solver_error.txt"])
+
+    # Post-solve validation
+    if VALIDATE and not DIAGNOSE:
+        log(f"[{datetime.now()}] Running post-solve validation")
+        try:
+            validate_all(DATA_DIR, verbose=True)
+        except Exception:
+            log("[validate] " + traceback.format_exc())
 
 
 if __name__ == "__main__":

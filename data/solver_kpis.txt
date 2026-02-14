@@ -1,1 +1,1 @@
-Status: TWO_PHASE — Week-0 and Week-1 FEASIBLE
+Status: FEASIBLE

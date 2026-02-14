@@ -10,6 +10,7 @@ A 2-week factory scheduler using OR-Tools CP-SAT. Assigns SKU demand to producti
 - **1-hour gap constraint**: Max 1h non-production (CIP/changeover only) between last Week-0 and first Week-1 run on each line
 - **CIP blocks** placed in gaps between production (no overlap); CIP every 120 run-hours
 - **Gantt viewer** (Streamlit): Color by SKU, data labels, click to highlight same SKU, changeovers table, 2-week view with Week boundary
+- **Inventory validation**: Check on-hand + inbound vs. schedule consumption; PLAN if sufficient, FLAG if insufficient (adjust demand or accept lower fill %)
 
 ## Quick start
 
@@ -38,13 +39,17 @@ streamlit run code/gantt_viewer.py
 | InitialStates.csv | line_id, initial_sku, available_from_hour, carryover_run_hours_since_last_cip_at_t0, ... |
 | DemandPlan.csv | order_id, sku, due_start_hour, due_end_hour, qty_target, lower_pct, upper_pct |
 | Downtimes.csv (optional) | line_id, start_hour, end_hour |
+| BOM_by_SKU.csv (optional) | sku, material_id, qty_per_unit — for inventory check |
+| OnHand_Inventory.csv (optional) | material_id, quantity — for inventory check |
+| Inbound_Inventory.csv (optional) | material_id, quantity, arrival_hour or arrival_date — for inventory check |
 
 ## Outputs
 
 - `schedule_phase2.csv` — per-line production timeline
 - `produced_vs_bounds.csv` — produced vs qty_min/qty_max per order
-- `cip_windows.csv` — CIP blocks (grey in Gantt)
+- `cip_windows.csv` — CIP blocks (grey in Gantt, with changeover absorption)
 - `Week-1_InitialStates.csv` — state at end of horizon (use with `--initial-states data/Week-1_InitialStates.csv` for next run)
+- `validation_report.txt` — post-solve check results (bounds, overlaps, CIP, changeovers)
 
 ## CLI options
 
@@ -53,9 +58,13 @@ streamlit run code/gantt_viewer.py
 | `--data-dir PATH` | Data directory (default: script dir) |
 | `--min-run-hours N` | Min run hours per (line, order) (default: 4) |
 | `--two-phase` | Run Week-0 then Week-1 with Week-1 InitialStates from Week-0 |
+| `--rolling` | Auto-load Week-1_InitialStates.csv + run two-phase (weekly roll-forward) |
 | `--initial-states PATH` | Use custom InitialStates (e.g. Week-1_InitialStates.csv) |
 | `--no-week1-in-week0` | Disallow Week-1 orders in Week-0 window |
 | `--time-limit N` | Solver time limit (seconds) |
+| `--objective MODE` | `balanced` (default), `min-changeovers`, or `spread-load` |
+| `--validate` | Run post-solve validation (bounds, overlaps, CIP, changeovers) |
+| `--config PATH` | Path to `flowstate.toml` config file |
 | `--diagnose` | Run diagnostics only |
 
 ## Project layout
@@ -67,8 +76,12 @@ Flowstate/
 │   ├── model_builder.py      # CP-SAT model
 │   ├── data_loader.py        # CSV loading, Params
 │   ├── diagnostics.py        # Blockages, line load
-│   └── gantt_viewer.py       # Streamlit Gantt chart
+│   ├── validate_schedule.py  # Post-solve validation (bounds, CIP, changeovers)
+│   ├── inventory_checker.py  # Inventory validation (BOM, on-hand, inbound)
+│   └── gantt_viewer.py       # Streamlit Gantt (filters, export, CIP, inventory)
 ├── data/                     # Input CSVs + outputs
+├── data/templates/           # Inventory templates (BOM, OnHand, Inbound)
+├── flowstate.toml            # Config file for scheduler defaults
 ├── docs/
 │   └── Factory_Scheduler_Summary.txt
 └── README.md

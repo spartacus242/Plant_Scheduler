@@ -14,6 +14,8 @@ BASE_DIR = Path(__file__).resolve().parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
+from inventory_checker import run_inventory_check, results_to_dataframe
+
 
 PLANNING_ANCHOR = "2026-02-15 00:00:00"
 # Week-0 ends at hour 167 (Sat 23:00); Week-1 starts at hour 168 (Sun 00:00)
@@ -175,7 +177,7 @@ def build_gantt_figure(
 
 
 def run_streamlit(data_dir: Path | None = None) -> None:
-    """Run Streamlit UI: pick schedule file, optional CIP, show Gantt; click bar to highlight SKU; changeovers table."""
+    """Run Streamlit UI: Gantt with filters, CIP, export, inventory validation."""
     try:
         import streamlit as st
     except ImportError:
@@ -189,18 +191,20 @@ def run_streamlit(data_dir: Path | None = None) -> None:
     default_schedule = data_dir / "schedule_phase2.csv"
     default_cip = data_dir / "cip_windows.csv"
 
-    schedule_path = st.text_input(
-        "Schedule CSV path",
-        value=str(default_schedule),
-        help="Path to schedule_phase2.csv",
-    )
-    use_cip = st.checkbox("Include CIP windows (grey bars)", value=default_cip.exists())
-    cip_path = st.text_input(
-        "CIP windows CSV path (optional)",
-        value=str(default_cip),
-        help="Path to cip_windows.csv (columns: line_id, start_hour, end_hour)",
-        disabled=not use_cip,
-    ) if use_cip else None
+    # --- Sidebar: filters and settings ---
+    with st.sidebar:
+        st.header("Settings")
+        schedule_path = st.text_input(
+            "Schedule CSV path",
+            value=str(default_schedule),
+            help="Path to schedule_phase2.csv",
+        )
+        use_cip = st.checkbox("Include CIP windows (grey bars)", value=default_cip.exists())
+        cip_path = st.text_input(
+            "CIP windows CSV path",
+            value=str(default_cip),
+            disabled=not use_cip,
+        ) if use_cip else None
 
     if not Path(schedule_path).exists():
         st.warning(f"Schedule file not found: {schedule_path}")
@@ -210,12 +214,51 @@ def run_streamlit(data_dir: Path | None = None) -> None:
     schedule_df = load_schedule(Path(schedule_path))
     cip_df = load_cip_windows(Path(cip_path)) if use_cip and cip_path else None
 
-    # Click-to-highlight: read selection from plotly chart (stored in session_state[key])
+    # --- Sidebar: filters (Phase 4.1) ---
+    with st.sidebar:
+        st.header("Filters")
+        all_lines = sorted(schedule_df["Task"].unique().tolist())
+        all_skus = sorted(schedule_df["Resource"].unique().tolist())
+        week_options = ["All", "Week 0", "Week 1"]
+
+        filter_lines = st.multiselect("Lines", options=all_lines, default=all_lines, key="filter_lines")
+        filter_skus = st.multiselect("SKUs", options=all_skus, default=all_skus, key="filter_skus")
+        filter_week = st.selectbox("Week", options=week_options, index=0, key="filter_week")
+
+    # Apply filters
+    filtered_df = schedule_df.copy()
+    if filter_lines:
+        filtered_df = filtered_df[filtered_df["Task"].isin(filter_lines)]
+    if filter_skus:
+        filtered_df = filtered_df[filtered_df["Resource"].isin(filter_skus)]
+    if filter_week == "Week 0":
+        filtered_df = filtered_df[filtered_df["start_hour"] <= WEEK1_START_HOUR]
+    elif filter_week == "Week 1":
+        filtered_df = filtered_df[filtered_df["start_hour"] >= WEEK1_START_HOUR]
+
+    # Filter CIP to match selected lines
+    filtered_cip = None
+    if cip_df is not None and not cip_df.empty and filter_lines:
+        filtered_cip = cip_df[cip_df["Task"].isin(filter_lines)]
+        if filter_week == "Week 0":
+            anchor = pd.Timestamp(PLANNING_ANCHOR)
+            week1_ts = anchor + pd.Timedelta(hours=WEEK1_START_HOUR)
+            filtered_cip = filtered_cip[filtered_cip["Start"] <= week1_ts]
+        elif filter_week == "Week 1":
+            anchor = pd.Timestamp(PLANNING_ANCHOR)
+            week1_ts = anchor + pd.Timedelta(hours=WEEK1_START_HOUR)
+            filtered_cip = filtered_cip[filtered_cip["Start"] >= week1_ts]
+
+    if filtered_df.empty:
+        st.info("No schedule data matches the current filters.")
+        return
+
+    # Click-to-highlight
     highlighted_sku = st.session_state.get("gantt_highlighted_sku")
 
     fig = build_gantt_figure(
-        schedule_df,
-        cip_df,
+        filtered_df,
+        filtered_cip,
         title="Schedule by line (color = SKU). Click a bar to highlight that SKU on all lines.",
         highlighted_sku=highlighted_sku,
     )
@@ -228,7 +271,7 @@ def run_streamlit(data_dir: Path | None = None) -> None:
         selection_mode="points",
     )
 
-    # Selection in session_state["gantt_chart"]: apply highlight on point select, clear on click-off (deselect)
+    # Selection handling
     sel = st.session_state.get("gantt_chart")
     if sel and isinstance(sel, dict):
         inner = sel.get("selection", sel)
@@ -243,7 +286,6 @@ def run_streamlit(data_dir: Path | None = None) -> None:
                         st.session_state["gantt_highlighted_sku"] = new_sku
                         st.rerun()
         elif highlighted_sku:
-            # User clicked off chart (deselected) — clear highlight
             st.session_state.pop("gantt_highlighted_sku", None)
             st.rerun()
     if highlighted_sku:
@@ -251,8 +293,34 @@ def run_streamlit(data_dir: Path | None = None) -> None:
             st.session_state.pop("gantt_highlighted_sku", None)
             st.rerun()
 
-    # Changeover section below the schedule — compact table
-    total_co, changeovers_df = compute_changeovers(schedule_df)
+    # --- Export (Phase 4.2) ---
+    col_export1, col_export2, _ = st.columns([1, 1, 3])
+    with col_export1:
+        # Export as PNG via plotly
+        try:
+            png_bytes = fig.to_image(format="png", width=1800, height=max(600, 30 * len(all_lines)), scale=2)
+            st.download_button(
+                label="Download PNG",
+                data=png_bytes,
+                file_name="flowstate_gantt.png",
+                mime="image/png",
+            )
+        except Exception:
+            st.caption("Install kaleido for PNG export: `pip install kaleido`")
+    with col_export2:
+        try:
+            pdf_bytes = fig.to_image(format="pdf", width=1800, height=max(600, 30 * len(all_lines)), scale=2)
+            st.download_button(
+                label="Download PDF",
+                data=pdf_bytes,
+                file_name="flowstate_gantt.pdf",
+                mime="application/pdf",
+            )
+        except Exception:
+            st.caption("Install kaleido for PDF export: `pip install kaleido`")
+
+    # Changeover section
+    total_co, changeovers_df = compute_changeovers(filtered_df)
     st.caption("Changeovers")
     col_metric, col_table = st.columns([1, 4])
     with col_metric:
@@ -261,12 +329,74 @@ def run_streamlit(data_dir: Path | None = None) -> None:
         co_display = changeovers_df[["line_name", "changeovers"]].rename(columns={"line_name": "Line", "changeovers": "CO"})
         st.dataframe(co_display, use_container_width=True, height=min(120, 28 * min(5, len(co_display))))
 
+    # Validation report (if exists)
+    validation_path = Path(schedule_path).parent / "validation_report.txt"
+    if validation_path.exists():
+        with st.expander("Validation report"):
+            st.code(validation_path.read_text(encoding="utf-8"), language="text")
+
     with st.expander("Schedule summary"):
         st.dataframe(
-            schedule_df[["line_name", "order_id", "sku", "start_dt", "end_dt", "run_hours"]].rename(
+            filtered_df[["line_name", "order_id", "sku", "start_dt", "end_dt", "run_hours"]].rename(
                 columns={"start_dt": "Start", "end_dt": "End"}
             ),
             use_container_width=True,
+        )
+
+    # Inventory validation section
+    st.divider()
+    st.subheader("Inventory validation")
+    data_dir_path = Path(schedule_path).parent
+    bom_path = data_dir_path / "BOM_by_SKU.csv"
+    onhand_path = data_dir_path / "OnHand_Inventory.csv"
+    inbound_path = data_dir_path / "Inbound_Inventory.csv"
+    has_inventory_data = bom_path.exists() and onhand_path.exists()
+
+    if has_inventory_data:
+        inv_results = run_inventory_check(data_dir_path)
+        inv_df = results_to_dataframe(inv_results)
+        if inv_df.empty:
+            st.info("No orders with BOM-defined materials in schedule.")
+        else:
+            n_flagged = (inv_df["status"] == "FLAG").sum()
+            n_planned = (inv_df["status"] == "PLAN").sum()
+            col_plan, col_flag, _ = st.columns([1, 1, 2])
+            with col_plan:
+                st.metric("Plan (OK)", n_planned, help="Sufficient on-hand + inbound inventory")
+            with col_flag:
+                st.metric("Flag (review)", n_flagged, help="Insufficient inventory; adjust demand or accept lower fill %")
+            status_filter = st.multiselect(
+                "Filter by status",
+                options=["PLAN", "FLAG"],
+                default=["PLAN", "FLAG"],
+                key="inv_status_filter",
+            )
+            display_df = inv_df[inv_df["status"].isin(status_filter)]
+            display_cols = ["order_id", "sku", "produced", "start_hour", "status", "message"]
+            if "shortfall_detail" in display_df.columns and display_df["shortfall_detail"].str.len().gt(0).any():
+                display_cols.append("shortfall_detail")
+            st.dataframe(
+                display_df[[c for c in display_cols if c in display_df.columns]],
+                use_container_width=True,
+                height=min(350, 35 * len(display_df) + 40),
+                column_config={
+                    "status": st.column_config.TextColumn("Status", help="PLAN = OK, FLAG = needs review"),
+                    "message": st.column_config.TextColumn("Message", width="large"),
+                    "shortfall_detail": st.column_config.TextColumn("Shortfall", width="medium"),
+                },
+            )
+            if n_flagged > 0:
+                st.warning(
+                    "**Flagged orders**: Insufficient on-hand inventory and no inbound arrives before consumption. "
+                    "Adjust demand volume or accept a lower fill % for these orders."
+                )
+    else:
+        st.info(
+            "To enable inventory validation, add these files to your data directory:\n"
+            "- **BOM_by_SKU.csv** — Bill of Materials (SKU → material, qty per unit)\n"
+            "- **OnHand_Inventory.csv** — On-hand quantities by material\n"
+            "- **Inbound_Inventory.csv** — Inbound shipments with arrival time (optional)\n\n"
+            "Copy templates from `data/templates/` and fill with your data. See `data/templates/INVENTORY_TEMPLATES_README.md`."
         )
 
 
