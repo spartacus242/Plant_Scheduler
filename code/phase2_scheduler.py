@@ -351,7 +351,14 @@ def write_week1_initial_states(
             else:
                 last_cip_dt = ""
 
-        avail_from = last_end_hour if set_available_from_schedule else 0
+        # Use the later of last production end or last CIP end.
+        # A CIP may extend past the last production block (e.g. CIP at
+        # end of Week-0); Phase 2 must not schedule production that
+        # overlaps with that CIP.
+        if set_available_from_schedule:
+            avail_from = max(last_end_hour, last_cip_end)
+        else:
+            avail_from = 0
 
         out_rows.append({
             "line_id": l,
@@ -407,6 +414,8 @@ def _solution_to_rows(
                 continue
             line_name = data.line_names.get(l, f"L{l}")
 
+            is_trial = bool(o.get("is_trial", False))
+
             # seg_a (always present when order is assigned)
             sa_s = solver.Value(seg_a_start[key]) + hour_offset
             sa_e = solver.Value(seg_a_end[key]) + hour_offset
@@ -424,6 +433,7 @@ def _solution_to_rows(
                     "run_hours": sa_r,
                     "start_dt": sa_start_dt.strftime("%Y-%m-%d %H:%M:%S"),
                     "end_dt": sa_end_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                    "is_trial": is_trial,
                 })
 
             # seg_b (only when split by CIP — same SKU continues)
@@ -444,6 +454,7 @@ def _solution_to_rows(
                         "run_hours": sb_r,
                         "start_dt": sb_start_dt.strftime("%Y-%m-%d %H:%M:%S"),
                         "end_dt": sb_end_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                        "is_trial": is_trial,
                     })
 
     bounds_rows = []
@@ -511,6 +522,7 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         allow_week1_in_week0=False,  # Week-0 only
         objective_makespan_weight=P.objective_makespan_weight,
         objective_changeover_weight=P.objective_changeover_weight,
+        objective_cip_defer_weight=P.objective_cip_defer_weight,
     )
     data0 = Data(P0, F)
     data0.load()
@@ -566,14 +578,35 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         allow_week1_in_week0=False,
         objective_makespan_weight=P.objective_makespan_weight,
         objective_changeover_weight=P.objective_changeover_weight,
+        objective_cip_defer_weight=P.objective_cip_defer_weight,
     )
     data1 = Data(P1, F_week1)
     data1.load()
-    orders_week1 = [o for o in data1.orders if int(o["due_start"]) >= WEEK1_START]
+    orders_week1 = []
+    for o in data1.orders:
+        is_trial = o.get("is_trial", False)
+        if is_trial:
+            tsh = o.get("trial_start_hour", 0)
+            teh = o.get("trial_end_hour", 0)
+            if tsh < WEEK1_START and teh > WEEK0_END + 1:
+                # Boundary-spanning trial: must go to Phase 2 (full 336h)
+                log(
+                    f"[two-phase] WARNING: trial {o['order_id']} spans "
+                    f"Week-0/1 boundary (h{tsh}-h{teh}). "
+                    f"Consider single-phase mode for best results."
+                )
+                orders_week1.append(o)
+            elif tsh >= WEEK1_START:
+                orders_week1.append(o)
+            # else: trial fits entirely in Week-0 (handled by Phase 1)
+        elif int(o["due_start"]) >= WEEK1_START:
+            orders_week1.append(o)
     # Allow Week-1 orders to start as soon as line is available (due_start=0)
+    # but do NOT override due_start for trial orders (timing is fixed)
     for o in orders_week1:
-        o["due_start"] = 0   # line availability constraint handles actual start
-        # due_end stays at 335 (end of Week-1)
+        if not o.get("is_trial", False):
+            o["due_start"] = 0   # line availability constraint handles actual start
+            # due_end stays at 335 (end of Week-1)
     data1.orders = orders_week1
 
     if not orders_week1:
@@ -632,9 +665,21 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
 
 def main() -> None:
     P = Params()
-    # Apply config overrides
+    # Apply config overrides from flowstate.toml
     if _CFG_SCHED.get("planning_start_date"):
-        P = Params(**{**P.__dict__, "planning_start_date": _CFG_SCHED["planning_start_date"]})
+        P.planning_start_date = _CFG_SCHED["planning_start_date"]
+    _cfg_cip = _CFG.get("cip", {})
+    if _cfg_cip.get("interval_h") is not None:
+        P.cip_interval_h = int(_cfg_cip["interval_h"])
+    if _cfg_cip.get("duration_h") is not None:
+        P.cip_duration_h = int(_cfg_cip["duration_h"])
+    _cfg_obj = _CFG.get("objective", {})
+    if _cfg_obj.get("makespan_weight") is not None:
+        P.objective_makespan_weight = int(_cfg_obj["makespan_weight"])
+    if _cfg_obj.get("changeover_weight") is not None:
+        P.objective_changeover_weight = int(_cfg_obj["changeover_weight"])
+    if _cfg_obj.get("cip_defer_weight") is not None:
+        P.objective_cip_defer_weight = int(_cfg_obj["cip_defer_weight"])
     F = Files(DATA_DIR)
     # Rolling mode: auto-load Week-1_InitialStates.csv if it exists
     if ROLLING:
@@ -661,6 +706,7 @@ def main() -> None:
             allow_week1_in_week0=not NO_WEEK1_IN_WEEK0,
             objective_makespan_weight=P.objective_makespan_weight,
             objective_changeover_weight=P.objective_changeover_weight,
+            objective_cip_defer_weight=P.objective_cip_defer_weight,
         )
     reset_err()
     log(

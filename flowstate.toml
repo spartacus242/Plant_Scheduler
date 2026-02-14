@@ -16,3 +16,4 @@ duration_h = 6              # CIP block duration (hours)
 # Weights for the default objective: minimize(makespan * W1 + changeovers * W2)
 makespan_weight = 1
 changeover_weight = 100
+cip_defer_weight = 10       # Reward for pushing CIPs toward 120h deadline

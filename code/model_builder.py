@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 import math
+from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 
 from ortools.sat.python import cp_model
@@ -130,6 +131,38 @@ def build_model(
                 seg_b_present[key]
             )
 
+            # Trial orders: pinned line, fixed start/end, CIP can split
+            if o.get("is_trial"):
+                tl = o["trial_line"]
+                if l == tl:
+                    model.Add(present[key] == 1)
+                    model.Add(
+                        seg_a_start[key] == o["trial_start_hour"]
+                    )
+                    # Fix effective end (seg_a_end or seg_b_end)
+                    model.Add(
+                        eff_end[key] == o["trial_end_hour"]
+                    )
+                    # Pin total production hours when computed from
+                    # target_kgs (trial_run_hours != None).  This
+                    # prevents the solver from shrinking the trial to
+                    # min_run_hours and leaving a huge idle gap.
+                    trial_run = o.get("trial_run_hours")
+                    if trial_run is not None:
+                        model.Add(run_h[key] == trial_run)
+                    # Allow CIP to split: seg_b determined by solver
+                    # Per-segment minimums (avoid short stubs)
+                    model.Add(
+                        seg_a_run[key] >= P.min_run_hours
+                    ).OnlyEnforceIf(present[key])
+                    model.Add(
+                        seg_b_run[key] >= P.min_run_hours
+                    ).OnlyEnforceIf(seg_b_present[key])
+                else:
+                    model.Add(present[key] == 0)
+                    model.Add(run_h[key] == 0)
+                continue  # skip normal capability / run-bound logic
+
             # Capability / run bounds
             r = data.rate.get((l, o["sku"]))
             cap = data.capable.get((l, o["sku"]))
@@ -195,7 +228,9 @@ def build_model(
         qmax = int(o["qty_max"])
         model.Add(prod >= qmin)
         model.Add(prod <= qmax)
-        model.Add(sum(present[(l, o_idx)] for l in lines) <= mlpo)
+        # Trials are always pinned to exactly 1 line; skip mlpo constraint
+        if not o.get("is_trial"):
+            model.Add(sum(present[(l, o_idx)] for l in lines) <= mlpo)
 
     # ── Changeover constraints (pairwise ordering + setup times) ──────────
     if (phase in ("sanity3", "full")) and (not ignore_co):
@@ -203,8 +238,13 @@ def build_model(
             elig = [
                 o_idx
                 for o_idx, o in enumerate(orders)
-                if data.capable.get((l, o["sku"]))
-                and (data.rate.get((l, o["sku"])) or 0) > 0
+                if (
+                    o.get("is_trial") and o.get("trial_line") == l
+                ) or (
+                    not o.get("is_trial")
+                    and data.capable.get((l, o["sku"]))
+                    and (data.rate.get((l, o["sku"])) or 0) > 0
+                )
             ]
             any_present = model.NewBoolVar(f"any_present_l{l}")
             model.Add(
@@ -395,12 +435,17 @@ def build_model(
                 data.init_map.get(l, {}).get("available_from", 0)
             )
 
-            # Eligible orders on this line
+            # Eligible orders on this line (including trials pinned here)
             elig_idxs = [
                 o_idx
                 for o_idx, o in enumerate(orders)
-                if data.capable.get((l, o["sku"]))
-                and (data.rate.get((l, o["sku"])) or 0) > 0
+                if (
+                    o.get("is_trial") and o.get("trial_line") == l
+                ) or (
+                    not o.get("is_trial")
+                    and data.capable.get((l, o["sku"]))
+                    and (data.rate.get((l, o["sku"])) or 0) > 0
+                )
             ]
             if not elig_idxs:
                 cip_model_vars[l] = []
@@ -481,6 +526,33 @@ def build_model(
             model.Add(
                 c1s <= first_start_l + remaining
             ).OnlyEnforceIf(b1)
+
+            # Cross-phase CIP deadline: if we know the absolute hour of the
+            # previous CIP (from InitialStates), CIP 1 must start before
+            # that time + interval to avoid a gap that the validator rejects.
+            last_cip_dt_str = str(
+                data.init_map.get(l, {}).get(
+                    "last_cip_end_datetime", ""
+                ) or ""
+            ).strip()
+            if last_cip_dt_str and last_cip_dt_str.lower() != "nan":
+                try:
+                    anchor = datetime.strptime(
+                        P.planning_start_date, "%Y-%m-%d %H:%M:%S"
+                    )
+                    cip_dt = datetime.strptime(
+                        last_cip_dt_str, "%Y-%m-%d %H:%M:%S"
+                    )
+                    last_cip_end_hour = int(
+                        (cip_dt - anchor).total_seconds() / 3600
+                    )
+                    if 0 <= last_cip_end_hour < H:
+                        abs_deadline = last_cip_end_hour + interval
+                        model.Add(
+                            c1s <= abs_deadline
+                        ).OnlyEnforceIf(b1)
+                except (ValueError, TypeError):
+                    pass  # bad datetime — fall back to relative window
 
             # CIP 2: wide window from c1e to c1e + interval
             c2s = model.NewIntVar(0, H, f"cip2_s_l{l}")
@@ -576,6 +648,24 @@ def build_model(
     for l in lines:
         model.AddNoOverlap(line_intervals[l])
 
+    # ── CIP deferral: collect present-CIP starts for objective term ──────
+    #
+    # Incentivise the solver to push CIPs as close to the 120h deadline as
+    # possible by adding sum(cip_starts) to the objective.  Absent CIPs
+    # contribute 0 so they don't distort the term.
+    all_cip_starts: list = []
+    for l in lines:
+        if l in cip_model_vars:
+            for ck_s, ck_e, ck_b in cip_model_vars[l]:
+                w_s = model.NewIntVar(
+                    0, H, f"cip_defer_{l}_{len(all_cip_starts)}"
+                )
+                model.Add(w_s == ck_s).OnlyEnforceIf(ck_b)
+                model.Add(w_s == 0).OnlyEnforceIf(ck_b.Not())
+                all_cip_starts.append(w_s)
+    cip_defer_total = sum(all_cip_starts) if all_cip_starts else 0
+    W_cip = P.objective_cip_defer_weight
+
     # ── Objective ─────────────────────────────────────────────────────────
     changeovers_per_line = []
     for l in lines:
@@ -610,13 +700,20 @@ def build_model(
         model.Add(makespan == 0)
 
     if maximize_production:
-        model.Maximize(
-            sum(produced[o_idx] for o_idx in range(len(orders)))
-        )
+        prod_sum = sum(produced[o_idx] for o_idx in range(len(orders)))
+        if all_cip_starts and W_cip > 0:
+            # Production is primary; CIP deferral is secondary.
+            # W_cip scales the tie-breaker so CIPs get pushed toward the
+            # 120h mark without significantly compromising production.
+            model.Maximize(prod_sum + cip_defer_total * W_cip)
+        else:
+            model.Maximize(prod_sum)
     elif objective_mode == "min-changeovers":
-        obj = model.NewIntVar(0, 10**12, "obj")
+        obj = model.NewIntVar(-(10**12), 10**12, "obj")
         model.Add(
-            obj == sum(changeovers_per_line) * 10000 + makespan
+            obj == sum(changeovers_per_line) * 10000
+            + makespan
+            - cip_defer_total * W_cip
         )
         model.Minimize(obj)
     elif objective_mode == "spread-load":
@@ -640,20 +737,23 @@ def build_model(
             model.AddMaxEquality(max_line_run, line_runs)
         else:
             model.Add(max_line_run == 0)
-        obj = model.NewIntVar(0, 10**12, "obj")
+        obj = model.NewIntVar(-(10**12), 10**12, "obj")
         model.Add(
             obj
             == max_line_run * 1000
             + sum(changeovers_per_line) * 10
             + makespan
+            - cip_defer_total * W_cip
         )
         model.Minimize(obj)
     else:  # balanced (default)
         W1 = P.objective_makespan_weight
         W2 = P.objective_changeover_weight
-        obj = model.NewIntVar(0, 10**12, "obj")
+        obj = model.NewIntVar(-(10**12), 10**12, "obj")
         model.Add(
-            obj == makespan * W1 + sum(changeovers_per_line) * W2
+            obj == makespan * W1
+            + sum(changeovers_per_line) * W2
+            - cip_defer_total * W_cip
         )
         model.Minimize(obj)
 

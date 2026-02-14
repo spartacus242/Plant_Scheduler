@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import List
 
@@ -53,6 +54,8 @@ class Params:
     # Objective: minimize makespan * W1 + total_changeovers * W2
     objective_makespan_weight: int = 1
     objective_changeover_weight: int = 100
+    # CIP deferral: reward pushing CIPs toward the 120h deadline (higher = more deferral)
+    objective_cip_defer_weight: int = 10
 
 
 class Files:
@@ -64,6 +67,7 @@ class Files:
         self.dem = str(data_dir / "DemandPlan.csv")
         self.downtime = str(data_dir / "Downtimes.csv")
         self.last_run = str(data_dir / "LineSKU_LastRun.csv")
+        self.trials = str(data_dir / "trials.csv")
 
 
 class Data:
@@ -153,6 +157,11 @@ class Data:
         # Demand
         dem = pd.read_csv(self.F.dem)
         self.orders = self._parse_demand(dem)
+        # Trials (optional — pinned-line, fixed-time production blocks)
+        if os.path.exists(self.F.trials):
+            tri = pd.read_csv(self.F.trials)
+            if not tri.empty:
+                self.orders.extend(self._parse_trials(tri))
 
     def _parse_demand(self, dem: pd.DataFrame) -> List[dict]:
         out = []
@@ -189,6 +198,159 @@ class Data:
                     qty_min=qmin,
                     qty_max=qmax,
                     priority=num_or_default(r.get("priority"), 999),
+                )
+            )
+        return out
+
+
+    def _parse_trials(self, tri: pd.DataFrame) -> List[dict]:
+        """Parse trials.csv into order dicts with trial-specific fields.
+
+        Each trial is pinned to a specific line with a fixed start time.
+        Either end_datetime or target_kgs (or both) must be supplied.
+        """
+        # Build reverse lookup: line_name -> line_id
+        name_to_id = {v: k for k, v in self.line_names.items()}
+        try:
+            anchor = datetime.strptime(
+                self.P.planning_start_date, "%Y-%m-%d %H:%M:%S"
+            )
+        except Exception:
+            anchor = datetime(2026, 2, 15, 0, 0, 0)
+
+        out: List[dict] = []
+        for row_i, r in tri.iterrows():
+            line_name = str(r.get("line_name", "")).strip()
+            sku = str(r.get("sku", "")).strip()
+            if not line_name or not sku:
+                raise ValueError(
+                    f"trials.csv row {row_i}: line_name and sku are required"
+                )
+            line_id = name_to_id.get(line_name)
+            if line_id is None:
+                raise ValueError(
+                    f"trials.csv row {row_i}: line_name '{line_name}' "
+                    "not found in Capabilities & Rates"
+                )
+
+            # Parse start_datetime (required)
+            start_raw = str(r.get("start_datetime", "")).strip()
+            if not start_raw or start_raw.lower() == "nan":
+                raise ValueError(
+                    f"trials.csv row {row_i}: start_datetime is required"
+                )
+            start_dt = pd.to_datetime(start_raw)
+            start_hour = int(
+                (start_dt - pd.Timestamp(anchor)).total_seconds() / 3600
+            )
+            if start_hour < 0:
+                raise ValueError(
+                    f"trials.csv row {row_i}: start_datetime "
+                    f"({start_raw}) is before planning start "
+                    f"({self.P.planning_start_date})"
+                )
+
+            # Parse end_datetime (optional)
+            end_raw = str(r.get("end_datetime", "")).strip()
+            has_end = end_raw and end_raw.lower() != "nan"
+            end_hour = None
+            if has_end:
+                end_dt = pd.to_datetime(end_raw)
+                end_hour = int(
+                    (end_dt - pd.Timestamp(anchor)).total_seconds() / 3600
+                )
+
+            # Parse target_kgs (optional)
+            kgs_raw = r.get("target_kgs")
+            has_kgs = pd.notna(kgs_raw) and float(kgs_raw) > 0
+            target_kgs = float(kgs_raw) if has_kgs else 0.0
+
+            if not has_end and not has_kgs:
+                raise ValueError(
+                    f"trials.csv row {row_i}: at least one of "
+                    "end_datetime or target_kgs must be provided"
+                )
+
+            # Resolve end_hour from target_kgs if needed
+            trial_run_hours = None  # production-only hours (set when computed from target_kgs)
+            if not has_end:
+                rate = self.rate.get((line_id, sku))
+                if rate is None or rate <= 0:
+                    raise ValueError(
+                        f"trials.csv row {row_i}: target_kgs given "
+                        f"but no rate found for ({line_name}, {sku}) "
+                        "in Capabilities & Rates. Provide end_datetime "
+                        "instead."
+                    )
+                run_hours = math.ceil(target_kgs / rate)
+                end_hour = start_hour + run_hours
+
+                # Widen the trial window to accommodate CIP blocks.
+                # Without this, the solver sacrifices production hours
+                # to fit the CIP within the original window.
+                carryover = int(
+                    self.init_map.get(line_id, {}).get(
+                        "carryover_run_hours", 0
+                    )
+                )
+                num_cips = 0
+                while (
+                    run_hours
+                    + num_cips * self.P.cip_duration_h
+                    + carryover
+                    >= (num_cips + 1) * self.P.cip_interval_h
+                ):
+                    num_cips += 1
+                    if num_cips > 3:  # model supports max 3 CIPs
+                        break
+                if num_cips > 0:
+                    end_hour += num_cips * self.P.cip_duration_h
+                trial_run_hours = run_hours  # production hours only
+
+            run_hours = end_hour - start_hour
+            if run_hours <= 0:
+                raise ValueError(
+                    f"trials.csv row {row_i}: computed run_hours "
+                    f"<= 0 (start_hour={start_hour}, "
+                    f"end_hour={end_hour})"
+                )
+
+            # Resolve qty bounds — qty_max must cover actual production
+            # Use production-only hours (not CIP-extended span) for qty
+            effective_run = (
+                trial_run_hours if trial_run_hours is not None
+                else run_hours
+            )
+            rate = self.rate.get((line_id, sku))
+            actual_production = (
+                int(math.ceil(rate * effective_run)) if rate and rate > 0
+                else 0
+            )
+            if has_kgs:
+                qty_min = 0
+                qty_max = max(int(target_kgs), actual_production)
+            elif rate and rate > 0:
+                qty_min = 0
+                qty_max = actual_production
+            else:
+                qty_min = 0
+                qty_max = 0
+
+            order_id = f"TRIAL-{sku}-L{line_name}"
+            out.append(
+                dict(
+                    order_id=order_id,
+                    sku=sku,
+                    due_start=start_hour,
+                    due_end=end_hour - 1,
+                    qty_min=qty_min,
+                    qty_max=qty_max,
+                    priority=0,  # highest priority
+                    is_trial=True,
+                    trial_line=line_id,
+                    trial_start_hour=start_hour,
+                    trial_end_hour=end_hour,
+                    trial_run_hours=trial_run_hours,  # production hours (None if explicit end_datetime)
                 )
             )
         return out

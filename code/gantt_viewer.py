@@ -28,7 +28,15 @@ def load_schedule(csv_path: Path) -> pd.DataFrame:
     df["Start"] = pd.to_datetime(df["start_dt"])
     df["Finish"] = pd.to_datetime(df["end_dt"])
     df["Task"] = df["line_name"].astype(str)
-    df["Resource"] = df["sku"].astype(str)
+    # Trial rows get a distinct Resource label
+    if "is_trial" in df.columns:
+        df["is_trial"] = df["is_trial"].fillna(False).astype(bool)
+    else:
+        df["is_trial"] = False
+    df["Resource"] = df.apply(
+        lambda r: f"TRIAL: {r['sku']}" if r["is_trial"] else str(r["sku"]),
+        axis=1,
+    )
     if "run_hours" not in df.columns:
         df["run_hours"] = (df["Finish"] - df["Start"]).dt.total_seconds() / 3600
     df = df.sort_values(["line_id", "Start"])
@@ -76,7 +84,7 @@ def build_gantt_figure(
         return go.Figure(layout_title_text="No schedule data")
 
     # Production frame: keep run_hours and datetimes for labels/hover
-    prod_cols = ["Start", "Finish", "Task", "Resource", "line_id", "run_hours"]
+    prod_cols = ["Start", "Finish", "Task", "Resource", "line_id", "run_hours", "sku", "is_trial"]
     if "start_dt" in schedule_df.columns:
         prod_cols.append("start_dt")
     if "end_dt" in schedule_df.columns:
@@ -84,7 +92,14 @@ def build_gantt_figure(
     frames = [schedule_df[[c for c in prod_cols if c in schedule_df.columns]].copy()]
     frames[0]["start_dt"] = frames[0].get("start_dt", frames[0]["Start"].astype(str))
     frames[0]["end_dt"] = frames[0].get("end_dt", frames[0]["Finish"].astype(str))
-    frames[0]["label"] = frames[0]["Resource"] + "\n" + frames[0]["run_hours"].astype(int).astype(str) + " h"
+    # Trial bars get a TRIAL prefix in the label
+    is_trial_col = frames[0].get("is_trial", pd.Series(False, index=frames[0].index))
+    frames[0]["label"] = frames[0].apply(
+        lambda r: f"TRIAL\n{r['sku']}\n{int(r['run_hours'])} h"
+        if is_trial_col.get(r.name, False)
+        else f"{r['Resource']}\n{int(r['run_hours'])} h",
+        axis=1,
+    )
 
     if cip_df is not None and not cip_df.empty:
         cip_df = cip_df.copy()
@@ -99,11 +114,14 @@ def build_gantt_figure(
     combined["Task"] = pd.Categorical(combined["Task"], categories=line_order, ordered=True)
     combined = combined.sort_values(["line_id", "Start"])
 
-    skus = [r for r in combined["Resource"].unique().tolist() if r != "CIP"]
+    skus = [r for r in combined["Resource"].unique().tolist() if r != "CIP" and not r.startswith("TRIAL:")]
+    trial_resources = [r for r in combined["Resource"].unique().tolist() if r.startswith("TRIAL:")]
     color_discrete_map = dict(
         zip(skus, px.colors.qualitative.Plotly * (1 + len(skus) // len(px.colors.qualitative.Plotly))),
     )
     color_discrete_map["CIP"] = "#888888"
+    for tr in trial_resources:
+        color_discrete_map[tr] = "#D4A017"  # gold for trial blocks
 
     fig = px.timeline(
         combined,

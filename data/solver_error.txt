@@ -1,3 +1,5 @@
-[2026-02-13 19:34:34.822609] START phase=full relax=False ignoreCO=False tl=120.0 mlpo=3
-[2026-02-13 19:36:36.636999] SOLVER status=FEASIBLE
-[2026-02-13 19:36:36.648006] Running post-solve validation
+[2026-02-13 22:07:24.657492] START phase=full relax=False ignoreCO=False tl=120 mlpo=3
+[two-phase] Phase 1: Week-0 only (33 orders), horizon=168
+[two-phase] Phase 2: Week-1 (25 orders), horizon=336 (full), maximize production
+[two-phase] Done: combined schedule written
+[2026-02-13 22:11:27.804070] Running post-solve validation
