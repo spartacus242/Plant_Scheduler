@@ -1,0 +1,4 @@
+Orders analyzed: 57
+Infeasible even without CIP: 0
+Infeasible when respecting CIP: 0
+Top blocking reasons (CIP-aware):

@@ -1,0 +1,15 @@
+line_id,line_name,initial_sku,available_from_hour,long_shutdown_flag,long_shutdown_extra_setup_hours,carryover_run_hours_since_last_cip_at_t0,last_cip_end_datetime,comment
+0,P09,280105,0,0,0,42,2026-02-27 04:00:00,Auto from week-0 run
+1,P10,280256,0,0,0,119,,Auto from week-0 run
+2,P11,280480,0,0,0,119,,Auto from week-0 run
+3,P12,120451,0,0,0,119,,Auto from week-0 run
+4,P13,241287,0,0,0,119,,Auto from week-0 run
+5,P14,120451,0,0,0,119,,Auto from week-0 run
+6,P15,280256,0,0,0,119,,Auto from week-0 run
+7,P16,280541,0,0,0,119,,Auto from week-0 run
+8,P17,280323,0,0,0,119,,Auto from week-0 run
+9,P18,280344,0,0,0,119,,Auto from week-0 run
+10,P19,280351,0,0,0,119,,Auto from week-0 run
+11,P20,280421,0,0,0,102,2026-02-24 13:00:00,Auto from week-0 run
+12,P21,280647,0,0,0,119,,Auto from week-0 run
+13,P22,280647,0,0,0,119,,Auto from week-0 run

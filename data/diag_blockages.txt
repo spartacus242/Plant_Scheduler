@@ -1,0 +1,251 @@
+Blockages: lines/weeks where required run hours exceed available (with CIP).
+Apply suggested changes to the listed CSV files to move toward a feasible schedule.
+
+
+--- Line 0 (P09) Week 0 ---
+  Required: 1209 h  Available: 324 h  Overflow: 885 h
+  Contributing orders (order_id, sku, qty_min, run_hours, num_capable_lines):
+    280324-W0  280324  137520  171.9  9
+    280490-W0  280490  105930  132.4  8
+    280264-W0  280264  76680  95.8  6
+    120436-W0  120436  71550  89.4  10
+    120464-W0  120464  60300  75.4  8
+    280581-W0  280581  55710  69.6  2
+    280323-W0  280323  55530  69.4  9
+    280583-W0  280583  50760  63.5  2
+    280451-W0  280451  50400  63.0  7
+    280169-W0  280169  49500  61.9  8
+    280166-W0  280166  45900  57.4  7
+    280586-W0  280586  36000  45.0  2
+    280104-W0  280104  34650  43.3  5
+    120448-W0  120448  33390  41.7  10
+    280421-W0  280421  29700  37.1  6
+    280478-W0  280478  22500  28.1  2
+    280592-W0  280592  18720  23.4  5
+    280450-W0  280450  16200  20.2  3
+    280573-W0  280573  16200  20.2  2
+  Suggested changes:
+    • DemandPlan.csv: relax order 280324-W0 (SKU 280324, qty_min=137520) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines.
+    • DemandPlan.csv: relax order 280490-W0 (SKU 280490, qty_min=105930) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines.
+
+--- Line 2 (P11) Week 0 ---
+  Required: 830 h  Available: 324 h  Overflow: 506 h
+  Contributing orders (order_id, sku, qty_min, run_hours, num_capable_lines):
+    280264-W0  280264  76680  95.8  6
+    280480-W0  280480  72000  90.0  10
+    120436-W0  120436  71550  89.4  10
+    120464-W0  120464  60300  75.4  8
+    280590-W0  280590  58500  73.1  7
+    280581-W0  280581  55710  69.6  2
+    280323-W0  280323  55530  69.4  9
+    280169-W0  280169  49500  61.9  8
+    280212-W0  280212  48600  60.8  8
+    120448-W0  120448  33390  41.7  10
+    280591-W0  280591  27000  33.8  8
+    120433-W0  120433  19620  24.5  3
+    280592-W0  280592  18720  23.4  5
+    280450-W0  280450  16200  20.2  3
+  Suggested changes:
+    • DemandPlan.csv: relax order 280264-W0 (SKU 280264, qty_min=76680) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines.
+    • DemandPlan.csv: relax order 280480-W0 (SKU 280480, qty_min=72000) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines.
+
+--- Line 4 (P13) Week 0 ---
+  Required: 688 h  Available: 324 h  Overflow: 364 h
+  Contributing orders (order_id, sku, qty_min, run_hours, num_capable_lines):
+    280490-W0  280490  105930  132.4  8
+    280264-W0  280264  76680  95.8  6
+    280480-W0  280480  72000  90.0  10
+    120436-W0  120436  71550  89.4  10
+    120464-W0  120464  60300  75.4  8
+    280169-W0  280169  49500  61.9  8
+    280212-W0  280212  48600  60.8  8
+    120448-W0  120448  33390  41.7  10
+    120430-W0  120430  16200  20.2  4
+    280450-W0  280450  16200  20.2  3
+  Suggested changes:
+    • DemandPlan.csv: relax order 280490-W0 (SKU 280490, qty_min=105930) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines.
+    • DemandPlan.csv: relax order 280264-W0 (SKU 280264, qty_min=76680) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines.
+
+--- Line 5 (P14) Week 0 ---
+  Required: 326 h  Available: 324 h  Overflow: 2 h
+  Contributing orders (order_id, sku, qty_min, run_hours, num_capable_lines):
+    120436-W0  120436  71550  89.4  10
+    280166-W0  280166  45900  57.4  7
+    120448-W0  120448  33390  41.7  10
+    280478-W0  280478  22500  28.1  2
+    120433-W0  120433  19620  24.5  3
+    120430-W0  120430  16200  20.2  4
+    120431-W0  120431  16200  20.2  2
+    280573-W0  280573  16200  20.2  2
+    280090-W0  280090  11250  14.1  2
+    120534-W0  120534  7740  9.7  2
+  Suggested changes:
+    • DemandPlan.csv: relax order 120436-W0 (SKU 120436, qty_min=71550) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines.
+    • DemandPlan.csv: relax order 280166-W0 (SKU 280166, qty_min=45900) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines.
+
+--- Line 6 (P15) Week 0 ---
+  Required: 1144 h  Available: 324 h  Overflow: 820 h
+  Contributing orders (order_id, sku, qty_min, run_hours, num_capable_lines):
+    280324-W0  280324  137520  171.9  9
+    280490-W0  280490  105930  132.4  8
+    280264-W0  280264  76680  95.8  6
+    280480-W0  280480  72000  90.0  10
+    120436-W0  120436  71550  89.4  10
+    120464-W0  120464  60300  75.4  8
+    280323-W0  280323  55530  69.4  9
+    280451-W0  280451  50400  63.0  7
+    280169-W0  280169  49500  61.9  8
+    280212-W0  280212  48600  60.8  8
+    280166-W0  280166  45900  57.4  7
+    280104-W0  280104  34650  43.3  5
+    120448-W0  120448  33390  41.7  10
+    280421-W0  280421  29700  37.1  6
+    280591-W0  280591  27000  33.8  8
+    120430-W0  120430  16200  20.2  4
+  Suggested changes:
+    • DemandPlan.csv: relax order 280324-W0 (SKU 280324, qty_min=137520) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines.
+    • DemandPlan.csv: relax order 280490-W0 (SKU 280490, qty_min=105930) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines.
+
+--- Line 7 (P16) Week 0 ---
+  Required: 1097 h  Available: 324 h  Overflow: 773 h
+  Contributing orders (order_id, sku, qty_min, run_hours, num_capable_lines):
+    280324-W0  280324  137520  171.9  9
+    280490-W0  280490  105930  132.4  8
+    570261-W0  570261  80550  100.7  6
+    280264-W0  280264  76680  95.8  6
+    280480-W0  280480  72000  90.0  10
+    120436-W0  120436  71550  89.4  10
+    120464-W0  120464  60300  75.4  8
+    280590-W0  280590  58500  73.1  7
+    280323-W0  280323  55530  69.4  9
+    280169-W0  280169  49500  61.9  8
+    280212-W0  280212  48600  60.8  8
+    120448-W0  120448  33390  41.7  10
+    280591-W0  280591  27000  33.8  8
+  Suggested changes:
+    • DemandPlan.csv: relax order 280324-W0 (SKU 280324, qty_min=137520) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines.
+    • DemandPlan.csv: relax order 280490-W0 (SKU 280490, qty_min=105930) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines.
+
+--- Line 8 (P17) Week 0 ---
+  Required: 638 h  Available: 324 h  Overflow: 314 h
+  Contributing orders (order_id, sku, qty_min, run_hours, num_capable_lines):
+    280324-W0  280324  137520  86.0  9
+    280490-W0  280490  105930  66.2  8
+    570261-W0  570261  80550  50.3  6
+    280480-W0  280480  72000  45.0  10
+    120436-W0  120436  71550  44.7  10
+    120464-W0  120464  60300  37.7  8
+    280590-W0  280590  58500  36.6  7
+    280323-W0  280323  55530  34.7  9
+    280451-W0  280451  50400  31.5  7
+    280169-W0  280169  49500  30.9  8
+    280212-W0  280212  48600  30.4  8
+    280166-W0  280166  45900  28.7  7
+    280647-W0  280647  40950  25.6  4
+    280104-W0  280104  34650  21.7  5
+    120448-W0  120448  33390  20.9  10
+    280421-W0  280421  29700  18.6  6
+    280591-W0  280591  27000  16.9  8
+    280592-W0  280592  18720  11.7  5
+  Suggested changes:
+    • DemandPlan.csv: relax order 280324-W0 (SKU 280324, qty_min=137520) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines.
+    • DemandPlan.csv: relax order 280490-W0 (SKU 280490, qty_min=105930) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines.
+
+--- Line 9 (P18) Week 0 ---
+  Required: 504 h  Available: 324 h  Overflow: 180 h
+  Contributing orders (order_id, sku, qty_min, run_hours, num_capable_lines):
+    280324-W0  280324  137520  86.0  9
+    280490-W0  280490  105930  66.2  8
+    570261-W0  570261  80550  50.3  6
+    280480-W0  280480  72000  45.0  10
+    280590-W0  280590  58500  36.6  7
+    280323-W0  280323  55530  34.7  9
+    280451-W0  280451  50400  31.5  7
+    280212-W0  280212  48600  30.4  8
+    280166-W0  280166  45900  28.7  7
+    280647-W0  280647  40950  25.6  4
+    280104-W0  280104  34650  21.7  5
+    280421-W0  280421  29700  18.6  6
+    280591-W0  280591  27000  16.9  8
+    280592-W0  280592  18720  11.7  5
+  Suggested changes:
+    • DemandPlan.csv: relax order 280324-W0 (SKU 280324, qty_min=137520) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines.
+    • DemandPlan.csv: relax order 280490-W0 (SKU 280490, qty_min=105930) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines.
+
+--- Line 10 (P19) Week 0 ---
+  Required: 451 h  Available: 324 h  Overflow: 127 h
+  Contributing orders (order_id, sku, qty_min, run_hours, num_capable_lines):
+    280351-W0  280351  180000  112.5  1
+    280256-W0  280256  141390  88.4  1
+    280324-W0  280324  137520  86.0  9
+    280480-W0  280480  72000  45.0  10
+    280590-W0  280590  58500  36.6  7
+    280323-W0  280323  55530  34.7  9
+    280212-W0  280212  48600  30.4  8
+    280591-W0  280591  27000  16.9  8
+  Suggested changes:
+    • Capabilities & Rates.csv: set capable=1 for another line (e.g. add a row line_id=<other>, sku=280351) so order 280351-W0 can use a second line.
+    • Capabilities & Rates.csv: set capable=1 for another line (e.g. add a row line_id=<other>, sku=280256) so order 280256-W0 can use a second line.
+    • DemandPlan.csv: relax order 280351-W0 (SKU 280351, qty_min=180000) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines.
+    • DemandPlan.csv: relax order 280256-W0 (SKU 280256, qty_min=141390) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines.
+
+--- Line 11 (P20) Week 0 ---
+  Required: 619 h  Available: 324 h  Overflow: 295 h
+  Contributing orders (order_id, sku, qty_min, run_hours, num_capable_lines):
+    280324-W0  280324  137520  86.0  9
+    280490-W0  280490  105930  66.2  8
+    570261-W0  570261  80550  50.3  6
+    280264-W0  280264  76680  47.9  6
+    280480-W0  280480  72000  45.0  10
+    120436-W0  120436  71550  44.7  10
+    120464-W0  120464  60300  37.7  8
+    280323-W0  280323  55530  34.7  9
+    280583-W0  280583  50760  31.7  2
+    280451-W0  280451  50400  31.5  7
+    280169-W0  280169  49500  30.9  8
+    280166-W0  280166  45900  28.7  7
+    280586-W0  280586  36000  22.5  2
+    280104-W0  280104  34650  21.7  5
+    120448-W0  120448  33390  20.9  10
+    280421-W0  280421  29700  18.6  6
+  Suggested changes:
+    • DemandPlan.csv: relax order 280324-W0 (SKU 280324, qty_min=137520) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines.
+    • DemandPlan.csv: relax order 280490-W0 (SKU 280490, qty_min=105930) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines.
+
+--- Line 12 (P21) Week 0 ---
+  Required: 502 h  Available: 324 h  Overflow: 178 h
+  Contributing orders (order_id, sku, qty_min, run_hours, num_capable_lines):
+    280324-W0  280324  137520  86.0  9
+    280490-W0  280490  105930  66.2  8
+    570261-W0  570261  80550  50.3  6
+    280480-W0  280480  72000  45.0  10
+    120464-W0  120464  60300  37.7  8
+    280590-W0  280590  58500  36.6  7
+    280323-W0  280323  55530  34.7  9
+    280451-W0  280451  50400  31.5  7
+    280212-W0  280212  48600  30.4  8
+    280166-W0  280166  45900  28.7  7
+    280647-W0  280647  40950  25.6  4
+    280591-W0  280591  27000  16.9  8
+    280592-W0  280592  18720  11.7  5
+  Suggested changes:
+    • DemandPlan.csv: relax order 280324-W0 (SKU 280324, qty_min=137520) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines.
+    • DemandPlan.csv: relax order 280490-W0 (SKU 280490, qty_min=105930) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines.
+
+--- Line 13 (P22) Week 0 ---
+  Required: 407 h  Available: 324 h  Overflow: 83 h
+  Contributing orders (order_id, sku, qty_min, run_hours, num_capable_lines):
+    280324-W0  280324  137520  86.0  9
+    570261-W0  570261  80550  50.3  6
+    280480-W0  280480  72000  45.0  10
+    120436-W0  120436  71550  44.7  10
+    280590-W0  280590  58500  36.6  7
+    280451-W0  280451  50400  31.5  7
+    280169-W0  280169  49500  30.9  8
+    280647-W0  280647  40950  25.6  4
+    120448-W0  120448  33390  20.9  10
+    280421-W0  280421  29700  18.6  6
+    280591-W0  280591  27000  16.9  8
+  Suggested changes:
+    • DemandPlan.csv: relax order 280324-W0 (SKU 280324, qty_min=137520) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines.
+    • DemandPlan.csv: relax order 570261-W0 (SKU 570261, qty_min=80550) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines.

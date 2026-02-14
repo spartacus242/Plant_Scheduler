@@ -1,0 +1,215 @@
+Factory Scheduler (Phase 2) — Build Log, Design, and Lessons
+As of 2026-02-13 00:11
+
+-------------------------------------------------------------------------------
+1) Objective & Scope
+-------------------------------------------------------------------------------
+Goal: build a 2-week (336 h) factory scheduler that assigns SKU demand to lines
+within due windows, honoring capability, rates (UPH), sequence-dependent
+changeovers, initial states (incl. long-shutdown extras), and Clean-In-Place
+(CIP) sanitation every 120 production hours with a 6 h duration. The plan limits
+parallel lines per order, and outputs a per-line timeline plus produced vs
+bounds for each order.
+
+-------------------------------------------------------------------------------
+2) Data Inputs & Semantics
+-------------------------------------------------------------------------------
+Expected CSVs (column highlights):
+• Capabilities & Rates.csv  -> line_id, line_name, sku, capable (0/1), rate_uph
+• Changeovers.csv           -> from_sku, to_sku, setup_hours (rounded to nearest h)
+• InitialStates.csv         -> line_id, initial_sku or CLEAN, available_from_hour,
+                               long_shutdown_flag (0/1), long_shutdown_extra_setup_hours,
+                               carryover_run_hours_since_last_cip_at_t0,
+                               last_cip_end_datetime (optional), comment
+• Downtimes.csv (optional)  -> line_id, start_hour, end_hour, reason
+• LineSKU_LastRun.csv (optional) -> line_id, sku, last_run_date (YYYY-MM-DD)
+• DemandPlan.csv            -> sku, order_id (or infer Wk-SKU), due_start_hour,
+                               due_end_hour, either pct bounds
+                               (qty_target, lower_pct, upper_pct) or absolute
+                               qty_min/qty_max, priority
+
+Key parsing/normalization behaviors we implemented:
+• Robust NaN/blank handling for all numerics; map blank initial_sku -> CLEAN.
+• In DemandPlan, infer order_id as 'W{week_index}-{sku}' if missing; if week
+  not provided, infer week by due_start_hour (<=167 -> W0 else W1).
+
+-------------------------------------------------------------------------------
+3) Environment, Execution, and Quality-of-Life
+-------------------------------------------------------------------------------
+• Python venv: project-local .venv; install ortools and pandas into that venv.
+• VS Code issues resolved: interpreter selection and PowerShell execution policy.
+• Data pathing: support --data-dir so runs work from any terminal location.
+• Outputs per run: solver_kpis.txt, schedule_phase2.csv, produced_vs_bounds.csv;
+  diagnostics files as added later (see §6–§7).
+
+-------------------------------------------------------------------------------
+4) Model Formulation (current design)
+-------------------------------------------------------------------------------
+Decision variables per (line, order):
+• present[l,o] in {0,1}; run_h[l,o] in [0..H]; start[l,o], end[l,o] in [0..H);
+  OptionalInterval(start, run_h, end, present).
+
+Core constraints:
+• Due window clamp: if present -> start >= due_start and end <= due_end+1.
+• Capability/Rate gating: if not capable or rate_uph <= 0 -> present=0 & run_h=0.
+• NoOverlap per line: all production intervals + fixed downtime intervals.
+• Production definition: produced[o] = Sum_l (int(rate_uph[l,sku]) * run_h[l,o]).
+• Demand bounds: qty_min[o] <= produced[o] <= qty_max[o].
+• Parallelism cap: Sum_l present[l,o] <= max_lines_per_order (default 3).
+
+Changeovers & initial state (sanity3/full):
+• Initial setup for first job on a line applies once (base setup from initial_sku
+  plus long_shutdown extra if flagged), also respect available_from_hour.
+• Pairwise sequence offsets add setup time between consecutive orders; feasibility
+  proven without CIP in earlier isolate runs.
+• When allow_week1_in_week0: max 1 h non-production (CIP/changeover only) between
+  last Week-0 run and first Week-1 run on each line that has both.
+
+CIP policy (evolved):
+• v1: explicit CIP1/CIP2 optional intervals with 120-h segment caps and
+  6 h duration, plus absorption of up to 6 h if a changeover straddled a CIP.
+• v3: simplified to aggregate accounting (no interval placement): for each line,
+  total_run + (cip_count * 6) <= available_wall_clock_hours; cip_count >= 1 if
+  carryover+total_run >= 120; >=2 if >=240. (Removes micro-segment dead-ends.)
+
+-------------------------------------------------------------------------------
+5) Key Fixes & Hardening Applied
+-------------------------------------------------------------------------------
+• Robust CSV coercions and defaults to avoid NaN->int crashes in InitialStates.
+• Linearization of BoolVar x IntVar products: introduced auxiliary IntVars to
+  represent run hours of a job before/after CIP windows when that design was in
+  use (v1).
+• Added --data-dir, --time-limit, and DEBUG logging into solver_error.txt.
+• Introduced phased runs to isolate logic: sanity1 (no changeovers/CIP),
+  sanity3 (changeovers, no CIP), full (CIP + changeovers).
+
+-------------------------------------------------------------------------------
+6) Evidence & Diagnostics (timeline of findings)
+-------------------------------------------------------------------------------
+• Base structure OK with demand relaxed: sanity1 + --relax-demand returned OPTIMAL.
+• Full model INFEASIBLE under v1 CIP segmentation; aggregate CIP (v3) also
+  returned INFEASIBLE, implying placement was not the only factor.
+• New diagnostic (diag_order_linecap.csv) shows each Week-0 order's qty_min is
+  far below the capacity of its best 3 lines within its window; e.g. orders like
+  280324-W0, 280490-W0, 280351-W0, 280256-W0 have ub_noCIP_top3 >> qty_min.
+  This means the 3-line per-order cap itself is not the binding constraint.
+
+Interpretation: infeasibility arises from line-level contention across orders
+within the same windows—especially single-capable SKUs that pile onto one line.
+If two large Week-0 SKUs each have only one capable line and share the same
+line, their combined required runtime can exceed that line's Week-0 capacity
+before we even add CIPs.
+
+-------------------------------------------------------------------------------
+7) Next Steps to Reach Feasible Schedules
+-------------------------------------------------------------------------------
+A) Identify overloaded lines precisely (recommended diagnostic to add next):
+   • For each order with exactly one capable line, compute required run hours
+     = qty_min / rate_uph(line, sku), sum by line over Week-0 windows (and
+     Week-1 separately). Compare to each line's available wall-clock hours.
+   • Output diag_unique_line_load.csv highlighting lines where required >
+     available. These are infeasibility drivers.
+
+B) Tactical levers to restore feasibility:
+   • Temporarily broaden capability: assign a second capable line to one or two
+     single-line SKUs with large Week-0 qty_min.
+   • Relax specific Week-0 lower bounds (e.g., from 95% to about 90–92%) for SKUs that
+     over-subscribe bottleneck lines; deliver remainder in Week-1.
+   • Adjust due windows to increase overlap on secondary lines.
+   • If needed for highly utilized lines, allow a 3rd CIP in aggregate accounting
+     (cip_count up to 3 is already supported in v3+; can extend if required).
+
+C) Optional model refinements after feasibility:
+   • Reintroduce safe CIP absorption of changeovers (up to 6 h) in the aggregate
+     scheme without segment caps by using indicator-driven offsets only when a
+     CIP is counted between two intervals.
+   • Add timestamp columns (start_dt, end_dt) in the CSV aligned to
+     2026-02-15 00:00:00 (planning anchor).
+
+-------------------------------------------------------------------------------
+8) How to Run (commands that worked consistently)
+-------------------------------------------------------------------------------
+# Diagnose capacity vs 3-line cap (writes diag_order_linecap.csv)
+python .\phase2_scheduler.py --diagnose --data-dir "."
+
+# Sanity checks
+python .\phase2_scheduler.py --phase sanity1 --time-limit 120 --data-dir "."
+python .\phase2_scheduler.py --phase sanity1 --relax-demand --time-limit 60 --data-dir "."
+python .\phase2_scheduler.py --phase sanity3 --time-limit 180 --data-dir "."
+
+# Full (aggregate CIP)
+python .\phase2_scheduler.py --phase full --time-limit 600 --data-dir "."
+
+# (Optional) explore policy sensitivity
+python .\phase2_scheduler.py --phase sanity1 --time-limit 180 --max-lines-per-order 6 --data-dir "."
+python .\phase2_scheduler.py --phase full    --time-limit 600 --max-lines-per-order 6 --data-dir "."
+
+-------------------------------------------------------------------------------
+9) Version History (high-level)
+-------------------------------------------------------------------------------
+• v1  — CIP1/2 intervals with 120-h segment caps; CIP absorption for changeovers;
+         fixed BoolVarxIntVar via linearization; improved CSV coercions.
+• v2  — Debug wrapper, phased runs, precise solver status logging, early gate.
+• v3  — Aggregate CIP count + wall-clock limit; removed placement dead-ends.
+• v3.2— Added line-cap diagnostic and --max-lines-per-order override.
+
+-------------------------------------------------------------------------------
+10) Files Produced (by phase)
+-------------------------------------------------------------------------------
+Always/diagnostics: solver_kpis.txt, diag_order_linecap.csv (v3.2),
+diag_unique_line_load.csv (single-capable-line load by line/week),
+diag_blockages.csv and diag_blockages.txt (overloaded line/weeks and suggested
+changes to Capabilities & Rates, DemandPlan, or InitialStates), diag_summary
+(earlier diagnostic), plus solver_error.txt (debug timestamps).
+When solver status is FEASIBLE or OPTIMAL: schedule_phase2.csv, produced_vs_bounds.csv,
+cip_windows.csv (CIP blocks after every 120 run-hours), Week-1_InitialStates.csv (see §12).
+
+-------------------------------------------------------------------------------
+11) Working Hypothesis Snapshot
+-------------------------------------------------------------------------------
+The data are broadly feasible at the order level, but specific production lines
+are over-subscribed within Week-0 due to single-capable SKUs. Resolve by
+reallocating some Week-0 demand (or broadening capability) on those lines; then
+return to the full model with aggregate CIP accounting and, if desired, add back
+CIP-changeover absorption.
+
+-------------------------------------------------------------------------------
+This summary is intended to seed a fresh conversation with all the context:
+• objectives, inputs, assumptions, constraints, and design evolution,
+• known pitfalls and fixes, and
+• a clear triage path to feasibility.
+
+-------------------------------------------------------------------------------
+12) Rolling weekly process, 1-hour gap, and Week-1 InitialStates
+-------------------------------------------------------------------------------
+Process: Demand for week-2 often arrives ~Wednesday of week-0; the schedule for
+week-1 is posted Thursday of week-0. Initial state is not always Sunday midnight
+(e.g. a line may run one SKU for weeks). The scheduler uses a 2-week (336 h)
+horizon: Week-0 ends at hour 167 (Saturday 23:00), Week-1 is 168–335.
+
+Week-1 orders at end of Week-0:
+• With allow_week1_in_week0 (default), Week-1 orders can fill the tail of Week-0
+  (from hour 120 to 167) so the work week is filled to Saturday 23:00.
+• 1-hour gap constraint: On each line that runs both Week-0 and Week-1 orders,
+  the gap between the end of the last Week-0 run and the start of the first
+  Week-1 run must be at most 1 hour. The only allowed non-production in that
+  gap is CIP or changeover (no long idle). Implemented in model_builder.
+
+Week-1_InitialStates.csv (autogenerated):
+• When a feasible/optimal schedule is written, the solver also writes
+  Week-1_InitialStates.csv: the state of each line at the end of the 2-week
+  horizon (end of Week-1). Columns match InitialStates.csv: line_id, line_name,
+  initial_sku (last run’s SKU), available_from_hour=0, long_shutdown_flag=0,
+  carryover_run_hours_since_last_cip_at_t0 (run hours from last CIP to horizon
+  end), last_cip_end_datetime (optional), comment="Auto from week-0 run".
+• Use this file as the next run’s initial state so the schedule rolls forward:
+  Option A — Copy/rename Week-1_InitialStates.csv to InitialStates.csv before
+  the next week’s run. Option B — Run with --initial-states data/Week-1_InitialStates.csv
+  (or the path to the file) so that run uses the autogenerated state.
+
+2-week view:
+• The Gantt viewer (gantt_viewer.py) shows the full 2-week schedule and draws a
+  dashed vertical line at the Week-0 / Week-1 boundary (hour 168) with a
+  "Week 1" label.
+
+— End of Summary —

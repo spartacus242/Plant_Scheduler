@@ -1,0 +1,4 @@
+[2026-02-13 02:15:16.171471] START phase=full relax=False ignoreCO=False tl=90.0 mlpo=3
+[two-phase] Phase 1: Week-0 only (32 orders), horizon=168
+[two-phase] Phase 2: Week-1 only (25 orders), horizon=168, maximize production
+[two-phase] Done: combined schedule written

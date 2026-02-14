@@ -1,0 +1,32 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Optional: exclude generated outputs (uncomment if you prefer)
+# data/schedule_phase2.csv
+# data/produced_vs_bounds.csv
+# data/cip_windows.csv
+# data/Week-1_InitialStates.csv
+# data/solver_kpis.txt
+# data/solver_error.txt
+# data/diag_*.csv
+# data/diag_*.txt
