@@ -1,0 +1,21 @@
+{
+  "name": "flowstate-gantt-sandbox",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Custom Streamlit v2 component: drag-and-drop Gantt scheduler sandbox",
+  "dependencies": {
+    "gantt-task-react": "^0.4.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "@streamlit/component-v2-lib": "^0.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build"
+  }
+}

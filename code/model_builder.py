@@ -523,8 +523,13 @@ def build_model(
             )
             line_intervals[l].append(c1_int)
             model.Add(c1s >= avail_from).OnlyEnforceIf(b1)
+            # CIP deadline is absolute from the line's availability, not
+            # from when production first starts.  With carryover hours the
+            # line has already been running *before* the planning horizon,
+            # so the CIP is due at (avail + remaining) hours into the
+            # horizon regardless of when production actually begins.
             model.Add(
-                c1s <= first_start_l + remaining
+                c1s <= avail_from + remaining
             ).OnlyEnforceIf(b1)
 
             # Cross-phase CIP deadline: if we know the absolute hour of the

@@ -1,4 +1,4 @@
-﻿line_id,line_name,initial_sku,available_from_hour,long_shutdown_flag,long_shutdown_extra_setup_hours,carryover_run_hours_since_last_cip_at_t0,last_cip_end_datetime,comment
+line_id,line_name,initial_sku,available_from_hour,long_shutdown_flag,long_shutdown_extra_setup_hours,carryover_run_hours_since_last_cip_at_t0,last_cip_end_datetime,comment
 0,P09,280581,0,0,0,0,,
 1,P10,CLEAN,0,1,2,0,,
 2,P11,CLEAN,0,0,0,0,,
