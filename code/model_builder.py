@@ -233,7 +233,21 @@ def build_model(
             model.Add(sum(present[(l, o_idx)] for l in lines) <= mlpo)
 
     # ── Changeover constraints (pairwise ordering + setup times) ──────────
+    #
+    # Successor variables track which order *immediately follows* which on
+    # each line.  This lets us compute a weighted changeover cost where
+    # topload-format changes are penalized more heavily than other changes.
+    succ = {}           # (l, i_idx, j_idx) -> BoolVar: j immediately follows i
+    weighted_co_cost_per_line = []  # list of IntVars (one per line)
+
     if (phase in ("sanity3", "full")) and (not ignore_co):
+        # Per-machine changeover weights
+        W_top = P.co_topload_weight
+        W_ttp = P.co_ttp_weight
+        W_ffs = P.co_ffs_weight
+        W_cp = P.co_casepacker_weight
+        W_base = P.co_base_weight
+
         for l in lines:
             elig = [
                 o_idx
@@ -297,6 +311,7 @@ def build_model(
                 )
 
             # Pairwise ordering: uses eff_end for "end of order"
+            # Also create successor variables for adjacency tracking.
             for a in range(len(elig)):
                 for b in range(a + 1, len(elig)):
                     i_idx, j_idx = elig[a], elig[b]
@@ -318,6 +333,107 @@ def build_model(
                         seg_a_start[(l, i_idx)]
                         >= eff_end[(l, j_idx)] + setup_ji
                     ).OnlyEnforceIf(b_ij.Not())
+
+                    # Successor variables: j immediately follows i (or vice versa)
+                    s_ij = model.NewBoolVar(
+                        f"succ_l{l}_{i['order_id']}__{j['order_id']}"
+                    )
+                    s_ji = model.NewBoolVar(
+                        f"succ_l{l}_{j['order_id']}__{i['order_id']}"
+                    )
+                    succ[(l, i_idx, j_idx)] = s_ij
+                    succ[(l, j_idx, i_idx)] = s_ji
+                    # Successor implies ordering direction
+                    model.AddImplication(s_ij, b_ij)
+                    model.AddImplication(s_ji, b_ij.Not())
+                    # Successor implies both present
+                    model.AddImplication(s_ij, present[(l, i_idx)])
+                    model.AddImplication(s_ij, present[(l, j_idx)])
+                    model.AddImplication(s_ji, present[(l, i_idx)])
+                    model.AddImplication(s_ji, present[(l, j_idx)])
+
+            # Chain constraints: each order has at most one successor / one predecessor
+            for a_pos, a_idx in enumerate(elig):
+                # At most one successor for order a
+                succ_from_a = [
+                    succ[(l, a_idx, b_idx)]
+                    for b_pos, b_idx in enumerate(elig)
+                    if b_pos != a_pos and (l, a_idx, b_idx) in succ
+                ]
+                if succ_from_a:
+                    model.Add(sum(succ_from_a) <= 1)
+                # At most one predecessor for order a
+                succ_to_a = [
+                    succ[(l, b_idx, a_idx)]
+                    for b_pos, b_idx in enumerate(elig)
+                    if b_pos != a_pos and (l, b_idx, a_idx) in succ
+                ]
+                if succ_to_a:
+                    model.Add(sum(succ_to_a) <= 1)
+
+            # Total successor links = present orders - 1  (chain integrity)
+            all_succ_l = [
+                succ[(l, elig[a], elig[b])]
+                for a in range(len(elig))
+                for b in range(len(elig))
+                if a != b and (l, elig[a], elig[b]) in succ
+            ]
+            if all_succ_l:
+                n_present_l = model.NewIntVar(
+                    0, len(elig), f"n_present_l{l}"
+                )
+                model.Add(
+                    n_present_l == sum(present[(l, i)] for i in elig)
+                )
+                n_succ_l = model.NewIntVar(
+                    0, len(elig), f"n_succ_l{l}"
+                )
+                model.Add(n_succ_l == sum(all_succ_l))
+                # If any orders present, successors = present - 1
+                model.Add(
+                    n_succ_l == n_present_l - 1
+                ).OnlyEnforceIf(any_present)
+                model.Add(n_succ_l == 0).OnlyEnforceIf(
+                    any_present.Not()
+                )
+
+            # Weighted changeover cost for this line
+            # cost = sum over adjacent pairs of:
+            #   base + topload_weight * topload_change + ttp * ttp_change + ...
+            co_cost_terms = []
+            for a in range(len(elig)):
+                for b in range(len(elig)):
+                    if a == b:
+                        continue
+                    i_idx, j_idx = elig[a], elig[b]
+                    key = (l, i_idx, j_idx)
+                    if key not in succ:
+                        continue
+                    i_sku = orders[i_idx]["sku"]
+                    j_sku = orders[j_idx]["sku"]
+                    mc = data.machine_changes.get(
+                        (i_sku, j_sku),
+                        {"ttp": 1, "ffs": 1, "topload": 1, "casepacker": 1},
+                    )
+                    pair_cost = (
+                        W_base
+                        + W_top * mc["topload"]
+                        + W_ttp * mc["ttp"]
+                        + W_ffs * mc["ffs"]
+                        + W_cp * mc["casepacker"]
+                    )
+                    if pair_cost > 0:
+                        co_cost_terms.append(succ[key] * pair_cost)
+
+            if co_cost_terms:
+                max_possible = len(elig) * (
+                    W_base + W_top + W_ttp + W_ffs + W_cp
+                )
+                co_cost_l = model.NewIntVar(
+                    0, max_possible, f"co_cost_l{l}"
+                )
+                model.Add(co_cost_l == sum(co_cost_terms))
+                weighted_co_cost_per_line.append(co_cost_l)
 
     # ── Week-0 / Week-1 gap constraint ────────────────────────────────────
     if P.allow_week1_in_week0:
@@ -671,7 +787,108 @@ def build_model(
     cip_defer_total = sum(all_cip_starts) if all_cip_starts else 0
     W_cip = P.objective_cip_defer_weight
 
+    # ── Line compactness (idle-time penalty) ──────────────────────────────
+    #
+    # Penalize per-line idle time: span − production − CIP hours.
+    # CIP-segmented blocks (seg_a → CIP → seg_b) are NOT penalized because
+    # the CIP hours are subtracted from the span.  Only true dead-time
+    # (gaps between runs or between a run and a changeover) is penalized.
+    line_idle_vars: list = []
+    W_idle = P.objective_idle_weight
+    if W_idle > 0:
+        dur_cip = P.cip_duration_h
+        for l in lines:
+            elig = [
+                o_idx
+                for o_idx, o in enumerate(orders)
+                if (o.get("is_trial") and o.get("trial_line") == l)
+                or (
+                    not o.get("is_trial")
+                    and data.capable.get((l, o["sku"]))
+                    and (data.rate.get((l, o["sku"])) or 0) > 0
+                )
+            ]
+            if not elig:
+                continue
+
+            # Any orders assigned to this line?
+            any_c = model.NewBoolVar(f"cidle_any_l{l}")
+            model.Add(
+                sum(present[(l, i)] for i in elig) >= 1
+            ).OnlyEnforceIf(any_c)
+            model.Add(
+                sum(present[(l, i)] for i in elig) == 0
+            ).OnlyEnforceIf(any_c.Not())
+
+            # First production start on line (H when not present)
+            s_list = []
+            for o_idx in elig:
+                v = model.NewIntVar(0, H, f"cS_l{l}_o{o_idx}")
+                model.Add(
+                    v == seg_a_start[(l, o_idx)]
+                ).OnlyEnforceIf(present[(l, o_idx)])
+                model.Add(v == H).OnlyEnforceIf(
+                    present[(l, o_idx)].Not()
+                )
+                s_list.append(v)
+            first_s = model.NewIntVar(0, H, f"cidle_fs_l{l}")
+            model.AddMinEquality(first_s, s_list)
+
+            # Last production end on line (0 when not present)
+            e_list = []
+            for o_idx in elig:
+                v = model.NewIntVar(0, H, f"cE_l{l}_o{o_idx}")
+                model.Add(
+                    v == eff_end[(l, o_idx)]
+                ).OnlyEnforceIf(present[(l, o_idx)])
+                model.Add(v == 0).OnlyEnforceIf(
+                    present[(l, o_idx)].Not()
+                )
+                e_list.append(v)
+            last_e = model.NewIntVar(0, H, f"cidle_le_l{l}")
+            model.AddMaxEquality(last_e, e_list)
+
+            # Span = last end − first start
+            span_c = model.NewIntVar(0, H, f"cidle_sp_l{l}")
+            model.Add(
+                span_c == last_e - first_s
+            ).OnlyEnforceIf(any_c)
+            model.Add(span_c == 0).OnlyEnforceIf(any_c.Not())
+
+            # Total production hours on this line
+            prod_c = model.NewIntVar(0, H, f"cidle_pr_l{l}")
+            model.Add(
+                prod_c
+                == sum(
+                    run_h[(l, o_idx)]
+                    for o_idx in range(len(orders))
+                )
+            )
+
+            # CIP hours on this line (subtracted so CIP splits aren't penalized)
+            cip_h_expr = 0
+            if l in cip_model_vars and cip_model_vars[l]:
+                cip_h_expr = sum(
+                    dur_cip * ck_b
+                    for _, _, ck_b in cip_model_vars[l]
+                )
+
+            # Idle = span − production − CIP hours  (≥ 0 by NoOverlap)
+            idle_c = model.NewIntVar(0, H, f"cidle_l{l}")
+            model.Add(
+                idle_c == span_c - prod_c - cip_h_expr
+            ).OnlyEnforceIf(any_c)
+            model.Add(idle_c == 0).OnlyEnforceIf(any_c.Not())
+
+            line_idle_vars.append(idle_c)
+
+    total_idle = sum(line_idle_vars) if line_idle_vars else 0
+
     # ── Objective ─────────────────────────────────────────────────────────
+    #
+    # Changeover cost: when successor variables are available (changeovers
+    # enabled), use the weighted per-machine cost.  Otherwise fall back to
+    # a simple count of changeovers (jobs - 1) per line.
     changeovers_per_line = []
     for l in lines:
         total_jobs_l = model.NewIntVar(
@@ -692,6 +909,13 @@ def build_model(
         )
         model.Add(changeovers_l == 0).OnlyEnforceIf(any_present_l.Not())
         changeovers_per_line.append(changeovers_l)
+
+    # Use weighted changeover cost when available, flat count as fallback
+    use_weighted_co = len(weighted_co_cost_per_line) > 0
+    weighted_co_total = (
+        sum(weighted_co_cost_per_line) if use_weighted_co else 0
+    )
+    flat_co_total = sum(changeovers_per_line)
 
     all_eff_end = [
         eff_end[(l, o_idx)]
@@ -715,11 +939,21 @@ def build_model(
             model.Maximize(prod_sum)
     elif objective_mode == "min-changeovers":
         obj = model.NewIntVar(-(10**12), 10**12, "obj")
-        model.Add(
-            obj == sum(changeovers_per_line) * 10000
-            + makespan
-            - cip_defer_total * W_cip
-        )
+        if use_weighted_co:
+            # Weighted: topload changes cost much more than other transitions
+            model.Add(
+                obj == weighted_co_total * 100
+                + makespan
+                + total_idle * W_idle
+                - cip_defer_total * W_cip
+            )
+        else:
+            model.Add(
+                obj == flat_co_total * 10000
+                + makespan
+                + total_idle * W_idle
+                - cip_defer_total * W_cip
+            )
         model.Minimize(obj)
     elif objective_mode == "spread-load":
         max_line_run = model.NewIntVar(
@@ -743,23 +977,45 @@ def build_model(
         else:
             model.Add(max_line_run == 0)
         obj = model.NewIntVar(-(10**12), 10**12, "obj")
-        model.Add(
-            obj
-            == max_line_run * 1000
-            + sum(changeovers_per_line) * 10
-            + makespan
-            - cip_defer_total * W_cip
-        )
+        if use_weighted_co:
+            model.Add(
+                obj
+                == max_line_run * 1000
+                + weighted_co_total
+                + makespan
+                + total_idle * W_idle
+                - cip_defer_total * W_cip
+            )
+        else:
+            model.Add(
+                obj
+                == max_line_run * 1000
+                + flat_co_total * 10
+                + makespan
+                + total_idle * W_idle
+                - cip_defer_total * W_cip
+            )
         model.Minimize(obj)
     else:  # balanced (default)
         W1 = P.objective_makespan_weight
         W2 = P.objective_changeover_weight
         obj = model.NewIntVar(-(10**12), 10**12, "obj")
-        model.Add(
-            obj == makespan * W1
-            + sum(changeovers_per_line) * W2
-            - cip_defer_total * W_cip
-        )
+        if use_weighted_co:
+            # Weighted changeover cost replaces flat count * W2.
+            # W2 is still used as a scaling multiplier.
+            model.Add(
+                obj == makespan * W1
+                + weighted_co_total * W2
+                + total_idle * W_idle
+                - cip_defer_total * W_cip
+            )
+        else:
+            model.Add(
+                obj == makespan * W1
+                + flat_co_total * W2
+                + total_idle * W_idle
+                - cip_defer_total * W_cip
+            )
         model.Minimize(obj)
 
     vars_dict = {

@@ -523,6 +523,12 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         objective_makespan_weight=P.objective_makespan_weight,
         objective_changeover_weight=P.objective_changeover_weight,
         objective_cip_defer_weight=P.objective_cip_defer_weight,
+        objective_idle_weight=P.objective_idle_weight,
+        co_topload_weight=P.co_topload_weight,
+        co_ttp_weight=P.co_ttp_weight,
+        co_ffs_weight=P.co_ffs_weight,
+        co_casepacker_weight=P.co_casepacker_weight,
+        co_base_weight=P.co_base_weight,
     )
     data0 = Data(P0, F)
     data0.load()
@@ -579,6 +585,12 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         objective_makespan_weight=P.objective_makespan_weight,
         objective_changeover_weight=P.objective_changeover_weight,
         objective_cip_defer_weight=P.objective_cip_defer_weight,
+        objective_idle_weight=P.objective_idle_weight,
+        co_topload_weight=P.co_topload_weight,
+        co_ttp_weight=P.co_ttp_weight,
+        co_ffs_weight=P.co_ffs_weight,
+        co_casepacker_weight=P.co_casepacker_weight,
+        co_base_weight=P.co_base_weight,
     )
     data1 = Data(P1, F_week1)
     data1.load()
@@ -680,6 +692,19 @@ def main() -> None:
         P.objective_changeover_weight = int(_cfg_obj["changeover_weight"])
     if _cfg_obj.get("cip_defer_weight") is not None:
         P.objective_cip_defer_weight = int(_cfg_obj["cip_defer_weight"])
+    if _cfg_obj.get("idle_weight") is not None:
+        P.objective_idle_weight = int(_cfg_obj["idle_weight"])
+    _cfg_co = _CFG.get("changeover", {})
+    if _cfg_co.get("topload_weight") is not None:
+        P.co_topload_weight = int(_cfg_co["topload_weight"])
+    if _cfg_co.get("ttp_weight") is not None:
+        P.co_ttp_weight = int(_cfg_co["ttp_weight"])
+    if _cfg_co.get("ffs_weight") is not None:
+        P.co_ffs_weight = int(_cfg_co["ffs_weight"])
+    if _cfg_co.get("casepacker_weight") is not None:
+        P.co_casepacker_weight = int(_cfg_co["casepacker_weight"])
+    if _cfg_co.get("base_changeover_weight") is not None:
+        P.co_base_weight = int(_cfg_co["base_changeover_weight"])
     F = Files(DATA_DIR)
     # Rolling mode: auto-load Week-1_InitialStates.csv if it exists
     if ROLLING:
@@ -707,6 +732,12 @@ def main() -> None:
             objective_makespan_weight=P.objective_makespan_weight,
             objective_changeover_weight=P.objective_changeover_weight,
             objective_cip_defer_weight=P.objective_cip_defer_weight,
+            objective_idle_weight=P.objective_idle_weight,
+            co_topload_weight=P.co_topload_weight,
+            co_ttp_weight=P.co_ttp_weight,
+            co_ffs_weight=P.co_ffs_weight,
+            co_casepacker_weight=P.co_casepacker_weight,
+            co_base_weight=P.co_base_weight,
         )
     reset_err()
     log(

@@ -1,6 +1,6 @@
 [scheduler]
 time_limit = 300
-min_run_hours = 10
+min_run_hours = 8
 max_lines_per_order = 2
 planning_start_date = "2026-02-15 00:00:00"
 validate = true
@@ -10,6 +10,14 @@ interval_h = 120
 duration_h = 6
 
 [objective]
-makespan_weight = 3
+makespan_weight = 6
 changeover_weight = 120
-cip_defer_weight = 10
+cip_defer_weight = 5
+idle_weight = 50
+
+[changeover]
+topload_weight = 50
+ttp_weight = 10
+ffs_weight = 10
+casepacker_weight = 10
+base_changeover_weight = 5

@@ -56,6 +56,14 @@ class Params:
     objective_changeover_weight: int = 100
     # CIP deferral: reward pushing CIPs toward the 120h deadline (higher = more deferral)
     objective_cip_defer_weight: int = 10
+    # Idle-time penalty: penalize per-line idle gaps (span − production − CIP hours)
+    objective_idle_weight: int = 0
+    # Per-machine changeover weights (used in weighted changeover objective)
+    co_topload_weight: int = 50
+    co_ttp_weight: int = 10
+    co_ffs_weight: int = 10
+    co_casepacker_weight: int = 10
+    co_base_weight: int = 5
 
 
 class Files:
@@ -79,6 +87,8 @@ class Data:
         self.capable = {}
         self.rate = {}
         self.setup = {}
+        self.machine_changes = {}   # (from_sku, to_sku) -> {ttp, ffs, topload, casepacker}
+        self.changeover_type = {}   # (from_sku, to_sku) -> "1-0-1-1" string
         self.init_map = {}
         self.downtimes = []
         self.orders = []
@@ -103,8 +113,31 @@ class Data:
         chg["to_sku"] = chg["to_sku"].astype(str)
         chg["setup_hours"] = pd.to_numeric(chg["setup_hours"], errors="coerce").fillna(0.0)
         chg["setup_rounded"] = chg["setup_hours"].apply(round_half_up)
+        # Machine-level changeover columns (backward-compat: default to 1 if missing)
+        has_machine_cols = all(
+            c in chg.columns for c in ("ttp_change", "ffs_change", "topload_change", "casepacker_change")
+        )
+        if has_machine_cols:
+            for col in ("ttp_change", "ffs_change", "topload_change", "casepacker_change"):
+                chg[col] = pd.to_numeric(chg[col], errors="coerce").fillna(1).astype(int)
         for _, r in chg.iterrows():
-            self.setup[(str(r["from_sku"]), str(r["to_sku"]))] = int(r["setup_rounded"])
+            pair = (str(r["from_sku"]), str(r["to_sku"]))
+            self.setup[pair] = int(r["setup_rounded"])
+            if has_machine_cols:
+                mc = {
+                    "ttp": int(r["ttp_change"]),
+                    "ffs": int(r["ffs_change"]),
+                    "topload": int(r["topload_change"]),
+                    "casepacker": int(r["casepacker_change"]),
+                }
+            else:
+                # Fallback: assume full changeover when setup > 0
+                full = 1 if int(r["setup_rounded"]) > 0 else 0
+                mc = {"ttp": full, "ffs": full, "topload": full, "casepacker": full}
+            self.machine_changes[pair] = mc
+            self.changeover_type[pair] = (
+                f"{mc['ttp']}-{mc['ffs']}-{mc['topload']}-{mc['casepacker']}"
+            )
         # Initial states
         init = pd.read_csv(self.F.init)
         for c, d in {
