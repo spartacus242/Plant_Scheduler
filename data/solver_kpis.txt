@@ -1,1 +1,2 @@
 Status: TWO_PHASE — Week-0 and Week-1 FEASIBLE
+Idle KPIs: 14 lines, total_idle=117h, median_idle=2h, utilization=92.7%

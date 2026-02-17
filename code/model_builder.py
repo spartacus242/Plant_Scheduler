@@ -930,13 +930,38 @@ def build_model(
 
     if maximize_production:
         prod_sum = sum(produced[o_idx] for o_idx in range(len(orders)))
-        if all_cip_starts and W_cip > 0:
-            # Production is primary; CIP deferral is secondary.
-            # W_cip scales the tie-breaker so CIPs get pushed toward the
-            # 120h mark without significantly compromising production.
-            model.Maximize(prod_sum + cip_defer_total * W_cip)
-        else:
-            model.Maximize(prod_sum)
+        # Production is the primary objective.  Secondary terms from the
+        # user's selected objective mode act as tiebreakers so the solver
+        # honours changeover / idle / CIP preferences when production is
+        # equal.  Production is scaled so it always dominates.
+        secondary = 0
+        if objective_mode == "min-changeovers":
+            co_term = (
+                weighted_co_total * 100
+                if use_weighted_co
+                else flat_co_total * 10000
+            )
+            secondary = co_term + total_idle * W_idle - cip_defer_total * W_cip
+        elif objective_mode == "spread-load":
+            co_term = (
+                weighted_co_total
+                if use_weighted_co
+                else flat_co_total * 10
+            )
+            secondary = co_term + makespan + total_idle * W_idle - cip_defer_total * W_cip
+        else:  # balanced (default)
+            W1 = P.objective_makespan_weight
+            W2 = P.objective_changeover_weight
+            co_term = (
+                weighted_co_total * W2
+                if use_weighted_co
+                else flat_co_total * W2
+            )
+            secondary = makespan * W1 + co_term + total_idle * W_idle - cip_defer_total * W_cip
+        # Scale production so it always dominates secondary terms.
+        # Max secondary is ~50k; prod_sum * 1000 puts production in the
+        # hundreds-of-millions range, guaranteeing it is never sacrificed.
+        model.Maximize(prod_sum * 1000 - secondary)
     elif objective_mode == "min-changeovers":
         obj = model.NewIntVar(-(10**12), 10**12, "obj")
         if use_weighted_co:

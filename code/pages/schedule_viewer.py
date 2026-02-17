@@ -116,6 +116,13 @@ mt.dataframe(
     use_container_width=True, height=min(120, 28 * min(5, len(co_df))),
 )
 
+# ── Idle-gap KPIs ──────────────────────────────────────────────────────
+idle_kpi_path = dd / "idle_kpis.csv"
+if idle_kpi_path.exists():
+    with st.expander("Idle-gap KPIs per line", expanded=False):
+        idle_df = pd.read_csv(idle_kpi_path)
+        st.dataframe(idle_df, use_container_width=True, hide_index=True)
+
 # ── Validation report ───────────────────────────────────────────────────
 val_path = dd / "validation_report.txt"
 if val_path.exists():

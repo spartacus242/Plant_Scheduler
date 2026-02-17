@@ -181,6 +181,73 @@ def write_kpi_lines(lines: List[str]) -> None:
             f.write(ln.rstrip() + "\n")
 
 
+def compute_idle_kpis(
+    schedule_rows: List[Dict[str, Any]],
+    cip_rows: List[Dict[str, Any]],
+    data_dir: Path,
+) -> List[str]:
+    """Compute per-line idle-gap KPIs from the schedule and CIP windows.
+
+    Returns KPI summary lines and writes ``idle_kpis.csv`` to *data_dir*.
+    Idle time = span − production − CIP hours − changeover dead-time
+    (changeover time is not tracked separately, so it is included in idle here).
+    """
+    # Group production segments by line
+    by_line: Dict[int, List[Tuple[int, int, int]]] = {}
+    line_names: Dict[int, str] = {}
+    for row in schedule_rows:
+        l = row["line_id"]
+        by_line.setdefault(l, []).append(
+            (int(row["start_hour"]), int(row["end_hour"]), int(row["run_hours"]))
+        )
+        line_names[l] = row.get("line_name", f"L{l}")
+
+    # Group CIP blocks by line
+    cip_by_line: Dict[int, int] = {}
+    for row in cip_rows:
+        l = row["line_id"]
+        cip_by_line[l] = cip_by_line.get(l, 0) + (
+            int(row["end_hour"]) - int(row["start_hour"])
+        )
+
+    kpi_rows: List[Dict[str, Any]] = []
+    total_idle = 0
+    total_prod = 0
+    for l in sorted(by_line.keys()):
+        segs = sorted(by_line[l], key=lambda x: x[0])
+        first_start = segs[0][0]
+        last_end = max(s[1] for s in segs)
+        span = last_end - first_start
+        prod_hours = sum(s[2] for s in segs)
+        cip_hours = cip_by_line.get(l, 0)
+        idle = max(0, span - prod_hours - cip_hours)
+        util_pct = round(100 * prod_hours / span, 1) if span > 0 else 0.0
+        total_idle += idle
+        total_prod += prod_hours
+        kpi_rows.append({
+            "line_id": l,
+            "line_name": line_names.get(l, f"L{l}"),
+            "span_h": span,
+            "production_h": prod_hours,
+            "cip_h": cip_hours,
+            "idle_h": idle,
+            "utilization_pct": util_pct,
+        })
+
+    # Write CSV
+    if kpi_rows:
+        pd.DataFrame(kpi_rows).to_csv(data_dir / "idle_kpis.csv", index=False)
+
+    # Summary lines for solver_kpis.txt
+    n_lines = len(kpi_rows)
+    median_idle = sorted(r["idle_h"] for r in kpi_rows)[n_lines // 2] if n_lines else 0
+    total_span = sum(r["span_h"] for r in kpi_rows)
+    overall_util = round(100 * total_prod / total_span, 1) if total_span > 0 else 0.0
+    return [
+        f"Idle KPIs: {n_lines} lines, total_idle={total_idle}h, median_idle={median_idle}h, utilization={overall_util}%",
+    ]
+
+
 def compute_cip_windows(
     schedule_rows: List[Dict[str, Any]],
     data: Data,
@@ -496,6 +563,10 @@ def write_solution(
         if cip_rows:
             pd.DataFrame(cip_rows).to_csv(data_dir / "cip_windows.csv", index=False)
         write_week1_initial_states(schedule_rows, cip_rows or [], data, P, data_dir)
+        # Idle-gap KPIs
+        idle_kpi_lines = compute_idle_kpis(schedule_rows, cip_rows or [], data_dir)
+        for ln in idle_kpi_lines:
+            log(ln)
     pd.DataFrame(bounds_rows).to_csv(data_dir / "produced_vs_bounds.csv", index=False)
 
 
@@ -671,8 +742,12 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         combined_schedule, combined_cips, data1, P1, data_dir,
         set_available_from_schedule=False,
     )
-    write_kpi_lines(["Status: TWO_PHASE — Week-0 and Week-1 FEASIBLE"])
+    # Idle-gap KPIs on combined schedule
+    idle_kpi_lines = compute_idle_kpis(combined_schedule, combined_cips, data_dir)
+    write_kpi_lines(["Status: TWO_PHASE — Week-0 and Week-1 FEASIBLE"] + idle_kpi_lines)
     log("[two-phase] Done: combined schedule written")
+    for ln in idle_kpi_lines:
+        log(ln)
 
 
 def main() -> None:
@@ -774,7 +849,6 @@ def main() -> None:
                 )
                 status = solver.Solve(model)
                 status_name = solver.StatusName(status)
-                write_kpi_lines([f"Status: {status_name}"])
                 log(f"[{datetime.now()}] SOLVER status={status_name}")
                 if status in (cp_model.FEASIBLE, cp_model.OPTIMAL):
                     write_solution(
@@ -784,6 +858,28 @@ def main() -> None:
                         DATA_DIR,
                         vars_dict,
                     )
+                    # Read back idle KPIs and include in solver_kpis.txt
+                    idle_kpi_path = DATA_DIR / "idle_kpis.csv"
+                    idle_kpi_summary = []
+                    if idle_kpi_path.exists():
+                        try:
+                            import csv
+                            with open(idle_kpi_path, encoding="utf-8") as f:
+                                rows = list(csv.DictReader(f))
+                            n = len(rows)
+                            t_idle = sum(int(r.get("idle_h", 0)) for r in rows)
+                            t_prod = sum(int(r.get("production_h", 0)) for r in rows)
+                            t_span = sum(int(r.get("span_h", 0)) for r in rows)
+                            m_idle = sorted(int(r.get("idle_h", 0)) for r in rows)[n // 2] if n else 0
+                            util = round(100 * t_prod / t_span, 1) if t_span > 0 else 0.0
+                            idle_kpi_summary = [
+                                f"Idle KPIs: {n} lines, total_idle={t_idle}h, median_idle={m_idle}h, utilization={util}%"
+                            ]
+                        except Exception:
+                            pass
+                    write_kpi_lines([f"Status: {status_name}"] + idle_kpi_summary)
+                else:
+                    write_kpi_lines([f"Status: {status_name}"])
     except Exception:
         log("\n=== FATAL ERROR ===\n" + traceback.format_exc())
         write_kpi_lines(["Status: ERROR — see solver_error.txt"])
