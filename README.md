@@ -1,92 +1,118 @@
-# Plant Scheduler (Flowstate)
+# Flowstate Scheduler
 
-A 2-week factory scheduler using OR-Tools CP-SAT. Assigns SKU demand to production lines within due windows, honoring capability, rates (UPH), sequence-dependent changeovers, initial states, and Clean-In-Place (CIP) sanitation every 120 production hours.
+Two-week production scheduler for pouch manufacturing lines, built with
+[OR-Tools CP-SAT](https://developers.google.com/optimization) and a
+[Streamlit](https://streamlit.io) GUI.
 
-## Features
+## Quick Start
 
-- **2-week horizon** (336h): Week-0 (Mon–Sat) and Week-1 (Sun–Sat)
-- **Two-phase mode** (`--two-phase`): Solve Week-0 first, then Week-1 with InitialStates from Week-0 — ensures Week-1 orders are scheduled even when qty_min=0
-- **Rolling weekly process**: Autogenerate Week-1_InitialStates.csv from the schedule for use as next run's initial state
-- **1-hour gap constraint**: Max 1h non-production (CIP/changeover only) between last Week-0 and first Week-1 run on each line
-- **CIP blocks** placed in gaps between production (no overlap); CIP every 120 run-hours
-- **Gantt viewer** (Streamlit): Color by SKU, data labels, click to highlight same SKU, changeovers table, 2-week view with Week boundary
-- **Inventory validation**: Check on-hand + inbound vs. schedule consumption; PLAN if sufficient, FLAG if insufficient (adjust demand or accept lower fill %)
+### Prerequisites
 
-## Quick start
+- **Python 3.11+** &mdash; [python.org/downloads](https://www.python.org/downloads/)
+- **Git** &mdash; [git-scm.com](https://git-scm.com/)
+
+### Clone & Run
 
 ```bash
-# Create venv and install
+# 1. Clone the repository
+git clone https://github.com/spartacus242/Plant_Scheduler.git
+cd Plant_Scheduler
+
+# 2. Create a virtual environment
 python -m venv .venv
-.venv\Scripts\activate
-pip install ortools pandas streamlit plotly
 
-# Run scheduler (single-phase)
-python code/phase2_scheduler.py --data-dir data --min-run-hours 4 --time-limit 120
+# 3. Activate it
+#    Windows (PowerShell):
+.venv\Scripts\Activate.ps1
+#    Windows (CMD):
+.venv\Scripts\activate.bat
+#    macOS / Linux:
+source .venv/bin/activate
 
-# Run two-phase (Week-0 then Week-1; shows Week-1 even when qty_min=0)
-python code/phase2_scheduler.py --data-dir data --min-run-hours 4 --two-phase --time-limit 90
+# 4. Install dependencies
+pip install -r requirements.txt
 
-# Run Gantt viewer
-streamlit run code/gantt_viewer.py
+# 5. Launch the app
+streamlit run code/app.py
 ```
 
-## Data inputs (`data/`)
+The app opens in your browser at **http://localhost:8501**.
 
-| File | Description |
-|------|-------------|
-| Capabilities & Rates.csv | line_id, sku, capable, rate_uph |
-| Changeovers.csv | from_sku, to_sku, setup_hours |
-| InitialStates.csv | line_id, initial_sku, available_from_hour, carryover_run_hours_since_last_cip_at_t0, ... |
-| DemandPlan.csv | order_id, sku, due_start_hour, due_end_hour, qty_target, lower_pct, upper_pct |
-| Downtimes.csv (optional) | line_id, start_hour, end_hour |
-| BOM_by_SKU.csv (optional) | sku, material_id, qty_per_unit — for inventory check |
-| OnHand_Inventory.csv (optional) | material_id, quantity — for inventory check |
-| Inbound_Inventory.csv (optional) | material_id, quantity, arrival_hour or arrival_date — for inventory check |
+## What You'll See
 
-## Outputs
+| Section | Pages | Description |
+|---------|-------|-------------|
+| **Setup** | Settings, Demand Plan, Inventory Check | Configure the planning horizon, edit demand orders, review raw material coverage |
+| **Configuration** | Capabilities & Rates, Changeovers, Trials, Downtimes, Initial States | Line-level parameters: which SKUs run where, changeover times, scheduled downtimes, current line states |
+| **Solve** | Run Solver, Schedule Viewer | Run the OR-Tools optimizer and view the resulting schedule as a Gantt chart |
+| **Adjust & Export** | Sandbox, Export | Drag-and-drop schedule adjustments, export to Excel/CSV |
 
-- `schedule_phase2.csv` — per-line production timeline
-- `produced_vs_bounds.csv` — produced vs qty_min/qty_max per order
-- `cip_windows.csv` — CIP blocks (grey in Gantt, with changeover absorption)
-- `Week-1_InitialStates.csv` — state at end of horizon (use with `--initial-states data/Week-1_InitialStates.csv` for next run)
-- `validation_report.txt` — post-solve check results (bounds, overlaps, CIP, changeovers)
+## Running the Solver (CLI)
 
-## CLI options
+You can also run the solver directly from the command line:
 
-| Option | Description |
-|--------|-------------|
-| `--data-dir PATH` | Data directory (default: script dir) |
-| `--min-run-hours N` | Min run hours per (line, order) (default: 4) |
-| `--two-phase` | Run Week-0 then Week-1 with Week-1 InitialStates from Week-0 |
-| `--rolling` | Auto-load Week-1_InitialStates.csv + run two-phase (weekly roll-forward) |
-| `--initial-states PATH` | Use custom InitialStates (e.g. Week-1_InitialStates.csv) |
-| `--no-week1-in-week0` | Disallow Week-1 orders in Week-0 window |
-| `--time-limit N` | Solver time limit (seconds) |
-| `--objective MODE` | `balanced` (default), `min-changeovers`, or `spread-load` |
-| `--validate` | Run post-solve validation (bounds, overlaps, CIP, changeovers) |
-| `--config PATH` | Path to `flowstate.toml` config file |
-| `--diagnose` | Run diagnostics only |
+```bash
+# Full solve (changeovers + CIP modeling)
+python code/phase2_scheduler.py --data-dir data --phase full --time-limit 120
 
-## Project layout
+# Quick feasibility check (no changeovers)
+python code/phase2_scheduler.py --data-dir data --phase sanity1 --time-limit 30
 
-```
-Flowstate/
-├── code/
-│   ├── phase2_scheduler.py   # Main scheduler (CLI)
-│   ├── model_builder.py      # CP-SAT model
-│   ├── data_loader.py        # CSV loading, Params
-│   ├── diagnostics.py        # Blockages, line load
-│   ├── validate_schedule.py  # Post-solve validation (bounds, CIP, changeovers)
-│   ├── inventory_checker.py  # Inventory validation (BOM, on-hand, inbound)
-│   └── gantt_viewer.py       # Streamlit Gantt (filters, export, CIP, inventory)
-├── data/                     # Input CSVs + outputs
-├── data/templates/           # Inventory templates (BOM, OnHand, Inbound)
-├── flowstate.toml            # Config file for scheduler defaults
-├── docs/
-│   └── Factory_Scheduler_Summary.txt
-└── README.md
+# Two-phase solve (Week-0 then Week-1)
+python code/phase2_scheduler.py --data-dir data --phase full --two-phase --time-limit 300
 ```
 
-## License
+Output files are written to the `data/` directory:
+- `schedule_phase2.csv` &mdash; the production schedule
+- `produced_vs_bounds.csv` &mdash; actual vs. target quantities
+- `cip_windows.csv` &mdash; CIP (clean-in-place) intervals
 
-See repository for license details.
+## Project Structure
+
+```
+Plant_Scheduler/
+  code/
+    app.py                  # Streamlit entry point
+    phase2_scheduler.py     # CLI solver orchestration
+    model_builder.py        # CP-SAT model construction
+    data_loader.py          # Data loading and parameter management
+    validate_schedule.py    # Post-solve validation
+    diagnostics.py          # Feasibility diagnostics
+    pages/                  # Streamlit GUI pages
+    components/             # Custom Streamlit components (Gantt sandbox)
+  data/
+    DemandPlan.csv          # Demand orders
+    Capabilities & Rates.csv
+    Changeovers.csv         # SKU-to-SKU changeover matrix
+    InitialStates.csv       # Current line states
+    Downtimes.csv           # Scheduled maintenance windows
+    ...
+  flowstate.toml            # Solver configuration
+  requirements.txt
+```
+
+## Configuration
+
+Edit `flowstate.toml` to tune solver behavior:
+
+```toml
+[scheduler]
+time_limit = 300          # Solver time limit (seconds)
+min_run_hours = 8         # Minimum production run per line assignment
+
+[cip]
+interval_h = 120          # CIP required every 120 production hours
+duration_h = 6            # CIP duration
+
+[objective]
+makespan_weight = 6       # Minimize total schedule length
+changeover_weight = 120   # Penalize changeovers
+idle_weight = 50          # Penalize idle gaps
+
+[changeover]
+topload_weight = 50       # Topload format changes (heaviest penalty)
+ttp_weight = 10           # TTP station changes
+ffs_weight = 10           # Form-fill-seal changes
+casepacker_weight = 10    # Casepacker changes
+base_changeover_weight = 5  # Flat cost per any transition
+```

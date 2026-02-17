@@ -22,6 +22,10 @@ if not csv_path.exists():
 
 df = pd.read_csv(csv_path)
 
+# Cast sku to str so TextColumn config works (pandas may infer as int)
+if "sku" in df.columns:
+    df["sku"] = df["sku"].astype(str)
+
 # Summary metrics
 w0 = df[df.get("due_end_hour", pd.Series(dtype=float)).fillna(999).astype(int) <= 167] if "due_end_hour" in df.columns else df[df.get("week_index", pd.Series(dtype=float)).fillna(0).astype(int) == 0]
 w1 = df.drop(w0.index)

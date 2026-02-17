@@ -7,8 +7,9 @@ __pycache__/
 .Python
 *.egg-info/
 .eggs/
-dist/
-build/
+/dist/
+/build/
+node_modules/
 
 # IDE
 .idea/
@@ -21,12 +22,7 @@ build/
 .DS_Store
 Thumbs.db
 
-# Optional: exclude generated outputs (uncomment if you prefer)
-# data/schedule_phase2.csv
-# data/produced_vs_bounds.csv
-# data/cip_windows.csv
-# data/Week-1_InitialStates.csv
-# data/solver_kpis.txt
-# data/solver_error.txt
-# data/diag_*.csv
-# data/diag_*.txt
+# Solver scratch files (written to code/ during runs)
+code/solver_error.txt
+code/solver_kpis.txt
+code/validation_report.txt

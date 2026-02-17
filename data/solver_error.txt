@@ -1,5 +1,5 @@
-[2026-02-13 22:07:24.657492] START phase=full relax=False ignoreCO=False tl=120 mlpo=3
+[2026-02-15 01:31:13.087795] START phase=full relax=False ignoreCO=False tl=300 mlpo=2
 [two-phase] Phase 1: Week-0 only (33 orders), horizon=168
 [two-phase] Phase 2: Week-1 (25 orders), horizon=336 (full), maximize production
 [two-phase] Done: combined schedule written
-[2026-02-13 22:11:27.804070] Running post-solve validation
+[2026-02-15 01:36:30.684191] Running post-solve validation

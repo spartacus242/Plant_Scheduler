@@ -82,6 +82,9 @@ if st.button("Run Solver", type="primary", use_container_width=True):
             f.unlink()
 
     st.session_state["schedule_source"] = "solver"
+    # Clear stale sandbox state so it reloads from new CSV
+    for key in ["sb_schedule", "sb_cips", "sb_holding"]:
+        st.session_state.pop(key, None)
 
     with st.status("Solving...", expanded=True) as status:
         st.write(f"Command: `{' '.join(cmd)}`")
