@@ -1,5 +1,5 @@
 [scheduler]
-time_limit = 300
+time_limit = 80
 min_run_hours = 8
 max_lines_per_order = 2
 planning_start_date = "2026-02-15 00:00:00"
@@ -13,7 +13,9 @@ duration_h = 6
 makespan_weight = 6
 changeover_weight = 120
 cip_defer_weight = 5
-idle_weight = 50
+co_conv_org_weight = 30
+co_cinn_weight = 20
+co_flavor_weight = 5
 
 [changeover]
 topload_weight = 50
@@ -21,3 +23,6 @@ ttp_weight = 10
 ffs_weight = 10
 casepacker_weight = 10
 base_changeover_weight = 5
+conv_org_weight = 30
+cinn_weight = 20
+flavor_weight = 5

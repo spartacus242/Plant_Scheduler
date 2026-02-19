@@ -1,4 +1,4 @@
-# pages/demand_plan.py — View / edit DemandPlan.csv.
+# pages/demand_plan.py — View / edit demand_plan.csv.
 
 from __future__ import annotations
 import sys
@@ -13,9 +13,9 @@ if str(BASE_DIR) not in sys.path:
 from helpers.paths import data_dir
 
 st.header("Demand Plan")
-st.caption("Review and edit order demand. Changes are saved back to `DemandPlan.csv`.")
+st.caption("Review and edit order demand. Changes are saved back to `demand_plan.csv`.")
 
-csv_path = data_dir() / "DemandPlan.csv"
+csv_path = data_dir() / "demand_plan.csv"
 if not csv_path.exists():
     st.warning(f"File not found: `{csv_path}`")
     st.stop()

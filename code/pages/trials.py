@@ -19,7 +19,7 @@ st.caption(
 )
 
 csv_path = data_dir() / "trials.csv"
-caps_path = data_dir() / "Capabilities & Rates.csv"
+caps_path = data_dir() / "capabilities_rates.csv"
 
 # Load line names and SKU capabilities for validation hints
 line_names = []

@@ -19,11 +19,16 @@ st.set_page_config(
     layout="wide",
 )
 
+from theme import apply_theme
+apply_theme()
+
 # ── Navigation ──────────────────────────────────────────────────────────
 pg = st.navigation(
     {
+        "": [
+            st.Page("pages/home.py", title="Home", icon=":material/home:", default=True),
+        ],
         "Setup": [
-            st.Page("pages/settings.py", title="Settings", icon=":material/settings:"),
             st.Page("pages/demand_plan.py", title="Demand Plan", icon=":material/list_alt:"),
             st.Page("pages/inventory_check.py", title="Inventory Check", icon=":material/inventory_2:"),
         ],

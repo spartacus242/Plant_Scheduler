@@ -80,7 +80,7 @@ def _parse_args() -> argparse.Namespace:
         "--initial-states",
         type=Path,
         default=None,
-        help="Path to InitialStates CSV (default: data-dir/InitialStates.csv). Use Week-1_InitialStates.csv for next run.",
+        help="Path to InitialStates CSV (default: data-dir/initial_states.csv). Use week1_initial_states.csv for next run.",
     )
     parser.add_argument(
         "--two-phase",
@@ -101,7 +101,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--rolling",
         action="store_true",
-        help="Rolling weekly run: auto-load Week-1_InitialStates.csv if it exists, then run --two-phase.",
+        help="Rolling weekly run: auto-load week1_initial_states.csv if it exists, then run --two-phase.",
     )
     parser.add_argument(
         "--config",
@@ -365,7 +365,7 @@ def write_week1_initial_states(
     data_dir: Path,
     set_available_from_schedule: bool = False,
 ) -> None:
-    """Write Week-1_InitialStates.csv: state of each line at end of schedule.
+    """Write week1_initial_states.csv: state of each line at end of schedule.
     set_available_from_schedule=True: set available_from_hour to last production end (for two-phase Phase 2).
     set_available_from_schedule=False: set available_from_hour=0 (for rolling/final states).
     """
@@ -440,7 +440,7 @@ def write_week1_initial_states(
         })
 
     df = pd.DataFrame(out_rows)
-    df.to_csv(data_dir / "Week-1_InitialStates.csv", index=False)
+    df.to_csv(data_dir / "week1_initial_states.csv", index=False)
 
 
 def _solution_to_rows(
@@ -482,6 +482,7 @@ def _solution_to_rows(
             line_name = data.line_names.get(l, f"L{l}")
 
             is_trial = bool(o.get("is_trial", False))
+            sku_desc = data.sku_desc.get(o["sku"], "")
 
             # seg_a (always present when order is assigned)
             sa_s = solver.Value(seg_a_start[key]) + hour_offset
@@ -495,6 +496,7 @@ def _solution_to_rows(
                     "line_name": line_name,
                     "order_id": o["order_id"],
                     "sku": o["sku"],
+                    "sku_description": sku_desc,
                     "start_hour": sa_s,
                     "end_hour": sa_e,
                     "run_hours": sa_r,
@@ -516,6 +518,7 @@ def _solution_to_rows(
                         "line_name": line_name,
                         "order_id": o["order_id"],
                         "sku": o["sku"],
+                        "sku_description": sku_desc,
                         "start_hour": sb_s,
                         "end_hour": sb_e,
                         "run_hours": sb_r,
@@ -600,6 +603,9 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         co_ffs_weight=P.co_ffs_weight,
         co_casepacker_weight=P.co_casepacker_weight,
         co_base_weight=P.co_base_weight,
+        co_conv_org_weight=P.co_conv_org_weight,
+        co_cinn_weight=P.co_cinn_weight,
+        co_flavor_weight=P.co_flavor_weight,
     )
     data0 = Data(P0, F)
     data0.load()
@@ -639,7 +645,7 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
 
     # Phase 2: Week-1 on FULL 336h horizon (lines available from Week-0 end)
     F_week1 = Files(data_dir)
-    F_week1.init = str(data_dir / "Week-1_InitialStates.csv")
+    F_week1.init = str(data_dir / "week1_initial_states.csv")
     P1 = Params(
         horizon_h=336,  # Full 2-week horizon (lines blocked until Week-0 end via available_from)
         changeover_penalty=P.changeover_penalty,
@@ -662,6 +668,9 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         co_ffs_weight=P.co_ffs_weight,
         co_casepacker_weight=P.co_casepacker_weight,
         co_base_weight=P.co_base_weight,
+        co_conv_org_weight=P.co_conv_org_weight,
+        co_cinn_weight=P.co_cinn_weight,
+        co_flavor_weight=P.co_flavor_weight,
     )
     data1 = Data(P1, F_week1)
     data1.load()
@@ -769,6 +778,13 @@ def main() -> None:
         P.objective_cip_defer_weight = int(_cfg_obj["cip_defer_weight"])
     if _cfg_obj.get("idle_weight") is not None:
         P.objective_idle_weight = int(_cfg_obj["idle_weight"])
+    # Changeover type penalty weights — saved by settings.py into [objective]
+    if _cfg_obj.get("co_conv_org_weight") is not None:
+        P.co_conv_org_weight = int(_cfg_obj["co_conv_org_weight"])
+    if _cfg_obj.get("co_cinn_weight") is not None:
+        P.co_cinn_weight = int(_cfg_obj["co_cinn_weight"])
+    if _cfg_obj.get("co_flavor_weight") is not None:
+        P.co_flavor_weight = int(_cfg_obj["co_flavor_weight"])
     _cfg_co = _CFG.get("changeover", {})
     if _cfg_co.get("topload_weight") is not None:
         P.co_topload_weight = int(_cfg_co["topload_weight"])
@@ -780,10 +796,16 @@ def main() -> None:
         P.co_casepacker_weight = int(_cfg_co["casepacker_weight"])
     if _cfg_co.get("base_changeover_weight") is not None:
         P.co_base_weight = int(_cfg_co["base_changeover_weight"])
+    if _cfg_co.get("conv_org_weight") is not None:
+        P.co_conv_org_weight = int(_cfg_co["conv_org_weight"])
+    if _cfg_co.get("cinn_weight") is not None:
+        P.co_cinn_weight = int(_cfg_co["cinn_weight"])
+    if _cfg_co.get("flavor_weight") is not None:
+        P.co_flavor_weight = int(_cfg_co["flavor_weight"])
     F = Files(DATA_DIR)
-    # Rolling mode: auto-load Week-1_InitialStates.csv if it exists
+    # Rolling mode: auto-load week1_initial_states.csv if it exists
     if ROLLING:
-        w1_init = DATA_DIR / "Week-1_InitialStates.csv"
+        w1_init = DATA_DIR / "week1_initial_states.csv"
         if w1_init.exists():
             F.init = str(w1_init)
             log(f"[rolling] Using {w1_init} as InitialStates")
@@ -813,6 +835,9 @@ def main() -> None:
             co_ffs_weight=P.co_ffs_weight,
             co_casepacker_weight=P.co_casepacker_weight,
             co_base_weight=P.co_base_weight,
+            co_conv_org_weight=P.co_conv_org_weight,
+            co_cinn_weight=P.co_cinn_weight,
+            co_flavor_weight=P.co_flavor_weight,
         )
     reset_err()
     log(

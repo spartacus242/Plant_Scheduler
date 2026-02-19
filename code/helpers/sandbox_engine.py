@@ -14,24 +14,75 @@ import pandas as pd
 
 # ── Data loading helpers ────────────────────────────────────────────────
 
+def _get_planning_month(data_dir: Path) -> int:
+    """Return the planning month integer from flowstate.toml, or current month."""
+    import datetime as _dt
+    toml_path = data_dir.parent / "flowstate.toml"
+    if not toml_path.exists():
+        toml_path = data_dir / "flowstate.toml"
+    try:
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib  # type: ignore
+        with open(toml_path, "rb") as f:
+            cfg = tomllib.load(f)
+        date_str = cfg.get("scheduler", {}).get("planning_start_date", "")
+        if date_str:
+            return _dt.datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S").month
+    except Exception:
+        pass
+    return _dt.datetime.now().month
+
+
 def load_capabilities(data_dir: Path) -> Dict[Tuple[str, str], float]:
-    """Return {(line_name, sku): rate_uph} for capable pairs."""
-    path = data_dir / "Capabilities & Rates.csv"
+    """Return {(line_name, sku): rate_kgph} for capable pairs.
+
+    Base rates come from capabilities_rates.csv (calc_rate_kgph).
+    Monthly rates from line_rates.csv then override on a per-line basis,
+    matching the month of planning_start_date from flowstate.toml.
+    """
+    path = data_dir / "capabilities_rates.csv"
     if not path.exists():
         return {}
     df = pd.read_csv(path)
+    df["line_id"] = pd.to_numeric(df["line_id"], errors="coerce").fillna(0).astype(int)
+    rate_col = "calc_rate_kgph" if "calc_rate_kgph" in df.columns else "rate_uph"
+    # Build base capability map and track line_id per line_name
     out: Dict[Tuple[str, str], float] = {}
+    line_name_to_id: Dict[str, int] = {}
     for _, r in df.iterrows():
         if int(r.get("capable", 0)) == 1:
-            rate = float(r.get("rate_uph", 0))
+            rate = float(r.get(rate_col, 0))
             if rate > 0:
-                out[(str(r["line_name"]), str(r["sku"]))] = rate
+                ln = str(r["line_name"])
+                out[(ln, str(r["sku"]))] = rate
+                line_name_to_id[ln] = int(r["line_id"])
+
+    # Apply monthly line-rate override from line_rates.csv
+    lr_path = data_dir / "line_rates.csv"
+    if lr_path.exists():
+        plan_month = _get_planning_month(data_dir)
+        lr = pd.read_csv(lr_path)
+        lr["line_id"] = pd.to_numeric(lr["line_id"], errors="coerce").fillna(0).astype(int)
+        lr["Month"] = pd.to_numeric(lr["Month"], errors="coerce").fillna(0).astype(int)
+        lr["rate_kgph"] = pd.to_numeric(lr["rate_kgph"], errors="coerce").fillna(0.0)
+        lr_month = lr[lr["Month"] == plan_month]
+        line_rate_map: Dict[int, float] = {}
+        for _, r in lr_month.iterrows():
+            line_rate_map[int(r["line_id"])] = float(r["rate_kgph"])
+        # Override rates for all capable (line_name, sku) pairs where the line has a monthly rate
+        for (ln, sku) in list(out.keys()):
+            lid = line_name_to_id.get(ln)
+            if lid is not None and lid in line_rate_map and line_rate_map[lid] > 0:
+                out[(ln, sku)] = line_rate_map[lid]
+
     return out
 
 
 def load_changeovers(data_dir: Path) -> Dict[Tuple[str, str], int]:
     """Return {(from_sku, to_sku): setup_hours}."""
-    path = data_dir / "Changeovers.csv"
+    path = data_dir / "changeovers.csv"
     if not path.exists():
         return {}
     df = pd.read_csv(path)
@@ -45,7 +96,7 @@ def load_changeovers(data_dir: Path) -> Dict[Tuple[str, str], int]:
 
 def load_demand_targets(data_dir: Path) -> List[Dict[str, Any]]:
     """Return list of {order_id, sku, qty_min, qty_max}."""
-    path = data_dir / "DemandPlan.csv"
+    path = data_dir / "demand_plan.csv"
     if not path.exists():
         return []
     df = pd.read_csv(path)
@@ -248,6 +299,7 @@ def save_sandbox_to_files(
             "line_name": blk.get("line_name", ""),
             "order_id": blk.get("order_id", ""),
             "sku": blk.get("sku", ""),
+            "sku_description": blk.get("sku_description", ""),
             "start_hour": sh,
             "end_hour": eh,
             "run_hours": rh,

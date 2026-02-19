@@ -64,18 +64,26 @@ class Params:
     co_ffs_weight: int = 10
     co_casepacker_weight: int = 10
     co_base_weight: int = 5
+    # Organic-conversion and cinnamon changeover penalties
+    co_conv_org_weight: int = 30
+    co_cinn_weight: int = 20
+    # Per-added-flavor penalty (negative added_flavors = reward)
+    co_flavor_weight: int = 5
 
 
 class Files:
     def __init__(self, data_dir: Path):
         data_dir = Path(data_dir)
-        self.caps = str(data_dir / "Capabilities & Rates.csv")
-        self.chg = str(data_dir / "Changeovers.csv")
-        self.init = str(data_dir / "InitialStates.csv")
-        self.dem = str(data_dir / "DemandPlan.csv")
-        self.downtime = str(data_dir / "Downtimes.csv")
-        self.last_run = str(data_dir / "LineSKU_LastRun.csv")
+        self.caps = str(data_dir / "capabilities_rates.csv")
+        self.chg = str(data_dir / "changeovers.csv")
+        self.init = str(data_dir / "initial_states.csv")
+        self.dem = str(data_dir / "demand_plan.csv")
+        self.downtime = str(data_dir / "downtimes.csv")
+        self.last_run = str(data_dir / "line_sku_last_run.csv")
         self.trials = str(data_dir / "trials.csv")
+        self.line_rates = str(data_dir / "line_rates.csv")
+        self.line_cip_hrs = str(data_dir / "line_cip_hrs.csv")
+        self.sku_info = str(data_dir / "sku_info.csv")
 
 
 class Data:
@@ -87,27 +95,73 @@ class Data:
         self.capable = {}
         self.rate = {}
         self.setup = {}
-        self.machine_changes = {}   # (from_sku, to_sku) -> {ttp, ffs, topload, casepacker}
+        self.machine_changes = {}   # (from_sku, to_sku) -> {ttp, ffs, topload, casepacker, conv_to_org, cinn_to_non, added_flavors}
         self.changeover_type = {}   # (from_sku, to_sku) -> "1-0-1-1" string
+        self.cip_interval_map = {}  # line_id -> max_cip_hrs (per-line CIP interval)
+        self.sku_desc: dict[str, str] = {}  # sku -> ediact_sku_description
         self.init_map = {}
         self.downtimes = []
         self.orders = []
         self.last_map = {}
 
     def load(self) -> None:
+        # ── Capabilities (capable flags + fallback SKU-specific rates) ───
         cap = pd.read_csv(self.F.caps)
         cap["line_id"] = pd.to_numeric(cap["line_id"], errors="coerce").fillna(0).astype(int)
         cap["sku"] = cap["sku"].astype(str)
         cap["capable"] = pd.to_numeric(cap.get("capable", 0), errors="coerce").fillna(0).astype(int)
-        cap["rate_uph"] = pd.to_numeric(cap.get("rate_uph", 0), errors="coerce").fillna(0.0).astype(float)
+        # Support both old column name (rate_uph) and new (calc_rate_kgph)
+        rate_col = "calc_rate_kgph" if "calc_rate_kgph" in cap.columns else "rate_uph"
+        cap[rate_col] = pd.to_numeric(cap.get(rate_col, 0), errors="coerce").fillna(0.0).astype(float)
         self.lines = sorted(cap["line_id"].unique().tolist())
         for _, r in cap.iterrows():
             lid = int(r["line_id"])
             sku = str(r["sku"])
             self.line_names[lid] = str(r.get("line_name", f"L{lid}"))
             self.capable[(lid, sku)] = int(r["capable"]) if not pd.isna(r["capable"]) else 0
-            self.rate[(lid, sku)] = float(r["rate_uph"]) if not pd.isna(r["rate_uph"]) else 0.0
-        # Changeovers
+            self.rate[(lid, sku)] = float(r[rate_col]) if not pd.isna(r[rate_col]) else 0.0
+
+        # ── SKU descriptions (sku_info.csv) ──────────────────────────────
+        if os.path.exists(self.F.sku_info):
+            si = pd.read_csv(self.F.sku_info)
+            si["sku"] = si["sku"].astype(str)
+            for _, r in si.iterrows():
+                self.sku_desc[str(r["sku"])] = str(r.get("ediact_sku_description", ""))
+
+        # ── Line rates (monthly, overrides SKU-specific rates per line) ──
+        # Uses the month from planning_start_date to pick the correct rate.
+        if os.path.exists(self.F.line_rates):
+            try:
+                anchor = datetime.strptime(self.P.planning_start_date, "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                anchor = datetime(2026, 2, 15, 0, 0, 0)
+            plan_month = anchor.month
+            lr = pd.read_csv(self.F.line_rates)
+            lr["line_id"] = pd.to_numeric(lr["line_id"], errors="coerce").fillna(0).astype(int)
+            lr["Month"] = pd.to_numeric(lr["Month"], errors="coerce").fillna(0).astype(int)
+            lr["rate_kgph"] = pd.to_numeric(lr["rate_kgph"], errors="coerce").fillna(0.0)
+            lr_month = lr[lr["Month"] == plan_month]
+            # Build per-line rate: {line_id: rate_kgph}
+            line_rate_map: dict = {}
+            for _, r in lr_month.iterrows():
+                line_rate_map[int(r["line_id"])] = float(r["rate_kgph"])
+            # Override self.rate for all (line, sku) pairs present in line_rate_map.
+            # Keep rates even for non-capable pairs so trials can look them up.
+            for (lid, sku) in self.capable:
+                if lid in line_rate_map:
+                    self.rate[(lid, sku)] = line_rate_map[lid]
+
+        # ── Per-line CIP intervals ────────────────────────────────────────
+        if os.path.exists(self.F.line_cip_hrs):
+            lc = pd.read_csv(self.F.line_cip_hrs)
+            lc["line_id"] = pd.to_numeric(lc["line_id"], errors="coerce").fillna(0).astype(int)
+            lc["max_cip_hrs"] = pd.to_numeric(lc["max_cip_hrs"], errors="coerce").fillna(
+                self.P.cip_interval_h
+            ).astype(int)
+            for _, r in lc.iterrows():
+                self.cip_interval_map[int(r["line_id"])] = int(r["max_cip_hrs"])
+
+        # ── Changeovers ──────────────────────────────────────────────────
         chg = pd.read_csv(self.F.chg)
         chg["from_sku"] = chg["from_sku"].astype(str)
         chg["to_sku"] = chg["to_sku"].astype(str)
@@ -120,6 +174,14 @@ class Data:
         if has_machine_cols:
             for col in ("ttp_change", "ffs_change", "topload_change", "casepacker_change"):
                 chg[col] = pd.to_numeric(chg[col], errors="coerce").fillna(1).astype(int)
+        # New columns: conv_to_org_change, cinn_to_non, added_flavors
+        has_new_co_cols = all(
+            c in chg.columns for c in ("conv_to_org_change", "cinn_to_non", "added_flavors")
+        )
+        if has_new_co_cols:
+            for col in ("conv_to_org_change", "cinn_to_non"):
+                chg[col] = pd.to_numeric(chg[col], errors="coerce").fillna(0).astype(int)
+            chg["added_flavors"] = pd.to_numeric(chg["added_flavors"], errors="coerce").fillna(0).astype(int)
         for _, r in chg.iterrows():
             pair = (str(r["from_sku"]), str(r["to_sku"]))
             self.setup[pair] = int(r["setup_rounded"])
@@ -131,9 +193,16 @@ class Data:
                     "casepacker": int(r["casepacker_change"]),
                 }
             else:
-                # Fallback: assume full changeover when setup > 0
                 full = 1 if int(r["setup_rounded"]) > 0 else 0
                 mc = {"ttp": full, "ffs": full, "topload": full, "casepacker": full}
+            if has_new_co_cols:
+                mc["conv_to_org"] = int(r["conv_to_org_change"])
+                mc["cinn_to_non"] = int(r["cinn_to_non"])
+                mc["added_flavors"] = int(r["added_flavors"])
+            else:
+                mc["conv_to_org"] = 0
+                mc["cinn_to_non"] = 0
+                mc["added_flavors"] = 0
             self.machine_changes[pair] = mc
             self.changeover_type[pair] = (
                 f"{mc['ttp']}-{mc['ffs']}-{mc['topload']}-{mc['casepacker']}"
@@ -263,7 +332,7 @@ class Data:
             if line_id is None:
                 raise ValueError(
                     f"trials.csv row {row_i}: line_name '{line_name}' "
-                    "not found in Capabilities & Rates"
+                    "not found in capabilities_rates.csv"
                 )
 
             # Parse start_datetime (required)
@@ -312,7 +381,7 @@ class Data:
                     raise ValueError(
                         f"trials.csv row {row_i}: target_kgs given "
                         f"but no rate found for ({line_name}, {sku}) "
-                        "in Capabilities & Rates. Provide end_datetime "
+                        "in capabilities_rates.csv. Provide end_datetime "
                         "instead."
                     )
                 run_hours = math.ceil(target_kgs / rate)
@@ -326,12 +395,15 @@ class Data:
                         "carryover_run_hours", 0
                     )
                 )
+                line_cip_interval = self.cip_interval_map.get(
+                    line_id, self.P.cip_interval_h
+                )
                 num_cips = 0
                 while (
                     run_hours
                     + num_cips * self.P.cip_duration_h
                     + carryover
-                    >= (num_cips + 1) * self.P.cip_interval_h
+                    >= (num_cips + 1) * line_cip_interval
                 ):
                     num_cips += 1
                     if num_cips > 3:  # model supports max 3 CIPs

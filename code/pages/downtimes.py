@@ -15,26 +15,39 @@ from helpers.paths import data_dir
 st.header("Downtimes")
 st.caption("Scheduled maintenance windows that block production on a line.")
 
-csv_path = data_dir() / "Downtimes.csv"
-caps_path = data_dir() / "Capabilities & Rates.csv"
+csv_path = data_dir() / "downtimes.csv"
+caps_path = data_dir() / "capabilities_rates.csv"
 
 line_names: list[str] = []
 name_to_id: dict[str, int] = {}
 if caps_path.exists():
     caps = pd.read_csv(caps_path)
-    for _, r in caps.drop_duplicates("line_id").iterrows():
+    caps["line_id"] = pd.to_numeric(caps["line_id"], errors="coerce").fillna(0).astype(int)
+    for _, r in caps.drop_duplicates("line_name").iterrows():
         lid = int(r["line_id"])
-        ln = str(r["line_name"])
-        line_names.append(ln)
-        name_to_id[ln] = lid
-    line_names.sort()
+        ln = str(r["line_name"]).strip()
+        if ln:
+            line_names.append(ln)
+            name_to_id[ln] = lid
+    line_names = sorted(set(line_names))
 
 if csv_path.exists():
     df = pd.read_csv(csv_path)
+    # Coerce numeric columns to prevent type mismatch in st.data_editor
+    if "start_hour" in df.columns:
+        df["start_hour"] = pd.to_numeric(df["start_hour"], errors="coerce")
+    if "end_hour" in df.columns:
+        df["end_hour"] = pd.to_numeric(df["end_hour"], errors="coerce")
+    if "line_id" in df.columns:
+        df["line_id"] = pd.to_numeric(df["line_id"], errors="coerce").fillna(0).astype(int)
     # Ensure line_name column exists (backfill from line_id if needed)
     if "line_name" not in df.columns:
         id_to_name = {v: k for k, v in name_to_id.items()}
         df["line_name"] = df["line_id"].map(id_to_name).fillna("")
+    # Guarantee line_name is str so SelectboxColumn doesn't get a type mismatch
+    df["line_name"] = df["line_name"].fillna("").astype(str)
+    if "reason" in df.columns:
+        df["reason"] = df["reason"].fillna("").astype(str)
 else:
     df = pd.DataFrame(columns=["line_name", "start_hour", "end_hour", "reason"])
     st.info("No downtimes file found. Add rows below.")
@@ -84,8 +97,8 @@ if not edited.empty and len(edited.dropna(subset=["line_name", "start_hour", "en
         st.plotly_chart(fig, use_container_width=True)
 
 if st.button("Save downtimes", type="primary"):
-    # Derive line_id from line_name for the CSV
     save_df = edited.copy()
+    # Derive line_id from line_name for the CSV
     save_df["line_id"] = save_df["line_name"].map(name_to_id)
     # Reorder columns: line_id first for backward compat with scheduler
     out_cols = ["line_id", "line_name", "start_hour", "end_hour", "reason"]

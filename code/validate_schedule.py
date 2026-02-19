@@ -1,4 +1,4 @@
-# validate_schedule.py — Post-solve validation for Flowstate schedules.
+# validate_schedule.py -- Post-solve validation for Flowstate schedules.
 # Checks: produced vs bounds, CIP spacing, changeover timing, no overlaps.
 # Run standalone or import validate_all() from other modules.
 
@@ -81,7 +81,7 @@ def check_no_overlaps(schedule_path: Path) -> List[str]:
             b = rows[i + 1]
             if b["start_hour"] < a["end_hour"]:
                 issues.append(
-                    f"OVERLAP: Line {a.get('line_name', line_id)} — "
+                    f"OVERLAP: Line {a.get('line_name', line_id)} -- "
                     f"{a['order_id']} ends at h{a['end_hour']} but {b['order_id']} starts at h{b['start_hour']}"
                 )
     if not issues:
@@ -152,7 +152,7 @@ def check_cip_spacing(
             clock_at_end = e - last_reference
             if clock_at_end > interval_h + 12:  # 12h tolerance (CIP duration + changeover buffer)
                 issues.append(
-                    f"CIP: Line {line_name} — {clock_at_end}h clock since last CIP (limit {interval_h}h) at h{e}"
+                    f"CIP: Line {line_name} -- {clock_at_end}h clock since last CIP (limit {interval_h}h) at h{e}"
                 )
 
     if not issues:
@@ -172,7 +172,7 @@ def check_changeover_timing(
     if not schedule_path.exists():
         return ["MISSING: schedule_phase2.csv"]
     if not changeovers_path.exists():
-        return ["MISSING: Changeovers.csv"]
+        return ["MISSING: changeovers.csv"]
 
     sched = pd.read_csv(schedule_path)
     chg = pd.read_csv(changeovers_path)
@@ -197,8 +197,8 @@ def check_changeover_timing(
             if gap < required:
                 line_name = a.get("line_name", f"L{line_id}")
                 issues.append(
-                    f"CHANGEOVER: Line {line_name} — {sku_a}→{sku_b} needs {required}h setup but gap is {gap}h "
-                    f"(h{a['end_hour']}→h{b['start_hour']})"
+                    f"CHANGEOVER: Line {line_name} -- {sku_a}->{sku_b} needs {required}h setup but gap is {gap}h "
+                    f"(h{a['end_hour']}->h{b['start_hour']})"
                 )
 
     if not issues:
@@ -217,7 +217,7 @@ def validate_all(data_dir: Path, verbose: bool = True) -> List[str]:
     report.append("--- Produced vs Bounds ---")
     bounds_issues = check_produced_vs_bounds(
         data_dir / "produced_vs_bounds.csv",
-        data_dir / "DemandPlan.csv",
+        data_dir / "demand_plan.csv",
     )
     report.extend(bounds_issues)
     report.append("")
@@ -233,7 +233,7 @@ def validate_all(data_dir: Path, verbose: bool = True) -> List[str]:
     cip_issues = check_cip_spacing(
         data_dir / "schedule_phase2.csv",
         data_dir / "cip_windows.csv",
-        data_dir / "InitialStates.csv",
+        data_dir / "initial_states.csv",
     )
     report.extend(cip_issues)
     report.append("")
@@ -242,7 +242,7 @@ def validate_all(data_dir: Path, verbose: bool = True) -> List[str]:
     report.append("--- Changeover Timing ---")
     co_issues = check_changeover_timing(
         data_dir / "schedule_phase2.csv",
-        data_dir / "Changeovers.csv",
+        data_dir / "changeovers.csv",
     )
     report.extend(co_issues)
     report.append("")

@@ -39,6 +39,10 @@ def load_schedule(csv_path: Path) -> pd.DataFrame:
     )
     if "run_hours" not in df.columns:
         df["run_hours"] = (df["Finish"] - df["Start"]).dt.total_seconds() / 3600
+    if "sku_description" not in df.columns:
+        df["sku_description"] = ""
+    else:
+        df["sku_description"] = df["sku_description"].fillna("").astype(str)
     df = df.sort_values(["line_id", "Start"])
     return df
 
@@ -84,22 +88,25 @@ def build_gantt_figure(
         return go.Figure(layout_title_text="No schedule data")
 
     # Production frame: keep run_hours and datetimes for labels/hover
-    prod_cols = ["Start", "Finish", "Task", "Resource", "line_id", "run_hours", "sku", "is_trial"]
+    prod_cols = ["Start", "Finish", "Task", "Resource", "line_id", "run_hours", "sku", "is_trial", "sku_description"]
     if "start_dt" in schedule_df.columns:
         prod_cols.append("start_dt")
     if "end_dt" in schedule_df.columns:
         prod_cols.append("end_dt")
     frames = [schedule_df[[c for c in prod_cols if c in schedule_df.columns]].copy()]
+    if "sku_description" not in frames[0].columns:
+        frames[0]["sku_description"] = ""
     frames[0]["start_dt"] = frames[0].get("start_dt", frames[0]["Start"].astype(str))
     frames[0]["end_dt"] = frames[0].get("end_dt", frames[0]["Finish"].astype(str))
-    # Trial bars get a TRIAL prefix in the label
+    # Trial bars get a TRIAL prefix; all bars show SKU + truncated description + hours
     is_trial_col = frames[0].get("is_trial", pd.Series(False, index=frames[0].index))
-    frames[0]["label"] = frames[0].apply(
-        lambda r: f"TRIAL\n{r['sku']}\n{int(r['run_hours'])} h"
-        if is_trial_col.get(r.name, False)
-        else f"{r['Resource']}\n{int(r['run_hours'])} h",
-        axis=1,
-    )
+    def _bar_label(r):
+        desc = str(r.get("sku_description", "") or "")
+        desc_part = f"\n{desc[:22]}" if desc else ""
+        if is_trial_col.get(r.name, False):
+            return f"TRIAL\n{r['sku']}{desc_part}\n{int(r['run_hours'])} h"
+        return f"{r['Resource']}{desc_part}\n{int(r['run_hours'])} h"
+    frames[0]["label"] = frames[0].apply(_bar_label, axis=1)
 
     if cip_df is not None and not cip_df.empty:
         cip_df = cip_df.copy()
@@ -108,7 +115,8 @@ def build_gantt_figure(
         cip_df["start_dt"] = cip_df["Start"].dt.strftime("%Y-%m-%d %H:%M")
         cip_df["end_dt"] = cip_df["Finish"].dt.strftime("%Y-%m-%d %H:%M")
         cip_df["label"] = "CIP"
-        frames.append(cip_df[["Start", "Finish", "Task", "Resource", "line_id", "run_hours", "start_dt", "end_dt", "label"]])
+        cip_df["sku_description"] = ""
+        frames.append(cip_df[["Start", "Finish", "Task", "Resource", "line_id", "run_hours", "start_dt", "end_dt", "label", "sku_description"]])
     combined = pd.concat(frames, ignore_index=True)
 
     combined["Task"] = pd.Categorical(combined["Task"], categories=line_order, ordered=True)
@@ -146,23 +154,26 @@ def build_gantt_figure(
     )
     fig.update_yaxes(autorange="reversed")
 
-    # Hover: SKU, start datetime, end datetime, run hours
+    # Hover: SKU, description, start datetime, end datetime, run hours
     for trace in fig.data:
         if trace.name == "CIP":
             trace.hovertemplate = "CIP<br>Start: %{base|%Y-%m-%d %H:%M}<br>End: %{x|%Y-%m-%d %H:%M}<br>Duration: 6 h<extra></extra>"
         else:
             trace.hovertemplate = (
                 "<b>%{customdata[0]}</b><br>"
+                "%{customdata[4]}<br>"
                 "Start: %{customdata[1]}<br>End: %{customdata[2]}<br>Run: %{customdata[3]} h<extra></extra>"
             )
-        # Build customdata per point: [sku, start_dt, end_dt, run_hours]
+        # Build customdata per point: [sku, start_dt, end_dt, run_hours, sku_description]
         mask = combined["Resource"] == trace.name
         sub = combined.loc[mask]
+        desc_col = sub["sku_description"] if "sku_description" in sub.columns else pd.Series("", index=sub.index)
         trace.customdata = list(zip(
             sub["Resource"],
             sub.get("start_dt", sub["Start"].astype(str)),
             sub.get("end_dt", sub["Finish"].astype(str)),
             sub["run_hours"].round(1),
+            desc_col.fillna(""),
         ))
 
     if highlighted_sku:
@@ -365,9 +376,9 @@ def run_streamlit(data_dir: Path | None = None) -> None:
     st.divider()
     st.subheader("Inventory validation")
     data_dir_path = Path(schedule_path).parent
-    bom_path = data_dir_path / "BOM_by_SKU.csv"
-    onhand_path = data_dir_path / "OnHand_Inventory.csv"
-    inbound_path = data_dir_path / "Inbound_Inventory.csv"
+    bom_path = data_dir_path / "bom_by_sku.csv"
+    onhand_path = data_dir_path / "on_hand_inventory.csv"
+    inbound_path = data_dir_path / "inbound_inventory.csv"
     has_inventory_data = bom_path.exists() and onhand_path.exists()
 
     if has_inventory_data:
@@ -411,9 +422,9 @@ def run_streamlit(data_dir: Path | None = None) -> None:
     else:
         st.info(
             "To enable inventory validation, add these files to your data directory:\n"
-            "- **BOM_by_SKU.csv** — Bill of Materials (SKU → material, qty per unit)\n"
-            "- **OnHand_Inventory.csv** — On-hand quantities by material\n"
-            "- **Inbound_Inventory.csv** — Inbound shipments with arrival time (optional)\n\n"
+            "- **bom_by_sku.csv** — Bill of Materials (SKU → material, qty per unit)\n"
+            "- **on_hand_inventory.csv** — On-hand quantities by material\n"
+            "- **inbound_inventory.csv** — Inbound shipments with arrival time (optional)\n\n"
             "Copy templates from `data/templates/` and fill with your data. See `data/templates/INVENTORY_TEMPLATES_README.md`."
         )
 

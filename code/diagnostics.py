@@ -206,18 +206,18 @@ def run_blockages_diagnostic(P: Params, data: Data, data_dir: Path, two_phase: b
             ):
                 if num_capable == 1:
                     cap_suggestions.append(
-                        f"Capabilities & Rates.csv: set capable=1 for another line (e.g. add a row line_id=<other>, sku={sku}) so order {order_id} can use a second line."
+                        f"capabilities_rates.csv: set capable=1 for another line (e.g. add a row line_id=<other>, sku={sku}) so order {order_id} can use a second line."
                     )
                 demand_suggestions.append(
-                    f"DemandPlan.csv: relax order {order_id} (SKU {sku}, qty_min={qty_min}) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines."
+                    f"demand_plan.csv: relax order {order_id} (SKU {sku}, qty_min={qty_min}) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines."
                 )
             if available_from > 0:
                 init_suggestions.append(
-                    f"InitialStates.csv: line_id={l} ({line_names.get(l, str(l))}) has available_from_hour={available_from}; reducing it may free capacity if the line is blocked late."
+                    f"initial_states.csv: line_id={l} ({line_names.get(l, str(l))}) has available_from_hour={available_from}; reducing it may free capacity if the line is blocked late."
                 )
             if long_shutdown == 1:
                 init_suggestions.append(
-                    f"InitialStates.csv: line_id={l} has long_shutdown_flag=1 (extra setup); consider 0 if no longer in long shutdown."
+                    f"initial_states.csv: line_id={l} has long_shutdown_flag=1 (extra setup); consider 0 if no longer in long shutdown."
                 )
 
             blockages.append({

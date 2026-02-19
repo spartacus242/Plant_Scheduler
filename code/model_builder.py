@@ -247,6 +247,9 @@ def build_model(
         W_ffs = P.co_ffs_weight
         W_cp = P.co_casepacker_weight
         W_base = P.co_base_weight
+        W_conv_org = P.co_conv_org_weight
+        W_cinn = P.co_cinn_weight
+        W_flavor = P.co_flavor_weight
 
         for l in lines:
             elig = [
@@ -413,21 +416,27 @@ def build_model(
                     j_sku = orders[j_idx]["sku"]
                     mc = data.machine_changes.get(
                         (i_sku, j_sku),
-                        {"ttp": 1, "ffs": 1, "topload": 1, "casepacker": 1},
+                        {"ttp": 1, "ffs": 1, "topload": 1, "casepacker": 1,
+                         "conv_to_org": 0, "cinn_to_non": 0, "added_flavors": 0},
                     )
-                    pair_cost = (
+                    # added_flavors can be negative (reward for removing flavors)
+                    flavor_cost = W_flavor * mc.get("added_flavors", 0)
+                    pair_cost = max(0, (
                         W_base
                         + W_top * mc["topload"]
                         + W_ttp * mc["ttp"]
                         + W_ffs * mc["ffs"]
                         + W_cp * mc["casepacker"]
-                    )
+                        + W_conv_org * mc.get("conv_to_org", 0)
+                        + W_cinn * mc.get("cinn_to_non", 0)
+                        + flavor_cost
+                    ))
                     if pair_cost > 0:
                         co_cost_terms.append(succ[key] * pair_cost)
 
             if co_cost_terms:
                 max_possible = len(elig) * (
-                    W_base + W_top + W_ttp + W_ffs + W_cp
+                    W_base + W_top + W_ttp + W_ffs + W_cp + W_conv_org + W_cinn
                 )
                 co_cost_l = model.NewIntVar(
                     0, max_possible, f"co_cost_l{l}"
@@ -542,8 +551,9 @@ def build_model(
     cip_model_vars: Dict[int, list] = {}
     if phase == "full":
         dur = P.cip_duration_h
-        interval = P.cip_interval_h
         for l in lines:
+            # Per-line CIP interval from line_cip_hrs.csv; falls back to global setting
+            interval = data.cip_interval_map.get(l, P.cip_interval_h)
             carry = int(
                 data.init_map.get(l, {}).get("carryover_run_hours", 0)
             )

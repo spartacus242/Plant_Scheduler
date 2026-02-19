@@ -78,6 +78,7 @@ def _load_schedule_blocks() -> list[dict]:
             "line_name": str(r.get("line_name", "")),
             "order_id": str(r.get("order_id", "")),
             "sku": str(r.get("sku", "")),
+            "sku_description": str(r.get("sku_description", "") or ""),
             "start_hour": float(r.get("start_hour", 0)),
             "end_hour": float(r.get("end_hour", 0)),
             "run_hours": float(r.get("run_hours", 0)),
@@ -111,7 +112,7 @@ def _load_cip_blocks() -> list[dict]:
 
 # Build line info list
 def _load_lines() -> list[dict]:
-    caps_path = dd / "Capabilities & Rates.csv"
+    caps_path = dd / "capabilities_rates.csv"
     if not caps_path.exists():
         return []
     df = pd.read_csv(caps_path).drop_duplicates("line_name").sort_values("line_id")

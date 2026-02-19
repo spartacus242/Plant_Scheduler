@@ -19,9 +19,9 @@ st.caption(
 )
 
 dd = data_dir()
-bom_path = dd / "BOM_by_SKU.csv"
-onhand_path = dd / "OnHand_Inventory.csv"
-inbound_path = dd / "Inbound_Inventory.csv"
+bom_path = dd / "bom_by_sku.csv"
+onhand_path = dd / "on_hand_inventory.csv"
+inbound_path = dd / "inbound_inventory.csv"
 
 tab_bom, tab_oh, tab_ib, tab_check = st.tabs(["BOM", "On-Hand", "Inbound", "Run Check"])
 

@@ -27,8 +27,8 @@ class InventoryCheckResult:
 
 
 def load_bom(data_dir: Path) -> Dict[str, Dict[str, float]]:
-    """Load BOM_by_SKU.csv: {sku: {material_id: qty_per_unit}}."""
-    path = data_dir / "BOM_by_SKU.csv"
+    """Load bom_by_sku.csv: {sku: {material_id: qty_per_unit}}."""
+    path = data_dir / "bom_by_sku.csv"
     if not path.exists():
         return {}
     df = pd.read_csv(path)
@@ -45,8 +45,8 @@ def load_bom(data_dir: Path) -> Dict[str, Dict[str, float]]:
 
 
 def load_on_hand(data_dir: Path) -> Dict[str, float]:
-    """Load OnHand_Inventory.csv: {material_id: quantity}."""
-    path = data_dir / "OnHand_Inventory.csv"
+    """Load on_hand_inventory.csv: {material_id: quantity}."""
+    path = data_dir / "on_hand_inventory.csv"
     if not path.exists():
         return {}
     df = pd.read_csv(path)
@@ -56,8 +56,8 @@ def load_on_hand(data_dir: Path) -> Dict[str, float]:
 
 
 def load_inbound(data_dir: Path, anchor_hour: int = 0) -> List[tuple]:
-    """Load Inbound_Inventory.csv. Returns list of (material_id, quantity, arrival_hour)."""
-    path = data_dir / "Inbound_Inventory.csv"
+    """Load inbound_inventory.csv. Returns list of (material_id, quantity, arrival_hour)."""
+    path = data_dir / "inbound_inventory.csv"
     if not path.exists():
         return []
     df = pd.read_csv(path)

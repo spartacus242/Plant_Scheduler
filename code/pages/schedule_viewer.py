@@ -137,8 +137,8 @@ with st.expander("Schedule summary"):
 
 # ── Inventory ───────────────────────────────────────────────────────────
 st.divider()
-bom_path = dd / "BOM_by_SKU.csv"
-onhand_path = dd / "OnHand_Inventory.csv"
+bom_path = dd / "bom_by_sku.csv"
+onhand_path = dd / "on_hand_inventory.csv"
 if bom_path.exists() and onhand_path.exists():
     st.subheader("Inventory validation")
     results = run_inventory_check(dd)

@@ -19,8 +19,8 @@ st.caption(
 )
 
 dd = data_dir()
-csv_path = dd / "InitialStates.csv"
-w1_path = dd / "Week-1_InitialStates.csv"
+csv_path = dd / "initial_states.csv"
+w1_path = dd / "week1_initial_states.csv"
 
 if not csv_path.exists():
     st.warning(f"File not found: `{csv_path}`")
@@ -31,7 +31,7 @@ if w1_path.exists():
     if st.button("Load Week-1 Initial States as starting point"):
         import shutil
         shutil.copy2(w1_path, csv_path)
-        st.success("Loaded Week-1 states into InitialStates.csv")
+        st.success("Loaded Week-1 states into initial_states.csv")
         st.rerun()
 
 df = pd.read_csv(csv_path)
@@ -45,7 +45,7 @@ if "initial_sku" in df.columns:
     df["initial_sku"] = df["initial_sku"].astype(str)
 
 # Collect known SKUs for dropdown
-caps_path = dd / "Capabilities & Rates.csv"
+caps_path = dd / "capabilities_rates.csv"
 sku_options = ["CLEAN"]
 if caps_path.exists():
     caps = pd.read_csv(caps_path)

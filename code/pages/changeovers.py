@@ -1,4 +1,4 @@
-# pages/changeovers.py — View / edit Changeovers.csv (filterable).
+# pages/changeovers.py — View / edit changeovers.csv (filterable).
 
 from __future__ import annotations
 import sys
@@ -15,7 +15,7 @@ from helpers.paths import data_dir
 st.header("Changeovers")
 st.caption("SKU-to-SKU changeover setup times (hours). Filter by SKU to manage the large matrix.")
 
-csv_path = data_dir() / "Changeovers.csv"
+csv_path = data_dir() / "changeovers.csv"
 if not csv_path.exists():
     st.warning(f"File not found: `{csv_path}`")
     st.stop()

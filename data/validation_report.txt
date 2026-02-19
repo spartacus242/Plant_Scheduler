@@ -9,11 +9,14 @@ BOUNDS: All orders within qty_min/qty_max. OK.
 OVERLAPS: No overlaps detected. OK.
 
 --- CIP Spacing ---
-CIP: Line P14 — 145h clock since last CIP (limit 120h) at h121
+CIP: Line P13 -- 133h clock since last CIP (limit 120h) at h131
+CIP: Line P13 -- 144h clock since last CIP (limit 120h) at h291
+CIP: Line P16 -- 144h clock since last CIP (limit 120h) at h191
+CIP: Line P16 -- 138h clock since last CIP (limit 120h) at h335
 
 --- Changeover Timing ---
 CHANGEOVERS: All gaps respect setup times. OK.
 
 ============================================================
-Checks passed: 3/4    Issues found: 1
+Checks passed: 3/4    Issues found: 4
 ============================================================

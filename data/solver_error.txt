@@ -1,6 +1,6 @@
-[2026-02-16 21:29:21.469011] START phase=full relax=False ignoreCO=False tl=300 mlpo=2
+[2026-02-18 22:53:52.605876] START phase=full relax=False ignoreCO=False tl=80 mlpo=2
 [two-phase] Phase 1: Week-0 only (33 orders), horizon=168
 [two-phase] Phase 2: Week-1 (25 orders), horizon=336 (full), maximize production
 [two-phase] Done: combined schedule written
-Idle KPIs: 14 lines, total_idle=117h, median_idle=2h, utilization=92.7%
-[2026-02-16 21:39:25.534853] Running post-solve validation
+Idle KPIs: 12 lines, total_idle=302h, median_idle=12h, utilization=88.3%
+[2026-02-18 22:56:37.174314] Running post-solve validation
