@@ -172,8 +172,9 @@ def build_gantt_figure(
     combined["Task"] = pd.Categorical(combined["Task"], categories=line_order, ordered=True)
     combined = combined.sort_values(["line_id", "Start"])
 
-    skus = [r for r in combined["Resource"].unique().tolist() if r != "CIP" and not r.startswith("TRIAL:")]
-    trial_resources = [r for r in combined["Resource"].unique().tolist() if r.startswith("TRIAL:")]
+    resources = [str(r) for r in combined["Resource"].unique().tolist()]
+    skus = [r for r in resources if r != "CIP" and not r.startswith("TRIAL:")]
+    trial_resources = [r for r in resources if r.startswith("TRIAL:")]
     color_discrete_map = dict(
         zip(skus, px.colors.qualitative.Plotly * (1 + len(skus) // len(px.colors.qualitative.Plotly))),
     )
@@ -377,26 +378,28 @@ def run_streamlit(data_dir: Path | None = None) -> None:
     with col_export1:
         # Export as PNG via plotly
         try:
-            png_bytes = fig.to_image(format="png", width=1800, height=max(600, 30 * len(all_lines)), scale=2)
+            export_h = min(4000, max(600, 30 * len(all_lines)))
+            png_bytes = fig.to_image(format="png", width=1800, height=export_h, scale=2)
             st.download_button(
                 label="Download PNG",
                 data=png_bytes,
                 file_name="flowstate_gantt.png",
                 mime="image/png",
             )
-        except Exception:
-            st.caption("Install kaleido for PNG export: `pip install kaleido`")
+        except (ImportError, ValueError, OSError, RuntimeError) as exc:
+            st.caption(f"PNG export unavailable: {exc}")
     with col_export2:
         try:
-            pdf_bytes = fig.to_image(format="pdf", width=1800, height=max(600, 30 * len(all_lines)), scale=2)
+            export_h = min(4000, max(600, 30 * len(all_lines)))
+            pdf_bytes = fig.to_image(format="pdf", width=1800, height=export_h, scale=2)
             st.download_button(
                 label="Download PDF",
                 data=pdf_bytes,
                 file_name="flowstate_gantt.pdf",
                 mime="application/pdf",
             )
-        except Exception:
-            st.caption("Install kaleido for PDF export: `pip install kaleido`")
+        except (ImportError, ValueError, OSError, RuntimeError) as exc:
+            st.caption(f"PDF export unavailable: {exc}")
 
     # Changeover section
     total_co, changeovers_df = compute_changeovers(filtered_df)

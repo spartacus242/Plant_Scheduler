@@ -11,6 +11,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 from helpers.paths import data_dir
+from helpers.safe_io import safe_write_csv
 
 st.header("CIP Intervals")
 st.caption(
@@ -49,5 +50,5 @@ edited = st.data_editor(
 )
 
 if st.button("Save changes", type="primary"):
-    edited.to_csv(csv_path, index=False)
+    safe_write_csv(edited, csv_path)
     st.success(f"Saved to `{csv_path.name}`")

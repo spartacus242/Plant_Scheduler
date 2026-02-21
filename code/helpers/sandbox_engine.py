@@ -30,7 +30,7 @@ def _get_planning_month(data_dir: Path) -> int:
         date_str = cfg.get("scheduler", {}).get("planning_start_date", "")
         if date_str:
             return _dt.datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S").month
-    except Exception:
+    except (ImportError, OSError, ValueError, KeyError):
         pass
     return _dt.datetime.now().month
 

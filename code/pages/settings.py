@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
@@ -11,6 +12,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 from helpers.paths import data_dir
+from helpers.safe_io import safe_write_toml
+
 
 # ── TOML helpers ────────────────────────────────────────────────────────
 def _load_toml(path: Path) -> dict:
@@ -22,12 +25,6 @@ def _load_toml(path: Path) -> dict:
         return {}
     with open(path, "rb") as f:
         return tomllib.load(f)
-
-
-def _save_toml(path: Path, cfg: dict) -> None:
-    import tomli_w
-    with open(path, "wb") as f:
-        tomli_w.dump(cfg, f)
 
 
 # ── Page ────────────────────────────────────────────────────────────────
@@ -190,6 +187,11 @@ with st.form("settings_form"):
     submitted = st.form_submit_button("Save settings", type="primary")
 
 if submitted:
+    try:
+        datetime.strptime(planning_start, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        st.error("Invalid **Planning start date** — must be `YYYY-MM-DD HH:MM:SS`.")
+        st.stop()
     cfg["scheduler"] = {
         "time_limit": int(time_limit),
         "min_run_hours": int(min_run),
@@ -209,5 +211,5 @@ if submitted:
         "co_cinn_weight": int(w_cinn),
         "co_flavor_weight": int(w_flavor),
     }
-    _save_toml(toml_path, cfg)
+    safe_write_toml(cfg, toml_path)
     st.success(f"Saved to `{toml_path}`")

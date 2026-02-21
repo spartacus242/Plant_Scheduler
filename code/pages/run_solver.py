@@ -1,6 +1,7 @@
 # pages/run_solver.py — Configure settings and launch the scheduling optimizer.
 
 from __future__ import annotations
+import json
 import subprocess
 import sys
 import time
@@ -13,6 +14,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 from helpers.paths import data_dir
+from helpers.safe_io import safe_write_toml
 
 st.header("Run Solver")
 st.caption("Configure parameters and launch the scheduling optimizer.")
@@ -33,12 +35,6 @@ def _load_toml(path: Path) -> dict:
         return tomllib.load(f)
 
 
-def _save_toml(path: Path, cfg: dict) -> None:
-    import tomli_w
-    with open(path, "wb") as f:
-        tomli_w.dump(cfg, f)
-
-
 toml_path = dd.parent / "flowstate.toml"
 if not toml_path.exists():
     toml_path = dd / "flowstate.toml"
@@ -55,7 +51,7 @@ def _count_csv(path: Path) -> int:
         return 0
     try:
         return max(0, len(pd.read_csv(path)))
-    except Exception:
+    except (OSError, pd.errors.ParserError, ValueError):
         return 0
 
 dem_count = _count_csv(dd / "demand_plan.csv")
@@ -66,7 +62,7 @@ line_count = 0
 if caps_path.exists():
     try:
         line_count = pd.read_csv(caps_path)["line_id"].nunique()
-    except Exception:
+    except (OSError, pd.errors.ParserError, KeyError):
         pass
 
 col1, col2, col3, col4 = st.columns(4)
@@ -351,6 +347,12 @@ with col_b:
 
 # ── Run button ────────────────────────────────────────────────────────────
 if st.button("Run Solver", type="primary", use_container_width=True):
+    from datetime import datetime as _dt
+    try:
+        _dt.strptime(planning_start, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        st.error("Invalid **Planning start date** — must be `YYYY-MM-DD HH:MM:SS`.")
+        st.stop()
     # Save settings to TOML before launching
     cfg["scheduler"] = {
         "time_limit": int(time_limit),
@@ -382,7 +384,7 @@ if st.button("Run Solver", type="primary", use_container_width=True):
         "cinn_weight": int(w_cinn),
         "flavor_weight": int(w_flavor),
     }
-    _save_toml(toml_path, cfg)
+    safe_write_toml(cfg, toml_path)
 
     cmd = [
         python_exe, str(scheduler_py),
@@ -422,7 +424,7 @@ if st.button("Run Solver", type="primary", use_container_width=True):
             return {}
         try:
             return _json.loads(progress_file.read_text(encoding="utf-8"))
-        except Exception:
+        except (OSError, json.JSONDecodeError, ValueError):
             return {}
 
     def _render_pipeline(container, stages: list[dict]) -> None:
@@ -504,8 +506,18 @@ if st.button("Run Solver", type="primary", use_container_width=True):
 
         log_lines: list[str] = []
         prev_progress: dict = {}
+        wall_deadline = time.monotonic() + int(time_limit) * 3 + 60
 
         while proc.poll() is None:
+            if time.monotonic() > wall_deadline:
+                proc.kill()
+                proc.wait()
+                status.update(label="Solver killed — wall-clock timeout exceeded", state="error")
+                st.error(
+                    f"The solver did not finish within {int(time_limit) * 3 + 60}s "
+                    f"(3x the time limit + 60s buffer). The process was killed."
+                )
+                break
             time.sleep(1.5)
 
             # Read structured progress
@@ -528,7 +540,7 @@ if st.button("Run Solver", type="primary", use_container_width=True):
                         with raw_ph.container():
                             with st.expander("Raw solver log", expanded=False):
                                 st.code("\n".join(log_lines), language="text")
-                except Exception:
+                except OSError:
                     pass
 
         # Final read after process exits

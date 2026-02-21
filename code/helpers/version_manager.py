@@ -16,7 +16,18 @@ from typing import Any
 
 import pandas as pd
 
+from helpers.safe_io import safe_write_csv
+
 MAX_VERSIONS = 5
+_SLUG_RE = re.compile(r"^[a-z0-9_]{1,64}$")
+
+
+def _validate_slug(slug: str) -> None:
+    """Raise ValueError if *slug* could escape the versions directory."""
+    if not _SLUG_RE.match(slug):
+        raise ValueError(
+            f"Invalid version slug {slug!r}: must be 1-64 lowercase alphanumeric/underscore characters."
+        )
 
 
 def _versions_dir(data_dir: Path) -> Path:
@@ -56,7 +67,7 @@ def list_versions(data_dir: Path) -> list[dict[str, Any]]:
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
                 meta["slug"] = d.name
                 versions.append(meta)
-            except Exception:
+            except (json.JSONDecodeError, OSError, KeyError):
                 continue
     versions.sort(key=lambda v: v.get("timestamp", ""), reverse=True)
     return versions
@@ -86,10 +97,10 @@ def save_version(
 
     # Schedule CSV
     if schedule:
-        pd.DataFrame(schedule).to_csv(dest / "schedule.csv", index=False)
+        safe_write_csv(pd.DataFrame(schedule), dest / "schedule.csv")
     # CIP CSV
     if cip_blocks:
-        pd.DataFrame(cip_blocks).to_csv(dest / "cip_windows.csv", index=False)
+        safe_write_csv(pd.DataFrame(cip_blocks), dest / "cip_windows.csv")
 
     meta = {
         "name": name,
@@ -102,6 +113,7 @@ def save_version(
 
 def load_version(slug: str, data_dir: Path) -> dict[str, Any]:
     """Load schedule, CIP blocks, and metadata for a version."""
+    _validate_slug(slug)
     vdir = _versions_dir(data_dir) / slug
     result: dict[str, Any] = {"schedule": [], "cip_blocks": [], "metadata": {}}
     sched_path = vdir / "schedule.csv"
@@ -119,6 +131,7 @@ def load_version(slug: str, data_dir: Path) -> dict[str, Any]:
 
 
 def rename_version(slug: str, new_name: str, data_dir: Path) -> None:
+    _validate_slug(slug)
     meta_path = _versions_dir(data_dir) / slug / "metadata.json"
     if meta_path.exists():
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -127,6 +140,7 @@ def rename_version(slug: str, new_name: str, data_dir: Path) -> None:
 
 
 def delete_version(slug: str, data_dir: Path) -> None:
+    _validate_slug(slug)
     vdir = _versions_dir(data_dir) / slug
     if vdir.exists() and vdir.is_dir():
         shutil.rmtree(vdir)
@@ -141,6 +155,7 @@ def delete_all_versions(data_dir: Path) -> None:
 
 def promote_version(slug: str, data_dir: Path) -> None:
     """Copy version files to the main schedule_phase2.csv / cip_windows.csv."""
+    _validate_slug(slug)
     vdir = _versions_dir(data_dir) / slug
     dd = Path(data_dir)
     sched_src = vdir / "schedule.csv"
@@ -153,6 +168,7 @@ def promote_version(slug: str, data_dir: Path) -> None:
 
 def export_version_excel(slug: str, data_dir: Path) -> bytes:
     """Return version schedule as Excel bytes for download."""
+    _validate_slug(slug)
     vdir = _versions_dir(data_dir) / slug
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:

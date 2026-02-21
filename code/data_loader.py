@@ -22,7 +22,7 @@ def num_or_default(v, default: int) -> int:
         if pd.isna(v):
             return default
         return int(v)
-    except Exception:
+    except (ValueError, TypeError):
         return default
 
 
@@ -31,7 +31,7 @@ def float_or_default(v, default: float) -> float:
         if pd.isna(v):
             return default
         return float(v)
-    except Exception:
+    except (ValueError, TypeError):
         return default
 
 
@@ -137,7 +137,7 @@ class Data:
         if not self.P.use_sku_rates and os.path.exists(self.F.line_rates):
             try:
                 anchor = datetime.strptime(self.P.planning_start_date, "%Y-%m-%d %H:%M:%S")
-            except Exception:
+            except ValueError:
                 anchor = datetime(2026, 2, 15, 0, 0, 0)
             plan_month = anchor.month
             lr = pd.read_csv(self.F.line_rates)
@@ -306,6 +306,15 @@ class Data:
                     priority=num_or_default(r.get("priority"), 999),
                 )
             )
+        # Deduplicate auto-generated order IDs by appending a suffix
+        seen: dict[str, int] = {}
+        for o in out:
+            oid = o["order_id"]
+            if oid in seen:
+                seen[oid] += 1
+                o["order_id"] = f"{oid}_{seen[oid]}"
+            else:
+                seen[oid] = 0
         return out
 
 
@@ -321,7 +330,7 @@ class Data:
             anchor = datetime.strptime(
                 self.P.planning_start_date, "%Y-%m-%d %H:%M:%S"
             )
-        except Exception:
+        except ValueError:
             anchor = datetime(2026, 2, 15, 0, 0, 0)
 
         out: List[dict] = []

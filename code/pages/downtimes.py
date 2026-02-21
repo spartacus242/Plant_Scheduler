@@ -11,6 +11,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 from helpers.paths import data_dir
+from helpers.safe_io import safe_write_csv
 
 st.header("Downtimes")
 st.caption("Scheduled maintenance windows that block production on a line.")
@@ -103,5 +104,5 @@ if st.button("Save downtimes", type="primary"):
     # Reorder columns: line_id first for backward compat with scheduler
     out_cols = ["line_id", "line_name", "start_hour", "end_hour", "reason"]
     save_df = save_df[[c for c in out_cols if c in save_df.columns]]
-    save_df.to_csv(csv_path, index=False)
+    safe_write_csv(save_df, csv_path)
     st.success(f"Saved to `{csv_path.name}`")

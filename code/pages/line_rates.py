@@ -11,6 +11,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 from helpers.paths import data_dir
+from helpers.safe_io import safe_write_csv
 
 st.header("Demand Planning Line Rates")
 st.caption(
@@ -75,7 +76,7 @@ if st.button("Save changes", type="primary"):
         edited_idx = edited.set_index(["line_id", "Month"])
         full.update(edited_idx)
         full.reset_index(inplace=True)
-        full.to_csv(csv_path, index=False)
+        safe_write_csv(full, csv_path)
     else:
-        edited.to_csv(csv_path, index=False)
+        safe_write_csv(edited, csv_path)
     st.success(f"Saved to `{csv_path.name}`")

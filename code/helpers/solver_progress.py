@@ -27,28 +27,24 @@ def _read(data_dir: Path) -> dict:
     if p.exists():
         try:
             return json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
+        except (json.JSONDecodeError, OSError, ValueError):
             pass
     return {"stages": [], "solutions": [], "solver_stats": {}, "data_summary": {}}
 
 
 def _write(data_dir: Path, state: dict) -> None:
-    """Atomic write: write to a temp file then rename so the reader never
-    sees a partial JSON document."""
+    """Atomic write: write to a temp file then os.replace() so the reader
+    never sees a partial JSON document."""
     p = _progress_path(data_dir)
     try:
         fd, tmp = tempfile.mkstemp(dir=str(data_dir), suffix=".tmp")
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)
-        # On Windows, target must not exist for os.rename
-        if p.exists():
-            p.unlink()
-        os.rename(tmp, str(p))
-    except Exception:
-        # Fall back to direct write if atomic fails
+        os.replace(tmp, str(p))
+    except OSError:
         try:
             p.write_text(json.dumps(state, indent=2), encoding="utf-8")
-        except Exception:
+        except OSError:
             pass
 
 

@@ -11,6 +11,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 from helpers.paths import data_dir
+from helpers.safe_io import safe_write_csv
 
 st.header("Demand Plan")
 st.caption("Review and edit order demand. Changes are saved back to `demand_plan.csv`.")
@@ -81,5 +82,5 @@ if st.button("Save changes", type="primary"):
             sku = str(row.get("sku", ""))
             wi = int(row.get("week_index", 0)) if pd.notna(row.get("week_index")) else 0
             edited.at[i, "order_id"] = f"{sku}-W{wi}"
-    edited.to_csv(csv_path, index=False)
+    safe_write_csv(edited, csv_path)
     st.success(f"Saved {len(edited)} rows to `{csv_path.name}`")

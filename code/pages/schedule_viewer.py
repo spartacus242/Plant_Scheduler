@@ -96,16 +96,18 @@ if highlighted_sku:
 c1, c2, _ = st.columns([1, 1, 3])
 with c1:
     try:
-        png = fig.to_image(format="png", width=1800, height=max(600, 30 * len(all_lines)), scale=2)
+        export_h = min(4000, max(600, 30 * len(all_lines)))
+        png = fig.to_image(format="png", width=1800, height=export_h, scale=2)
         st.download_button("Download PNG", data=png, file_name="gantt.png", mime="image/png")
-    except Exception:
-        st.caption("Install kaleido for PNG export")
+    except (ImportError, ValueError, OSError, RuntimeError) as exc:
+        st.caption(f"PNG export unavailable: {exc}")
 with c2:
     try:
-        pdf = fig.to_image(format="pdf", width=1800, height=max(600, 30 * len(all_lines)), scale=2)
+        export_h = min(4000, max(600, 30 * len(all_lines)))
+        pdf = fig.to_image(format="pdf", width=1800, height=export_h, scale=2)
         st.download_button("Download PDF", data=pdf, file_name="gantt.pdf", mime="application/pdf")
-    except Exception:
-        st.caption("Install kaleido for PDF export")
+    except (ImportError, ValueError, OSError, RuntimeError) as exc:
+        st.caption(f"PDF export unavailable: {exc}")
 
 # ── Changeovers ─────────────────────────────────────────────────────────
 total_co, co_df = compute_changeovers(filt)

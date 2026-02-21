@@ -11,6 +11,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 from helpers.paths import data_dir
+from helpers.safe_io import safe_write_csv
 
 st.header("Capabilities")
 st.caption("Line-SKU capability matrix and production rates (kg/h). **Rate** and **Capable** columns are editable — line IDs, names, and SKUs are locked.")
@@ -109,7 +110,7 @@ if st.button("Save changes", type="primary"):
         edited_idx = to_save.set_index(["line_id", "sku"])
         full.update(edited_idx)
         full.reset_index(inplace=True)
-        full.to_csv(csv_path, index=False)
+        safe_write_csv(full, csv_path)
     else:
-        to_save.to_csv(csv_path, index=False)
+        safe_write_csv(to_save, csv_path)
     st.success(f"Saved to `{csv_path.name}`")

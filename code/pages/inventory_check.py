@@ -11,6 +11,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 from helpers.paths import data_dir
+from helpers.safe_io import safe_write_csv
 
 st.header("Inventory Check")
 st.caption(
@@ -46,7 +47,7 @@ with tab_bom:
         },
     )
     if st.button("Save BOM", key="save_bom"):
-        edited_bom.to_csv(bom_path, index=False)
+        safe_write_csv(edited_bom, bom_path)
         st.success(f"Saved to `{bom_path.name}`")
 
 # ── On-Hand tab ─────────────────────────────────────────────────────────
@@ -68,7 +69,7 @@ with tab_oh:
         },
     )
     if st.button("Save On-Hand", key="save_oh"):
-        edited_oh.to_csv(onhand_path, index=False)
+        safe_write_csv(edited_oh, onhand_path)
         st.success(f"Saved to `{onhand_path.name}`")
 
 # ── Inbound tab ─────────────────────────────────────────────────────────
@@ -94,7 +95,7 @@ with tab_ib:
         },
     )
     if st.button("Save Inbound", key="save_ib"):
-        edited_ib.to_csv(inbound_path, index=False)
+        safe_write_csv(edited_ib, inbound_path)
         st.success(f"Saved to `{inbound_path.name}`")
 
 # ── Run Check tab ───────────────────────────────────────────────────────

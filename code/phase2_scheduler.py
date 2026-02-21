@@ -206,7 +206,7 @@ def reset_err() -> None:
     try:
         if ERR_FILE.exists():
             ERR_FILE.unlink()
-    except Exception:
+    except OSError:
         pass
 
 
@@ -214,7 +214,7 @@ def log(msg: str) -> None:
     try:
         with open(ERR_FILE, "a", encoding="utf-8") as f:
             f.write(msg.rstrip() + "\n")
-    except Exception:
+    except OSError:
         pass
 
 
@@ -414,7 +414,7 @@ def write_week1_initial_states(
     """
     try:
         anchor = datetime.strptime(P.planning_start_date, "%Y-%m-%d %H:%M:%S")
-    except Exception:
+    except ValueError:
         anchor = datetime(2026, 2, 15, 0, 0, 0)
 
     # Per line: last CIP end hour (0 if no CIP)
@@ -513,7 +513,7 @@ def _solution_to_rows(
 
     try:
         anchor = datetime.strptime(P.planning_start_date, "%Y-%m-%d %H:%M:%S")
-    except Exception:
+    except ValueError:
         anchor = datetime(2026, 2, 15, 0, 0, 0)
 
     schedule_rows = []
@@ -1050,15 +1050,15 @@ def main() -> None:
                             idle_kpi_summary = [
                                 f"Idle KPIs: {n} lines, total_idle={t_idle}h, median_idle={m_idle}h, utilization={util}%"
                             ]
-                        except Exception:
+                        except (OSError, KeyError, ValueError, TypeError):
                             pass
                     write_kpi_lines([f"Status: {status_name}"] + idle_kpi_summary)
                 else:
                     update_stage(DATA_DIR, "solving", "error", status_name)
                     write_kpi_lines([f"Status: {status_name}"])
-    except Exception:
+    except Exception as exc:
         log("\n=== FATAL ERROR ===\n" + traceback.format_exc())
-        write_kpi_lines(["Status: ERROR — see solver_error.txt"])
+        write_kpi_lines([f"Status: ERROR — {type(exc).__name__}: see solver_error.txt"])
 
     # Post-solve validation
     if VALIDATE and not DIAGNOSE:
@@ -1067,8 +1067,8 @@ def main() -> None:
         try:
             validate_all(DATA_DIR, verbose=True)
             update_stage(DATA_DIR, "validating", "done", "Validation complete")
-        except Exception:
-            log("[validate] " + traceback.format_exc())
+        except (OSError, ValueError, KeyError) as exc:
+            log(f"[validate] {type(exc).__name__}: {exc}\n" + traceback.format_exc())
             update_stage(DATA_DIR, "validating", "error", "Validation failed")
 
 

@@ -37,7 +37,7 @@ def _count_rows(path: Path) -> int | None:
     try:
         import pandas as pd
         return len(pd.read_csv(path))
-    except Exception:
+    except (OSError, pd.errors.ParserError, ValueError):
         return None
 
 
@@ -77,7 +77,7 @@ def _planning_horizon() -> str:
             if raw:
                 dt = datetime.strptime(str(raw).strip(), "%Y-%m-%d %H:%M:%S")
                 return dt.strftime("%b %d, %Y")
-        except Exception:
+        except (ValueError, KeyError, OSError):
             pass
     return "2 weeks"
 

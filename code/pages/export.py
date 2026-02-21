@@ -76,7 +76,7 @@ if st.button("Generate Excel", key="gen_xlsx"):
             sdf = load_schedule(schedule_path)
             _, co_df = compute_changeovers(sdf)
             co_df.to_excel(writer, sheet_name="Changeover Summary", index=False)
-        except Exception:
+        except (OSError, KeyError, ValueError):
             pass
 
     st.download_button(
@@ -97,9 +97,10 @@ if st.button("Generate Gantt PDF", key="gen_pdf"):
         cdf = load_cip_windows(cip_path) if cip_path.exists() else None
         fig = build_gantt_figure(sdf, cdf, title="Flowstate Schedule")
         n_lines = sdf["Task"].nunique()
-        pdf_bytes = fig.to_image(format="pdf", width=1800, height=max(600, 30 * n_lines), scale=2)
+        export_h = min(4000, max(600, 30 * n_lines))
+        pdf_bytes = fig.to_image(format="pdf", width=1800, height=export_h, scale=2)
         st.download_button("Download PDF", data=pdf_bytes, file_name="flowstate_gantt.pdf", mime="application/pdf")
-    except Exception as e:
+    except (ImportError, ValueError, OSError, RuntimeError) as e:
         st.error(f"PDF generation failed: {e}")
         st.caption("Ensure `kaleido` is installed: `pip install kaleido`")
 
@@ -123,9 +124,10 @@ if st.button("Generate ZIP", key="gen_zip"):
             cdf = load_cip_windows(cip_path) if cip_path.exists() else None
             fig = build_gantt_figure(sdf, cdf, title="Flowstate Schedule")
             n_lines = sdf["Task"].nunique()
-            pdf_bytes = fig.to_image(format="pdf", width=1800, height=max(600, 30 * n_lines), scale=2)
+            export_h = min(4000, max(600, 30 * n_lines))
+            pdf_bytes = fig.to_image(format="pdf", width=1800, height=export_h, scale=2)
             zf.writestr("flowstate_gantt.pdf", pdf_bytes)
-        except Exception:
+        except (ImportError, ValueError, OSError, RuntimeError):
             pass
 
     st.download_button(

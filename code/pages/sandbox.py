@@ -40,7 +40,7 @@ try:
 
     with open(Path(BASE_DIR).parent / "flowstate.toml", "rb") as f:
         toml_cfg = tomli.load(f)
-except Exception:
+except (ImportError, OSError, ValueError):
     toml_cfg = {}
 
 planning_anchor = toml_cfg.get("scheduler", {}).get("planning_start_date", "2026-02-15 00:00:00")
@@ -339,7 +339,7 @@ for ver in list_versions(dd):
             from datetime import datetime as _dt, timedelta as _td
             try:
                 anchor_dt = _dt.strptime(planning_anchor, "%Y-%m-%d %H:%M:%S")
-            except Exception:
+            except ValueError:
                 anchor_dt = _dt(2026, 2, 15)
             v_rows = []
             for b in v_sched:
@@ -355,7 +355,7 @@ for ver in list_versions(dd):
                     "end_hour": b.get("end_hour", 0),
                     "run_hours": b.get("run_hours", 0),
                     "Task": b.get("line_name", ""),
-                    "Resource": b.get("sku", ""),
+                    "Resource": str(b.get("sku", "")),
                     "Start": start_dt,
                     "Finish": end_dt,
                     "start_dt": start_dt.strftime("%Y-%m-%d %H:%M"),
@@ -397,8 +397,8 @@ for ver in list_versions(dd):
                     key=f"export_{slug}",
                     use_container_width=True,
                 )
-            except Exception:
-                st.caption("Export unavailable (install openpyxl)")
+            except (ImportError, OSError, ValueError) as exc:
+                st.caption(f"Export unavailable: {exc}")
 
 # ── Delete all versions ──────────────────────────────────────────────
 if list_versions(dd):
