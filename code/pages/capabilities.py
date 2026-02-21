@@ -12,10 +12,11 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 from helpers.paths import data_dir
 
-st.header("Capabilities & Rates")
+st.header("Capabilities")
 st.caption("Line-SKU capability matrix and production rates (kg/h). **Rate** and **Capable** columns are editable — line IDs, names, and SKUs are locked.")
 
-csv_path = data_dir() / "capabilities_rates.csv"
+dd = data_dir()
+csv_path = dd / "capabilities_rates.csv"
 if not csv_path.exists():
     st.warning(f"File not found: `{csv_path}`")
     st.stop()
@@ -27,6 +28,14 @@ df["capable"] = pd.to_numeric(df["capable"], errors="coerce").fillna(0).astype(i
 # Support both old (rate_uph) and new (calc_rate_kgph) column names
 if "calc_rate_kgph" not in df.columns and "rate_uph" in df.columns:
     df = df.rename(columns={"rate_uph": "calc_rate_kgph"})
+
+# Join SKU descriptions from sku_info.csv
+sku_info_path = dd / "sku_info.csv"
+if sku_info_path.exists():
+    si = pd.read_csv(sku_info_path)
+    si["sku"] = si["sku"].astype(str)
+    desc_map = dict(zip(si["sku"], si["ediact_sku_description"].fillna("")))
+    df.insert(df.columns.get_loc("sku") + 1, "sku_description", df["sku"].map(desc_map).fillna(""))
 
 # Filters to manage the large table
 col_f1, col_f2 = st.columns(2)
@@ -53,13 +62,19 @@ with st.expander("Pivot view (lines x SKUs)", expanded=False):
 
 st.divider()
 st.caption(f"Showing {len(view)} of {len(df)} rows")
+st.info(
+    "Editing the **Nominal Rate** or **Rate** columns here will **not** change the rates "
+    "used for the schedule unless you select **Enable SKU-specific rates** on the "
+    "Run Solver settings page."
+)
 
 # Determine which columns exist for the editor
-disabled_cols = [c for c in ["line_id", "line_name", "sku", "nominal_rate_kgph"] if c in view.columns]
+disabled_cols = [c for c in ["line_id", "line_name", "sku", "sku_description", "nominal_rate_kgph"] if c in view.columns]
 col_config: dict = {
     "line_id": st.column_config.NumberColumn("Line ID"),
     "line_name": st.column_config.TextColumn("Line"),
     "sku": st.column_config.TextColumn("SKU"),
+    "sku_description": st.column_config.TextColumn("Description"),
     "capable": st.column_config.SelectboxColumn(
         "Capable", options=[0, 1], required=True,
         help="1 = line can produce this SKU, 0 = not capable.",
@@ -84,17 +99,17 @@ edited = st.data_editor(
 )
 
 if st.button("Save changes", type="primary"):
+    to_save = edited.drop(columns=["sku_description"], errors="ignore")
     if sel_lines or sel_skus:
-        # Merge edits back into full dataframe
         full = pd.read_csv(csv_path)
         full["line_id"] = pd.to_numeric(full["line_id"], errors="coerce").fillna(0).astype(int)
         if "calc_rate_kgph" not in full.columns and "rate_uph" in full.columns:
             full = full.rename(columns={"rate_uph": "calc_rate_kgph"})
         full.set_index(["line_id", "sku"], inplace=True)
-        edited_idx = edited.set_index(["line_id", "sku"])
+        edited_idx = to_save.set_index(["line_id", "sku"])
         full.update(edited_idx)
         full.reset_index(inplace=True)
         full.to_csv(csv_path, index=False)
     else:
-        edited.to_csv(csv_path, index=False)
+        to_save.to_csv(csv_path, index=False)
     st.success(f"Saved to `{csv_path.name}`")

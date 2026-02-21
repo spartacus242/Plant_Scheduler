@@ -16,6 +16,7 @@ from gantt_viewer import (
     load_cip_windows,
     build_gantt_figure,
     compute_changeovers,
+    compute_changeover_details,
     WEEK1_START_HOUR,
 )
 from inventory_checker import run_inventory_check, results_to_dataframe
@@ -115,6 +116,31 @@ mt.dataframe(
     co_df[["line_name", "changeovers"]].rename(columns={"line_name": "Line", "changeovers": "CO"}),
     use_container_width=True, height=min(120, 28 * min(5, len(co_df))),
 )
+
+# Detailed changeover breakdown by type
+chg_csv = dd / "changeovers.csv"
+if chg_csv.exists():
+    with st.expander("Changeover breakdown by type", expanded=False):
+        detail_df = compute_changeover_details(filt, changeovers_path=chg_csv)
+        if not detail_df.empty:
+            totals = detail_df[["ttp", "ffs", "topload", "casepacker", "conv_to_org", "cinn_to_non"]].sum()
+            m1, m2, m3, m4, m5, m6 = st.columns(6)
+            m1.metric("TTP", int(totals["ttp"]))
+            m2.metric("FFS", int(totals["ffs"]))
+            m3.metric("Topload", int(totals["topload"]))
+            m4.metric("Casepacker", int(totals["casepacker"]))
+            m5.metric("Conv to Org", int(totals["conv_to_org"]))
+            m6.metric("Cinn to Non-Cinn", int(totals["cinn_to_non"]))
+            st.dataframe(
+                detail_df.rename(columns={
+                    "line_name": "Line", "changeovers": "Total CO",
+                    "ttp": "TTP", "ffs": "FFS", "topload": "Topload",
+                    "casepacker": "Casepacker", "conv_to_org": "Conv→Org",
+                    "cinn_to_non": "Cinn→Non-Cinn",
+                }),
+                use_container_width=True,
+                hide_index=True,
+            )
 
 # ── Idle-gap KPIs ──────────────────────────────────────────────────────
 idle_kpi_path = dd / "idle_kpis.csv"

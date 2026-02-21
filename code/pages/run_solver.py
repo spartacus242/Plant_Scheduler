@@ -47,6 +47,7 @@ cfg = _load_toml(toml_path)
 sched = cfg.get("scheduler", {})
 cip_cfg = cfg.get("cip", {})
 obj = cfg.get("objective", {})
+co_cfg = cfg.get("changeover", {})
 
 # ── Input summary ─────────────────────────────────────────────────────────
 def _count_csv(path: Path) -> int:
@@ -135,6 +136,23 @@ with st.expander("Scheduler settings", expanded=True):
             ),
         )
 
+    st.subheader("Rate source")
+    use_sku_rates = st.toggle(
+        "Enable SKU-specific rates",
+        value=sched.get("use_sku_rates", False),
+    )
+    if use_sku_rates:
+        st.warning(
+            "SKU-specific rates are based on the historical running rate for each line "
+            "and each SKU. This may affect the feasibility of meeting the demand plan, "
+            "but it may also be more accurate to 'real life'."
+        )
+    else:
+        st.caption(
+            "Using Demand Planning line rates (`line_rates.csv`) by default. "
+            "Enable the toggle above to use per-SKU rates from `capabilities_rates.csv`."
+        )
+
     st.subheader("CIP")
     c4, c5 = st.columns(2)
     with c4:
@@ -203,48 +221,110 @@ with st.expander("Scheduler settings", expanded=True):
             ),
         )
 
-    st.subheader("Changeover type penalties")
+    st.subheader("Machine changeover weights")
     st.caption(
-        "These penalties are added on top of the base changeover weight for specific "
-        "transition types flagged in `changeovers.csv`. They discourage complex changeovers "
-        "without adding hard time constraints."
+        "Per-changeover cost is built from these weights based on which machine components "
+        "change between two consecutive SKUs. The **Changeover weight** above is a global "
+        "multiplier on the sum of all per-changeover costs."
+    )
+    with st.expander("How the changeover cost is calculated"):
+        st.markdown(
+            "```\n"
+            "Per-changeover cost =\n"
+            "  base_changeover_weight\n"
+            "  + topload_weight  x  topload_change\n"
+            "  + ttp_weight      x  ttp_change\n"
+            "  + ffs_weight      x  ffs_change\n"
+            "  + casepacker_weight x casepacker_change\n"
+            "  + conv_org_weight x  conv_to_org_change\n"
+            "  + cinn_weight     x  cinn_to_non\n"
+            "  + flavor_weight   x  added_flavors\n"
+            "\n"
+            "Total objective cost =\n"
+            "  changeover_weight  x  SUM(all per-changeover costs)\n"
+            "```\n\n"
+            "Set **base_changeover_weight = 0** to only penalize transitions "
+            "that involve an actual machine component change (topload, TTP, FFS, "
+            "or casepacker). Leave it > 0 to add a flat cost for every SKU-to-SKU switch."
+        )
+
+    cm1, cm2, cm3, cm4, cm5 = st.columns(5)
+    with cm1:
+        w_base_co = st.number_input(
+            "Base changeover",
+            value=co_cfg.get("base_changeover_weight", 5),
+            min_value=0, max_value=10000, step=1,
+            help=(
+                "Flat cost added to every SKU-to-SKU transition regardless of type. "
+                "Set to 0 to only penalize machine-specific changes."
+            ),
+        )
+    with cm2:
+        w_topload = st.number_input(
+            "Topload weight",
+            value=co_cfg.get("topload_weight", 50),
+            min_value=0, max_value=10000, step=5,
+            help="Penalty for topload format changes (heaviest mechanical change).",
+        )
+    with cm3:
+        w_ttp = st.number_input(
+            "TTP weight",
+            value=co_cfg.get("ttp_weight", 10),
+            min_value=0, max_value=10000, step=5,
+            help="Penalty for TTP station changes.",
+        )
+    with cm4:
+        w_ffs = st.number_input(
+            "FFS weight",
+            value=co_cfg.get("ffs_weight", 10),
+            min_value=0, max_value=10000, step=5,
+            help="Penalty for form-fill-seal changes.",
+        )
+    with cm5:
+        w_casepacker = st.number_input(
+            "Casepacker weight",
+            value=co_cfg.get("casepacker_weight", 10),
+            min_value=0, max_value=10000, step=5,
+            help="Penalty for casepacker changes.",
+        )
+
+    st.subheader("Special changeover penalties")
+    st.caption(
+        "Additional penalties for specific product transitions "
+        "flagged in `changeovers.csv`."
     )
     c9, c10, c11 = st.columns(3)
     with c9:
         w_conv_org = st.number_input(
             "Conv → Organic penalty",
-            value=obj.get("co_conv_org_weight", 30),
+            value=obj.get("co_conv_org_weight", co_cfg.get("conv_org_weight", 30)),
             min_value=0, max_value=10000, step=5,
             help=(
                 "Extra penalty when `conv_to_org_change = 1` in `changeovers.csv` "
                 "(conventional → organic recipe, requires flush & rinse, typically 1–2 h). "
-                "**Suggested: 20–50.** At 30 this changeover is penalized like 30 extra hours of makespan "
-                "on top of the base changeover cost."
+                "**Suggested: 20–50.**"
             ),
         )
     with c10:
         w_cinn = st.number_input(
             "Cinnamon → Non-Cinn penalty",
-            value=obj.get("co_cinn_weight", 20),
+            value=obj.get("co_cinn_weight", co_cfg.get("cinn_weight", 20)),
             min_value=0, max_value=10000, step=5,
             help=(
                 "Extra penalty when `cinn_to_non = 1` in `changeovers.csv` "
                 "(cinnamon → non-cinnamon flavor, requires flush, typically ~1 h). "
-                "**Suggested: 15–30.** Set higher if cinnamon contamination is a quality risk."
+                "**Suggested: 15–30.**"
             ),
         )
     with c11:
         w_flavor = st.number_input(
             "Added-flavor penalty (per flavor)",
-            value=obj.get("co_flavor_weight", 5),
+            value=obj.get("co_flavor_weight", co_cfg.get("flavor_weight", 5)),
             min_value=0, max_value=1000, step=1,
             help=(
                 "Penalty per unit of `added_flavors` in `changeovers.csv`. "
-                "Positive values increase setup complexity; negative values are a reward "
-                "(solver prefers transitions that reduce flavor count). "
-                "The total penalty from this term never makes a changeover negative. "
-                "**Suggested: 3–10.** At 5, going from 1 to 4 flavors adds a penalty of 15 "
-                "(3 additional flavors × 5)."
+                "**Suggested: 3–10.** At 5, going from 1 to 4 flavors adds 15 penalty "
+                "(3 additional flavors x 5)."
             ),
         )
 
@@ -278,6 +358,7 @@ if st.button("Run Solver", type="primary", use_container_width=True):
         "max_lines_per_order": int(max_lines),
         "planning_start_date": planning_start,
         "validate": validate_after,
+        "use_sku_rates": use_sku_rates,
     }
     cfg["cip"] = {
         "interval_h": int(cip_interval),
@@ -290,6 +371,16 @@ if st.button("Run Solver", type="primary", use_container_width=True):
         "co_conv_org_weight": int(w_conv_org),
         "co_cinn_weight": int(w_cinn),
         "co_flavor_weight": int(w_flavor),
+    }
+    cfg["changeover"] = {
+        "base_changeover_weight": int(w_base_co),
+        "topload_weight": int(w_topload),
+        "ttp_weight": int(w_ttp),
+        "ffs_weight": int(w_ffs),
+        "casepacker_weight": int(w_casepacker),
+        "conv_org_weight": int(w_conv_org),
+        "cinn_weight": int(w_cinn),
+        "flavor_weight": int(w_flavor),
     }
     _save_toml(toml_path, cfg)
 
@@ -304,10 +395,13 @@ if st.button("Run Solver", type="primary", use_container_width=True):
     if validate_after:
         cmd.append("--validate")
 
+    import json as _json
+
     err_file = dd / "solver_error.txt"
     kpi_file = dd / "solver_kpis.txt"
+    progress_file = dd / "solver_progress.json"
 
-    for f in [err_file, kpi_file]:
+    for f in [err_file, kpi_file, progress_file]:
         if f.exists():
             f.unlink()
 
@@ -315,8 +409,86 @@ if st.button("Run Solver", type="primary", use_container_width=True):
     for key in ["sb_schedule", "sb_cips", "sb_holding"]:
         st.session_state.pop(key, None)
 
+    # ── Status icons for the pipeline graphic ────────────────────────────
+    _STAGE_ICON = {
+        "pending": "\u23F3",   # hourglass
+        "active":  "\U0001F7E1",  # yellow circle
+        "done":    "\u2705",   # green check
+        "error":   "\u274C",   # red X
+    }
+
+    def _read_progress() -> dict:
+        if not progress_file.exists():
+            return {}
+        try:
+            return _json.loads(progress_file.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _render_pipeline(container, stages: list[dict]) -> None:
+        if not stages:
+            return
+        cols = container.columns(len(stages))
+        for col, s in zip(cols, stages):
+            icon = _STAGE_ICON.get(s.get("status", "pending"), "\u23F3")
+            label = s.get("label", s.get("id", ""))
+            detail = s.get("detail", "")
+            if s.get("status") == "active":
+                col.markdown(f"**{icon} {label}**")
+            else:
+                col.markdown(f"{icon} {label}")
+            if detail:
+                col.caption(detail)
+
+    def _render_metrics(container, stats: dict, data_summary: dict) -> None:
+        elapsed = stats.get("elapsed_s", 0)
+        best_obj = stats.get("best_objective")
+        bound = stats.get("best_bound")
+        gap = stats.get("gap_pct")
+        tl = stats.get("time_limit_s", 0)
+
+        m1, m2, m3, m4 = container.columns(4)
+        elapsed_str = f"{int(elapsed)}s" if elapsed else "—"
+        if tl:
+            elapsed_str += f" / {int(tl)}s"
+        m1.metric("Elapsed", elapsed_str)
+        m2.metric("Best Objective", f"{best_obj:,.0f}" if best_obj is not None else "—")
+        m3.metric("Bound", f"{bound:,.0f}" if bound is not None else "—")
+        m4.metric("Gap", f"{gap:.1f}%" if gap is not None else "—")
+
+        if data_summary:
+            info_parts = []
+            if data_summary.get("lines"):
+                info_parts.append(f"{data_summary['lines']} lines")
+            if data_summary.get("orders"):
+                info_parts.append(f"{data_summary['orders']} orders")
+            if data_summary.get("skus"):
+                info_parts.append(f"{data_summary['skus']} SKUs")
+            if data_summary.get("horizon_h"):
+                info_parts.append(f"{data_summary['horizon_h']}h horizon")
+            if info_parts:
+                container.caption("Data: " + ", ".join(info_parts))
+
+    def _render_solutions(container, solutions: list[dict]) -> None:
+        if not solutions:
+            return
+        container.markdown("**Solutions found**")
+        rows = []
+        for s in solutions:
+            rows.append({
+                "Time (s)": s.get("wall_time", 0),
+                "Objective": f"{s.get('objective', 0):,.0f}",
+                "Note": s.get("label", ""),
+            })
+        container.dataframe(
+            pd.DataFrame(rows),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    # ── Launch subprocess and poll ───────────────────────────────────────
     with st.status("Solving...", expanded=True) as status:
-        st.write(f"Command: `{' '.join(cmd)}`")
+        st.caption(f"`{' '.join(cmd)}`")
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -324,24 +496,57 @@ if st.button("Run Solver", type="primary", use_container_width=True):
             text=True,
             cwd=str(BASE_DIR),
         )
-        output_area = st.empty()
+
+        pipeline_ph = st.empty()
+        metrics_ph = st.empty()
+        solutions_ph = st.empty()
+        raw_ph = st.empty()
+
         log_lines: list[str] = []
+        prev_progress: dict = {}
 
         while proc.poll() is None:
-            time.sleep(2)
+            time.sleep(1.5)
+
+            # Read structured progress
+            prog = _read_progress()
+            if prog and prog != prev_progress:
+                prev_progress = prog
+                with pipeline_ph.container():
+                    _render_pipeline(st, prog.get("stages", []))
+                with metrics_ph.container():
+                    _render_metrics(st, prog.get("solver_stats", {}), prog.get("data_summary", {}))
+                with solutions_ph.container():
+                    _render_solutions(st, prog.get("solutions", []))
+
+            # Read raw log
             if err_file.exists():
                 try:
                     lines = err_file.read_text(encoding="utf-8").strip().split("\n")
                     if lines != log_lines:
                         log_lines = lines
-                        output_area.code("\n".join(log_lines), language="text")
+                        with raw_ph.container():
+                            with st.expander("Raw solver log", expanded=False):
+                                st.code("\n".join(log_lines), language="text")
                 except Exception:
                     pass
 
+        # Final read after process exits
         rc = proc.returncode
+        prog = _read_progress()
+        if prog:
+            with pipeline_ph.container():
+                _render_pipeline(st, prog.get("stages", []))
+            with metrics_ph.container():
+                _render_metrics(st, prog.get("solver_stats", {}), prog.get("data_summary", {}))
+            with solutions_ph.container():
+                _render_solutions(st, prog.get("solutions", []))
+
         if err_file.exists():
             log_lines = err_file.read_text(encoding="utf-8").strip().split("\n")
-            output_area.code("\n".join(log_lines), language="text")
+            with raw_ph.container():
+                with st.expander("Raw solver log", expanded=False):
+                    st.code("\n".join(log_lines), language="text")
 
         if rc == 0:
             status.update(label="Solver finished", state="complete")

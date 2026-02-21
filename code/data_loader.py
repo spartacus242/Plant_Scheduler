@@ -51,6 +51,9 @@ class Params:
     min_run_pct_of_qty: float = 0.5
     # Allow Week-1 orders to be produced in Week-0 to fill slack and smooth week-to-week
     allow_week1_in_week0: bool = True
+    # When True, keep per-SKU rates from capabilities_rates.csv instead of
+    # overriding them with the flat line_rates.csv values.
+    use_sku_rates: bool = False
     # Objective: minimize makespan * W1 + total_changeovers * W2
     objective_makespan_weight: int = 1
     objective_changeover_weight: int = 100
@@ -129,8 +132,9 @@ class Data:
                 self.sku_desc[str(r["sku"])] = str(r.get("ediact_sku_description", ""))
 
         # ── Line rates (monthly, overrides SKU-specific rates per line) ──
-        # Uses the month from planning_start_date to pick the correct rate.
-        if os.path.exists(self.F.line_rates):
+        # Skipped when use_sku_rates is True so the per-SKU rates from
+        # capabilities_rates.csv are preserved.
+        if not self.P.use_sku_rates and os.path.exists(self.F.line_rates):
             try:
                 anchor = datetime.strptime(self.P.planning_start_date, "%Y-%m-%d %H:%M:%S")
             except Exception:

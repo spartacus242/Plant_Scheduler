@@ -6,6 +6,7 @@ export interface ScheduleBlock {
   line_name: string;
   order_id: string;
   sku: string;
+  sku_description?: string;
   start_hour: number;
   end_hour: number;
   run_hours: number;

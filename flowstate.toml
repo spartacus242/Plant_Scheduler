@@ -1,9 +1,10 @@
 [scheduler]
-time_limit = 80
+time_limit = 60
 min_run_hours = 8
 max_lines_per_order = 2
 planning_start_date = "2026-02-15 00:00:00"
 validate = true
+use_sku_rates = false
 
 [cip]
 interval_h = 120
@@ -18,11 +19,11 @@ co_cinn_weight = 20
 co_flavor_weight = 5
 
 [changeover]
-topload_weight = 50
-ttp_weight = 10
-ffs_weight = 10
-casepacker_weight = 10
 base_changeover_weight = 5
+topload_weight = 50
+ttp_weight = 5
+ffs_weight = 75
+casepacker_weight = 20
 conv_org_weight = 30
 cinn_weight = 20
 flavor_weight = 5

@@ -141,6 +141,9 @@ if not schedule and not cip_blocks:
     st.stop()
 
 # ── Mount React component ──────────────────────────────────────────────
+# A reset counter in the key forces a full remount after "Reset from solver",
+# ensuring the React component reinitializes with fresh data.
+_reset_gen = st.session_state.get("sb_reset_gen", 0)
 component_state = gantt_sandbox(
     schedule=schedule,
     cip_windows=cip_blocks,
@@ -156,6 +159,7 @@ component_state = gantt_sandbox(
         "horizon_hours": horizon_hours,
     },
     height=800,
+    key=f"gantt_sandbox_{_reset_gen}",
 )
 
 # ── Update state from React ────────────────────────────────────────────
@@ -209,8 +213,196 @@ with col_reset:
         st.session_state["sb_holding"] = []
         st.session_state["sb_csv_mtime"] = _csv_mtime
         st.session_state["sb_just_reset"] = True
+        st.session_state["sb_reset_gen"] = st.session_state.get("sb_reset_gen", 0) + 1
         st.rerun()
 
 with col_export:
     if st.button("Go to Export", use_container_width=True):
         st.switch_page("pages/export.py")
+
+# ══════════════════════════════════════════════════════════════════════
+# Schedule Versions
+# ══════════════════════════════════════════════════════════════════════
+from helpers.version_manager import (
+    list_versions,
+    save_version,
+    load_version,
+    rename_version,
+    delete_version,
+    delete_all_versions,
+    promote_version,
+    export_version_excel,
+    MAX_VERSIONS,
+)
+from gantt_viewer import (
+    load_schedule as gv_load_schedule,
+    build_gantt_figure,
+    compute_changeovers,
+)
+
+st.divider()
+st.subheader("Schedule Versions")
+st.caption(
+    f"Save up to {MAX_VERSIONS} versions of the current sandbox schedule. "
+    "Compare KPIs and choose which version to promote as the official schedule."
+)
+
+# ── Save as Version ──────────────────────────────────────────────────
+saved_versions = list_versions(dd)
+next_num = len(saved_versions) + 1
+ver_col1, ver_col2 = st.columns([3, 1])
+with ver_col1:
+    ver_name = st.text_input(
+        "Version name",
+        value=f"Option {next_num}",
+        key="sb_ver_name",
+        label_visibility="collapsed",
+        placeholder="Enter version name...",
+    )
+with ver_col2:
+    save_ver_clicked = st.button(
+        "Save as Version",
+        type="primary",
+        use_container_width=True,
+        disabled=len(saved_versions) >= MAX_VERSIONS,
+    )
+
+if save_ver_clicked:
+    # Compute KPIs for the current sandbox state
+    ver_co_total = 0
+    ver_makespan = 0
+    sched_only = [b for b in schedule if b.get("block_type") != "cip"]
+    if sched_only:
+        ver_makespan = max(b.get("end_hour", 0) for b in sched_only) - min(b.get("start_hour", 0) for b in sched_only)
+        prev_by_line: dict[str, str] = {}
+        for b in sorted(sched_only, key=lambda x: (x.get("line_name", ""), x.get("start_hour", 0))):
+            ln = b.get("line_name", "")
+            sk = b.get("sku", "")
+            if ln in prev_by_line and prev_by_line[ln] != sk:
+                ver_co_total += 1
+            prev_by_line[ln] = sk
+
+    # Demand adherence
+    produced_by_order: dict[str, float] = {}
+    for b in sched_only:
+        oid = b.get("order_id", "")
+        sk = b.get("sku", "")
+        ln = b.get("line_name", "")
+        rate = caps_tuples.get((ln, sk), 0)
+        produced_by_order[oid] = produced_by_order.get(oid, 0) + rate * b.get("run_hours", 0)
+    orders_met = 0
+    orders_total = len(demand)
+    for d in demand:
+        qty = produced_by_order.get(d["order_id"], 0)
+        if qty >= d["qty_min"]:
+            orders_met += 1
+    adh_pct = round(100 * orders_met / orders_total, 1) if orders_total else 0
+
+    kpis = {
+        "changeovers": ver_co_total,
+        "makespan_h": round(ver_makespan, 1),
+        "orders_met": orders_met,
+        "orders_total": orders_total,
+        "adherence_pct": adh_pct,
+    }
+    try:
+        slug = save_version(ver_name, schedule, cip_blocks, kpis, dd)
+        st.success(f"Saved version **{ver_name}**.")
+        st.rerun()
+    except ValueError as exc:
+        st.error(str(exc))
+
+if len(saved_versions) >= MAX_VERSIONS:
+    st.warning(f"Maximum of {MAX_VERSIONS} versions reached. Delete a version to save a new one.")
+
+# ── Display saved versions ───────────────────────────────────────────
+for ver in list_versions(dd):
+    slug = ver["slug"]
+    meta_name = ver.get("name", slug)
+    kpis = ver.get("kpis", {})
+    ts = ver.get("timestamp", "")
+
+    with st.expander(f"{meta_name}  —  {ts}", expanded=False):
+        # KPI metrics row
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Changeovers", kpis.get("changeovers", "—"))
+        k2.metric("Makespan (h)", kpis.get("makespan_h", "—"))
+        k3.metric("Orders Met", f"{kpis.get('orders_met', '—')}/{kpis.get('orders_total', '—')}")
+        k4.metric("Adherence", f"{kpis.get('adherence_pct', '—')}%")
+
+        # Load version data for Gantt and table
+        vdata = load_version(slug, dd)
+        v_sched = vdata.get("schedule", [])
+
+        if v_sched:
+            # Build a DataFrame for Gantt rendering
+            from datetime import datetime as _dt, timedelta as _td
+            try:
+                anchor_dt = _dt.strptime(planning_anchor, "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                anchor_dt = _dt(2026, 2, 15)
+            v_rows = []
+            for b in v_sched:
+                start_dt = anchor_dt + _td(hours=float(b.get("start_hour", 0)))
+                end_dt = anchor_dt + _td(hours=float(b.get("end_hour", 0)))
+                v_rows.append({
+                    "line_id": b.get("line_id", 0),
+                    "line_name": b.get("line_name", ""),
+                    "order_id": b.get("order_id", ""),
+                    "sku": b.get("sku", ""),
+                    "sku_description": b.get("sku_description", ""),
+                    "start_hour": b.get("start_hour", 0),
+                    "end_hour": b.get("end_hour", 0),
+                    "run_hours": b.get("run_hours", 0),
+                    "Task": b.get("line_name", ""),
+                    "Resource": b.get("sku", ""),
+                    "Start": start_dt,
+                    "Finish": end_dt,
+                    "start_dt": start_dt.strftime("%Y-%m-%d %H:%M"),
+                    "end_dt": end_dt.strftime("%Y-%m-%d %H:%M"),
+                })
+            v_df = pd.DataFrame(v_rows)
+
+            # Gantt chart
+            v_fig = build_gantt_figure(v_df, cip_df=None, title=meta_name)
+            st.plotly_chart(v_fig, use_container_width=True, key=f"ver_gantt_{slug}")
+
+            # Schedule table with sku_description
+            display_cols = ["line_name", "order_id", "sku", "sku_description", "start_dt", "end_dt", "run_hours"]
+            avail = [c for c in display_cols if c in v_df.columns]
+            st.dataframe(v_df[avail], use_container_width=True, hide_index=True)
+
+        # Action buttons
+        ba, bb, bc = st.columns(3)
+        with ba:
+            if st.button("Save as Official Schedule", key=f"promote_{slug}", type="primary", use_container_width=True):
+                promote_version(slug, dd)
+                st.session_state["schedule_source"] = "version"
+                for k in ["sb_schedule", "sb_cips", "sb_holding"]:
+                    st.session_state.pop(k, None)
+                st.success(f"**{meta_name}** is now the official schedule.")
+                st.rerun()
+        with bb:
+            if st.button("Delete this version", key=f"delete_{slug}", use_container_width=True):
+                delete_version(slug, dd)
+                st.rerun()
+        with bc:
+            try:
+                excel_bytes = export_version_excel(slug, dd)
+                st.download_button(
+                    "Export to Excel",
+                    data=excel_bytes,
+                    file_name=f"{meta_name}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"export_{slug}",
+                    use_container_width=True,
+                )
+            except Exception:
+                st.caption("Export unavailable (install openpyxl)")
+
+# ── Delete all versions ──────────────────────────────────────────────
+if list_versions(dd):
+    st.divider()
+    if st.button("Delete all schedule versions", type="secondary"):
+        delete_all_versions(dd)
+        st.rerun()

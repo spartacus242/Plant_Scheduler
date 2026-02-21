@@ -97,15 +97,28 @@ def check_cip_spacing(
     cip_path: Path,
     init_path: Path,
     interval_h: int = 120,
+    line_cip_hrs_path: Path | None = None,
 ) -> List[str]:
-    """Verify CIP occurs within every 120 CLOCK hours from first production start per line.
-    Clock-time based: CIP must happen within 120h of first production start after last CIP.
+    """Verify CIP occurs within the allowed clock-hours per line.
+
+    Uses per-line intervals from *line_cip_hrs_path* when available,
+    falling back to *interval_h* for lines not listed.
     """
     issues: List[str] = []
     if not schedule_path.exists():
         return ["MISSING: schedule_phase2.csv"]
 
     sched = pd.read_csv(schedule_path)
+
+    # Per-line CIP interval overrides
+    cip_interval_map: Dict[int, int] = {}
+    if line_cip_hrs_path and line_cip_hrs_path.exists():
+        lc = pd.read_csv(line_cip_hrs_path)
+        lc["line_id"] = pd.to_numeric(lc["line_id"], errors="coerce").fillna(0).astype(int)
+        lc["max_cip_hrs"] = pd.to_numeric(lc["max_cip_hrs"], errors="coerce").fillna(interval_h).astype(int)
+        for _, r in lc.iterrows():
+            cip_interval_map[int(r["line_id"])] = int(r["max_cip_hrs"])
+
     # Load initial carryover (clock hours since last CIP before horizon)
     init_carry: Dict[int, int] = {}
     if init_path.exists():
@@ -125,6 +138,7 @@ def check_cip_spacing(
 
     for line_id, grp in sched.groupby("line_id"):
         line_id = int(line_id)
+        line_interval = cip_interval_map.get(line_id, interval_h)
         segs = sorted(
             [(int(r["start_hour"]), int(r["end_hour"])) for _, r in grp.iterrows()],
             key=lambda x: x[0],
@@ -136,27 +150,25 @@ def check_cip_spacing(
         if not segs:
             continue
 
-        # Clock-time tracking: hours since last CIP (or from first production start)
         first_start = segs[0][0]
-        clock_since_cip = carry  # carryover from before horizon
-        last_reference = first_start - carry  # effective start of CIP clock
+        clock_since_cip = carry
+        last_reference = first_start - carry
         cip_idx = 0
 
         for s, e in segs:
-            # Apply CIPs that happen before or at start of this segment
             while cip_idx < len(cips) and cips[cip_idx][0] <= s:
-                last_reference = cips[cip_idx][1]  # CIP end resets clock
+                last_reference = cips[cip_idx][1]
                 clock_since_cip = 0
                 cip_idx += 1
-            # Clock time from last reference to end of this segment
             clock_at_end = e - last_reference
-            if clock_at_end > interval_h + 12:  # 12h tolerance (CIP duration + changeover buffer)
+            if clock_at_end > line_interval + 12:
                 issues.append(
-                    f"CIP: Line {line_name} -- {clock_at_end}h clock since last CIP (limit {interval_h}h) at h{e}"
+                    f"CIP: Line {line_name} -- {clock_at_end}h clock since last CIP "
+                    f"(limit {line_interval}h) at h{e}"
                 )
 
     if not issues:
-        issues.append("CIP: All lines within 120 clock-hours between CIPs. OK.")
+        issues.append("CIP: All lines within allowed clock-hours between CIPs. OK.")
     return issues
 
 
@@ -234,6 +246,7 @@ def validate_all(data_dir: Path, verbose: bool = True) -> List[str]:
         data_dir / "schedule_phase2.csv",
         data_dir / "cip_windows.csv",
         data_dir / "initial_states.csv",
+        line_cip_hrs_path=data_dir / "line_cip_hrs.csv",
     )
     report.extend(cip_issues)
     report.append("")

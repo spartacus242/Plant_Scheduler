@@ -17,8 +17,8 @@ const statusColors: Record<string, string> = {
 
 export const AdherenceTable: React.FC<Props> = ({ rows, highlightSku, onSkuClick }) => {
   return (
-    <div style={{ maxHeight: 260, overflowY: "auto", border: "1px solid #e0e0e5", borderRadius: 8 }}>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+    <div style={{ maxHeight: 260, overflowY: "auto", border: "1px solid #e0e0e5", borderRadius: 8, background: "#ffffff" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: "#333" }}>
         <thead>
           <tr style={{ background: "#f7f7fa", position: "sticky", top: 0 }}>
             <th style={th}>SKU</th>
@@ -36,8 +36,8 @@ export const AdherenceTable: React.FC<Props> = ({ rows, highlightSku, onSkuClick
               <tr
                 key={r.order_id}
                 style={{
-                  borderBottom: "1px solid #f0f0f0",
-                  background: isSelected ? "#fff8dc" : "transparent",
+                  borderBottom: "1px solid #eee",
+                  background: isSelected ? "#fff8dc" : "#ffffff",
                   cursor: "pointer",
                 }}
                 onClick={(e) => {

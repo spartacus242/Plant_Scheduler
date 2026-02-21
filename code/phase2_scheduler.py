@@ -20,6 +20,49 @@ from data_loader import Params, Data, Files, available_hours_line
 from diagnostics import run_diagnostics, run_unique_line_load_diagnostic, run_blockages_diagnostic
 from model_builder import build_model
 from validate_schedule import validate_all
+from helpers.solver_progress import (
+    init_progress,
+    update_stage,
+    set_data_summary,
+    add_solution,
+    update_solver_stats,
+    STAGES_SINGLE,
+    STAGES_TWO_PHASE,
+)
+
+
+class _ProgressCallback(cp_model.CpSolverSolutionCallback):
+    """Reports each intermediate solution to solver_progress.json so the
+    UI can display real-time objective improvements."""
+
+    def __init__(self, data_dir: Path, label_prefix: str = ""):
+        super().__init__()
+        self._data_dir = data_dir
+        self._prefix = label_prefix
+        self._count = 0
+        self._first_obj: float | None = None
+
+    def on_solution_callback(self) -> None:
+        self._count += 1
+        obj = self.ObjectiveValue()
+        wall = self.WallTime()
+        bound = self.BestObjectiveBound()
+        if self._first_obj is None:
+            self._first_obj = obj
+            label = f"{self._prefix}First feasible solution"
+        else:
+            pct = (obj - self._first_obj) / max(1, abs(self._first_obj)) * 100
+            label = f"{self._prefix}Solution #{self._count} ({pct:+.1f}%)"
+        add_solution(self._data_dir, wall, obj, label)
+        gap = round(100 * abs(obj - bound) / max(1, abs(obj)), 1) if obj != 0 else 0
+        update_solver_stats(
+            self._data_dir,
+            status="SOLVING",
+            best_objective=round(obj, 1),
+            best_bound=round(bound, 1),
+            gap_pct=gap,
+            elapsed_s=round(wall, 1),
+        )
 
 
 def _parse_args() -> argparse.Namespace:
@@ -581,6 +624,9 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
     CIPs extracted from solver (explicit intervals in model).
     """
     tl = float(TIME_LIMIT) if TIME_LIMIT is not None else 120.0
+
+    # ── Stage: Loading Data ──
+    update_stage(data_dir, "loading_data", "active")
     P0 = Params(
         horizon_h=168,
         changeover_penalty=P.changeover_penalty,
@@ -611,25 +657,56 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
     data0.load()
     orders_week0 = [o for o in data0.orders if int(o["due_end"]) <= WEEK0_END]
     data0.orders = orders_week0
+
+    n_skus = len({o["sku"] for o in data0.orders})
+    total_demand = sum(o.get("qty_min", 0) for o in data0.orders)
+    update_stage(
+        data_dir, "loading_data", "done",
+        f"{len(data0.lines)} lines, {len(orders_week0)} W0 orders, {n_skus} SKUs",
+    )
+    set_data_summary(
+        data_dir,
+        lines=len(data0.lines),
+        orders=len(orders_week0),
+        skus=n_skus,
+        total_demand_kg=total_demand,
+        changeover_pairs=len(data0.setup),
+        horizon_h=P.horizon_h,
+    )
+
     if not orders_week0:
         log("[two-phase] No Week-0 orders")
         write_kpi_lines(["Status: TWO_PHASE — no Week-0 orders"])
         return
 
+    # ── Stage: Building Model (Week 0) ──
+    update_stage(data_dir, "building_model_w0", "active")
     log(f"[two-phase] Phase 1: Week-0 only ({len(orders_week0)} orders), horizon=168")
     model0, vars0 = build_model(
         P0, data0, PHASE, RELAX_DEMAND, IGNORE_CHANGEOVERS,
         max_lines_per_order_override=MAX_LINES_PER_ORDER,
         objective_mode=OBJECTIVE_MODE,
     )
+    proto0 = model0.Proto()
+    update_stage(
+        data_dir, "building_model_w0", "done",
+        f"{len(proto0.variables):,} vars, {len(proto0.constraints):,} constraints",
+    )
+
+    # ── Stage: Solving Week 0 ──
+    update_stage(data_dir, "solving_week0", "active", f"{int(tl)}s limit, 8 workers")
+    update_solver_stats(data_dir, status="STARTING", time_limit_s=tl)
     solver0 = cp_model.CpSolver()
     solver0.parameters.num_search_workers = 8
     solver0.parameters.max_time_in_seconds = tl
-    status0 = solver0.Solve(model0)
+    cb0 = _ProgressCallback(data_dir, label_prefix="W0: ")
+    status0 = solver0.Solve(model0, cb0)
     if status0 not in (cp_model.FEASIBLE, cp_model.OPTIMAL):
+        update_stage(data_dir, "solving_week0", "error", solver0.StatusName(status0))
         write_kpi_lines([f"Status: TWO_PHASE — Week-0 {solver0.StatusName(status0)}"])
         log(f"[two-phase] Week-0 failed: {solver0.StatusName(status0)}")
         return
+    update_stage(data_dir, "solving_week0", "done", solver0.StatusName(status0))
 
     schedule_rows_0, bounds_0 = _solution_to_rows(
         solver0, data0, P0, vars0, 0
@@ -709,6 +786,8 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         write_kpi_lines(["Status: TWO_PHASE — Week-0 FEASIBLE, no Week-1 orders"])
         return
 
+    # ── Stage: Building Model (Week 1) ──
+    update_stage(data_dir, "building_model_w1", "active")
     log(f"[two-phase] Phase 2: Week-1 ({len(orders_week1)} orders), horizon=336 (full), maximize production")
     model1, vars1 = build_model(
         P1, data1, PHASE, RELAX_DEMAND, IGNORE_CHANGEOVERS,
@@ -716,12 +795,22 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         maximize_production=True,
         objective_mode=OBJECTIVE_MODE,
     )
+    proto1 = model1.Proto()
+    update_stage(
+        data_dir, "building_model_w1", "done",
+        f"{len(proto1.variables):,} vars, {len(proto1.constraints):,} constraints",
+    )
+
+    # ── Stage: Solving Week 1 ──
+    update_stage(data_dir, "solving_week1", "active", f"{int(tl)}s limit, 8 workers")
     solver1 = cp_model.CpSolver()
     solver1.parameters.num_search_workers = 8
     solver1.parameters.max_time_in_seconds = tl
-    status1 = solver1.Solve(model1)
+    cb1 = _ProgressCallback(data_dir, label_prefix="W1: ")
+    status1 = solver1.Solve(model1, cb1)
 
     if status1 not in (cp_model.FEASIBLE, cp_model.OPTIMAL):
+        update_stage(data_dir, "solving_week1", "error", solver1.StatusName(status1))
         pd.DataFrame(schedule_rows_0).to_csv(data_dir / "schedule_phase2.csv", index=False)
         if cip_rows_0:
             pd.DataFrame(cip_rows_0).to_csv(data_dir / "cip_windows.csv", index=False)
@@ -729,6 +818,7 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         write_kpi_lines([f"Status: TWO_PHASE — Week-0 FEASIBLE, Week-1 {solver1.StatusName(status1)}"])
         log(f"[two-phase] Week-1 failed: {solver1.StatusName(status1)}")
         return
+    update_stage(data_dir, "solving_week1", "done", solver1.StatusName(status1))
 
     # No hour offset: Phase 2 uses absolute hours (0-335)
     schedule_rows_1, bounds_1 = _solution_to_rows(
@@ -736,6 +826,9 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
     )
     # Extract CIPs from Phase 2 solver (covers CIPs for Week-1 portion)
     cip_rows_1 = extract_cip_windows(solver1, data1, vars1.get("cip_vars", {}), 0)
+
+    # ── Stage: Writing Output ──
+    update_stage(data_dir, "writing_output", "active")
 
     combined_schedule = schedule_rows_0 + schedule_rows_1
     combined_bounds = bounds_0 + bounds_1
@@ -751,6 +844,8 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         combined_schedule, combined_cips, data1, P1, data_dir,
         set_available_from_schedule=False,
     )
+    update_stage(data_dir, "writing_output", "done", "Schedule and KPIs saved")
+
     # Idle-gap KPIs on combined schedule
     idle_kpi_lines = compute_idle_kpis(combined_schedule, combined_cips, data_dir)
     write_kpi_lines(["Status: TWO_PHASE — Week-0 and Week-1 FEASIBLE"] + idle_kpi_lines)
@@ -802,6 +897,8 @@ def main() -> None:
         P.co_cinn_weight = int(_cfg_co["cinn_weight"])
     if _cfg_co.get("flavor_weight") is not None:
         P.co_flavor_weight = int(_cfg_co["flavor_weight"])
+    if _CFG_SCHED.get("use_sku_rates") is not None:
+        P.use_sku_rates = bool(_CFG_SCHED["use_sku_rates"])
     F = Files(DATA_DIR)
     # Rolling mode: auto-load week1_initial_states.csv if it exists
     if ROLLING:
@@ -838,18 +935,45 @@ def main() -> None:
             co_conv_org_weight=P.co_conv_org_weight,
             co_cinn_weight=P.co_cinn_weight,
             co_flavor_weight=P.co_flavor_weight,
+            use_sku_rates=P.use_sku_rates,
         )
     reset_err()
     log(
         f"[{datetime.now()}] START phase={PHASE} relax={RELAX_DEMAND} ignoreCO={IGNORE_CHANGEOVERS} "
         f"tl={TIME_LIMIT} mlpo={P.max_lines_per_order}"
     )
+
+    # Initialise structured progress
+    if TWO_PHASE:
+        init_progress(DATA_DIR, STAGES_TWO_PHASE)
+    else:
+        init_progress(DATA_DIR, STAGES_SINGLE)
+
     try:
         if TWO_PHASE:
             _run_two_phase(P, F, DATA_DIR)
         else:
+            # ── Stage: Loading Data ──
+            update_stage(DATA_DIR, "loading_data", "active")
             data = Data(P, F)
             data.load()
+            n_skus = len({o["sku"] for o in data.orders})
+            total_demand = sum(o.get("qty_min", 0) for o in data.orders)
+            update_stage(
+                DATA_DIR, "loading_data", "done",
+                f"{len(data.lines)} lines, {len(data.orders)} orders, {n_skus} SKUs",
+            )
+            set_data_summary(
+                DATA_DIR,
+                lines=len(data.lines),
+                orders=len(data.orders),
+                skus=n_skus,
+                total_demand_kg=total_demand,
+                changeover_pairs=len(data.setup),
+                horizon_h=P.horizon_h,
+            )
+            log(f"[data] {len(data.lines)} lines, {len(data.orders)} orders, {n_skus} SKUs")
+
             if DIAGNOSE:
                 run_diagnostics(P, data, DATA_DIR)
                 run_unique_line_load_diagnostic(P, data, DATA_DIR)
@@ -858,6 +982,8 @@ def main() -> None:
                     "Status: DIAG COMPLETE (see diag_order_linecap.csv, diag_unique_line_load.csv, diag_blockages.csv / diag_blockages.txt)"
                 ])
             else:
+                # ── Stage: Building Model ──
+                update_stage(DATA_DIR, "building_model", "active")
                 model, vars_dict = build_model(
                     P,
                     data,
@@ -867,15 +993,38 @@ def main() -> None:
                     max_lines_per_order_override=MAX_LINES_PER_ORDER,
                     objective_mode=OBJECTIVE_MODE,
                 )
+                proto = model.Proto()
+                n_vars = len(proto.variables)
+                n_cons = len(proto.constraints)
+                update_stage(
+                    DATA_DIR, "building_model", "done",
+                    f"{n_vars:,} variables, {n_cons:,} constraints",
+                )
+                log(f"[model] {n_vars} vars, {n_cons} constraints")
+
+                # ── Stage: Solving ──
+                tl = float(TIME_LIMIT) if TIME_LIMIT is not None else 120.0
+                update_stage(DATA_DIR, "solving", "active", f"{int(tl)}s time limit, 8 workers")
+                update_solver_stats(DATA_DIR, status="STARTING", time_limit_s=tl)
+
                 solver = cp_model.CpSolver()
                 solver.parameters.num_search_workers = 8
-                solver.parameters.max_time_in_seconds = (
-                    float(TIME_LIMIT) if TIME_LIMIT is not None else 120.0
-                )
-                status = solver.Solve(model)
+                solver.parameters.max_time_in_seconds = tl
+                cb = _ProgressCallback(DATA_DIR)
+                status = solver.Solve(model, cb)
                 status_name = solver.StatusName(status)
                 log(f"[{datetime.now()}] SOLVER status={status_name}")
+                update_solver_stats(
+                    DATA_DIR,
+                    status=status_name,
+                    elapsed_s=round(solver.WallTime(), 1),
+                )
+
                 if status in (cp_model.FEASIBLE, cp_model.OPTIMAL):
+                    update_stage(DATA_DIR, "solving", "done", status_name)
+
+                    # ── Stage: Writing Output ──
+                    update_stage(DATA_DIR, "writing_output", "active")
                     write_solution(
                         solver,
                         data,
@@ -883,7 +1032,8 @@ def main() -> None:
                         DATA_DIR,
                         vars_dict,
                     )
-                    # Read back idle KPIs and include in solver_kpis.txt
+                    update_stage(DATA_DIR, "writing_output", "done", "Schedule and KPIs saved")
+
                     idle_kpi_path = DATA_DIR / "idle_kpis.csv"
                     idle_kpi_summary = []
                     if idle_kpi_path.exists():
@@ -904,6 +1054,7 @@ def main() -> None:
                             pass
                     write_kpi_lines([f"Status: {status_name}"] + idle_kpi_summary)
                 else:
+                    update_stage(DATA_DIR, "solving", "error", status_name)
                     write_kpi_lines([f"Status: {status_name}"])
     except Exception:
         log("\n=== FATAL ERROR ===\n" + traceback.format_exc())
@@ -911,11 +1062,14 @@ def main() -> None:
 
     # Post-solve validation
     if VALIDATE and not DIAGNOSE:
+        update_stage(DATA_DIR, "validating", "active")
         log(f"[{datetime.now()}] Running post-solve validation")
         try:
             validate_all(DATA_DIR, verbose=True)
+            update_stage(DATA_DIR, "validating", "done", "Validation complete")
         except Exception:
             log("[validate] " + traceback.format_exc())
+            update_stage(DATA_DIR, "validating", "error", "Validation failed")
 
 
 if __name__ == "__main__":

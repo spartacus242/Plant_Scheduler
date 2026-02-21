@@ -43,6 +43,9 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, onClose }) =>
         <tbody>
           <tr><td style={{ color: "#888", paddingRight: 12 }}>Line</td><td>{block.line_name}</td></tr>
           <tr><td style={{ color: "#888", paddingRight: 12 }}>SKU</td><td>{block.sku}</td></tr>
+          {block.sku_description && (
+            <tr><td style={{ color: "#888", paddingRight: 12 }}>Description</td><td>{block.sku_description}</td></tr>
+          )}
           <tr><td style={{ color: "#888", paddingRight: 12 }}>Start</td><td>h{block.start_hour}</td></tr>
           <tr><td style={{ color: "#888", paddingRight: 12 }}>End</td><td>h{block.end_hour}</td></tr>
           <tr><td style={{ color: "#888", paddingRight: 12 }}>Duration</td><td>{block.run_hours}h</td></tr>

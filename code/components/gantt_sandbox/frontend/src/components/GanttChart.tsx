@@ -44,11 +44,11 @@ const LineRow: React.FC<{
 
   let fill: string;
   if (isOver) {
-    fill = isCapable === false ? "#ffe0e0" : "#d8e8ff";
+    fill = isCapable === false ? "#e57373" : "#66bb6a";
   } else if (isCapable === true) {
-    fill = "#e8f5e8";
+    fill = "#a5d6a7";
   } else if (isCapable === false) {
-    fill = "#f5e8e8";
+    fill = "#ef9a9a";
   } else {
     fill = index % 2 === 0 ? "#fff" : "#fafafa";
   }

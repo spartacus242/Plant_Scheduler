@@ -33,8 +33,10 @@ pg = st.navigation(
             st.Page("pages/inventory_check.py", title="Inventory Check", icon=":material/inventory_2:"),
         ],
         "Configuration": [
-            st.Page("pages/capabilities.py", title="Capabilities & Rates", icon=":material/precision_manufacturing:"),
+            st.Page("pages/capabilities.py", title="Capabilities", icon=":material/precision_manufacturing:"),
             st.Page("pages/changeovers.py", title="Changeovers", icon=":material/swap_horiz:"),
+            st.Page("pages/cip.py", title="CIP Intervals", icon=":material/cleaning_services:"),
+            st.Page("pages/line_rates.py", title="Demand Planning Line Rates", icon=":material/speed:"),
             st.Page("pages/trials.py", title="Trials", icon=":material/science:"),
             st.Page("pages/downtimes.py", title="Downtimes", icon=":material/event_busy:"),
             st.Page("pages/initial_states.py", title="Initial States", icon=":material/play_arrow:"),

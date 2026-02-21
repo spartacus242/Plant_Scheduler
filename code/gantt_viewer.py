@@ -76,6 +76,56 @@ def compute_changeovers(schedule_df: pd.DataFrame) -> tuple[int, pd.DataFrame]:
     return total, pd.DataFrame(per_line)
 
 
+def compute_changeover_details(
+    schedule_df: pd.DataFrame,
+    changeovers_path: Path | None = None,
+) -> pd.DataFrame:
+    """Detailed changeover report broken down by type per line.
+
+    Returns a DataFrame with columns:
+        line_name, changeovers, ttp, ffs, topload, casepacker,
+        conv_to_org, cinn_to_non
+    """
+    # Load machine-change flags from changeovers.csv
+    mc_map: dict[tuple[str, str], dict] = {}
+    if changeovers_path and changeovers_path.exists():
+        chg = pd.read_csv(changeovers_path)
+        has_mc = all(c in chg.columns for c in ("ttp_change", "ffs_change", "topload_change", "casepacker_change"))
+        has_extra = all(c in chg.columns for c in ("conv_to_org_change", "cinn_to_non"))
+        for _, r in chg.iterrows():
+            pair = (str(r["from_sku"]), str(r["to_sku"]))
+            entry: dict = {}
+            if has_mc:
+                entry["ttp"] = int(pd.to_numeric(r.get("ttp_change", 1), errors="coerce") or 1)
+                entry["ffs"] = int(pd.to_numeric(r.get("ffs_change", 1), errors="coerce") or 1)
+                entry["topload"] = int(pd.to_numeric(r.get("topload_change", 1), errors="coerce") or 1)
+                entry["casepacker"] = int(pd.to_numeric(r.get("casepacker_change", 1), errors="coerce") or 1)
+            else:
+                entry.update({"ttp": 1, "ffs": 1, "topload": 1, "casepacker": 1})
+            if has_extra:
+                entry["conv_to_org"] = int(pd.to_numeric(r.get("conv_to_org_change", 0), errors="coerce") or 0)
+                entry["cinn_to_non"] = int(pd.to_numeric(r.get("cinn_to_non", 0), errors="coerce") or 0)
+            else:
+                entry.update({"conv_to_org": 0, "cinn_to_non": 0})
+            mc_map[pair] = entry
+
+    default_mc = {"ttp": 1, "ffs": 1, "topload": 1, "casepacker": 1, "conv_to_org": 0, "cinn_to_non": 0}
+    df = schedule_df.sort_values(["line_id", "Start"])
+    rows = []
+    for line_id, grp in df.groupby("line_id", sort=True):
+        skus = grp["Resource"].tolist()
+        line_name = grp["Task"].iloc[0] if not grp.empty else str(line_id)
+        counts = {"changeovers": 0, "ttp": 0, "ffs": 0, "topload": 0, "casepacker": 0, "conv_to_org": 0, "cinn_to_non": 0}
+        for i in range(1, len(skus)):
+            if skus[i] != skus[i - 1]:
+                counts["changeovers"] += 1
+                mc = mc_map.get((skus[i - 1], skus[i]), default_mc)
+                for k in ("ttp", "ffs", "topload", "casepacker", "conv_to_org", "cinn_to_non"):
+                    counts[k] += mc.get(k, 0)
+        rows.append({"line_name": line_name, **counts})
+    return pd.DataFrame(rows)
+
+
 def build_gantt_figure(
     schedule_df: pd.DataFrame,
     cip_df: pd.DataFrame | None,
