@@ -123,7 +123,7 @@ mt.dataframe(
 chg_csv = dd / "changeovers.csv"
 if chg_csv.exists():
     with st.expander("Changeover breakdown by type", expanded=False):
-        detail_df = compute_changeover_details(filt, changeovers_path=chg_csv)
+        detail_df = compute_changeover_details(filt, changeovers_path=chg_csv, cip_df=cip_df)
         if not detail_df.empty:
             totals = detail_df[["ttp", "ffs", "topload", "casepacker", "conv_to_org", "cinn_to_non"]].sum()
             m1, m2, m3, m4, m5, m6 = st.columns(6)
@@ -158,9 +158,25 @@ if val_path.exists():
         st.code(val_path.read_text(encoding="utf-8"), language="text")
 
 with st.expander("Schedule summary"):
+    summary_cols = ["line_name", "order_id", "sku", "sku_description", "start_dt", "end_dt", "run_hours"]
+    avail_cols = [c for c in summary_cols if c in filt.columns]
+    summary_df = filt[avail_cols].copy()
+    if cip_df is not None and not cip_df.empty:
+        cip_table = cip_df.copy()
+        if "line_name" not in cip_table.columns:
+            cip_table["line_name"] = cip_table["Task"]
+        cip_table["order_id"] = "CIP"
+        cip_table["sku"] = "CIP"
+        cip_table["sku_description"] = ""
+        cip_table["start_dt"] = cip_table["Start"].dt.strftime("%Y-%m-%d %H:%M")
+        cip_table["end_dt"] = cip_table["Finish"].dt.strftime("%Y-%m-%d %H:%M")
+        cip_table["run_hours"] = (cip_table["Finish"] - cip_table["Start"]).dt.total_seconds() / 3600
+        cip_avail = [c for c in avail_cols if c in cip_table.columns]
+        summary_df = pd.concat([summary_df[avail_cols], cip_table[cip_avail]], ignore_index=True)
     st.dataframe(
-        filt[["line_name", "order_id", "sku", "start_dt", "end_dt", "run_hours"]],
+        summary_df.sort_values(["line_name", "start_dt"]),
         use_container_width=True,
+        hide_index=True,
     )
 
 # ── Inventory ───────────────────────────────────────────────────────────

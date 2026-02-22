@@ -70,15 +70,36 @@ export const GanttBlock: React.FC<Props> = ({
   const dragX = isDragging && transform ? transform.x : 0;
   const dragY = isDragging && transform ? transform.y : 0;
 
-  const label = block.block_type === "cip"
+  const desc = block.sku_description || "";
+  const baseLabel = block.block_type === "cip"
     ? "CIP"
     : block.block_type === "trial"
       ? `T:${block.sku}`
       : block.sku;
 
-  // Highlight effect: pulsing stroke
-  const strokeColor = isHighlighted ? "#FFD700" : isDragging ? "#333" : "none";
-  const strokeW = isHighlighted ? 3 : isDragging ? 2 : 0;
+  // Estimate available characters from pixel width (~6.5px per char at 11px font)
+  const charBudget = Math.floor((w - 12) / 6.5);
+  let label: string;
+  if (block.block_type === "cip") {
+    label = "CIP";
+  } else if (charBudget <= 0) {
+    label = "";
+  } else {
+    const withHours = `${baseLabel} (${block.run_hours}h)`;
+    const withDesc = desc ? `${baseLabel} ${desc} (${block.run_hours}h)` : withHours;
+    if (withDesc.length <= charBudget) {
+      label = withDesc;
+    } else if (withHours.length <= charBudget) {
+      label = withHours;
+    } else if (baseLabel.length <= charBudget) {
+      label = baseLabel;
+    } else {
+      label = baseLabel.slice(0, Math.max(charBudget - 1, 1)) + "…";
+    }
+  }
+
+  const strokeColor = isDragging ? "#333" : "none";
+  const strokeW = isDragging ? 2 : 0;
 
   return (
     <g
@@ -114,12 +135,11 @@ export const GanttBlock: React.FC<Props> = ({
         stroke={strokeColor}
         strokeWidth={strokeW}
       />
-      {/* Label */}
-      {w > 20 && (
+      {w > 20 && label && (
         <text
-          x={x + w / 2}
+          x={x + 6}
           y={y + h / 2 + 1}
-          textAnchor="middle"
+          textAnchor="start"
           dominantBaseline="middle"
           fontSize={w > 60 ? 11 : 9}
           fill={fg}
@@ -127,7 +147,7 @@ export const GanttBlock: React.FC<Props> = ({
           pointerEvents="none"
           style={{ userSelect: "none" }}
         >
-          {w > 80 ? `${label} (${block.run_hours}h)` : label}
+          {label}
         </text>
       )}
       {/* Left resize handle */}

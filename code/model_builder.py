@@ -239,6 +239,7 @@ def build_model(
     # topload-format changes are penalized more heavily than other changes.
     succ = {}           # (l, i_idx, j_idx) -> BoolVar: j immediately follows i
     weighted_co_cost_per_line = []  # list of IntVars (one per line)
+    cip_absorbable = []  # (l, i_idx, j_idx, succ_key, delta) for CIP absorption
 
     if (phase in ("sanity3", "full")) and (not ignore_co):
         # Per-machine changeover weights
@@ -433,6 +434,16 @@ def build_model(
                     ))
                     if pair_cost > 0:
                         co_cost_terms.append(succ[key] * pair_cost)
+                        # Track pairs where a CIP between orders can absorb
+                        # conv→org / cinn→non penalties.
+                        absorb_delta = (
+                            W_conv_org * mc.get("conv_to_org", 0)
+                            + W_cinn * mc.get("cinn_to_non", 0)
+                        )
+                        if absorb_delta > 0:
+                            cip_absorbable.append(
+                                (l, i_idx, j_idx, key, absorb_delta)
+                            )
 
             if co_cost_terms:
                 max_possible = len(elig) * (
@@ -797,6 +808,37 @@ def build_model(
     cip_defer_total = sum(all_cip_starts) if all_cip_starts else 0
     W_cip = P.objective_cip_defer_weight
 
+    # ── CIP absorption: waive conv→org / cinn→non when CIP is between ──
+    #
+    # When a CIP falls between two adjacent orders, the line is fully
+    # cleaned, so conv_to_org and cinn_to_non changeover penalties are
+    # absorbed.  We give a bonus (cost reduction) equal to the waived
+    # penalty whenever the solver places a CIP between such a pair.
+    cip_absorb_bonus_terms = []
+    if cip_absorbable and cip_model_vars:
+        for l_ab, i_ab, j_ab, skey, delta in cip_absorbable:
+            cip_vars_l = cip_model_vars.get(l_ab, [])
+            if not cip_vars_l:
+                continue
+            absorb_vars = []
+            for k, (ck_s, ck_e, ck_b) in enumerate(cip_vars_l):
+                ab = model.NewBoolVar(
+                    f"cipAb_l{l_ab}_o{i_ab}_{j_ab}_c{k}"
+                )
+                model.AddImplication(ab, succ[skey])
+                model.AddImplication(ab, ck_b)
+                model.Add(
+                    eff_end[(l_ab, i_ab)] <= ck_s
+                ).OnlyEnforceIf(ab)
+                model.Add(
+                    ck_e <= seg_a_start[(l_ab, j_ab)]
+                ).OnlyEnforceIf(ab)
+                absorb_vars.append(ab)
+            if absorb_vars:
+                model.Add(sum(absorb_vars) <= 1)
+                for ab in absorb_vars:
+                    cip_absorb_bonus_terms.append(ab * delta)
+
     # ── Line compactness (idle-time penalty) ──────────────────────────────
     #
     # Penalize per-line idle time: span − production − CIP hours.
@@ -925,6 +967,9 @@ def build_model(
     weighted_co_total = (
         sum(weighted_co_cost_per_line) if use_weighted_co else 0
     )
+    # Subtract CIP absorption bonus from weighted changeover cost
+    if cip_absorb_bonus_terms and use_weighted_co:
+        weighted_co_total = weighted_co_total - sum(cip_absorb_bonus_terms)
     flat_co_total = sum(changeovers_per_line)
 
     all_eff_end = [

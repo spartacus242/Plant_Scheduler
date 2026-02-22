@@ -23,6 +23,7 @@ from helpers.sandbox_engine import (
     load_demand_targets,
     save_sandbox_to_files,
 )
+from gantt_viewer import compute_changeover_details
 from components.gantt_sandbox import gantt_sandbox
 
 st.header("Sandbox")
@@ -139,6 +140,51 @@ lines = _load_lines()
 if not schedule and not cip_blocks:
     st.info("No schedule loaded. Run the solver first, then return here.")
     st.stop()
+
+# ── Changeover KPIs for current sandbox schedule ──────────────────────
+_chg_csv = dd / "changeovers.csv"
+if schedule and _chg_csv.exists():
+    _co_rows = []
+    _cip_rows = []
+    for b in schedule:
+        if b.get("block_type") == "cip":
+            _cip_rows.append({
+                "line_id": b.get("line_id", 0),
+                "start_hour": b.get("start_hour", 0),
+                "end_hour": b.get("end_hour", 0),
+            })
+            continue
+        _co_rows.append({
+            "line_id": b.get("line_id", 0),
+            "Task": b.get("line_name", ""),
+            "Resource": str(b.get("sku", "")),
+            "Start": b.get("start_hour", 0),
+            "end_hour": b.get("end_hour", 0),
+        })
+    if _co_rows:
+        _co_df = pd.DataFrame(_co_rows)
+        _cip_co_df = pd.DataFrame(_cip_rows) if _cip_rows else None
+        _co_detail = compute_changeover_details(_co_df, changeovers_path=_chg_csv, cip_df=_cip_co_df)
+        if not _co_detail.empty:
+            _co_totals = _co_detail[["changeovers", "ttp", "ffs", "topload", "casepacker", "conv_to_org", "cinn_to_non"]].sum()
+            _m0, _m1, _m2, _m3, _m4, _m5, _m6 = st.columns(7)
+            _m0.metric("CHANGEOVERS", int(_co_totals["changeovers"]))
+            _m1.metric("TTP", int(_co_totals["ttp"]))
+            _m2.metric("FFS", int(_co_totals["ffs"]))
+            _m3.metric("Topload", int(_co_totals["topload"]))
+            _m4.metric("Casepacker", int(_co_totals["casepacker"]))
+            _m5.metric("Conv→Org", int(_co_totals["conv_to_org"]))
+            _m6.metric("Cinn→Non", int(_co_totals["cinn_to_non"]))
+            with st.expander("Changeover breakdown by line"):
+                st.dataframe(
+                    _co_detail.rename(columns={
+                        "line_name": "Line", "changeovers": "Total CO",
+                        "ttp": "TTP", "ffs": "FFS", "topload": "Topload",
+                        "casepacker": "Casepacker", "conv_to_org": "Conv→Org",
+                        "cinn_to_non": "Cinn→Non",
+                    }),
+                    use_container_width=True, hide_index=True,
+                )
 
 # ── Mount React component ──────────────────────────────────────────────
 # A reset counter in the key forces a full remount after "Reset from solver",
@@ -363,14 +409,75 @@ for ver in list_versions(dd):
                 })
             v_df = pd.DataFrame(v_rows)
 
-            # Gantt chart
-            v_fig = build_gantt_figure(v_df, cip_df=None, title=meta_name)
+            # Changeover breakdown by type
+            chg_csv = dd / "changeovers.csv"
+            if chg_csv.exists():
+                v_cip_blocks = vdata.get("cip_blocks", [])
+                v_cip_df = pd.DataFrame(v_cip_blocks) if v_cip_blocks else None
+                co_detail = compute_changeover_details(v_df, changeovers_path=chg_csv, cip_df=v_cip_df)
+                if not co_detail.empty:
+                    co_totals = co_detail[["ttp", "ffs", "topload", "casepacker", "conv_to_org", "cinn_to_non"]].sum()
+                    m1, m2, m3, m4, m5, m6 = st.columns(6)
+                    m1.metric("TTP", int(co_totals["ttp"]))
+                    m2.metric("FFS", int(co_totals["ffs"]))
+                    m3.metric("Topload", int(co_totals["topload"]))
+                    m4.metric("Casepacker", int(co_totals["casepacker"]))
+                    m5.metric("Conv→Org", int(co_totals["conv_to_org"]))
+                    m6.metric("Cinn→Non", int(co_totals["cinn_to_non"]))
+                    st.dataframe(
+                        co_detail.rename(columns={
+                            "line_name": "Line", "changeovers": "Total CO",
+                            "ttp": "TTP", "ffs": "FFS", "topload": "Topload",
+                            "casepacker": "Casepacker", "conv_to_org": "Conv→Org",
+                            "cinn_to_non": "Cinn→Non",
+                        }),
+                        use_container_width=True, hide_index=True,
+                    )
+
+            # Gantt chart — include CIP blocks from saved version
+            v_cip_gantt = None
+            v_cip_list = vdata.get("cip_blocks", [])
+            if v_cip_list:
+                _cip_rows = []
+                for cb in v_cip_list:
+                    _cs = anchor_dt + _td(hours=float(cb.get("start_hour", 0)))
+                    _ce = anchor_dt + _td(hours=float(cb.get("end_hour", 0)))
+                    _cip_rows.append({
+                        "line_id": cb.get("line_id", 0),
+                        "Start": _cs,
+                        "Finish": _ce,
+                        "Task": cb.get("line_name", str(cb.get("line_id", ""))),
+                        "Resource": "CIP",
+                    })
+                v_cip_gantt = pd.DataFrame(_cip_rows)
+            v_fig = build_gantt_figure(v_df, cip_df=v_cip_gantt, title=meta_name)
             st.plotly_chart(v_fig, use_container_width=True, key=f"ver_gantt_{slug}")
 
-            # Schedule table with sku_description
+            # Schedule table with sku_description, sorted by line then start time
             display_cols = ["line_name", "order_id", "sku", "sku_description", "start_dt", "end_dt", "run_hours"]
             avail = [c for c in display_cols if c in v_df.columns]
-            st.dataframe(v_df[avail], use_container_width=True, hide_index=True)
+            v_display = v_df[avail].copy()
+            v_cip_list = vdata.get("cip_blocks", [])
+            if v_cip_list:
+                cip_rows = []
+                for cb in v_cip_list:
+                    cs = anchor_dt + _td(hours=float(cb.get("start_hour", 0)))
+                    ce = anchor_dt + _td(hours=float(cb.get("end_hour", 0)))
+                    cip_rows.append({
+                        "line_name": cb.get("line_name", ""),
+                        "order_id": "CIP",
+                        "sku": "CIP",
+                        "sku_description": "",
+                        "start_dt": cs.strftime("%Y-%m-%d %H:%M"),
+                        "end_dt": ce.strftime("%Y-%m-%d %H:%M"),
+                        "run_hours": round((ce - cs).total_seconds() / 3600, 1),
+                    })
+                cip_tbl = pd.DataFrame(cip_rows)
+                cip_avail = [c for c in avail if c in cip_tbl.columns]
+                v_display = pd.concat([v_display, cip_tbl[cip_avail]], ignore_index=True)
+            sort_cols = [c for c in ["line_name", "start_dt"] if c in v_display.columns]
+            v_display = v_display.sort_values(sort_cols) if sort_cols else v_display
+            st.dataframe(v_display, use_container_width=True, hide_index=True)
 
         # Action buttons
         ba, bb, bc = st.columns(3)

@@ -79,8 +79,14 @@ def compute_changeovers(schedule_df: pd.DataFrame) -> tuple[int, pd.DataFrame]:
 def compute_changeover_details(
     schedule_df: pd.DataFrame,
     changeovers_path: Path | None = None,
+    cip_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Detailed changeover report broken down by type per line.
+
+    When *cip_df* is provided (with columns ``line_id``, ``Start``/
+    ``start_hour``, ``Finish``/``end_hour``), conv_to_org and cinn_to_non
+    penalties are waived for changeovers where a CIP falls between the
+    two production blocks (the CIP absorbs the cleaning cost).
 
     Returns a DataFrame with columns:
         line_name, changeovers, ttp, ffs, topload, casepacker,
@@ -92,36 +98,72 @@ def compute_changeover_details(
         chg = pd.read_csv(changeovers_path)
         has_mc = all(c in chg.columns for c in ("ttp_change", "ffs_change", "topload_change", "casepacker_change"))
         has_extra = all(c in chg.columns for c in ("conv_to_org_change", "cinn_to_non"))
+        def _flag(val, default=0):
+            v = pd.to_numeric(val, errors="coerce")
+            return default if pd.isna(v) else int(v)
+
         for _, r in chg.iterrows():
             pair = (str(r["from_sku"]), str(r["to_sku"]))
             entry: dict = {}
             if has_mc:
-                entry["ttp"] = int(pd.to_numeric(r.get("ttp_change", 1), errors="coerce") or 1)
-                entry["ffs"] = int(pd.to_numeric(r.get("ffs_change", 1), errors="coerce") or 1)
-                entry["topload"] = int(pd.to_numeric(r.get("topload_change", 1), errors="coerce") or 1)
-                entry["casepacker"] = int(pd.to_numeric(r.get("casepacker_change", 1), errors="coerce") or 1)
+                entry["ttp"] = _flag(r.get("ttp_change", 0))
+                entry["ffs"] = _flag(r.get("ffs_change", 0))
+                entry["topload"] = _flag(r.get("topload_change", 0))
+                entry["casepacker"] = _flag(r.get("casepacker_change", 0))
             else:
                 entry.update({"ttp": 1, "ffs": 1, "topload": 1, "casepacker": 1})
             if has_extra:
-                entry["conv_to_org"] = int(pd.to_numeric(r.get("conv_to_org_change", 0), errors="coerce") or 0)
-                entry["cinn_to_non"] = int(pd.to_numeric(r.get("cinn_to_non", 0), errors="coerce") or 0)
+                entry["conv_to_org"] = _flag(r.get("conv_to_org_change", 0))
+                entry["cinn_to_non"] = _flag(r.get("cinn_to_non", 0))
             else:
                 entry.update({"conv_to_org": 0, "cinn_to_non": 0})
             mc_map[pair] = entry
+
+    # Use numeric hour columns for CIP-gap comparison when available;
+    # this avoids type mismatches between int hours and Timestamps.
+    _use_numeric = "start_hour" in schedule_df.columns and "end_hour" in schedule_df.columns
+    s_col_sched = "start_hour" if _use_numeric else "Start"
+    f_col_sched = "end_hour" if _use_numeric else ("Finish" if "Finish" in schedule_df.columns else None)
+
+    # Build per-line CIP lookup: {line_id: [(start, end), ...]}
+    cip_by_line: dict[int, list[tuple]] = {}
+    if cip_df is not None and not cip_df.empty and "line_id" in cip_df.columns:
+        s_col_cip = "start_hour" if "start_hour" in cip_df.columns else "Start"
+        f_col_cip = "end_hour" if "end_hour" in cip_df.columns else "Finish"
+        if s_col_cip in cip_df.columns and f_col_cip in cip_df.columns:
+            for _, cr in cip_df.iterrows():
+                cip_by_line.setdefault(int(cr["line_id"]), []).append(
+                    (cr[s_col_cip], cr[f_col_cip])
+                )
 
     default_mc = {"ttp": 1, "ffs": 1, "topload": 1, "casepacker": 1, "conv_to_org": 0, "cinn_to_non": 0}
     df = schedule_df.sort_values(["line_id", "Start"])
     rows = []
     for line_id, grp in df.groupby("line_id", sort=True):
         skus = grp["Resource"].tolist()
+        starts = grp[s_col_sched].tolist()
+        finishes = grp[f_col_sched].tolist() if f_col_sched else [None] * len(skus)
+        line_cips = cip_by_line.get(int(line_id), [])
         line_name = grp["Task"].iloc[0] if not grp.empty else str(line_id)
         counts = {"changeovers": 0, "ttp": 0, "ffs": 0, "topload": 0, "casepacker": 0, "conv_to_org": 0, "cinn_to_non": 0}
         for i in range(1, len(skus)):
             if skus[i] != skus[i - 1]:
                 counts["changeovers"] += 1
-                mc = mc_map.get((skus[i - 1], skus[i]), default_mc)
-                for k in ("ttp", "ffs", "topload", "casepacker", "conv_to_org", "cinn_to_non"):
+                mc = mc_map.get((str(skus[i - 1]), str(skus[i])), default_mc)
+                for k in ("ttp", "ffs", "topload", "casepacker"):
                     counts[k] += mc.get(k, 0)
+                # Check if a CIP between these blocks absorbs conv→org / cinn→non
+                cip_between = False
+                prev_end = finishes[i - 1]
+                curr_start = starts[i]
+                if prev_end is not None and line_cips:
+                    cip_between = any(
+                        cs >= prev_end and cf <= curr_start
+                        for cs, cf in line_cips
+                    )
+                if not cip_between:
+                    for k in ("conv_to_org", "cinn_to_non"):
+                        counts[k] += mc.get(k, 0)
         rows.append({"line_name": line_name, **counts})
     return pd.DataFrame(rows)
 
@@ -173,8 +215,8 @@ def build_gantt_figure(
     combined = combined.sort_values(["line_id", "Start"])
 
     resources = [str(r) for r in combined["Resource"].unique().tolist()]
-    skus = [r for r in resources if r != "CIP" and not r.startswith("TRIAL:")]
-    trial_resources = [r for r in resources if r.startswith("TRIAL:")]
+    skus = sorted([r for r in resources if r != "CIP" and not r.startswith("TRIAL:")])
+    trial_resources = sorted([r for r in resources if r.startswith("TRIAL:")])
     color_discrete_map = dict(
         zip(skus, px.colors.qualitative.Plotly * (1 + len(skus) // len(px.colors.qualitative.Plotly))),
     )
@@ -182,6 +224,7 @@ def build_gantt_figure(
     for tr in trial_resources:
         color_discrete_map[tr] = "#D4A017"  # gold for trial blocks
 
+    legend_order = skus + trial_resources + (["CIP"] if "CIP" in resources else [])
     fig = px.timeline(
         combined,
         x_start="Start",
@@ -189,6 +232,7 @@ def build_gantt_figure(
         y="Task",
         color="Resource",
         color_discrete_map=color_discrete_map,
+        category_orders={"Resource": legend_order},
         text="label",
         title=title,
     )
@@ -202,6 +246,7 @@ def build_gantt_figure(
         barmode="overlay",
         xaxis=dict(showgrid=True, type="date"),
         yaxis=dict(categoryorder="array", categoryarray=line_order),
+        legend=dict(itemclick="toggleothers", itemdoubleclick="toggle"),
     )
     fig.update_yaxes(autorange="reversed")
 

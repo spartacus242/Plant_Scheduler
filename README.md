@@ -91,6 +91,40 @@ Plant_Scheduler/
   requirements.txt
 ```
 
+## Recent Changes
+
+### Gantt & UI Improvements
+- **Sandbox block text truncation** — Block labels are now truncated in
+  JavaScript to fit within the colored rect.  Eliminates SVG text overflow
+  that caused highlight borders to stretch past the block area.
+- **Legend click = highlight** — Single-clicking a SKU in the Plotly legend
+  now isolates it (dims all others) instead of hiding the trace.  Double-click
+  toggles individual traces.
+- **CIP blocks on Option Gantt charts** — Saved versions now display CIP
+  intervals on their Gantt charts (previously passed `cip_df=None`).
+- **CIP rows in schedule tables** — CIP blocks appear inline in the schedule
+  summary tables on both the Schedule Viewer and the Option expander pages.
+
+### Changeover KPIs
+- **Bug fix: `0 or 1` truthiness** — `compute_changeover_details` was using
+  `int(val or 1)`, which converted `0` (a valid "no change" flag) to `1`.
+  Every changeover was counted as TTP, FFS, Topload, *and* Casepacker.
+  Replaced with a `_flag()` helper that distinguishes `0` from `NaN`.
+- **Changeover metrics above sandbox** — A new KPI row above the React
+  Gantt component shows total changeovers and per-type counts (TTP, FFS,
+  Topload, Casepacker, Conv→Org, Cinn→Non) with an expandable per-line table.
+
+### CIP Absorption of Conv→Org / Cinn→Non Penalties
+- **Solver model** (`model_builder.py`) — When a CIP interval falls between
+  two adjacent orders on a line, the conv_to_org and cinn_to_non weighted
+  penalties are waived via a bonus term in the objective.  The solver
+  naturally places CIPs to take advantage of this when beneficial.
+- **KPI counting** (`gantt_viewer.py`) — `compute_changeover_details` now
+  accepts an optional `cip_df` and skips conv_to_org / cinn_to_non for
+  changeovers where a CIP sits between the two production blocks.
+- **All callers updated** — Sandbox (main + version expanders) and
+  Schedule Viewer pass CIP data for accurate KPI display.
+
 ## Configuration
 
 Edit `flowstate.toml` to tune solver behavior:
