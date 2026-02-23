@@ -224,6 +224,20 @@ def write_kpi_lines(lines: List[str]) -> None:
             f.write(ln.rstrip() + "\n")
 
 
+def write_schedule_meta() -> None:
+    """Write schedule_meta.json recording when the solver ran."""
+    import json as _json
+    meta = {
+        "solver_ran_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "edited": False,
+    }
+    try:
+        with open(DATA_DIR / "schedule_meta.json", "w", encoding="utf-8") as f:
+            _json.dump(meta, f, indent=2)
+    except OSError:
+        pass
+
+
 def compute_idle_kpis(
     schedule_rows: List[Dict[str, Any]],
     cip_rows: List[Dict[str, Any]],
@@ -1070,6 +1084,10 @@ def main() -> None:
         except (OSError, ValueError, KeyError) as exc:
             log(f"[validate] {type(exc).__name__}: {exc}\n" + traceback.format_exc())
             update_stage(DATA_DIR, "validating", "error", "Validation failed")
+
+    # Record solver run timestamp
+    if (DATA_DIR / "schedule_phase2.csv").exists():
+        write_schedule_meta()
 
 
 if __name__ == "__main__":

@@ -245,6 +245,17 @@ with col_save:
             if st.button("Confirm save", type="primary"):
                 save_sandbox_to_files(schedule, cip_blocks, caps_tuples, demand, dd)
                 st.session_state["schedule_source"] = "sandbox"
+                # Mark schedule_meta.json as manually edited
+                _meta_path = dd / "schedule_meta.json"
+                try:
+                    import json as _json
+                    _meta = {}
+                    if _meta_path.exists():
+                        _meta = _json.loads(_meta_path.read_text(encoding="utf-8"))
+                    _meta["edited"] = True
+                    _meta_path.write_text(_json.dumps(_meta, indent=2), encoding="utf-8")
+                except (OSError, ValueError):
+                    pass
                 st.session_state.pop("sb_confirm_save", None)
                 st.success("Schedule saved to files.")
         with c2:

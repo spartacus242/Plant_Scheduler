@@ -13,11 +13,20 @@ import streamlit as st
 BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
-from helpers.paths import data_dir
+from helpers.paths import data_dir, load_schedule_meta
 from helpers.safe_io import safe_write_toml
 
 st.header("Run Solver")
-st.caption("Configure parameters and launch the scheduling optimizer.")
+
+# Show last solver run time
+_meta = load_schedule_meta()
+if _meta.get("solver_ran_at"):
+    _label = f"Last solver run: {_meta['solver_ran_at']}"
+    if _meta.get("edited"):
+        _label += "  |  Schedule has been manually edited since"
+    st.caption(_label)
+else:
+    st.caption("Configure parameters and launch the scheduling optimizer.")
 
 dd = data_dir()
 scheduler_py = BASE_DIR / "phase2_scheduler.py"

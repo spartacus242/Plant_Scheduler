@@ -10,7 +10,7 @@ import streamlit as st
 BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
-from helpers.paths import data_dir
+from helpers.paths import data_dir, schedule_provenance_label
 from gantt_viewer import (
     load_schedule,
     load_cip_windows,
@@ -23,11 +23,12 @@ from inventory_checker import run_inventory_check, results_to_dataframe
 
 st.header("Schedule Viewer")
 
-# Banner if schedule was manually edited
-if st.session_state.get("schedule_source") == "sandbox":
-    st.warning("This schedule was manually edited in the Sandbox. Re-run the solver to restore the optimized schedule.")
-
 dd = data_dir()
+
+# Provenance banner
+_prov = schedule_provenance_label(dd)
+if _prov:
+    st.caption(_prov)
 schedule_path = dd / "schedule_phase2.csv"
 cip_path = dd / "cip_windows.csv"
 
