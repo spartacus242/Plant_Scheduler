@@ -27,6 +27,7 @@ export interface ScheduleStateActions {
     duration: number,
     label: string,
   ) => void;
+  reportAction: (msg: string) => void;
   undo: () => void;
   redo: () => void;
   canUndo: boolean;
@@ -242,10 +243,15 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
     setLastAction(`Added ${blockType} on ${lineName} at h${startHour}`);
   }, [pushUndo]);
 
+  const reportAction = useCallback((msg: string) => {
+    setLastAction(msg);
+  }, []);
+
   const data: ScheduleStateData = { schedule, cipWindows, holdingArea, lastAction };
   const actions: ScheduleStateActions = {
     updateBlock, moveBlock, resizeBlock, splitBlock,
     removeToHolding, restoreFromHolding, addCip, addTrial, addWindowBlock,
+    reportAction,
     undo, redo,
     canUndo: undoStack.current.length > 0,
     canRedo: redoStack.current.length > 0,

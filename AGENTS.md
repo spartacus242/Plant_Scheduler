@@ -14,6 +14,7 @@ Flowstate is effectively a **single runtime service**: the Streamlit app (`code/
 - Use `python3`, not `python` — this environment has no `python` alias. The README's `python -m streamlit ...` will fail; run `python3 -m streamlit run code/app.py --server.headless true` instead.
 - Streamlit is installed to `~/.local/bin` (not on `PATH`). Invoke it as a module (`python3 -m streamlit ...`) rather than the bare `streamlit` command.
 - The React/Vite Gantt component in `code/components/gantt/frontend/` ships a prebuilt `dist/` that is committed to the repo, so the app runs without a Node build. Only rebuild (`npm run build` in that dir) if you change the frontend source. If `dist/` is ever missing, the component falls back to a Vite dev server at `http://localhost:5173`.
+- Quick open: `./scripts/open_flowstate.sh` (Linux/macOS/Cloud). On Windows, use `scripts/open_flowstate.bat` or `scripts/install_desktop_shortcut.ps1` (see README).
 
 ### Testing / lint
 There is **no** automated test suite and no configured linter in this repo (no pytest/unittest, no ESLint/ruff config). Validate changes by running the app and exercising the relevant page, plus `python3 -m py_compile` for a quick syntax check and `npm run build` (in the frontend dir) to type-check/build the Gantt component.

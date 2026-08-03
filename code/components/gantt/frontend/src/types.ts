@@ -21,6 +21,7 @@ export interface ScheduleBlock {
   is_trial: boolean;
   block_type: BlockType;
   label?: string;
+  locked?: boolean;
 }
 
 export interface DemandTarget {

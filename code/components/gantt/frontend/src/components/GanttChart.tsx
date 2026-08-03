@@ -24,6 +24,7 @@ interface Props {
   resizing: ResizeState;
   highlightSku: string | null;
   capableLines: Set<string> | null;
+  svgRef?: React.RefObject<SVGSVGElement | null>;
   onResizeStart: (blockId: string, edge: "left" | "right", startH: number, endH: number, clientX: number, hourWidth: number) => void;
   onContextMenu: (e: React.MouseEvent, blockId: string) => void;
   onBlockClick: (blockId: string) => void;
@@ -67,10 +68,11 @@ const LineRow: React.FC<{
 
 export const GanttChart: React.FC<Props> = ({
   schedule, cipWindows, lines, viewStart, viewEnd, hourWidth, anchor,
-  resizing, highlightSku, capableLines,
+  resizing, highlightSku, capableLines, svgRef: externalSvgRef,
   onResizeStart, onContextMenu, onBlockClick, onZoomIn, onZoomOut, onResetZoom,
 }) => {
-  const svgRef = useRef<SVGSVGElement>(null);
+  const localSvgRef = useRef<SVGSVGElement>(null);
+  const svgRef = externalSvgRef ?? localSvgRef;
   const svgWidth = LINE_LABEL_WIDTH + (viewEnd - viewStart) * hourWidth;
   const svgHeight = HEADER_HEIGHT + lines.length * LINE_HEIGHT + 4;
 
@@ -83,7 +85,7 @@ export const GanttChart: React.FC<Props> = ({
 
       {/* Single SVG containing time axis + rows + blocks */}
       <div style={{ overflowX: "hidden", overflowY: "hidden", border: "1px solid #e0e0e5", borderRadius: 8 }}>
-        <svg ref={svgRef} width={svgWidth} height={svgHeight} style={{ display: "block" }}>
+        <svg ref={svgRef as React.RefObject<SVGSVGElement>} width={svgWidth} height={svgHeight} style={{ display: "block" }}>
           {/* Time axis: day labels, shift lines, week boundary — all SVG */}
           <TimeAxisSvg
             viewStart={viewStart}

@@ -173,6 +173,7 @@ def calendar_to_gantt_payload(df: pd.DataFrame) -> tuple[list[dict], list[dict]]
             "is_trial": btype == "trial",
             "block_type": _to_gantt_type(btype),
             "label": str(r.get("label") or ""),
+            "locked": bool(r.get("locked", False)),
         }
         if btype in ("production", "trial"):
             schedule.append(block)

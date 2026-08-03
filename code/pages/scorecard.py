@@ -22,6 +22,7 @@ from helpers.config import load_toml
 from helpers.paths import data_dir, legacy_dir, reference_dir
 from helpers.scorecard_engine import list_scorecards, save_scorecard, score_calendar
 from helpers.scorecard_ui import render_scorecard, scorecard_table
+from helpers.version_manager import upsert_version
 
 st.header("Schedule Scorecard")
 st.caption(
@@ -33,6 +34,25 @@ dd = data_dir()
 cal_path = dd / "calendar_blocks.csv"
 cfg = load_toml()
 anchor = cfg.get("scheduler", {}).get("planning_start_date", "2026-02-15 00:00:00")
+week_label = st.text_input("Week label", value=f"AZAP-{date.today().isoformat()}")
+
+
+def _snapshot_azap_baseline(cal) -> None:
+    """Keep Compare/Generate in sync with the official imported schedule."""
+    result = score_calendar(cal, week_label="AZAP Baseline", data_dir=dd)
+    try:
+        upsert_version(
+            "azap_baseline",
+            "AZAP Baseline",
+            cal,
+            result.to_dict(),
+            dd,
+            source="azap_import",
+            notes="Official calendar_blocks.csv snapshot from Schedule Scorecard import.",
+        )
+    except ValueError as e:
+        st.warning(f"Could not upsert azap_baseline version: {e}")
+
 
 # ── Import ──────────────────────────────────────────────────────────────
 with st.expander("Import corporate / AZAP schedule", expanded=not cal_path.exists()):
@@ -45,7 +65,6 @@ with st.expander("Import corporate / AZAP schedule", expanded=not cal_path.exist
         ["Flowstate-legacy data (seed)", "Upload CSVs", "Already imported"],
         horizontal=True,
     )
-    week_label = st.text_input("Week label", value=f"AZAP-{date.today().isoformat()}")
 
     if src_choice == "Flowstate-legacy data (seed)":
         leg = legacy_dir() / "data"
@@ -58,7 +77,8 @@ with st.expander("Import corporate / AZAP schedule", expanded=not cal_path.exist
             )
             save_calendar(cal, cal_path)
             ensure_lines_from_calendar(cal, dd / "lines.csv")
-            st.success(f"Imported {len(cal)} blocks into calendar_blocks.csv")
+            _snapshot_azap_baseline(cal)
+            st.success(f"Imported {len(cal)} blocks into calendar_blocks.csv (+ azap_baseline version)")
             st.rerun()
     elif src_choice == "Upload CSVs":
         up_sched = st.file_uploader("schedule_phase2.csv", type=["csv"])
@@ -75,7 +95,8 @@ with st.expander("Import corporate / AZAP schedule", expanded=not cal_path.exist
             cal = import_legacy_schedule(sched_p, cip_p, reference_dir(dd) / "downtimes.csv", anchor)
             save_calendar(cal, cal_path)
             ensure_lines_from_calendar(cal, dd / "lines.csv")
-            st.success(f"Imported {len(cal)} blocks")
+            _snapshot_azap_baseline(cal)
+            st.success(f"Imported {len(cal)} blocks (+ azap_baseline version)")
             st.rerun()
 
 # ── Score ───────────────────────────────────────────────────────────────
@@ -97,18 +118,33 @@ with col_a:
 
 result_dict = st.session_state.get("last_scorecard")
 if result_dict is None:
-    # auto-score for display
     result_dict = score_calendar(cal, week_label=week_label, data_dir=dd).to_dict()
 
+# Official / AZAP composite for history deltas
+azap_live = score_calendar(cal, week_label="official", data_dir=dd)
+
 st.divider()
+history = list_scorecards(dd)
+if history:
+    labels = [
+        f"{h.get('week_label', '?')} · {h.get('scored_at', '')} · composite={h.get('composite', '—')}"
+        for h in history
+    ]
+    pick = st.selectbox("View scorecard", ["Current / latest"] + labels, index=0)
+    if pick != "Current / latest":
+        result_dict = history[labels.index(pick)]
+
 render_scorecard(result_dict)
 
 # ── History ─────────────────────────────────────────────────────────────
 st.divider()
 st.subheader("Prior weeks")
-history = list_scorecards(dd)
 if history:
-    st.dataframe(scorecard_table(history), use_container_width=True, hide_index=True)
+    st.dataframe(
+        scorecard_table(history, azap_composite=azap_live.composite),
+        use_container_width=True,
+        hide_index=True,
+    )
 else:
     st.caption("No saved scorecards yet. Click **Score this week** to snapshot history.")
 

@@ -14,8 +14,8 @@ if str(BASE_DIR) not in sys.path:
 
 from helpers.calendar_io import load_calendar, save_calendar
 from helpers.paths import data_dir
-from helpers.scorecard_engine import delta_narrative, score_calendar
-from helpers.scorecard_ui import render_scorecard
+from helpers.scorecard_engine import ScorecardResult, delta_narrative, score_calendar
+from helpers.scorecard_ui import render_delta_strip, render_scorecard
 from helpers.version_manager import (
     delete_all_versions,
     delete_version,
@@ -29,72 +29,135 @@ from helpers.version_manager import (
 
 st.header("Version Compare")
 st.caption(
-    "Compare named options and solver scenarios against each other. "
+    "Compare named options and solver scenarios against the AZAP / official baseline. "
     "Raw metrics drive 'show me why'; the composite is only a conversation starter."
 )
 
 dd = data_dir()
 versions = list_versions(dd)
 
-if not versions:
-    st.info("No versions yet. Save one from the Plant Calendar or Generate Scenarios.")
-    st.stop()
-
 # Official baseline score for reference
 official = load_calendar(dd / "calendar_blocks.csv")
 baseline = score_calendar(official, week_label="official", data_dir=dd) if not official.empty else None
 
-if baseline:
-    st.subheader("Official calendar (current)")
-    st.metric("Composite", f"{baseline.composite:.0f}" if baseline.composite is not None else "n/a")
+OFFICIAL_KEY = "__official__"
 
-# Side-by-side picker
+if not versions and baseline is None:
+    st.info("No versions yet. Save one from the Plant Calendar or Generate Scenarios.")
+    st.stop()
+
+if baseline:
+    st.subheader("Official AZAP / current calendar")
+    render_scorecard(baseline, show_formulas=False, show_contribution=True)
+
+if not versions:
+    st.info("No named versions yet — official calendar is shown above. Save options from Plant Calendar or Generate Scenarios.")
+    st.stop()
+
+# Side-by-side picker — default left = official AZAP when available
 names = {v["slug"]: v.get("name", v["slug"]) for v in versions}
+left_options = ([OFFICIAL_KEY] if baseline else []) + list(names.keys())
+
+def _fmt_left(s: str) -> str:
+    if s == OFFICIAL_KEY:
+        return "Official AZAP / current"
+    return names.get(s, s)
+
+default_left = OFFICIAL_KEY if baseline else list(names.keys())[0]
 c1, c2 = st.columns(2)
 with c1:
-    left_slug = st.selectbox("Left", list(names.keys()), format_func=lambda s: names[s], key="cmp_left")
+    left_slug = st.selectbox(
+        "Baseline (left)",
+        left_options,
+        index=left_options.index(default_left) if default_left in left_options else 0,
+        format_func=_fmt_left,
+        key="cmp_left",
+    )
 with c2:
     right_opts = [s for s in names if s != left_slug] or list(names.keys())
-    right_slug = st.selectbox("Right", right_opts, format_func=lambda s: names[s], key="cmp_right")
+    # Prefer a non-azap_baseline scenario when left is official
+    preferred = next((s for s in right_opts if s != "azap_baseline"), right_opts[0])
+    right_slug = st.selectbox(
+        "Proposed (right)",
+        right_opts,
+        index=right_opts.index(preferred) if preferred in right_opts else 0,
+        format_func=lambda s: names[s],
+        key="cmp_right",
+    )
 
-left = load_version(left_slug, dd)
+if left_slug == OFFICIAL_KEY:
+    left_cal = official
+    left_sc = baseline.to_dict() if baseline else {}
+    left_label = "Official AZAP / current"
+    left_res = baseline
+else:
+    left = load_version(left_slug, dd)
+    left_cal = left["calendar"]
+    left_sc = left["metadata"].get("scorecard") or score_calendar(left_cal, week_label=left_slug, data_dir=dd).to_dict()
+    left_label = names[left_slug]
+    left_res = score_calendar(left_cal, week_label=left_label, data_dir=dd)
+
 right = load_version(right_slug, dd)
-left_sc = left["metadata"].get("scorecard") or score_calendar(left["calendar"], week_label=left_slug, data_dir=dd).to_dict()
-right_sc = right["metadata"].get("scorecard") or score_calendar(right["calendar"], week_label=right_slug, data_dir=dd).to_dict()
+right_cal = right["calendar"]
+right_sc = right["metadata"].get("scorecard") or score_calendar(right_cal, week_label=right_slug, data_dir=dd).to_dict()
+right_label = names[right_slug]
+right_res = score_calendar(right_cal, week_label=right_label, data_dir=dd)
 
-# KPI comparison table
+# KPI comparison table with Δ
 rows = []
 sections = [
-    ("composite", None, "Composite"),
-    ("changeovers", "recipe_changes", "Recipe COs"),
-    ("changeovers", "format_changes", "Format COs"),
-    ("changeovers", "total_co_hours", "CO hours"),
-    ("cip", "cip_count", "CIP count"),
-    ("cip", "cip_hours", "CIP hours"),
-    ("cip", "cip_forfeited_h", "CIP forfeited h"),
-    ("trials", "trial_hours", "Trial hours"),
-    ("trials", "trial_disruptions", "Trial disruptions"),
-    ("maintenance", "maint_aligned", "Maint aligned"),
-    ("maintenance", "maint_conflicts", "Maint conflicts"),
-    ("campaigns", "avg_run_h", "Avg run h"),
-    ("campaigns", "short_run_count", "Short runs"),
-    ("service", "orders_late", "Orders late"),
-    ("service", "orders_at_risk", "Orders at risk"),
+    ("composite", None, "Composite", True),
+    ("changeovers", "recipe_changes", "Recipe COs", False),
+    ("changeovers", "format_changes", "Format COs", False),
+    ("changeovers", "total_co_hours", "CO hours", False),
+    ("cip", "cip_count", "CIP count", False),
+    ("cip", "cip_hours", "CIP hours", False),
+    ("cip", "cip_forfeited_h", "CIP forfeited h", False),
+    ("trials", "trial_hours", "Trial hours", False),
+    ("trials", "trial_disruptions", "Trial disruptions", False),
+    ("maintenance", "maint_aligned", "Maint aligned", True),
+    ("maintenance", "maint_conflicts", "Maint conflicts", False),
+    ("campaigns", "avg_run_h", "Avg run h", True),
+    ("campaigns", "short_run_count", "Short runs", False),
+    ("service", "orders_late", "Orders late", False),
+    ("service", "orders_at_risk", "Orders at risk", False),
 ]
-for section, key, label in sections:
+for section, key, label, higher_better in sections:
     if key is None:
         lv, rv = left_sc.get("composite"), right_sc.get("composite")
     else:
         lv = (left_sc.get(section) or {}).get(key)
         rv = (right_sc.get(section) or {}).get(key)
-    rows.append({"Metric": label, names[left_slug]: lv, names[right_slug]: rv})
+    delta = None
+    verdict = ""
+    if lv is not None and rv is not None:
+        try:
+            delta = float(rv) - float(lv)
+            if abs(delta) < 1e-9:
+                verdict = "same"
+            else:
+                improved = (delta > 0) if higher_better else (delta < 0)
+                # Composite: higher score is better
+                if key is None:
+                    improved = delta > 0
+                verdict = "better" if improved else "worse"
+        except (TypeError, ValueError):
+            delta = None
+    rows.append({
+        "Metric": label,
+        left_label: lv,
+        right_label: rv,
+        "Δ": None if delta is None else round(delta, 2),
+        "vs baseline": verdict,
+    })
 
 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
+if left_res is not None:
+    render_delta_strip(left_res, right_res, title=f"Δ {right_label} vs {left_label}")
+
 # Delta narrative
-left_res = score_calendar(left["calendar"], week_label=names[left_slug], data_dir=dd)
-right_res = score_calendar(right["calendar"], week_label=names[right_slug], data_dir=dd)
-deltas = delta_narrative(left_res, right_res)
+deltas = delta_narrative(left_res, right_res) if left_res is not None else []
 st.subheader("Show me why")
 if deltas:
     for d in deltas:
@@ -102,9 +165,9 @@ if deltas:
 else:
     st.caption("No material differences.")
 
-if baseline:
+if baseline and left_slug != OFFICIAL_KEY:
     st.subheader("vs Official AZAP / current")
-    for label, res in ((names[left_slug], left_res), (names[right_slug], right_res)):
+    for label, res in ((left_label, left_res), (right_label, right_res)):
         with st.expander(f"{label} vs official"):
             for d in delta_narrative(baseline, res):
                 st.write(f"- {d}")

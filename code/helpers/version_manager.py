@@ -93,6 +93,43 @@ def save_version(
     return slug
 
 
+def upsert_version(
+    slug: str,
+    name: str,
+    calendar: pd.DataFrame,
+    scorecard: dict[str, Any],
+    data_dir: Path,
+    *,
+    pros: str = "",
+    cons: str = "",
+    notes: str = "",
+    source: str = "manual",
+) -> str:
+    """Create or overwrite a version at a fixed slug (does not count toward MAX when updating)."""
+    _validate_slug(slug)
+    dest = versions_dir(data_dir) / slug
+    creating = not dest.exists()
+    if creating:
+        existing = list_versions(data_dir)
+        if len(existing) >= MAX_VERSIONS:
+            raise ValueError(
+                f"Maximum of {MAX_VERSIONS} versions reached. Delete one before saving."
+            )
+    dest.mkdir(parents=True, exist_ok=True)
+    save_calendar(calendar, dest / "calendar_blocks.csv")
+    meta = {
+        "name": name,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "source": source,
+        "pros": pros,
+        "cons": cons,
+        "notes": notes,
+        "scorecard": scorecard,
+    }
+    safe_write_json(meta, dest / "metadata.json")
+    return slug
+
+
 def load_version(slug: str, data_dir: Path) -> dict[str, Any]:
     _validate_slug(slug)
     vdir = versions_dir(data_dir) / slug
