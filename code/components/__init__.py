@@ -1,1 +1,1 @@
-# components package
+# components/__init__.py

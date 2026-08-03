@@ -26,3 +26,11 @@ Thumbs.db
 code/solver_error.txt
 code/solver_kpis.txt
 code/validation_report.txt
+
+# Flowstate rebuild scratch
+data/_scenario_work/
+data/_upload/
+*.tmp
+node_modules/
+code/components/gantt/frontend/node_modules/
+

@@ -1,0 +1,73 @@
+{
+  "name": "Scenario D \u2014 Balanced",
+  "timestamp": "2026-08-03T16:23:22",
+  "source": "solver:balanced",
+  "pros": "",
+  "cons": "",
+  "notes": "Minimize makespan + weighted changeovers (recommended default).",
+  "scorecard": {
+    "week_label": "Scenario D \u2014 Balanced",
+    "scored_at": "2026-08-03T16:23:22",
+    "changeovers": {
+      "recipe_changes": 67,
+      "format_changes": 31,
+      "total_co_hours": 75.0,
+      "sku_transitions": 67
+    },
+    "cip": {
+      "cip_count": 28,
+      "cip_hours": 168.0,
+      "cip_forfeited_h": 1029.0
+    },
+    "trials": {
+      "trial_hours": 97.0,
+      "trial_disruptions": 1
+    },
+    "maintenance": {
+      "maint_aligned": 0,
+      "maint_aligned_hours": 0.0,
+      "maint_conflicts": 0,
+      "maint_count": 0
+    },
+    "campaigns": {
+      "avg_run_h": 39.01,
+      "short_run_count": 0,
+      "production_blocks": 89,
+      "total_prod_h": 3472.0
+    },
+    "service": {
+      "orders_at_risk": 19,
+      "orders_late": 6,
+      "excess_inventory_kg": null,
+      "available": true,
+      "orders_total": 57
+    },
+    "category_scores": {
+      "changeovers": 9.6,
+      "cip": 2.2,
+      "trials": 47.5,
+      "maintenance": 100.0,
+      "campaigns": 50.0,
+      "service": 32.5
+    },
+    "composite": 34.2,
+    "formulas": {
+      "recipe_changes": "Count of adjacent production transitions on the same line where recipe/SKU family differs (changeover flags: flavor/organic/cinnamon; else SKU change that is not format-only).",
+      "format_changes": "Count of adjacent production transitions with packaging format change (topload / TTP / FFS / casepacker flags from changeover standards).",
+      "total_co_hours": "Sum of estimated changeover hours per transition from standards table, else configurable defaults by CO type. Idle gaps alone are not counted.",
+      "cip_count": "Number of CIP blocks in the horizon.",
+      "cip_hours": "Sum of CIP block durations (end_h \u2212 start_h).",
+      "cip_forfeited_h": "For each CIP: max(0, line_cip_interval_h \u2212 run_hours_since_last_cip). Cleaning earlier than the interval forfeits unused dirty-time budget.",
+      "trial_hours": "Sum of trial block durations.",
+      "trial_disruptions": "Production blocks immediately before/after a trial on the same line that require a changeover (SKU differs) or are split by the trial.",
+      "maint_aligned": "Maintenance blocks whose window overlaps a CIP on the same line (or within \u00b1align_tolerance_h). Higher is better.",
+      "maint_conflicts": "Maintenance blocks that overlap production, trial, or contractor on the same line. Higher is worse.",
+      "avg_run_h": "Mean duration (hours) of production blocks.",
+      "short_run_count": "Production blocks with duration < short_run_h (default 4h).",
+      "orders_at_risk": "Orders whose scheduled completion is within at_risk_h of due end but still on time. n/a if demand data missing.",
+      "orders_late": "Orders with scheduled completion after due end, or unmet qty below min. n/a if demand data missing.",
+      "excess_inventory_kg": "Sum of max(0, produced_qty \u2212 qty_max) across orders. n/a if no max bound."
+    },
+    "notes": []
+  }
+}
