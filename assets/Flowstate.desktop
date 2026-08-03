@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Flowstate
+Comment=Open the Flowstate schedule optimizer (starts the app if needed)
+Exec=/workspace/scripts/open_flowstate.sh
+Icon=/workspace/assets/flowstate-icon.png
+Terminal=false
+Categories=Development;Office;
+StartupNotify=true
+Path=/workspace
