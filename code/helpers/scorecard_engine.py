@@ -85,6 +85,23 @@ class ScorecardResult:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ScorecardResult":
+        return cls(
+            week_label=str(data.get("week_label") or "unknown"),
+            scored_at=str(data.get("scored_at") or ""),
+            changeovers=dict(data.get("changeovers") or {}),
+            cip=dict(data.get("cip") or {}),
+            trials=dict(data.get("trials") or {}),
+            maintenance=dict(data.get("maintenance") or {}),
+            campaigns=dict(data.get("campaigns") or {}),
+            service=dict(data.get("service") or {}),
+            category_scores=dict(data.get("category_scores") or {}),
+            composite=data.get("composite"),
+            formulas=dict(data.get("formulas") or FORMULA_HELP),
+            notes=list(data.get("notes") or []),
+        )
+
 
 def _load_changeovers(ref: Path) -> pd.DataFrame:
     path = ref / "changeovers.csv"
@@ -605,3 +622,79 @@ def delta_narrative(baseline: ScorecardResult, proposed: ScorecardResult) -> lis
         d = proposed.composite - baseline.composite
         lines.insert(0, f"Composite {baseline.composite:g} → {proposed.composite:g} ({d:+.1f})")
     return lines
+
+
+def contribution_breakdown(
+    result: ScorecardResult | dict[str, Any],
+    cfg: dict | None = None,
+) -> list[dict[str, Any]]:
+    """Per-category contribution to composite: score × weight, plus cap-saturation notes."""
+    cfg = cfg or scorecard_config()
+    data = result.to_dict() if isinstance(result, ScorecardResult) else result
+    cats = data.get("category_scores") or {}
+    raw = {
+        "changeovers": data.get("changeovers") or {},
+        "cip": data.get("cip") or {},
+        "trials": data.get("trials") or {},
+        "maintenance": data.get("maintenance") or {},
+        "campaigns": data.get("campaigns") or {},
+        "service": data.get("service") or {},
+    }
+    weights = {
+        "service": float(cfg["weight_service"]),
+        "changeovers": float(cfg["weight_changeovers"]),
+        "cip": float(cfg["weight_cip"]),
+        "campaigns": float(cfg["weight_campaigns"]),
+        "maintenance": float(cfg["weight_maintenance"]),
+        "trials": float(cfg["weight_trials"]),
+    }
+    # Cap saturation hints
+    caps = {
+        "changeovers": [
+            ("recipe_changes", "cap_recipe_changes"),
+            ("format_changes", "cap_format_changes"),
+            ("total_co_hours", "cap_co_hours"),
+        ],
+        "cip": [
+            ("cip_count", "cap_cip_count"),
+            ("cip_hours", "cap_cip_hours"),
+            ("cip_forfeited_h", "cap_cip_forfeited"),
+        ],
+        "trials": [
+            ("trial_hours", "cap_trial_hours"),
+            ("trial_disruptions", "cap_trial_disruptions"),
+        ],
+        "maintenance": [("maint_conflicts", "cap_maint_conflicts")],
+        "campaigns": [("short_run_count", "cap_short_runs")],
+        "service": [
+            ("orders_late", "cap_orders_late"),
+            ("orders_at_risk", "cap_orders_at_risk"),
+        ],
+    }
+    rows: list[dict[str, Any]] = []
+    active_w = sum(w for k, w in weights.items() if cats.get(k) is not None) or 1.0
+    for key, weight in weights.items():
+        score = cats.get(key)
+        if score is None:
+            continue
+        points = round(float(score) * weight / active_w, 1)
+        sat_notes = []
+        for metric, cap_key in caps.get(key, []):
+            val = raw.get(key, {}).get(metric)
+            cap = cfg.get(cap_key)
+            if val is None or cap is None:
+                continue
+            try:
+                if float(val) >= float(cap):
+                    sat_notes.append(f"{metric} {val:g} ≥ cap {cap:g}")
+            except (TypeError, ValueError):
+                continue
+        rows.append({
+            "category": key,
+            "score": round(float(score), 1),
+            "weight": weight,
+            "contribution": points,
+            "cap_saturation": "; ".join(sat_notes) if sat_notes else "",
+        })
+    return rows
+
