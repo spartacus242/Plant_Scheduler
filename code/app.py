@@ -1,7 +1,11 @@
-# app.py — Flowstate GUI entry point.
-# Launch: streamlit run code/app.py --server.address 0.0.0.0 --server.port 8501
+# Flowstate — Operational truth → Digital twin → Optimizer
+#
+# Phase 0: Schedule Scorecard
+# Phase 1: Digital Twin (DnD what-if)
+# Phase 2: Optimizer scenarios vs AZAP baseline
 
 from __future__ import annotations
+
 import sys
 from pathlib import Path
 
@@ -14,46 +18,33 @@ if str(BASE_DIR) not in sys.path:
 DATA_DIR = BASE_DIR.parent / "data"
 
 st.set_page_config(
-    page_title="Flowstate Scheduler",
+    page_title="Flowstate",
     page_icon=":material/factory:",
     layout="wide",
 )
 
-from theme import apply_theme
-apply_theme()
-
-# ── Navigation ──────────────────────────────────────────────────────────
 pg = st.navigation(
     {
-        "": [
-            st.Page("pages/home.py", title="Home", icon=":material/home:", default=True),
+        "Score": [
+            st.Page("pages/scorecard.py", title="Schedule Scorecard", icon=":material/analytics:", default=True),
+        ],
+        "Twin": [
+            st.Page("pages/calendar.py", title="Plant Calendar", icon=":material/drag_indicator:"),
+        ],
+        "Compare": [
+            st.Page("pages/compare.py", title="Version Compare", icon=":material/compare:"),
+        ],
+        "Optimize": [
+            st.Page("pages/generate.py", title="Generate Scenarios", icon=":material/auto_awesome:"),
         ],
         "Setup": [
-            st.Page("pages/demand_plan.py", title="Demand Plan", icon=":material/list_alt:"),
-            st.Page("pages/inventory_check.py", title="Inventory Check", icon=":material/inventory_2:"),
-        ],
-        "Configuration": [
-            st.Page("pages/capabilities.py", title="Capabilities", icon=":material/precision_manufacturing:"),
-            st.Page("pages/changeovers.py", title="Changeovers", icon=":material/swap_horiz:"),
-            st.Page("pages/cip.py", title="CIP Intervals", icon=":material/cleaning_services:"),
-            st.Page("pages/line_rates.py", title="Demand Planning Line Rates", icon=":material/speed:"),
-            st.Page("pages/trials.py", title="Trials", icon=":material/science:"),
-            st.Page("pages/downtimes.py", title="Downtimes", icon=":material/event_busy:"),
-            st.Page("pages/initial_states.py", title="Initial States", icon=":material/play_arrow:"),
-        ],
-        "Solve": [
-            st.Page("pages/run_solver.py", title="Run Solver", icon=":material/calculate:"),
-            st.Page("pages/schedule_viewer.py", title="Schedule Viewer", icon=":material/view_timeline:"),
-        ],
-        "Adjust & Export": [
-            st.Page("pages/sandbox.py", title="Sandbox", icon=":material/drag_indicator:"),
-            st.Page("pages/export.py", title="Export", icon=":material/download:"),
+            st.Page("pages/lines.py", title="Lines", icon=":material/view_week:"),
+            st.Page("pages/home.py", title="About", icon=":material/info:"),
         ],
     },
     expanded=True,
 )
 
-# ── Shared state ────────────────────────────────────────────────────────
 if "data_dir" not in st.session_state:
     st.session_state["data_dir"] = str(DATA_DIR)
 

@@ -1,8 +1,11 @@
+# Flowstate configuration — operational truth → twin → optimizer
+
 [scheduler]
-time_limit = 60
-min_run_hours = 8
-max_lines_per_order = 2
 planning_start_date = "2026-02-15 00:00:00"
+horizon_hours = 336
+time_limit = 60
+min_run_hours = 4
+max_lines_per_order = 2
 validate = true
 use_sku_rates = false
 
@@ -27,3 +30,33 @@ casepacker_weight = 20
 conv_org_weight = 30
 cinn_weight = 20
 flavor_weight = 5
+
+# Draft v0 scorecard formulas — tune with the plant; shown in the UI.
+[scorecard]
+short_run_h = 4.0
+align_tolerance_h = 2.0
+at_risk_h = 24.0
+default_co_hours_recipe = 1.0
+default_co_hours_format = 2.0
+default_co_hours_base = 0.5
+cip_interval_fallback_h = 120
+weight_service = 0.30
+weight_changeovers = 0.20
+weight_cip = 0.15
+weight_campaigns = 0.15
+weight_maintenance = 0.10
+weight_trials = 0.10
+cap_recipe_changes = 40
+cap_format_changes = 40
+cap_co_hours = 80
+cap_cip_count = 30
+cap_cip_hours = 120
+cap_cip_forfeited = 200
+cap_trial_hours = 48
+cap_trial_disruptions = 20
+cap_maint_conflicts = 10
+cap_short_runs = 30
+cap_orders_late = 15
+cap_orders_at_risk = 20
+cap_excess_kg = 50000.0
+target_avg_run_h = 16.0
