@@ -14,7 +14,7 @@ if str(BASE_DIR) not in sys.path:
 
 from helpers.calendar_io import load_calendar, save_calendar
 from helpers.paths import data_dir
-from helpers.scorecard_engine import ScorecardResult, delta_narrative, score_calendar
+from helpers.scorecard_engine import delta_narrative, score_calendar
 from helpers.scorecard_ui import render_scorecard
 from helpers.version_manager import (
     delete_all_versions,
@@ -92,8 +92,6 @@ for section, key, label in sections:
 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 # Delta narrative
-left_obj = ScorecardResult(**{k: left_sc.get(k) for k in ScorecardResult.__dataclass_fields__ if k in left_sc}) if "week_label" in left_sc else None
-# Simpler: rebuild from score_calendar
 left_res = score_calendar(left["calendar"], week_label=names[left_slug], data_dir=dd)
 right_res = score_calendar(right["calendar"], week_label=names[right_slug], data_dir=dd)
 deltas = delta_narrative(left_res, right_res)
