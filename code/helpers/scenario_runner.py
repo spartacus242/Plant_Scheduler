@@ -16,6 +16,196 @@ from helpers.paths import legacy_dir
 from helpers.scorecard_engine import score_calendar
 from helpers.version_manager import list_versions, save_version
 
+# ---------------------------------------------------------------------------
+# Solver knob documentation
+#
+# Every knob below is a real input to the CP-SAT objective built in
+# Flowstate-legacy/code/model_builder.py (the objective branches live around
+# lines 1005-1127).  Knobs sourced from flowstate.toml are declared with a
+# "config" key of the form "<section>.<key>"; their live value is resolved by
+# scenario_knobs() against the loaded toml.  Knobs with a literal "value" are
+# hard-coded multipliers inside the objective branch and are NOT tunable.
+# ---------------------------------------------------------------------------
+
+# Weighted changeover cost is assembled from the per-machine weights below; it
+# feeds every objective mode, so it is shown for all scenarios.
+_CO_WEIGHT_KNOBS = [
+    {
+        "param": "changeover.topload_weight",
+        "config": "changeover.topload_weight",
+        "effect": "Cost of a topload (carton/format) change on a line. High = campaign formats together.",
+    },
+    {
+        "param": "changeover.ffs_weight",
+        "config": "changeover.ffs_weight",
+        "effect": "Cost of a form-fill-seal film change. High = avoid film swaps.",
+    },
+    {
+        "param": "changeover.ttp_weight",
+        "config": "changeover.ttp_weight",
+        "effect": "Cost of a tray/thermoform (TTP) change.",
+    },
+    {
+        "param": "changeover.casepacker_weight",
+        "config": "changeover.casepacker_weight",
+        "effect": "Cost of a case-packer pattern change.",
+    },
+    {
+        "param": "changeover.base_changeover_weight",
+        "config": "changeover.base_changeover_weight",
+        "effect": "Flat cost charged for any SKU switch, on top of the per-machine costs.",
+    },
+    {
+        "param": "changeover.conv_org_weight",
+        "config": "changeover.conv_org_weight",
+        "effect": "Extra cost for a conventional <-> organic switch (allergen/clean-down risk).",
+    },
+    {
+        "param": "changeover.cinn_weight",
+        "config": "changeover.cinn_weight",
+        "effect": "Extra cost for switching in/out of cinnamon (carry-over risk).",
+    },
+    {
+        "param": "changeover.flavor_weight",
+        "config": "changeover.flavor_weight",
+        "effect": "Extra cost for a plain flavour-to-flavour switch.",
+    },
+]
+
+# Terms present in every objective branch.
+_COMMON_KNOBS = [
+    {
+        "param": "objective.idle_weight",
+        "config": "objective.idle_weight",
+        "effect": "Penalty per idle hour on a line. Raise to pack runs tighter; 0 disables idle tracking.",
+    },
+    {
+        "param": "objective.cip_defer_weight",
+        "config": "objective.cip_defer_weight",
+        "effect": "Bonus (subtracted) per hour a CIP is deferred into an existing gap. Raise to absorb CIP into downtime.",
+    },
+    {
+        "param": "objective.late_weight",
+        "config": "objective.late_weight",
+        "effect": "Penalty per hour an order finishes past its due date (active from relax level 2).",
+    },
+]
+
+_FORMULA_MIN_CO = (
+    "minimize  100 * weighted_changeover_cost"
+    " + makespan"
+    " + idle_h * idle_weight"
+    " - cip_deferred_h * cip_defer_weight"
+    " + late_h * late_weight"
+    "\n(no per-machine weights available -> 10000 * changeover_count replaces the first term)"
+)
+
+_FORMULA_SPREAD = (
+    "minimize  1000 * max_line_run_h"
+    " + weighted_changeover_cost"
+    " + makespan"
+    " + idle_h * idle_weight"
+    " - cip_deferred_h * cip_defer_weight"
+    " + late_h * late_weight"
+    "\n(no per-machine weights available -> 10 * changeover_count replaces the changeover term)"
+)
+
+_FORMULA_BALANCED = (
+    "minimize  makespan * makespan_weight"
+    " + weighted_changeover_cost * changeover_weight"
+    " + idle_h * idle_weight"
+    " - cip_deferred_h * cip_defer_weight"
+    " + late_h * late_weight"
+)
+
+_KNOBS_MIN_CO = [
+    {
+        "param": "weighted changeover multiplier",
+        "value": 100,
+        "effect": "Hard-coded in min-changeovers mode: changeover cost dominates everything else.",
+    },
+    {
+        "param": "makespan coefficient",
+        "value": 1,
+        "effect": "Fixed at 1 in this mode (makespan_weight is IGNORED) - schedule length is only a tiebreaker.",
+    },
+    {
+        "param": "objective.changeover_weight",
+        "value": "not used",
+        "effect": "Ignored in min-changeovers mode; the fixed 100x multiplier is used instead.",
+    },
+] + _COMMON_KNOBS + _CO_WEIGHT_KNOBS
+
+_KNOBS_SPREAD = [
+    {
+        "param": "max_line_run multiplier",
+        "value": 1000,
+        "effect": "Hard-coded: minimizes the busiest line's total run hours, i.e. levels load across lines.",
+    },
+    {
+        "param": "weighted changeover multiplier",
+        "value": 1,
+        "effect": "Changeovers are only a light tiebreaker here, so lines stay loaded.",
+    },
+    {
+        "param": "objective.makespan_weight / changeover_weight",
+        "value": "not used",
+        "effect": "Both are IGNORED in spread-load mode; coefficients are fixed by the branch.",
+    },
+] + _COMMON_KNOBS + _CO_WEIGHT_KNOBS
+
+_KNOBS_BALANCED = [
+    {
+        "param": "objective.makespan_weight",
+        "config": "objective.makespan_weight",
+        "effect": "Weight on total schedule length. Raise to finish the week earlier.",
+    },
+    {
+        "param": "objective.changeover_weight",
+        "config": "objective.changeover_weight",
+        "effect": "Multiplier on the weighted changeover cost. Raise to trade makespan for fewer switches.",
+    },
+] + _COMMON_KNOBS + _CO_WEIGHT_KNOBS
+
+# Flat override keys the UI/caller may supply, mapped to their toml section.
+OVERRIDE_SECTIONS: dict[str, str] = {
+    "makespan_weight": "objective",
+    "changeover_weight": "objective",
+    "cip_defer_weight": "objective",
+    "idle_weight": "objective",
+    "late_weight": "objective",
+    "base_changeover_weight": "changeover",
+    "topload_weight": "changeover",
+    "ttp_weight": "changeover",
+    "ffs_weight": "changeover",
+    "casepacker_weight": "changeover",
+    "conv_org_weight": "changeover",
+    "cinn_weight": "changeover",
+    "flavor_weight": "changeover",
+}
+
+OBJECTIVE_MODES = ("balanced", "min-changeovers", "spread-load")
+
+# Fallbacks matching Params in Flowstate-legacy/code/data_loader.py, used when a
+# key is absent from flowstate.toml so the knob table never shows a blank.
+SOLVER_DEFAULTS: dict[str, int] = {
+    "objective.makespan_weight": 1,
+    "objective.changeover_weight": 100,
+    "objective.cip_defer_weight": 10,
+    "objective.idle_weight": 0,
+    "objective.late_weight": 200,
+    "changeover.topload_weight": 50,
+    "changeover.ttp_weight": 10,
+    "changeover.ffs_weight": 10,
+    "changeover.casepacker_weight": 10,
+    "changeover.base_changeover_weight": 5,
+    "changeover.conv_org_weight": 30,
+    "changeover.cinn_weight": 20,
+    "changeover.flavor_weight": 5,
+}
+
+CUSTOM_SCENARIO_ID = "X"
+
 # Scenario definitions — mapped to legacy --objective modes (+ notes).
 SCENARIOS = [
     {
@@ -24,6 +214,8 @@ SCENARIOS = [
         "objective": "min-changeovers",
         "two_phase": True,
         "intent": "Minimize SKU switches above all else.",
+        "objective_formula": _FORMULA_MIN_CO,
+        "knobs": _KNOBS_MIN_CO,
     },
     {
         "id": "B",
@@ -31,6 +223,8 @@ SCENARIOS = [
         "objective": "spread-load",
         "two_phase": True,
         "intent": "Spread load / keep lines productive (proxy for throughput).",
+        "objective_formula": _FORMULA_SPREAD,
+        "knobs": _KNOBS_SPREAD,
     },
     {
         "id": "C",
@@ -41,6 +235,8 @@ SCENARIOS = [
             "Balanced solve; planner should align maintenance with CIP in the twin. "
             "v0 uses balanced weights — tune CIP defer / idle in legacy config for stronger maint bias."
         ),
+        "objective_formula": _FORMULA_BALANCED,
+        "knobs": _KNOBS_BALANCED,
     },
     {
         "id": "D",
@@ -48,8 +244,95 @@ SCENARIOS = [
         "objective": "balanced",
         "two_phase": True,
         "intent": "Minimize makespan + weighted changeovers (recommended default).",
+        "objective_formula": _FORMULA_BALANCED,
+        "knobs": _KNOBS_BALANCED,
+    },
+    {
+        "id": CUSTOM_SCENARIO_ID,
+        "name": "Custom scenario",
+        "objective": "balanced",
+        "two_phase": True,
+        "intent": "Planner-defined objective mode and weight overrides.",
+        "custom": True,
+        "objective_formula": _FORMULA_BALANCED,
+        "knobs": _KNOBS_BALANCED,
     },
 ]
+
+# Formula / knob table per objective mode — used to re-describe a custom
+# scenario when the planner picks a different mode.
+MODE_DOCS: dict[str, dict[str, Any]] = {
+    "min-changeovers": {"objective_formula": _FORMULA_MIN_CO, "knobs": _KNOBS_MIN_CO},
+    "spread-load": {"objective_formula": _FORMULA_SPREAD, "knobs": _KNOBS_SPREAD},
+    "balanced": {"objective_formula": _FORMULA_BALANCED, "knobs": _KNOBS_BALANCED},
+}
+
+
+def make_custom_scenario(
+    name: str,
+    objective: str,
+    overrides: dict[str, Any] | None = None,
+    *,
+    two_phase: bool = True,
+) -> dict[str, Any]:
+    """Build a runnable CUSTOM scenario dict from planner input."""
+    mode = objective if objective in OBJECTIVE_MODES else "balanced"
+    docs = MODE_DOCS[mode]
+    return {
+        "id": CUSTOM_SCENARIO_ID,
+        "name": (name or "Custom scenario").strip() or "Custom scenario",
+        "objective": mode,
+        "two_phase": two_phase,
+        "custom": True,
+        "intent": f"Custom solve ({mode}) with planner weight overrides.",
+        "objective_formula": docs["objective_formula"],
+        "knobs": docs["knobs"],
+        "overrides": dict(overrides or {}),
+    }
+
+
+def config_value(cfg: dict[str, Any], dotted: str, default: Any = None) -> Any:
+    """Look up '<section>.<key>' in a loaded flowstate.toml dict."""
+    section, _, key = dotted.partition(".")
+    return (cfg.get(section) or {}).get(key, default)
+
+
+def scenario_knobs(
+    scenario: dict[str, Any],
+    cfg: dict[str, Any] | None = None,
+    overrides: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Resolve a scenario's knob table into concrete (param, value, effect) rows."""
+    cfg = cfg or {}
+    overrides = overrides or {}
+    rows: list[dict[str, Any]] = []
+    for knob in scenario.get("knobs", []):
+        dotted = knob.get("config")
+        if dotted:
+            key = dotted.partition(".")[2]
+            if key in overrides and overrides[key] is not None:
+                value = overrides[key]
+            else:
+                section = dotted.partition(".")[0]
+                if key in (cfg.get(section) or {}):
+                    value = cfg[section][key]
+                else:
+                    fallback = SOLVER_DEFAULTS.get(dotted)
+                    value = (
+                        f"{fallback} (solver default)" if fallback is not None else "(solver default)"
+                    )
+        else:
+            value = knob.get("value", "")
+        rows.append(
+            {
+                "Parameter": knob["param"],
+                # Stringified: the column mixes ints and notes like "not used",
+                # and a mixed-type column fails Arrow serialization in Streamlit.
+                "Value": str(value),
+                "What it does": knob["effect"],
+            }
+        )
+    return rows
 
 
 def _prepare_work_dir(data_dir: Path, work: Path) -> None:
@@ -114,6 +397,82 @@ def _prepare_work_dir(data_dir: Path, work: Path) -> None:
         shutil.copy2(root_toml, work / "flowstate.toml")
 
 
+def normalize_overrides(overrides: dict[str, Any] | None) -> dict[str, Any]:
+    """Keep only known weight keys with a real value; coerce to int.
+
+    Accepts flat keys ('makespan_weight') or dotted ('objective.makespan_weight').
+    """
+    clean: dict[str, Any] = {}
+    for raw_key, value in (overrides or {}).items():
+        key = raw_key.partition(".")[2] if "." in raw_key else raw_key
+        if key not in OVERRIDE_SECTIONS or value is None:
+            continue
+        try:
+            clean[key] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return clean
+
+
+def _patch_work_toml(
+    toml: Path,
+    time_limit: int | None,
+    overrides: dict[str, Any] | None = None,
+) -> None:
+    """Write time limit + weight overrides into the work-dir flowstate.toml.
+
+    With no overrides this keeps the historical in-place regex patch so the
+    copied config (comments and all) is byte-identical apart from time_limit.
+    With overrides it round-trips the file through tomllib / tomli_w.
+    """
+    overrides = normalize_overrides(overrides)
+    if not overrides:
+        if time_limit is None:
+            return
+        try:
+            import re
+
+            text = toml.read_text(encoding="utf-8")
+            text = re.sub(r"time_limit\s*=\s*\d+", f"time_limit = {int(time_limit)}", text)
+            toml.write_text(text, encoding="utf-8")
+        except Exception:
+            pass
+        return
+
+    try:
+        try:
+            import tomllib
+        except ImportError:  # pragma: no cover - py<3.11
+            import tomli as tomllib  # type: ignore
+        import tomli_w
+
+        with open(toml, "rb") as fh:
+            cfg = tomllib.load(fh)
+        if time_limit is not None:
+            cfg.setdefault("scheduler", {})["time_limit"] = int(time_limit)
+        for key, value in overrides.items():
+            section = OVERRIDE_SECTIONS[key]
+            cfg.setdefault(section, {})[key] = value
+            # [objective] carries duplicate co_* keys that phase2_scheduler
+            # applies before [changeover]; keep them in step so the override wins
+            # regardless of which section the solver reads last.
+            if section == "changeover" and key in ("conv_org_weight", "cinn_weight", "flavor_weight"):
+                cfg.setdefault("objective", {})[f"co_{key}"] = value
+        with open(toml, "wb") as fh:
+            tomli_w.dump(cfg, fh)
+    except Exception:
+        # Never let config rewriting kill a solve; fall back to time-limit only.
+        if time_limit is not None:
+            try:
+                import re
+
+                text = toml.read_text(encoding="utf-8")
+                text = re.sub(r"time_limit\s*=\s*\d+", f"time_limit = {int(time_limit)}", text)
+                toml.write_text(text, encoding="utf-8")
+            except Exception:
+                pass
+
+
 def _read_feasibility(work: Path) -> dict[str, Any] | None:
     """Read feasibility_report.json from a solver work dir (written every run)."""
     import json
@@ -143,9 +502,15 @@ def run_scenario(
     *,
     time_limit: int | None = None,
     python_exe: str | None = None,
+    overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run one scenario. Returns {ok, calendar, scorecard, log, returncode,
-    feasibility, relax_level}."""
+    feasibility, relax_level}.
+
+    ``overrides`` is a flat weight mapping (see OVERRIDE_SECTIONS) written into
+    the work-dir flowstate.toml before the solver runs. Scenarios may also carry
+    their own 'overrides' key (custom scenarios); the argument wins.
+    """
     work = (Path(data_dir) / "_scenario_work" / scenario["id"]).resolve()
     _prepare_work_dir(Path(data_dir).resolve(), work)
 
@@ -160,15 +525,9 @@ def run_scenario(
     ]
     if scenario.get("two_phase"):
         cmd.append("--two-phase")
-    if time_limit is not None:
-        # legacy reads time_limit from toml; patch file if requested
-        try:
-            text = toml.read_text(encoding="utf-8")
-            import re
-            text = re.sub(r"time_limit\s*=\s*\d+", f"time_limit = {int(time_limit)}", text)
-            toml.write_text(text, encoding="utf-8")
-        except Exception:
-            pass
+    # legacy reads time_limit + all weights from the toml; patch the work copy.
+    eff_overrides = overrides if overrides is not None else scenario.get("overrides")
+    _patch_work_toml(toml, time_limit, eff_overrides)
 
     proc = subprocess.run(
         cmd,
@@ -225,11 +584,21 @@ def save_scenario_version(
     """Persist scenario as a named version (may delete oldest if at capacity — caller should manage slots)."""
     if not result.get("ok") or result.get("calendar") is None:
         raise ValueError("Scenario did not produce a calendar")
-    # If full, delete a previous scenario with same id prefix
+    # If full, delete a previous scenario occupying the same slot
     existing = list_versions(data_dir)
+    is_custom = bool(scenario.get("custom"))
+    source = (
+        f"solver-custom:{scenario['objective']}" if is_custom else f"solver:{scenario['objective']}"
+    )
     slug_hint = f"scenario_{scenario['id'].lower()}"
     for v in existing:
-        if v.get("slug", "").startswith(slug_hint) or v.get("name", "").startswith(f"Scenario {scenario['id']}"):
+        if is_custom:
+            match = str(v.get("source", "")).startswith("solver-custom:")
+        else:
+            match = v.get("slug", "").startswith(slug_hint) or v.get("name", "").startswith(
+                f"Scenario {scenario['id']}"
+            )
+        if match:
             from helpers.version_manager import delete_version
             delete_version(v["slug"], data_dir)
             break
@@ -244,7 +613,7 @@ def save_scenario_version(
         sc.to_dict() if hasattr(sc, "to_dict") else sc,
         data_dir,
         notes=scenario.get("intent", ""),
-        source=f"solver:{scenario['objective']}",
+        source=source,
         pros="",
         cons="",
     )
