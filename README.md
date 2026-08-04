@@ -31,11 +31,11 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 
-# One-time: Desktop shortcut that starts/opens http://localhost:8501
+# One-time: silent Desktop shortcut (no console window) that starts/opens http://localhost:8501
 powershell -ExecutionPolicy Bypass -File .\scripts\install_desktop_shortcut.ps1
 ```
 
-Double-click **Flowstate** on your Desktop (or run `.\scripts\open_flowstate.bat`). The launcher starts Streamlit from this clone if needed, then opens the browser.
+Double-click **Flowstate** on your Desktop. The shortcut runs `scripts\open_flowstate.vbs`, which silently launches `scripts\open_flowstate.bat` — no console window. The launcher starts Streamlit from this clone if needed, then opens the browser.
 
 When editing frontend Gantt source, rebuild:
 

@@ -1,15 +1,16 @@
-# Creates a Desktop shortcut "Flowstate.lnk" that launches open_flowstate.bat.
+# Creates a Desktop shortcut "Flowstate.lnk" that launches open_flowstate.vbs
+# via wscript.exe - silent, no console window flash.
 # Run once after clone:
 #   powershell -ExecutionPolicy Bypass -File .\scripts\install_desktop_shortcut.ps1
 
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$BatPath = Join-Path $RepoRoot "scripts\open_flowstate.bat"
+$VbsPath = Join-Path $RepoRoot "scripts\open_flowstate.vbs"
 $IcoPath = Join-Path $RepoRoot "assets\flowstate-icon.ico"
 
-if (-not (Test-Path $BatPath)) {
-    throw "Launcher not found: $BatPath"
+if (-not (Test-Path $VbsPath)) {
+    throw "Silent launcher not found: $VbsPath"
 }
 
 $Desktop = [Environment]::GetFolderPath("Desktop")
@@ -18,16 +19,19 @@ if (-not $Desktop) {
 }
 $ShortcutPath = Join-Path $Desktop "Flowstate.lnk"
 
+$WscriptPath = Join-Path $env:SystemRoot "System32\wscript.exe"
+
 $Wsh = New-Object -ComObject WScript.Shell
 $Shortcut = $Wsh.CreateShortcut($ShortcutPath)
-$Shortcut.TargetPath = $BatPath
+$Shortcut.TargetPath = $WscriptPath
+$Shortcut.Arguments = "`"$VbsPath`""
 $Shortcut.WorkingDirectory = $RepoRoot
-$Shortcut.WindowStyle = 7  # Minimized
-$Shortcut.Description = "Open Flowstate schedule optimizer (localhost:8501)"
+$Shortcut.WindowStyle = 1  # Normal (the .vbs itself runs the .bat hidden)
+$Shortcut.Description = "Open Flowstate schedule optimizer (localhost:8501) - silent, no console window"
 if (Test-Path $IcoPath) {
     $Shortcut.IconLocation = "$IcoPath,0"
 }
 $Shortcut.Save()
 
 Write-Host "Created Desktop shortcut: $ShortcutPath"
-Write-Host "Double-click 'Flowstate' to start/open http://localhost:8501"
+Write-Host "Double-click 'Flowstate' to start/open http://localhost:8501 (no console window)"
