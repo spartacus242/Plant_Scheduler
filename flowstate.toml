@@ -17,6 +17,8 @@ duration_h = 6
 makespan_weight = 6
 changeover_weight = 120
 cip_defer_weight = 5
+# Soft due-date penalty per hour an order finishes late (relax ladder level 2+).
+late_weight = 200
 co_conv_org_weight = 30
 co_cinn_weight = 20
 co_flavor_weight = 5

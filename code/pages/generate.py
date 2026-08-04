@@ -105,8 +105,17 @@ if st.button("Generate selected scenarios", type="primary", disabled=not selecte
                     st.exception(e)
                     continue
                 if not result["ok"]:
-                    status.update(label=f"{scenario['name']} — no schedule", state="error")
+                    feas = result.get("feasibility")
+                    summary = _feasibility_summary(feas) if feas else "no schedule"
+                    status.update(label=f"{scenario['name']} — {summary}", state="error")
                     with st.expander("Solver log"):
+                        if feas:
+                            st.markdown("**Feasibility report**")
+                            st.json(feas)
+                        blockages = (result.get("diag_blockages") or "").strip()
+                        if blockages:
+                            st.markdown("**Blockages diagnostic**")
+                            st.code(blockages, language="text")
                         st.code(result.get("log") or "(empty)", language="text")
                     continue
                 try:
@@ -116,6 +125,9 @@ if st.button("Generate selected scenarios", type="primary", disabled=not selecte
                     status.update(label=str(e), state="error")
                     continue
                 status.update(label=f"{scenario['name']} → `{slug}`", state="complete")
+                feas = result.get("feasibility")
+                if feas:
+                    st.caption("Solver: " + _feasibility_summary(feas))
                 sc = result["scorecard"]
                 st.metric("Composite", f"{sc.composite:.0f}" if sc.composite is not None else "n/a")
                 st.markdown("**vs baseline**")
