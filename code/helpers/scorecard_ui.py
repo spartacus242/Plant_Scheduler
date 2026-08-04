@@ -7,7 +7,16 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-from helpers.scorecard_engine import FORMULA_HELP, ScorecardResult, contribution_breakdown
+from helpers.scorecard_engine import (
+    CATEGORY_DOCS,
+    CATEGORY_ORDER,
+    FORMULA_HELP,
+    KNOWN_LIMITATIONS,
+    ScorecardResult,
+    category_weights,
+    contribution_breakdown,
+    metric_reference_rows,
+)
 
 
 def render_scorecard(
@@ -76,9 +85,113 @@ def render_scorecard(
         render_contribution(data)
 
     if show_formulas:
-        with st.expander("How these metrics are calculated (draft v0)"):
-            for k, text in (data.get("formulas") or FORMULA_HELP).items():
-                st.markdown(f"**{k}** — {text}")
+        render_metric_reference(data)
+
+
+def render_metric_reference(
+    result: ScorecardResult | dict[str, Any] | None = None,
+    *,
+    expanded: bool = False,
+) -> None:
+    """Full metric reference: formula, cap/target, scoring, weight and why.
+
+    Documentation only - it reads the live config and the rendered scorecard and
+    never recomputes a score. Pass `result` to show each metric's actual value
+    next to its cap and flag cap saturation.
+    """
+    if isinstance(result, ScorecardResult):
+        result = result.to_dict()
+    try:
+        rows_by_cat = metric_reference_rows(result)
+        weights = category_weights()
+    except Exception as e:  # config/reference problems must not kill the page
+        with st.expander("How these metrics are calculated"):
+            st.warning(f"Metric reference unavailable: {e}")
+            for k, text in ((result or {}).get("formulas") or FORMULA_HELP).items():
+                st.markdown(f"**{k}** - {text}")
+        return
+
+    with st.expander("How these metrics are calculated (full reference)", expanded=expanded):
+        st.markdown(
+            "**Composite = sum(weight x category_score) / sum(weight of scored "
+            "categories).** Each category score is the plain MEAN of its sub-metric "
+            "scores. Every sub-metric is normalised to 0-100 before averaging:\n\n"
+            "- *lower is better*: `score = clamp(100 * (1 - value / cap), 0, 100)` - "
+            "a value **at or above its cap scores 0**.\n"
+            "- *higher is better*: `score = clamp(100 * value / target, 0, 100)`.\n"
+            "- *symmetric* (avg_run_h only): "
+            "`score = clamp(100 * (1 - abs(value - target) / target), 0, 100)` - "
+            "over-target is penalised the same as under-target.\n\n"
+            "Caps and targets are read live from `flowstate.toml [scorecard]`, so the "
+            "numbers below are the ones actually in force."
+        )
+
+        wdf = pd.DataFrame(
+            [
+                {
+                    "category": c,
+                    "weight": weights[c],
+                    "share of composite": f"{weights[c] / sum(weights.values()):.0%}",
+                    "what it answers": CATEGORY_DOCS[c],
+                }
+                for c in CATEGORY_ORDER
+            ]
+        )
+        st.markdown("**Category weights**")
+        st.dataframe(wdf, use_container_width=True, hide_index=True)
+        st.caption(
+            "A category that scores n/a (currently only Service, when demand_plan.csv "
+            "is missing) is dropped from the composite and the remaining weights "
+            "renormalise - so the same composite number can mean different things."
+        )
+
+        cats = (result or {}).get("category_scores") or {}
+        saturated_all = [
+            r for rows in rows_by_cat.values() for r in rows if r.get("saturation_note")
+        ]
+        if saturated_all:
+            st.markdown("**Cap saturation in this scorecard**")
+            for r in saturated_all:
+                st.markdown(f"- `{r['saturation_note']}`")
+            st.caption(
+                "A saturated metric has hit the floor of its scale: it can get worse "
+                "in reality without the score moving."
+            )
+
+        st.divider()
+        for cat in CATEGORY_ORDER:
+            rows = rows_by_cat.get(cat) or []
+            if not rows:
+                continue
+            score = cats.get(cat)
+            score_txt = f"{score:.0f}/100" if score is not None else "n/a"
+            st.markdown(
+                f"#### {cat.title()} - weight {weights[cat]:.2f}"
+                + (f" - score {score_txt}" if result else "")
+            )
+            st.caption(CATEGORY_DOCS[cat])
+            table = pd.DataFrame(
+                [
+                    {
+                        "metric": r["metric"],
+                        "value": "n/a" if r["value"] is None else f"{r['value']:g}",
+                        "cap / target": r["cap_or_target"],
+                        "flag": "AT CAP -> 0" if r["saturated"] else "",
+                        "formula": r["formula"],
+                        "how it is scored": r["how_scored"],
+                        "why it matters": r["why_it_matters"],
+                    }
+                    for r in rows
+                ]
+            )
+            if not result:
+                table = table.drop(columns=["value", "flag"])
+            st.dataframe(table, use_container_width=True, hide_index=True)
+
+        st.divider()
+        st.markdown("**Known limitations of draft v0 - read the score with these in mind**")
+        for title, text in KNOWN_LIMITATIONS:
+            st.markdown(f"- **{title}.** {text}")
 
 
 def render_contribution(result: ScorecardResult | dict[str, Any]) -> None:

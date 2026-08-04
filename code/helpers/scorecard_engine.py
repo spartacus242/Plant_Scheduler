@@ -18,53 +18,454 @@ from helpers.paths import reference_dir, scorecards_dir
 from helpers.safe_io import safe_write_json
 
 
-FORMULA_HELP = {
-    "recipe_changes": (
-        "Count of adjacent production transitions on the same line where recipe/SKU "
-        "family differs (changeover flags: flavor/organic/cinnamon; else SKU change "
-        "that is not format-only)."
+# ---------------------------------------------------------------------------
+# Metric reference (documentation only - no scoring math lives here).
+#
+# METRIC_DOCS is the single source of truth for the in-app "How these metrics
+# are calculated" reference. Every entry mirrors what the scoring functions
+# below ACTUALLY do; if you change a formula, update the matching entry.
+#
+#   definition  - short prose (this is what FORMULA_HELP exposes, unchanged)
+#   formula     - exact math as implemented, in ASCII
+#   direction   - "lower" | "higher" | "symmetric" (how the sub-score is built)
+#   cap_key     - flowstate.toml [scorecard] key holding the cap/target, or None
+#   scoring     - exact normalization applied to produce the 0-100 sub-score
+#   category    - which of the 6 categories this sub-metric averages into
+#   why         - plain English: why a production planner should care
+# ---------------------------------------------------------------------------
+
+CATEGORY_WEIGHT_KEYS = {
+    "service": "weight_service",
+    "changeovers": "weight_changeovers",
+    "cip": "weight_cip",
+    "campaigns": "weight_campaigns",
+    "maintenance": "weight_maintenance",
+    "trials": "weight_trials",
+}
+
+CATEGORY_ORDER = ["service", "changeovers", "cip", "campaigns", "maintenance", "trials"]
+
+CATEGORY_DOCS = {
+    "service": (
+        "Did we make what the customer ordered, on time? Scored only when "
+        "data/reference/demand_plan.csv exists - otherwise the whole category is "
+        "n/a and its weight is redistributed across the remaining categories."
     ),
-    "format_changes": (
-        "Count of adjacent production transitions with packaging format change "
-        "(topload / TTP / FFS / casepacker flags from changeover standards)."
+    "changeovers": (
+        "How much saleable time the week burns switching the line between recipes "
+        "and pack formats. Every changeover is capacity you paid for and did not "
+        "sell."
     ),
-    "total_co_hours": (
-        "Sum of estimated changeover hours per transition from standards table, "
-        "else configurable defaults by CO type. Idle gaps alone are not counted."
+    "cip": (
+        "Clean-in-place discipline: how often we clean, how long it takes, and how "
+        "much of the allowed dirty-time budget we throw away by cleaning early."
     ),
-    "cip_count": "Number of CIP blocks in the horizon.",
-    "cip_hours": "Sum of CIP block durations (end_h − start_h).",
-    "cip_forfeited_h": (
-        "For each CIP: max(0, line_cip_interval_h − run_hours_since_last_cip). "
-        "Cleaning earlier than the interval forfeits unused dirty-time budget."
+    "campaigns": (
+        "Run-length discipline. Long, consolidated campaigns are efficient; a week "
+        "chopped into short runs bleeds changeover and ramp time."
     ),
-    "trial_hours": "Sum of trial block durations.",
-    "trial_disruptions": (
-        "Production blocks immediately before/after a trial on the same line that "
-        "require a changeover (SKU differs) or are split by the trial."
+    "maintenance": (
+        "Whether planned maintenance is piggy-backed onto CIP downtime instead of "
+        "stealing production time."
     ),
-    "maint_aligned": (
-        "Maintenance blocks whose window overlaps a CIP on the same line "
-        "(or within ±align_tolerance_h). Higher is better."
-    ),
-    "maint_conflicts": (
-        "Maintenance blocks that overlap production, trial, or contractor on the "
-        "same line. Higher is worse."
-    ),
-    "avg_run_h": "Mean duration (hours) of production blocks.",
-    "short_run_count": "Production blocks with duration < short_run_h (default 4h).",
-    "orders_at_risk": (
-        "Orders whose scheduled completion is within at_risk_h of due end but still "
-        "on time. n/a if demand data missing."
-    ),
-    "orders_late": (
-        "Orders with scheduled completion after due end, or unmet qty below min. "
-        "n/a if demand data missing."
-    ),
-    "excess_inventory_kg": (
-        "Sum of max(0, produced_qty − qty_max) across orders. n/a if no max bound."
+    "trials": (
+        "The cost of R&D / trial work on the plant floor: the hours it consumes and "
+        "the production it interrupts."
     ),
 }
+
+# Known distortions in draft v0 - surfaced in the UI so nobody over-trusts a number.
+KNOWN_LIMITATIONS = [
+    (
+        "CIP forfeited hours saturate easily",
+        "cip_forfeited_h is capped at cap_cip_forfeited. On the AZAP baseline it is "
+        "~1120 h against a cap of 200, so that sub-score clamps to 0 and drags the "
+        "whole CIP category to about 2/100. Below the cap the metric is informative; "
+        "at/above it, the score stops distinguishing 'bad' from 'much worse'."
+    ),
+    (
+        "Maintenance scores 100 when nothing is scheduled",
+        "If maint_count == 0 the CIP-alignment sub-metric returns a flat 100 "
+        "(neutral-good) and conflicts are also 0, so the category reads a perfect "
+        "100. That is an absence of data, not good performance - do not read it as "
+        "an achievement."
+    ),
+    (
+        "Service is all-or-nothing",
+        "Without demand_plan.csv the service category is None. It is dropped from "
+        "the composite and its 0.30 weight is renormalized across the other five "
+        "categories, which materially changes what the composite means."
+    ),
+]
+
+METRIC_DOCS: dict[str, dict[str, Any]] = {
+    # --- changeovers -------------------------------------------------------
+    "recipe_changes": {
+        "definition": (
+            "Count of adjacent production transitions on the same line where recipe/SKU "
+            "family differs (changeover flags: flavor/organic/cinnamon; else SKU change "
+            "that is not format-only)."
+        ),
+        "formula": (
+            "For each line, sort production blocks by start_h; for each adjacent pair "
+            "(a, b) with a.sku != b.sku, count 1 if the changeover-standards row flags "
+            "conv_to_org_change=1 or cinn_to_non=1 or added_flavors>0, or the pair is "
+            "not a pure format change, or no standards row exists."
+        ),
+        "direction": "lower",
+        "cap_key": "cap_recipe_changes",
+        "scoring": "score = clamp(100 * (1 - recipe_changes / cap_recipe_changes), 0, 100)",
+        "category": "changeovers",
+        "why": (
+            "Every recipe switch means flushing, re-dosing and quality holds. Fewer "
+            "recipe changes means more of the week is spent producing saleable product."
+        ),
+    },
+    "format_changes": {
+        "definition": (
+            "Count of adjacent production transitions with packaging format change "
+            "(topload / TTP / FFS / casepacker flags from changeover standards)."
+        ),
+        "formula": (
+            "Same adjacent-pair scan; count 1 when any of topload_change, ttp_change, "
+            "ffs_change, casepacker_change equals 1 in the changeover-standards row."
+        ),
+        "direction": "lower",
+        "cap_key": "cap_format_changes",
+        "scoring": "score = clamp(100 * (1 - format_changes / cap_format_changes), 0, 100)",
+        "category": "changeovers",
+        "why": (
+            "Format changes are the mechanical ones - tooling, guide rails, case "
+            "packer setup. They are usually the longest changeovers on the floor and "
+            "the most likely to overrun."
+        ),
+    },
+    "total_co_hours": {
+        "definition": (
+            "Sum of estimated changeover hours per transition from standards table, "
+            "else configurable defaults by CO type. Idle gaps alone are not counted."
+        ),
+        "formula": (
+            "Per transition: use setup_hours from the standards row when > 0; if the "
+            "row exists but setup_hours <= 0, use default_co_hours_format (if format "
+            "change) + default_co_hours_recipe (if recipe change), falling back to "
+            "default_co_hours_base when both are 0. With no standards row: "
+            "default_co_hours_base + default_co_hours_recipe (+ format uplift if "
+            "flagged). Sum over all transitions."
+        ),
+        "direction": "lower",
+        "cap_key": "cap_co_hours",
+        "scoring": "score = clamp(100 * (1 - total_co_hours / cap_co_hours), 0, 100)",
+        "category": "changeovers",
+        "why": (
+            "This is the headline number: hours of line capacity consumed by changing "
+            "over rather than running. It converts directly to lost cases."
+        ),
+    },
+    # --- cip ---------------------------------------------------------------
+    "cip_count": {
+        "definition": "Number of CIP blocks in the horizon.",
+        "formula": "count(blocks where block_type == 'cip')",
+        "direction": "lower",
+        "cap_key": "cap_cip_count",
+        "scoring": "score = clamp(100 * (1 - cip_count / cap_cip_count), 0, 100)",
+        "category": "cip",
+        "why": (
+            "Each CIP is a full stop on the line plus chemical and water cost. Running "
+            "the same recipe longer between cleans means fewer of them."
+        ),
+    },
+    "cip_hours": {
+        "definition": "Sum of CIP block durations (end_h - start_h).",
+        "formula": "sum(max(0, end_h - start_h)) over blocks where block_type == 'cip'",
+        "direction": "lower",
+        "cap_key": "cap_cip_hours",
+        "scoring": "score = clamp(100 * (1 - cip_hours / cap_cip_hours), 0, 100)",
+        "category": "cip",
+        "why": (
+            "Total downtime handed to cleaning. Two short CIPs and one long one are "
+            "not the same thing; this metric prices the duration, not just the count."
+        ),
+    },
+    "cip_forfeited_h": {
+        "definition": (
+            "For each CIP: max(0, line_cip_interval_h - run_hours_since_last_cip). "
+            "Cleaning earlier than the interval forfeits unused dirty-time budget."
+        ),
+        "formula": (
+            "Per line, walk CIPs in start_h order with last_cip_end starting at 0. "
+            "run_since = sum of production overlap in (last_cip_end, cip_start). "
+            "forfeited += max(0, interval - run_since), where interval comes from "
+            "reference/line_cip_hrs.csv (max_cip_hrs) or cip_interval_fallback_h. "
+            "Then last_cip_end = cip.end_h."
+        ),
+        "direction": "lower",
+        "cap_key": "cap_cip_forfeited",
+        "scoring": "score = clamp(100 * (1 - cip_forfeited_h / cap_cip_forfeited), 0, 100)",
+        "category": "cip",
+        "why": (
+            "The line is allowed to run dirty for a set number of hours. Cleaning at "
+            "hour 20 of a 120-hour allowance throws away 100 hours of paid-for run "
+            "time. This metric measures that waste."
+        ),
+    },
+    # --- trials ------------------------------------------------------------
+    "trial_hours": {
+        "definition": "Sum of trial block durations.",
+        "formula": "sum(max(0, end_h - start_h)) over blocks where block_type == 'trial'",
+        "direction": "lower",
+        "cap_key": "cap_trial_hours",
+        "scoring": "score = clamp(100 * (1 - trial_hours / cap_trial_hours), 0, 100)",
+        "category": "trials",
+        "why": (
+            "Trials are necessary but they occupy commercial assets. Knowing the hour "
+            "count makes the trade-off with R&D visible instead of invisible."
+        ),
+    },
+    "trial_disruptions": {
+        "definition": (
+            "Production blocks immediately before/after a trial on the same line that "
+            "require a changeover (SKU differs) or are split by the trial."
+        ),
+        "formula": (
+            "Per trial: add the number of production blocks on the same line that "
+            "overlap the trial window (start_h < trial_end and end_h > trial_start). "
+            "Then, if production exists both before and after and their SKUs differ, "
+            "add 1; if production exists on only one side, add 1."
+        ),
+        "direction": "lower",
+        "cap_key": "cap_trial_disruptions",
+        "scoring": "score = clamp(100 * (1 - trial_disruptions / cap_trial_disruptions), 0, 100)",
+        "category": "trials",
+        "why": (
+            "A trial dropped in the middle of a campaign costs far more than its own "
+            "hours - it forces an extra changeover on each side. Scheduling trials at "
+            "a natural break makes this number zero."
+        ),
+    },
+    # --- maintenance -------------------------------------------------------
+    "maint_aligned": {
+        "definition": (
+            "Maintenance blocks whose window overlaps a CIP on the same line "
+            "(or within +/- align_tolerance_h). Higher is better."
+        ),
+        "formula": (
+            "Count maintenance blocks m where some CIP c on the same line satisfies "
+            "(m.start_h - align_tolerance_h) < c.end_h and "
+            "(m.end_h + align_tolerance_h) > c.start_h."
+        ),
+        "direction": "higher",
+        "cap_key": None,
+        "scoring": (
+            "score = clamp(100 * maint_aligned / max(1, maint_count), 0, 100). "
+            "If maint_count == 0 this sub-metric is skipped and a flat 100 is used."
+        ),
+        "category": "maintenance",
+        "why": (
+            "The line is already down for cleaning - doing maintenance in that same "
+            "window is free downtime. Doing it separately costs a second stop."
+        ),
+    },
+    "maint_conflicts": {
+        "definition": (
+            "Maintenance blocks that overlap production, trial, or contractor on the "
+            "same line. Higher is worse."
+        ),
+        "formula": (
+            "Count maintenance blocks m for which at least one block b on the same "
+            "line with block_type in (production, trial, contractor) satisfies "
+            "m.start_h < b.end_h and m.end_h > b.start_h (counted once per "
+            "maintenance block, not once per overlap)."
+        ),
+        "direction": "lower",
+        "cap_key": "cap_maint_conflicts",
+        "scoring": "score = clamp(100 * (1 - maint_conflicts / cap_maint_conflicts), 0, 100)",
+        "category": "maintenance",
+        "why": (
+            "A conflict means the plan is double-booked: maintenance and production "
+            "both claim the line. One of them will be bumped on the day, usually at "
+            "the worst moment."
+        ),
+    },
+    # --- campaigns ---------------------------------------------------------
+    "avg_run_h": {
+        "definition": "Mean duration (hours) of production blocks.",
+        "formula": "mean(max(0, end_h - start_h)) over blocks where block_type == 'production'",
+        "direction": "symmetric",
+        "cap_key": "target_avg_run_h",
+        "scoring": (
+            "score = clamp(100 * (1 - abs(avg_run_h - target_avg_run_h) / "
+            "max(target_avg_run_h, 1)), 0, 100). Symmetric: both shorter AND longer "
+            "than target lose points, and anything at or beyond 2x the target scores 0."
+        ),
+        "category": "campaigns",
+        "why": (
+            "There is a sweet spot. Too short and changeovers dominate; too long and "
+            "the plan becomes inflexible and inventory piles up ahead of demand."
+        ),
+    },
+    "short_run_count": {
+        "definition": "Production blocks with duration < short_run_h (default 4h).",
+        "formula": "count(production blocks where (end_h - start_h) < short_run_h)",
+        "direction": "lower",
+        "cap_key": "cap_short_runs",
+        "scoring": "score = clamp(100 * (1 - short_run_count / cap_short_runs), 0, 100)",
+        "category": "campaigns",
+        "why": (
+            "A sub-4-hour run barely clears startup and ramp. These are the runs that "
+            "quietly destroy OEE and are the first candidates to consolidate."
+        ),
+    },
+    # --- service -----------------------------------------------------------
+    "orders_at_risk": {
+        "definition": (
+            "Orders whose scheduled completion is within at_risk_h of due end but still "
+            "on time. n/a if demand data missing."
+        ),
+        "formula": (
+            "For each demand order, scheduled_end = max(end_h) of its production "
+            "blocks. Count orders where scheduled_end <= due_end_hour and "
+            "scheduled_end >= due_end_hour - at_risk_h."
+        ),
+        "direction": "lower",
+        "cap_key": "cap_orders_at_risk",
+        "scoring": "score = clamp(100 * (1 - orders_at_risk / cap_orders_at_risk), 0, 100)",
+        "category": "service",
+        "why": (
+            "These orders make the date on paper with no buffer. One breakdown or one "
+            "slow changeover and they are late. This is your early-warning list."
+        ),
+    },
+    "orders_late": {
+        "definition": (
+            "Orders with scheduled completion after due end, or unmet qty below min. "
+            "n/a if demand data missing."
+        ),
+        "formula": (
+            "Count demand orders where scheduled_end > due_end_hour, plus every order "
+            "with no production block scheduled at all (scheduled_end is None)."
+        ),
+        "direction": "lower",
+        "cap_key": "cap_orders_late",
+        "scoring": "score = clamp(100 * (1 - orders_late / cap_orders_late), 0, 100)",
+        "category": "service",
+        "why": (
+            "The one number the customer sees. Any schedule that looks efficient while "
+            "missing dates is not a good schedule."
+        ),
+    },
+    "excess_inventory_kg": {
+        "definition": (
+            "Sum of max(0, produced_qty - qty_max) across orders. n/a if no max bound."
+        ),
+        "formula": (
+            "For each order with a qty_max (explicit, or qty_target * upper_pct): "
+            "excess += max(0, sum(qty_kg of its production blocks) - qty_max). "
+            "Returns None unless the calendar carries a populated qty_kg column."
+        ),
+        "direction": "lower",
+        "cap_key": "cap_excess_kg",
+        "scoring": (
+            "score = clamp(100 * (1 - excess_inventory_kg / cap_excess_kg), 0, 100). "
+            "Omitted from the service average when None."
+        ),
+        "category": "service",
+        "why": (
+            "Overproducing to fill a convenient run is not free - it is cash and shelf "
+            "life sitting in the warehouse. This keeps 'run it longer' honest."
+        ),
+    },
+}
+
+# Backward compatible: other modules (and saved scorecard JSON) import this flat
+# {metric: prose} mapping. Derived from METRIC_DOCS so the two cannot drift.
+FORMULA_HELP = {k: v["definition"] for k, v in METRIC_DOCS.items()}
+
+
+def metric_docs(cfg: dict | None = None) -> dict[str, dict[str, Any]]:
+    """METRIC_DOCS merged with the LIVE configured caps/targets and weights.
+
+    Documentation only - reads config, never scores anything. Each entry gains:
+      cap_value       - the configured number behind cap_key (None if no cap)
+      cap_label       - "cap_x = 40" style display string
+      category_weight - the live composite weight for the owning category
+    """
+    cfg = cfg or scorecard_config()
+    out: dict[str, dict[str, Any]] = {}
+    for key, doc in METRIC_DOCS.items():
+        entry = dict(doc)
+        cap_key = doc.get("cap_key")
+        cap_value = cfg.get(cap_key) if cap_key else None
+        entry["cap_value"] = cap_value
+        if cap_key and cap_value is not None:
+            entry["cap_label"] = f"{cap_key} = {cap_value:g}"
+        elif key == "maint_aligned":
+            entry["cap_label"] = "target = maint_count (dynamic)"
+        else:
+            entry["cap_label"] = "n/a"
+        wkey = CATEGORY_WEIGHT_KEYS.get(doc["category"])
+        entry["category_weight"] = float(cfg.get(wkey, 0.0)) if wkey else 0.0
+        out[key] = entry
+    return out
+
+
+def category_weights(cfg: dict | None = None) -> dict[str, float]:
+    """Live composite weights per category, in display order."""
+    cfg = cfg or scorecard_config()
+    return {k: float(cfg[CATEGORY_WEIGHT_KEYS[k]]) for k in CATEGORY_ORDER}
+
+
+def metric_reference_rows(
+    result: "ScorecardResult | dict[str, Any] | None" = None,
+    cfg: dict | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Rows for the in-app metric reference, grouped by category.
+
+    When `result` is supplied each row also carries the metric's live value and a
+    saturation flag (value at/above its cap scores 0). Pure reporting - it never
+    recomputes or alters a score.
+    """
+    cfg = cfg or scorecard_config()
+    docs = metric_docs(cfg)
+    data: dict[str, Any] = {}
+    if result is not None:
+        data = result.to_dict() if isinstance(result, ScorecardResult) else dict(result)
+
+    grouped: dict[str, list[dict[str, Any]]] = {c: [] for c in CATEGORY_ORDER}
+    for key, doc in docs.items():
+        cat = doc["category"]
+        value = (data.get(cat) or {}).get(key) if data else None
+        saturated = False
+        cap_value = doc.get("cap_value")
+        if value is not None and cap_value is not None:
+            try:
+                if doc["direction"] == "lower":
+                    saturated = float(value) >= float(cap_value)
+                elif doc["direction"] == "symmetric":
+                    saturated = abs(float(value) - float(cap_value)) >= float(cap_value)
+            except (TypeError, ValueError):
+                saturated = False
+        note = ""
+        if saturated and doc["direction"] == "lower":
+            note = f"{key} {float(value):g} >= cap {float(cap_value):g} -> scores 0"
+        elif saturated:
+            note = (
+                f"{key} {float(value):g} is >= 2x from target {float(cap_value):g} "
+                "-> scores 0"
+            )
+        grouped[cat].append({
+            "metric": key,
+            "value": value,
+            "formula": doc["formula"],
+            "cap_or_target": doc["cap_label"],
+            "how_scored": doc["scoring"],
+            "why_it_matters": doc["why"],
+            "direction": doc["direction"],
+            "category_weight": doc["category_weight"],
+            "saturated": saturated,
+            "saturation_note": note,
+        })
+    return grouped
 
 
 @dataclass
