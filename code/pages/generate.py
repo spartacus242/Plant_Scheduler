@@ -14,7 +14,15 @@ if str(BASE_DIR) not in sys.path:
 from helpers.calendar_io import load_calendar
 from helpers.config import load_toml
 from helpers.paths import data_dir, legacy_dir
-from helpers.scenario_runner import SCENARIOS, run_scenario, save_scenario_version
+from helpers.scenario_runner import (
+    CUSTOM_SCENARIO_ID,
+    OBJECTIVE_MODES,
+    SCENARIOS,
+    make_custom_scenario,
+    run_scenario,
+    save_scenario_version,
+    scenario_knobs,
+)
 from helpers.scorecard_engine import delta_narrative, score_calendar
 from helpers.scorecard_ui import render_scorecard
 from helpers.version_manager import list_versions
@@ -55,12 +63,38 @@ st.markdown(
 """
 )
 
+PRESETS = [s for s in SCENARIOS if s["id"] != CUSTOM_SCENARIO_ID]
+
+
+def _render_knobs(scenario: dict, overrides: dict | None = None) -> None:
+    """Expander showing the solver knobs + objective formula for a scenario."""
+    label = f"What this scenario tunes — {scenario['name']}"
+    with st.expander(label):
+        st.caption(f"Legacy objective mode: `{scenario['objective']}` (two-phase solve)")
+        st.markdown("**Objective the solver minimizes**")
+        st.code(scenario.get("objective_formula", "(not documented)"), language="text")
+        st.markdown("**Knobs**")
+        st.dataframe(
+            scenario_knobs(scenario, cfg, overrides),
+            hide_index=True,
+            use_container_width=True,
+        )
+        st.caption(
+            "Values come from flowstate.toml. Rows without a config path are hard-coded "
+            "multipliers inside the objective branch in Flowstate-legacy/code/model_builder.py."
+        )
+
+
+st.subheader("Solver knobs per scenario")
+for _s in PRESETS:
+    _render_knobs(_s)
+
 tl = st.number_input("Solver time limit (s) per scenario", min_value=10, max_value=600, value=default_tl, step=10)
 selected = st.multiselect(
     "Scenarios to generate",
-    options=[s["id"] for s in SCENARIOS],
+    options=[s["id"] for s in PRESETS],
     default=["A", "D"],
-    format_func=lambda i: next(s["name"] for s in SCENARIOS if s["id"] == i),
+    format_func=lambda i: next(s["name"] for s in PRESETS if s["id"] == i),
 )
 
 st.caption(f"Versions in use: {len(list_versions(dd))} / 5. Generating will replace prior Scenario X slots when needed.")
@@ -89,56 +123,151 @@ def _feasibility_summary(feas: dict) -> str:
     return " — ".join([base] + extras) if extras else base
 
 
+def _generate_one(scenario: dict, time_limit: int, overrides: dict | None = None) -> bool:
+    """Solve one scenario, render its result, and save it as a version."""
+    with st.status(f"Solving {scenario['name']}...", expanded=True) as status:
+        st.write(scenario["intent"])
+        try:
+            result = run_scenario(scenario, dd, time_limit=int(time_limit), overrides=overrides)
+        except Exception as e:
+            status.update(label=f"{scenario['name']} failed", state="error")
+            st.exception(e)
+            return False
+        if not result["ok"]:
+            feas = result.get("feasibility")
+            summary = _feasibility_summary(feas) if feas else "no schedule"
+            status.update(label=f"{scenario['name']} — {summary}", state="error")
+            with st.expander("Solver log"):
+                if feas:
+                    st.markdown("**Feasibility report**")
+                    st.json(feas)
+                blockages = (result.get("diag_blockages") or "").strip()
+                if blockages:
+                    st.markdown("**Blockages diagnostic**")
+                    st.code(blockages, language="text")
+                st.code(result.get("log") or "(empty)", language="text")
+            return False
+        try:
+            slug = save_scenario_version(scenario, result, dd)
+        except ValueError as e:
+            st.error(str(e))
+            status.update(label=str(e), state="error")
+            return False
+        status.update(label=f"{scenario['name']} → `{slug}`", state="complete")
+        feas = result.get("feasibility")
+        if feas:
+            st.caption("Solver: " + _feasibility_summary(feas))
+        sc = result["scorecard"]
+        st.metric("Composite", f"{sc.composite:.0f}" if sc.composite is not None else "n/a")
+        st.markdown("**vs baseline**")
+        for d in delta_narrative(baseline, sc):
+            st.write(f"- {d}")
+        with st.expander("Raw solver log"):
+            st.code((result.get("log") or "")[-4000:], language="text")
+        return True
+
+
 if st.button("Generate selected scenarios", type="primary", disabled=not selected):
     if baseline_cal.empty:
         st.error("Need a baseline calendar first.")
     else:
-        results = []
+        made = 0
         for sid in selected:
-            scenario = next(s for s in SCENARIOS if s["id"] == sid)
-            with st.status(f"Solving {scenario['name']}…", expanded=True) as status:
-                st.write(scenario["intent"])
-                try:
-                    result = run_scenario(scenario, dd, time_limit=int(tl))
-                except Exception as e:
-                    status.update(label=f"{scenario['name']} failed", state="error")
-                    st.exception(e)
-                    continue
-                if not result["ok"]:
-                    feas = result.get("feasibility")
-                    summary = _feasibility_summary(feas) if feas else "no schedule"
-                    status.update(label=f"{scenario['name']} — {summary}", state="error")
-                    with st.expander("Solver log"):
-                        if feas:
-                            st.markdown("**Feasibility report**")
-                            st.json(feas)
-                        blockages = (result.get("diag_blockages") or "").strip()
-                        if blockages:
-                            st.markdown("**Blockages diagnostic**")
-                            st.code(blockages, language="text")
-                        st.code(result.get("log") or "(empty)", language="text")
-                    continue
-                try:
-                    slug = save_scenario_version(scenario, result, dd)
-                except ValueError as e:
-                    st.error(str(e))
-                    status.update(label=str(e), state="error")
-                    continue
-                status.update(label=f"{scenario['name']} → `{slug}`", state="complete")
-                feas = result.get("feasibility")
-                if feas:
-                    st.caption("Solver: " + _feasibility_summary(feas))
-                sc = result["scorecard"]
-                st.metric("Composite", f"{sc.composite:.0f}" if sc.composite is not None else "n/a")
-                st.markdown("**vs baseline**")
-                for d in delta_narrative(baseline, sc):
-                    st.write(f"- {d}")
-                results.append((scenario, sc, slug))
-                with st.expander("Raw solver log"):
-                    st.code((result.get("log") or "")[-4000:], language="text")
-
-        if results:
+            scenario = next(s for s in PRESETS if s["id"] == sid)
+            if _generate_one(scenario, int(tl)):
+                made += 1
+        if made:
             st.success("Done. Open **Version Compare** to inspect side-by-side and add pros/cons.")
+
+st.divider()
+st.subheader("Custom scenario")
+st.caption(
+    "Pick the objective mode and override the weights the solver uses. Values below default to "
+    "flowstate.toml; anything you change is written into the scenario's own solver config "
+    "(the repo flowstate.toml is not modified)."
+)
+
+_obj_cfg = cfg.get("objective", {})
+_co_cfg = cfg.get("changeover", {})
+
+custom_name = st.text_input("Scenario name", value="Custom scenario")
+custom_mode = st.selectbox(
+    "Objective mode",
+    options=list(OBJECTIVE_MODES),
+    index=list(OBJECTIVE_MODES).index("balanced"),
+    help="balanced uses makespan_weight / changeover_weight; the other two use fixed multipliers.",
+)
+
+st.markdown("**Objective weights**")
+oc1, oc2, oc3 = st.columns(3)
+with oc1:
+    w_makespan = st.number_input(
+        "makespan_weight", min_value=0, max_value=1000,
+        value=int(_obj_cfg.get("makespan_weight", 6)), step=1,
+        help="Balanced mode only. Weight on total schedule length.",
+    )
+    w_idle = st.number_input(
+        "idle_weight", min_value=0, max_value=1000,
+        value=int(_obj_cfg.get("idle_weight", 0)), step=1,
+        help="Penalty per idle hour on a line.",
+    )
+with oc2:
+    w_changeover = st.number_input(
+        "changeover_weight", min_value=0, max_value=10000,
+        value=int(_obj_cfg.get("changeover_weight", 120)), step=5,
+        help="Balanced mode only. Multiplier on the weighted changeover cost.",
+    )
+    w_cip = st.number_input(
+        "cip_defer_weight", min_value=0, max_value=1000,
+        value=int(_obj_cfg.get("cip_defer_weight", 5)), step=1,
+        help="Bonus per hour of CIP absorbed into an existing gap.",
+    )
+with oc3:
+    w_late = st.number_input(
+        "late_weight", min_value=0, max_value=10000,
+        value=int(_obj_cfg.get("late_weight", 200)), step=10,
+        help="Penalty per hour an order finishes past its due date.",
+    )
+
+st.markdown("**Per-machine changeover weights**")
+cc1, cc2, cc3, cc4 = st.columns(4)
+with cc1:
+    w_topload = st.slider("topload_weight", 0, 200, int(_co_cfg.get("topload_weight", 50)))
+    w_conv = st.slider("conv_org_weight", 0, 200, int(_co_cfg.get("conv_org_weight", 30)))
+with cc2:
+    w_ffs = st.slider("ffs_weight", 0, 200, int(_co_cfg.get("ffs_weight", 75)))
+    w_cinn = st.slider("cinn_weight", 0, 200, int(_co_cfg.get("cinn_weight", 20)))
+with cc3:
+    w_ttp = st.slider("ttp_weight", 0, 200, int(_co_cfg.get("ttp_weight", 5)))
+    w_flavor = st.slider("flavor_weight", 0, 200, int(_co_cfg.get("flavor_weight", 5)))
+with cc4:
+    w_case = st.slider("casepacker_weight", 0, 200, int(_co_cfg.get("casepacker_weight", 20)))
+    w_base = st.slider("base_changeover_weight", 0, 200, int(_co_cfg.get("base_changeover_weight", 5)))
+
+custom_overrides = {
+    "makespan_weight": int(w_makespan),
+    "changeover_weight": int(w_changeover),
+    "cip_defer_weight": int(w_cip),
+    "idle_weight": int(w_idle),
+    "late_weight": int(w_late),
+    "topload_weight": int(w_topload),
+    "ffs_weight": int(w_ffs),
+    "ttp_weight": int(w_ttp),
+    "casepacker_weight": int(w_case),
+    "base_changeover_weight": int(w_base),
+    "conv_org_weight": int(w_conv),
+    "cinn_weight": int(w_cinn),
+    "flavor_weight": int(w_flavor),
+}
+
+custom_scenario = make_custom_scenario(custom_name, custom_mode, custom_overrides)
+_render_knobs(custom_scenario, custom_overrides)
+
+if st.button("Generate custom scenario", type="primary"):
+    if baseline_cal.empty:
+        st.error("Need a baseline calendar first.")
+    elif _generate_one(custom_scenario, int(tl), custom_overrides):
+        st.success("Done. Open **Version Compare** to inspect side-by-side and add pros/cons.")
 
 st.divider()
 st.subheader("Saved versions")
