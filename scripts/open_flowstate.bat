@@ -41,7 +41,9 @@ if %ERRORLEVEL%==0 goto :open
 
 echo Starting Flowstate on port %PORT%...
 cd /d "%REPO_ROOT%"
-start "Flowstate" /MIN cmd /c %PY_CMD% -m streamlit run code\app.py --server.headless true --server.port %PORT% ^> "%LOG%" 2^>^&1
+REM Note: cmd /c eats a leading quote, so wrap the whole command in one extra
+REM pair of quotes. %PY_CMD% already carries its own quotes when it is a path.
+start "Flowstate" /MIN cmd /c "%PY_CMD% -m streamlit run code\app.py --server.headless true --server.port %PORT% ^> "%LOG%" 2^>^&1"
 
 set /a ATTEMPTS=0
 :waitloop
