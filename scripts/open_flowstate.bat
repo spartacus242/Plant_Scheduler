@@ -20,16 +20,18 @@ REM can shadow the venv's numpy/pandas with an incompatible build and crash
 REM the app on import. The venv is self-contained, so drop PYTHONPATH entirely.
 set "PYTHONPATH="
 
-REM Prefer repo venv, then py launcher, then python on PATH
-set "PY_CMD="
-if exist "%REPO_ROOT%\.venv\Scripts\python.exe" set "PY_CMD="%REPO_ROOT%\.venv\Scripts\python.exe""
-if not defined PY_CMD (
-  where py >nul 2>&1 && set "PY_CMD=py -3"
+REM Prefer repo venv, then py launcher, then python on PATH.
+REM PY_EXE holds a bare path (quoted only at the call site); PY_ARGS any prefix args.
+set "PY_EXE="
+set "PY_ARGS="
+if exist "%REPO_ROOT%\.venv\Scripts\python.exe" set "PY_EXE=%REPO_ROOT%\.venv\Scripts\python.exe"
+if not defined PY_EXE (
+  where py >nul 2>&1 && set "PY_EXE=py" && set "PY_ARGS=-3"
 )
-if not defined PY_CMD (
-  where python >nul 2>&1 && set "PY_CMD=python"
+if not defined PY_EXE (
+  where python >nul 2>&1 && set "PY_EXE=python"
 )
-if not defined PY_CMD (
+if not defined PY_EXE (
   echo Python not found. Install Python 3 and/or create .venv in the repo.
   pause
   exit /b 1
@@ -41,9 +43,10 @@ if %ERRORLEVEL%==0 goto :open
 
 echo Starting Flowstate on port %PORT%...
 cd /d "%REPO_ROOT%"
-REM Note: cmd /c eats a leading quote, so wrap the whole command in one extra
-REM pair of quotes. %PY_CMD% already carries its own quotes when it is a path.
-start "Flowstate" /MIN cmd /c "%PY_CMD% -m streamlit run code\app.py --server.headless true --server.port %PORT% ^> "%LOG%" 2^>^&1"
+REM Launch hidden. cmd /c strips the outer quote pair, leaving a well-formed
+REM command whose exe path is quoted exactly once and whose > redirect applies
+REM inside the child (so the log is actually written).
+start "Flowstate" /MIN cmd /c ""%PY_EXE%" %PY_ARGS% -m streamlit run code\app.py --server.headless true --server.port %PORT% > "%LOG%" 2>&1"
 
 set /a ATTEMPTS=0
 :waitloop
