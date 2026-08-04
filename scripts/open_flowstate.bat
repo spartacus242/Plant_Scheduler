@@ -15,6 +15,11 @@ popd >nul
 
 set "LOG=%TEMP%\flowstate-streamlit.log"
 
+REM Scrub PYTHONPATH: a leaked site-packages (e.g. from an agent/IDE shell)
+REM can shadow the venv's numpy/pandas with an incompatible build and crash
+REM the app on import. The venv is self-contained, so drop PYTHONPATH entirely.
+set "PYTHONPATH="
+
 REM Prefer repo venv, then py launcher, then python on PATH
 set "PY_CMD="
 if exist "%REPO_ROOT%\.venv\Scripts\python.exe" set "PY_CMD="%REPO_ROOT%\.venv\Scripts\python.exe""
