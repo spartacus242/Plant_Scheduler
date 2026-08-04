@@ -65,6 +65,30 @@ selected = st.multiselect(
 
 st.caption(f"Versions in use: {len(list_versions(dd))} / 5. Generating will replace prior Scenario X slots when needed.")
 
+
+def _feasibility_summary(feas: dict) -> str:
+    """One-line human summary of a solver feasibility_report."""
+    lvl = feas.get("relax_level", 0)
+    mode = feas.get("relax_mode", "hard")
+    status = feas.get("status", "?")
+    if status == "INFEASIBLE":
+        return f"INFEASIBLE at max relax level {lvl} ({mode}) — see report below."
+    if lvl == 0:
+        base = "Solved at relax level 0 (hard constraints)"
+    else:
+        base = f"Solved at relax level {lvl} ({mode})"
+    late = feas.get("late_orders") or []
+    short = feas.get("orders_short_of_qmin") or []
+    extras = []
+    if late:
+        ids = ", ".join(str(o.get("order_id")) for o in late[:4])
+        extras.append(f"{len(late)} order(s) late ({ids})")
+    if short:
+        ids = ", ".join(str(o.get("order_id")) for o in short[:4])
+        extras.append(f"{len(short)} order(s) short of min ({ids})")
+    return " — ".join([base] + extras) if extras else base
+
+
 if st.button("Generate selected scenarios", type="primary", disabled=not selected):
     if baseline_cal.empty:
         st.error("Need a baseline calendar first.")

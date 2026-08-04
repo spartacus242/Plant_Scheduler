@@ -25,6 +25,7 @@ def build_model(
     max_lines_per_order_override: Optional[int] = None,
     maximize_production: bool = False,
     objective_mode: str = "balanced",
+    relax_due: bool = False,
 ) -> Tuple[cp_model.CpModel, Dict[str, Any]]:
     model = cp_model.CpModel()
     orders = data.orders
@@ -57,6 +58,7 @@ def build_model(
     seg_b_end = {}
     seg_b_interval = {}
     eff_end = {}        # IntVar: effective order end (seg_b_end or seg_a_end)
+    lateness = {}       # IntVar: hours past due_end+1 (only when relax_due)
 
     for l in lines:
         for o_idx, o in enumerate(orders):
@@ -125,11 +127,27 @@ def build_model(
             model.Add(seg_a_end[key] == 0).OnlyEnforceIf(present[key].Not())
 
             # Due window
+            # Start stays hard in all modes. When relax_due is set, the
+            # window END becomes soft: the order may finish up to
+            # de + 1 + lateness, with lateness penalized in the objective.
             model.Add(seg_a_start[key] >= ds_eff).OnlyEnforceIf(present[key])
-            model.Add(seg_a_end[key] <= de + 1).OnlyEnforceIf(present[key])
-            model.Add(seg_b_end[key] <= de + 1).OnlyEnforceIf(
-                seg_b_present[key]
-            )
+            if relax_due:
+                late_max = max(0, H - (de + 1))
+                lateness[key] = model.NewIntVar(
+                    0, late_max, f"late_l{l}_o{oid}"
+                )
+                model.Add(lateness[key] == 0).OnlyEnforceIf(present[key].Not())
+                model.Add(
+                    seg_a_end[key] <= de + 1 + lateness[key]
+                ).OnlyEnforceIf(present[key])
+                model.Add(
+                    seg_b_end[key] <= de + 1 + lateness[key]
+                ).OnlyEnforceIf(seg_b_present[key])
+            else:
+                model.Add(seg_a_end[key] <= de + 1).OnlyEnforceIf(present[key])
+                model.Add(seg_b_end[key] <= de + 1).OnlyEnforceIf(
+                    seg_b_present[key]
+                )
 
             # Trial orders: pinned line, fixed start/end, CIP can split
             if o.get("is_trial"):
@@ -983,6 +1001,10 @@ def build_model(
     else:
         model.Add(makespan == 0)
 
+    # Soft due-date penalty (relax_due only; empty dict -> 0 otherwise)
+    late_total = sum(lateness.values()) if lateness else 0
+    W_late = P.objective_late_weight
+
     if maximize_production:
         prod_sum = sum(produced[o_idx] for o_idx in range(len(orders)))
         # Production is the primary objective.  Secondary terms from the
@@ -1016,7 +1038,7 @@ def build_model(
         # Scale production so it always dominates secondary terms.
         # Max secondary is ~50k; prod_sum * 1000 puts production in the
         # hundreds-of-millions range, guaranteeing it is never sacrificed.
-        model.Maximize(prod_sum * 1000 - secondary)
+        model.Maximize(prod_sum * 1000 - secondary - late_total * W_late)
     elif objective_mode == "min-changeovers":
         obj = model.NewIntVar(-(10**12), 10**12, "obj")
         if use_weighted_co:
@@ -1026,6 +1048,7 @@ def build_model(
                 + makespan
                 + total_idle * W_idle
                 - cip_defer_total * W_cip
+                + late_total * W_late
             )
         else:
             model.Add(
@@ -1033,6 +1056,7 @@ def build_model(
                 + makespan
                 + total_idle * W_idle
                 - cip_defer_total * W_cip
+                + late_total * W_late
             )
         model.Minimize(obj)
     elif objective_mode == "spread-load":
@@ -1065,6 +1089,7 @@ def build_model(
                 + makespan
                 + total_idle * W_idle
                 - cip_defer_total * W_cip
+                + late_total * W_late
             )
         else:
             model.Add(
@@ -1074,6 +1099,7 @@ def build_model(
                 + makespan
                 + total_idle * W_idle
                 - cip_defer_total * W_cip
+                + late_total * W_late
             )
         model.Minimize(obj)
     else:  # balanced (default)
@@ -1088,6 +1114,7 @@ def build_model(
                 + weighted_co_total * W2
                 + total_idle * W_idle
                 - cip_defer_total * W_cip
+                + late_total * W_late
             )
         else:
             model.Add(
@@ -1095,6 +1122,7 @@ def build_model(
                 + flat_co_total * W2
                 + total_idle * W_idle
                 - cip_defer_total * W_cip
+                + late_total * W_late
             )
         model.Minimize(obj)
 
@@ -1111,5 +1139,6 @@ def build_model(
         "eff_end": eff_end,
         "produced": produced,
         "cip_vars": cip_model_vars,
+        "lateness": lateness,
     }
     return model, vars_dict

@@ -93,6 +93,21 @@ def _parse_args() -> argparse.Namespace:
         help="Set qty_min=0 for all orders (feasibility check)",
     )
     parser.add_argument(
+        "--relax-due",
+        action="store_true",
+        help="Soft due dates: orders may finish past due_end with a lateness penalty",
+    )
+    parser.add_argument(
+        "--auto-relax",
+        action="store_true",
+        help="Auto-escalate relax levels on INFEASIBLE (default: on)",
+    )
+    parser.add_argument(
+        "--no-auto-relax",
+        action="store_true",
+        help="Disable auto-relaxation ladder (single attempt, legacy behavior)",
+    )
+    parser.add_argument(
         "--ignore-changeovers",
         action="store_true",
         help="Do not enforce changeover setup times",
@@ -186,7 +201,10 @@ KPI_FILE = DATA_DIR / "solver_kpis.txt"
 TIME_LIMIT = _ARGS.time_limit or _CFG_SCHED.get("time_limit")
 PHASE = _ARGS.phase
 RELAX_DEMAND = _ARGS.relax_demand
+RELAX_DUE = _ARGS.relax_due
 IGNORE_CHANGEOVERS = _ARGS.ignore_changeovers
+# Auto-relaxation ladder is ON by default; --no-auto-relax preserves old behavior.
+AUTO_RELAX = not _ARGS.no_auto_relax
 DIAGNOSE = _ARGS.diagnose
 MAX_LINES_PER_ORDER = _ARGS.max_lines_per_order or _CFG_SCHED.get("max_lines_per_order")
 MIN_RUN_HOURS_OVERRIDE = _ARGS.min_run_hours or _CFG_SCHED.get("min_run_hours")
@@ -236,6 +254,144 @@ def write_schedule_meta() -> None:
             _json.dump(meta, f, indent=2)
     except OSError:
         pass
+
+
+# ── Auto-relaxation ladder (graceful degradation) ───────────────────────
+# Level 0: hard. 1: qty_min relaxed. 2: + soft due dates. 3: + no changeovers.
+RELAX_LADDER = [
+    {"relax_demand": False, "relax_due": False, "ignore_co": False},
+    {"relax_demand": True, "relax_due": False, "ignore_co": False},
+    {"relax_demand": True, "relax_due": True, "ignore_co": False},
+    {"relax_demand": True, "relax_due": True, "ignore_co": True},
+]
+RELAX_LABELS = [
+    "hard",
+    "relax_demand",
+    "relax_demand+soft_due",
+    "relax_demand+soft_due+ignore_co",
+]
+
+
+def _base_relax_level() -> int:
+    """Starting ladder level from explicit CLI flags."""
+    if IGNORE_CHANGEOVERS:
+        return 3
+    if RELAX_DUE:
+        return 2
+    if RELAX_DEMAND:
+        return 1
+    return 0
+
+
+def _read_blocking_lines(data_dir: Path, max_rows: int = 8) -> List[str]:
+    """Short summary strings from diag_blockages.csv (if present)."""
+    path = data_dir / "diag_blockages.csv"
+    if not path.exists():
+        return []
+    try:
+        import csv as _csv
+        with open(path, encoding="utf-8") as f:
+            rows = list(_csv.DictReader(f))
+    except (OSError, ValueError):
+        return []
+    out = []
+    for r in rows[:max_rows]:
+        out.append(
+            f"Line {r.get('line_id')} ({r.get('line_name', '')}) week {r.get('week')}: "
+            f"required {r.get('required_run_hours')}h vs available {r.get('available_hours')}h "
+            f"(overflow {r.get('overflow_hours')}h)"
+        )
+    return out
+
+
+def _orders_short_of_qmin(bounds_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out = []
+    for r in bounds_rows:
+        produced = int(r.get("produced", 0))
+        qmin = int(r.get("qty_min", 0))
+        if produced < qmin:
+            out.append({
+                "order_id": r.get("order_id"),
+                "sku": r.get("sku"),
+                "produced": produced,
+                "qty_min": qmin,
+            })
+    return out
+
+
+def _late_orders(
+    solver: cp_model.CpSolver,
+    data: Data,
+    vars_dict: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Per-order total lateness (hours past due window) when relax_due was on."""
+    lateness = vars_dict.get("lateness") or {}
+    if not lateness:
+        return []
+    totals: Dict[int, int] = {}
+    for (_l, o_idx), var in lateness.items():
+        v = int(solver.Value(var))
+        if v > 0:
+            totals[o_idx] = totals.get(o_idx, 0) + v
+    return [
+        {
+            "order_id": data.orders[o_idx]["order_id"],
+            "sku": data.orders[o_idx]["sku"],
+            "lateness_h": v,
+        }
+        for o_idx, v in sorted(totals.items(), key=lambda kv: -kv[1])
+    ]
+
+
+def write_feasibility_report(data_dir: Path, report: Dict[str, Any]) -> None:
+    """Write feasibility_report.json — always, on any solve outcome."""
+    import json as _json
+    report.setdefault("generated_at", datetime.now().isoformat(timespec="seconds"))
+    report.setdefault("orders_short_of_qmin", [])
+    report.setdefault("late_orders", [])
+    report.setdefault("blocking_lines", _read_blocking_lines(data_dir))
+    try:
+        with open(data_dir / "feasibility_report.json", "w", encoding="utf-8") as f:
+            _json.dump(report, f, indent=2)
+    except OSError:
+        pass
+
+
+def _handle_infeasible(
+    P: Params,
+    data: Data,
+    data_dir: Path,
+    *,
+    level: int,
+    solver_status: str,
+    week_label: str,
+    two_phase: bool,
+    extra: Dict[str, Any] | None = None,
+) -> None:
+    """Terminal INFEASIBLE at max relax level: report + diagnose + exit nonzero."""
+    log(
+        f"[auto-relax] {week_label} INFEASIBLE at max relax level "
+        f"{level} ({RELAX_LABELS[level]})"
+    )
+    try:
+        run_blockages_diagnostic(P, data, data_dir, two_phase=two_phase)
+    except Exception:
+        log("[auto-relax] blockages diagnostic failed:\n" + traceback.format_exc())
+    report: Dict[str, Any] = {
+        "relax_level": level,
+        "relax_mode": RELAX_LABELS[level],
+        "status": "INFEASIBLE",
+        "solver_status": solver_status,
+        "week": week_label,
+        "blocking_lines": _read_blocking_lines(data_dir),
+    }
+    if extra:
+        report.update(extra)
+    write_feasibility_report(data_dir, report)
+    write_kpi_lines([
+        f"Status: INFEASIBLE at max relax level ({week_label}, {RELAX_LABELS[level]})"
+    ])
+    raise SystemExit(2)
 
 
 def compute_idle_kpis(
@@ -607,8 +763,11 @@ def write_solution(
     data_dir: Path,
     vars_dict: Dict[str, Any],
     hour_offset: int = 0,
-) -> None:
-    """Write schedule_phase2.csv and produced_vs_bounds.csv when solve is FEASIBLE/OPTIMAL."""
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Write schedule_phase2.csv and produced_vs_bounds.csv when solve is FEASIBLE/OPTIMAL.
+
+    Returns (schedule_rows, bounds_rows) for feasibility reporting.
+    """
     schedule_rows, bounds_rows = _solution_to_rows(
         solver, data, P, vars_dict, hour_offset
     )
@@ -628,6 +787,7 @@ def write_solution(
         for ln in idle_kpi_lines:
             log(ln)
     pd.DataFrame(bounds_rows).to_csv(data_dir / "produced_vs_bounds.csv", index=False)
+    return schedule_rows, bounds_rows
 
 
 def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
@@ -658,6 +818,7 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         objective_changeover_weight=P.objective_changeover_weight,
         objective_cip_defer_weight=P.objective_cip_defer_weight,
         objective_idle_weight=P.objective_idle_weight,
+        objective_late_weight=P.objective_late_weight,
         co_topload_weight=P.co_topload_weight,
         co_ttp_weight=P.co_ttp_weight,
         co_ffs_weight=P.co_ffs_weight,
@@ -691,35 +852,64 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
     if not orders_week0:
         log("[two-phase] No Week-0 orders")
         write_kpi_lines(["Status: TWO_PHASE — no Week-0 orders"])
+        write_feasibility_report(data_dir, {
+            "relax_level": _base_relax_level(),
+            "relax_mode": RELAX_LABELS[_base_relax_level()],
+            "status": "NO_WEEK0_ORDERS",
+            "solver_status": "N/A",
+        })
         return
 
     # ── Stage: Building Model (Week 0) ──
     update_stage(data_dir, "building_model_w0", "active")
     log(f"[two-phase] Phase 1: Week-0 only ({len(orders_week0)} orders), horizon=168")
-    model0, vars0 = build_model(
-        P0, data0, PHASE, RELAX_DEMAND, IGNORE_CHANGEOVERS,
-        max_lines_per_order_override=MAX_LINES_PER_ORDER,
-        objective_mode=OBJECTIVE_MODE,
-    )
-    proto0 = model0.Proto()
-    update_stage(
-        data_dir, "building_model_w0", "done",
-        f"{len(proto0.variables):,} vars, {len(proto0.constraints):,} constraints",
-    )
+    base_lvl = _base_relax_level()
+    max_lvl = 3 if AUTO_RELAX else base_lvl
+    level0 = base_lvl
+    solver0 = None
+    status0 = None
+    vars0 = None
+    for lvl in range(base_lvl, max_lvl + 1):
+        flags = RELAX_LADDER[lvl]
+        if lvl > base_lvl:
+            log(f"[auto-relax] Week-0 escalating to level {lvl} ({RELAX_LABELS[lvl]})")
+            update_stage(data_dir, "building_model_w0", "active", f"relax level {lvl}")
+            update_stage(data_dir, "solving_week0", "pending")
+        model0, vars0 = build_model(
+            P0, data0, PHASE, flags["relax_demand"], flags["ignore_co"],
+            max_lines_per_order_override=MAX_LINES_PER_ORDER,
+            objective_mode=OBJECTIVE_MODE,
+            relax_due=flags["relax_due"],
+        )
+        proto0 = model0.Proto()
+        update_stage(
+            data_dir, "building_model_w0", "done",
+            f"{len(proto0.variables):,} vars, {len(proto0.constraints):,} constraints",
+        )
 
-    # ── Stage: Solving Week 0 ──
-    update_stage(data_dir, "solving_week0", "active", f"{int(tl)}s limit, 8 workers")
-    update_solver_stats(data_dir, status="STARTING", time_limit_s=tl)
-    solver0 = cp_model.CpSolver()
-    solver0.parameters.num_search_workers = 8
-    solver0.parameters.max_time_in_seconds = tl
-    cb0 = _ProgressCallback(data_dir, label_prefix="W0: ")
-    status0 = solver0.Solve(model0, cb0)
+        # ── Stage: Solving Week 0 ──
+        update_stage(
+            data_dir, "solving_week0", "active",
+            f"{int(tl)}s limit, 8 workers (level {lvl}: {RELAX_LABELS[lvl]})",
+        )
+        update_solver_stats(data_dir, status="STARTING", time_limit_s=tl)
+        solver0 = cp_model.CpSolver()
+        solver0.parameters.num_search_workers = 8
+        solver0.parameters.max_time_in_seconds = tl
+        cb0 = _ProgressCallback(data_dir, label_prefix=f"W0 L{lvl}: ")
+        status0 = solver0.Solve(model0, cb0)
+        if status0 in (cp_model.FEASIBLE, cp_model.OPTIMAL):
+            level0 = lvl
+            break
+        log(f"[auto-relax] Week-0 {solver0.StatusName(status0)} at level {lvl}")
     if status0 not in (cp_model.FEASIBLE, cp_model.OPTIMAL):
         update_stage(data_dir, "solving_week0", "error", solver0.StatusName(status0))
-        write_kpi_lines([f"Status: TWO_PHASE — Week-0 {solver0.StatusName(status0)}"])
         log(f"[two-phase] Week-0 failed: {solver0.StatusName(status0)}")
-        return
+        _handle_infeasible(
+            P0, data0, data_dir,
+            level=level0, solver_status=solver0.StatusName(status0),
+            week_label="Week-0", two_phase=True,
+        )
     update_stage(data_dir, "solving_week0", "done", solver0.StatusName(status0))
 
     schedule_rows_0, bounds_0 = _solution_to_rows(
@@ -754,6 +944,7 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         objective_changeover_weight=P.objective_changeover_weight,
         objective_cip_defer_weight=P.objective_cip_defer_weight,
         objective_idle_weight=P.objective_idle_weight,
+        objective_late_weight=P.objective_late_weight,
         co_topload_weight=P.co_topload_weight,
         co_ttp_weight=P.co_ttp_weight,
         co_ffs_weight=P.co_ffs_weight,
@@ -798,30 +989,57 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
             pd.DataFrame(cip_rows_0).to_csv(data_dir / "cip_windows.csv", index=False)
         pd.DataFrame(bounds_0).to_csv(data_dir / "produced_vs_bounds.csv", index=False)
         write_kpi_lines(["Status: TWO_PHASE — Week-0 FEASIBLE, no Week-1 orders"])
+        write_feasibility_report(data_dir, {
+            "relax_level": level0,
+            "relax_mode": RELAX_LABELS[level0],
+            "status": solver0.StatusName(status0),
+            "solver_status": solver0.StatusName(status0),
+            "week": "Week-0 (no Week-1 orders)",
+            "orders_short_of_qmin": _orders_short_of_qmin(bounds_0),
+            "late_orders": _late_orders(solver0, data0, vars0),
+        })
         return
 
     # ── Stage: Building Model (Week 1) ──
     update_stage(data_dir, "building_model_w1", "active")
     log(f"[two-phase] Phase 2: Week-1 ({len(orders_week1)} orders), horizon=336 (full), maximize production")
-    model1, vars1 = build_model(
-        P1, data1, PHASE, RELAX_DEMAND, IGNORE_CHANGEOVERS,
-        max_lines_per_order_override=MAX_LINES_PER_ORDER,
-        maximize_production=True,
-        objective_mode=OBJECTIVE_MODE,
-    )
-    proto1 = model1.Proto()
-    update_stage(
-        data_dir, "building_model_w1", "done",
-        f"{len(proto1.variables):,} vars, {len(proto1.constraints):,} constraints",
-    )
+    level1 = base_lvl
+    solver1 = None
+    status1 = None
+    vars1 = None
+    for lvl in range(base_lvl, max_lvl + 1):
+        flags = RELAX_LADDER[lvl]
+        if lvl > base_lvl:
+            log(f"[auto-relax] Week-1 escalating to level {lvl} ({RELAX_LABELS[lvl]})")
+            update_stage(data_dir, "building_model_w1", "active", f"relax level {lvl}")
+            update_stage(data_dir, "solving_week1", "pending")
+        model1, vars1 = build_model(
+            P1, data1, PHASE, flags["relax_demand"], flags["ignore_co"],
+            max_lines_per_order_override=MAX_LINES_PER_ORDER,
+            maximize_production=True,
+            objective_mode=OBJECTIVE_MODE,
+            relax_due=flags["relax_due"],
+        )
+        proto1 = model1.Proto()
+        update_stage(
+            data_dir, "building_model_w1", "done",
+            f"{len(proto1.variables):,} vars, {len(proto1.constraints):,} constraints",
+        )
 
-    # ── Stage: Solving Week 1 ──
-    update_stage(data_dir, "solving_week1", "active", f"{int(tl)}s limit, 8 workers")
-    solver1 = cp_model.CpSolver()
-    solver1.parameters.num_search_workers = 8
-    solver1.parameters.max_time_in_seconds = tl
-    cb1 = _ProgressCallback(data_dir, label_prefix="W1: ")
-    status1 = solver1.Solve(model1, cb1)
+        # ── Stage: Solving Week 1 ──
+        update_stage(
+            data_dir, "solving_week1", "active",
+            f"{int(tl)}s limit, 8 workers (level {lvl}: {RELAX_LABELS[lvl]})",
+        )
+        solver1 = cp_model.CpSolver()
+        solver1.parameters.num_search_workers = 8
+        solver1.parameters.max_time_in_seconds = tl
+        cb1 = _ProgressCallback(data_dir, label_prefix=f"W1 L{lvl}: ")
+        status1 = solver1.Solve(model1, cb1)
+        if status1 in (cp_model.FEASIBLE, cp_model.OPTIMAL):
+            level1 = lvl
+            break
+        log(f"[auto-relax] Week-1 {solver1.StatusName(status1)} at level {lvl}")
 
     if status1 not in (cp_model.FEASIBLE, cp_model.OPTIMAL):
         update_stage(data_dir, "solving_week1", "error", solver1.StatusName(status1))
@@ -829,9 +1047,21 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         if cip_rows_0:
             pd.DataFrame(cip_rows_0).to_csv(data_dir / "cip_windows.csv", index=False)
         pd.DataFrame(bounds_0).to_csv(data_dir / "produced_vs_bounds.csv", index=False)
-        write_kpi_lines([f"Status: TWO_PHASE — Week-0 FEASIBLE, Week-1 {solver1.StatusName(status1)}"])
         log(f"[two-phase] Week-1 failed: {solver1.StatusName(status1)}")
-        return
+        _handle_infeasible(
+            P1, data1, data_dir,
+            level=level1, solver_status=solver1.StatusName(status1),
+            week_label="Week-1 (Week-0 feasible)", two_phase=True,
+            extra={
+                "week0": {
+                    "relax_level": level0,
+                    "relax_mode": RELAX_LABELS[level0],
+                    "status": solver0.StatusName(status0),
+                },
+                "orders_short_of_qmin": _orders_short_of_qmin(bounds_0),
+                "late_orders": _late_orders(solver0, data0, vars0),
+            },
+        )
     update_stage(data_dir, "solving_week1", "done", solver1.StatusName(status1))
 
     # No hour offset: Phase 2 uses absolute hours (0-335)
@@ -862,7 +1092,32 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
 
     # Idle-gap KPIs on combined schedule
     idle_kpi_lines = compute_idle_kpis(combined_schedule, combined_cips, data_dir)
-    write_kpi_lines(["Status: TWO_PHASE — Week-0 and Week-1 FEASIBLE"] + idle_kpi_lines)
+    final_level = max(level0, level1)
+    write_kpi_lines(
+        ["Status: TWO_PHASE — Week-0 and Week-1 FEASIBLE",
+         f"Relax level: {final_level} ({RELAX_LABELS[final_level]})"]
+        + idle_kpi_lines
+    )
+    write_feasibility_report(data_dir, {
+        "relax_level": final_level,
+        "relax_mode": RELAX_LABELS[final_level],
+        "status": "FEASIBLE",
+        "solver_status": f"Week-0 {solver0.StatusName(status0)}, Week-1 {solver1.StatusName(status1)}",
+        "week0": {
+            "relax_level": level0,
+            "relax_mode": RELAX_LABELS[level0],
+            "status": solver0.StatusName(status0),
+        },
+        "week1": {
+            "relax_level": level1,
+            "relax_mode": RELAX_LABELS[level1],
+            "status": solver1.StatusName(status1),
+        },
+        "orders_short_of_qmin": _orders_short_of_qmin(combined_bounds),
+        "late_orders": (
+            _late_orders(solver0, data0, vars0) + _late_orders(solver1, data1, vars1)
+        ),
+    })
     log("[two-phase] Done: combined schedule written")
     for ln in idle_kpi_lines:
         log(ln)
@@ -887,6 +1142,8 @@ def main() -> None:
         P.objective_cip_defer_weight = int(_cfg_obj["cip_defer_weight"])
     if _cfg_obj.get("idle_weight") is not None:
         P.objective_idle_weight = int(_cfg_obj["idle_weight"])
+    if _cfg_obj.get("late_weight") is not None:
+        P.objective_late_weight = int(_cfg_obj["late_weight"])
     # Changeover type penalty weights — saved by settings.py into [objective]
     if _cfg_obj.get("co_conv_org_weight") is not None:
         P.co_conv_org_weight = int(_cfg_obj["co_conv_org_weight"])
@@ -941,6 +1198,7 @@ def main() -> None:
             objective_changeover_weight=P.objective_changeover_weight,
             objective_cip_defer_weight=P.objective_cip_defer_weight,
             objective_idle_weight=P.objective_idle_weight,
+            objective_late_weight=P.objective_late_weight,
             co_topload_weight=P.co_topload_weight,
             co_ttp_weight=P.co_ttp_weight,
             co_ffs_weight=P.co_ffs_weight,
@@ -953,7 +1211,8 @@ def main() -> None:
         )
     reset_err()
     log(
-        f"[{datetime.now()}] START phase={PHASE} relax={RELAX_DEMAND} ignoreCO={IGNORE_CHANGEOVERS} "
+        f"[{datetime.now()}] START phase={PHASE} relax={RELAX_DEMAND} relax_due={RELAX_DUE} "
+        f"ignoreCO={IGNORE_CHANGEOVERS} auto_relax={AUTO_RELAX} "
         f"tl={TIME_LIMIT} mlpo={P.max_lines_per_order}"
     )
 
@@ -998,48 +1257,68 @@ def main() -> None:
             else:
                 # ── Stage: Building Model ──
                 update_stage(DATA_DIR, "building_model", "active")
-                model, vars_dict = build_model(
-                    P,
-                    data,
-                    PHASE,
-                    RELAX_DEMAND,
-                    IGNORE_CHANGEOVERS,
-                    max_lines_per_order_override=MAX_LINES_PER_ORDER,
-                    objective_mode=OBJECTIVE_MODE,
-                )
-                proto = model.Proto()
-                n_vars = len(proto.variables)
-                n_cons = len(proto.constraints)
-                update_stage(
-                    DATA_DIR, "building_model", "done",
-                    f"{n_vars:,} variables, {n_cons:,} constraints",
-                )
-                log(f"[model] {n_vars} vars, {n_cons} constraints")
-
-                # ── Stage: Solving ──
                 tl = float(TIME_LIMIT) if TIME_LIMIT is not None else 120.0
-                update_stage(DATA_DIR, "solving", "active", f"{int(tl)}s time limit, 8 workers")
-                update_solver_stats(DATA_DIR, status="STARTING", time_limit_s=tl)
+                base_lvl = _base_relax_level()
+                max_lvl = 3 if AUTO_RELAX else base_lvl
+                level = base_lvl
+                solver = None
+                status = None
+                vars_dict = None
+                for lvl in range(base_lvl, max_lvl + 1):
+                    flags = RELAX_LADDER[lvl]
+                    if lvl > base_lvl:
+                        log(f"[auto-relax] escalating to level {lvl} ({RELAX_LABELS[lvl]})")
+                        update_stage(DATA_DIR, "building_model", "active", f"relax level {lvl}")
+                        update_stage(DATA_DIR, "solving", "pending")
+                    model, vars_dict = build_model(
+                        P,
+                        data,
+                        PHASE,
+                        flags["relax_demand"],
+                        flags["ignore_co"],
+                        max_lines_per_order_override=MAX_LINES_PER_ORDER,
+                        objective_mode=OBJECTIVE_MODE,
+                        relax_due=flags["relax_due"],
+                    )
+                    proto = model.Proto()
+                    n_vars = len(proto.variables)
+                    n_cons = len(proto.constraints)
+                    update_stage(
+                        DATA_DIR, "building_model", "done",
+                        f"{n_vars:,} variables, {n_cons:,} constraints",
+                    )
+                    log(f"[model] level {lvl} ({RELAX_LABELS[lvl]}): {n_vars} vars, {n_cons} constraints")
 
-                solver = cp_model.CpSolver()
-                solver.parameters.num_search_workers = 8
-                solver.parameters.max_time_in_seconds = tl
-                cb = _ProgressCallback(DATA_DIR)
-                status = solver.Solve(model, cb)
+                    # ── Stage: Solving ──
+                    update_stage(
+                        DATA_DIR, "solving", "active",
+                        f"{int(tl)}s time limit, 8 workers (level {lvl}: {RELAX_LABELS[lvl]})",
+                    )
+                    update_solver_stats(DATA_DIR, status="STARTING", time_limit_s=tl)
+
+                    solver = cp_model.CpSolver()
+                    solver.parameters.num_search_workers = 8
+                    solver.parameters.max_time_in_seconds = tl
+                    cb = _ProgressCallback(DATA_DIR, label_prefix=f"L{lvl}: ")
+                    status = solver.Solve(model, cb)
+                    status_name = solver.StatusName(status)
+                    log(f"[{datetime.now()}] SOLVER level={lvl} status={status_name}")
+                    update_solver_stats(
+                        DATA_DIR,
+                        status=status_name,
+                        elapsed_s=round(solver.WallTime(), 1),
+                    )
+                    if status in (cp_model.FEASIBLE, cp_model.OPTIMAL):
+                        level = lvl
+                        break
+
                 status_name = solver.StatusName(status)
-                log(f"[{datetime.now()}] SOLVER status={status_name}")
-                update_solver_stats(
-                    DATA_DIR,
-                    status=status_name,
-                    elapsed_s=round(solver.WallTime(), 1),
-                )
-
                 if status in (cp_model.FEASIBLE, cp_model.OPTIMAL):
                     update_stage(DATA_DIR, "solving", "done", status_name)
 
                     # ── Stage: Writing Output ──
                     update_stage(DATA_DIR, "writing_output", "active")
-                    write_solution(
+                    _sched_rows, bounds_rows = write_solution(
                         solver,
                         data,
                         P,
@@ -1066,10 +1345,26 @@ def main() -> None:
                             ]
                         except (OSError, KeyError, ValueError, TypeError):
                             pass
-                    write_kpi_lines([f"Status: {status_name}"] + idle_kpi_summary)
+                    write_kpi_lines(
+                        [f"Status: {status_name}",
+                         f"Relax level: {level} ({RELAX_LABELS[level]})"]
+                        + idle_kpi_summary
+                    )
+                    write_feasibility_report(DATA_DIR, {
+                        "relax_level": level,
+                        "relax_mode": RELAX_LABELS[level],
+                        "status": status_name,
+                        "solver_status": status_name,
+                        "orders_short_of_qmin": _orders_short_of_qmin(bounds_rows),
+                        "late_orders": _late_orders(solver, data, vars_dict),
+                    })
                 else:
                     update_stage(DATA_DIR, "solving", "error", status_name)
-                    write_kpi_lines([f"Status: {status_name}"])
+                    _handle_infeasible(
+                        P, data, DATA_DIR,
+                        level=level, solver_status=status_name,
+                        week_label="single-phase", two_phase=False,
+                    )
     except Exception as exc:
         log("\n=== FATAL ERROR ===\n" + traceback.format_exc())
         write_kpi_lines([f"Status: ERROR — {type(exc).__name__}: see solver_error.txt"])

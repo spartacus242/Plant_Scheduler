@@ -78,6 +78,7 @@ def _prepare_work_dir(data_dir: Path, work: Path) -> None:
         "diag_summary.txt",
         "diag_unique_line_load.csv",
         "schedule_meta.json",
+        "feasibility_report.json",
     }
 
     # Prefer legacy full dataset for solver feasibility; overlay reference when present.
@@ -113,6 +114,29 @@ def _prepare_work_dir(data_dir: Path, work: Path) -> None:
         shutil.copy2(root_toml, work / "flowstate.toml")
 
 
+def _read_feasibility(work: Path) -> dict[str, Any] | None:
+    """Read feasibility_report.json from a solver work dir (written every run)."""
+    import json
+    path = work / "feasibility_report.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _read_diag_blockages(work: Path) -> str:
+    """Human-readable blockages summary from the solver work dir (if any)."""
+    path = work / "diag_blockages.txt"
+    if not path.exists():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
 def run_scenario(
     scenario: dict[str, Any],
     data_dir: Path,
@@ -120,7 +144,8 @@ def run_scenario(
     time_limit: int | None = None,
     python_exe: str | None = None,
 ) -> dict[str, Any]:
-    """Run one scenario. Returns {ok, calendar, scorecard, log, returncode}."""
+    """Run one scenario. Returns {ok, calendar, scorecard, log, returncode,
+    feasibility, relax_level}."""
     work = (Path(data_dir) / "_scenario_work" / scenario["id"]).resolve()
     _prepare_work_dir(Path(data_dir).resolve(), work)
 
@@ -159,6 +184,9 @@ def run_scenario(
 
     sched = work / "schedule_phase2.csv"
     cip = work / "cip_windows.csv"
+    feas = _read_feasibility(work)
+    relax_level = feas.get("relax_level") if feas else None
+    diag_blockages = _read_diag_blockages(work)
     if proc.returncode != 0 or not sched.exists():
         return {
             "ok": False,
@@ -166,6 +194,9 @@ def run_scenario(
             "log": log,
             "calendar": None,
             "scorecard": None,
+            "feasibility": feas,
+            "relax_level": relax_level,
+            "diag_blockages": diag_blockages,
         }
 
     calendar = import_legacy_schedule(
@@ -180,6 +211,9 @@ def run_scenario(
         "log": log,
         "calendar": calendar,
         "scorecard": score,
+        "feasibility": feas,
+        "relax_level": relax_level,
+        "diag_blockages": diag_blockages,
     }
 
 

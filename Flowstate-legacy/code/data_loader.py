@@ -61,6 +61,9 @@ class Params:
     objective_cip_defer_weight: int = 10
     # Idle-time penalty: penalize per-line idle gaps (span − production − CIP hours)
     objective_idle_weight: int = 0
+    # Soft due-date penalty (relax_due mode): cost per hour an order finishes
+    # past its due window. Kept high so lateness is a last resort.
+    objective_late_weight: int = 200
     # Per-machine changeover weights (used in weighted changeover objective)
     co_topload_weight: int = 50
     co_ttp_weight: int = 10
