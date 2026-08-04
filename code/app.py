@@ -25,8 +25,14 @@ st.set_page_config(
 
 pg = st.navigation(
     {
+        "Home": [
+            st.Page("pages/home.py", title="Home", icon=":material/home:", default=True),
+        ],
+        "Data": [
+            st.Page("pages/data.py", title="Data Files", icon=":material/table:"),
+        ],
         "Score": [
-            st.Page("pages/scorecard.py", title="Schedule Scorecard", icon=":material/analytics:", default=True),
+            st.Page("pages/scorecard.py", title="Schedule Scorecard", icon=":material/analytics:"),
         ],
         "Twin": [
             st.Page("pages/calendar.py", title="Plant Calendar", icon=":material/drag_indicator:"),
@@ -39,7 +45,6 @@ pg = st.navigation(
         ],
         "Setup": [
             st.Page("pages/lines.py", title="Lines", icon=":material/view_week:"),
-            st.Page("pages/home.py", title="About", icon=":material/info:"),
         ],
     },
     expanded=True,
