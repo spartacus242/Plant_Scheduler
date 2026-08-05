@@ -45,6 +45,9 @@ def scorecard_config(cfg: dict | None = None) -> dict[str, Any]:
         "cap_cip_count": 30,
         "cap_cip_hours": 120,
         "cap_cip_forfeited": 200,
+        # Forfeited CIP is scored in kg of lost production (hours x line avg
+        # kg/h). Calibrated ~1.6x the AZAP baseline so it does not clamp to 0.
+        "cap_cip_forfeited_kg": 1500000.0,
         "cap_trial_hours": 48,
         "cap_trial_disruptions": 20,
         "cap_maint_conflicts": 10,
@@ -53,6 +56,11 @@ def scorecard_config(cfg: dict | None = None) -> dict[str, Any]:
         "cap_orders_at_risk": 20,
         "cap_excess_kg": 50000,
         "target_avg_run_h": 16.0,
+        # Deprecated: target_avg_run_h drove a SYMMETRIC campaign run-length
+        # score that punished long runs. Longer runs are better, so the score
+        # is now monotonic and hits 100 at this floor. Kept separate so the old
+        # key's meaning is not silently changed.
+        "campaign_run_floor_h": 24.0,
     }
     for k, v in defaults.items():
         sc.setdefault(k, v)

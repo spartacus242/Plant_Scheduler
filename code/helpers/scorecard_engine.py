@@ -527,6 +527,58 @@ def _co_lookup(co_df: pd.DataFrame) -> dict[tuple[str, str], dict]:
     return out
 
 
+def _load_line_avg_rates(ref: Path) -> dict[str, float]:
+    """Mean calc_rate_kgph per line over the SKUs that line is capable of running.
+
+    Reads data/reference/capabilities_rates.csv. Per line_name we average
+    calc_rate_kgph across rows with capable == 1, falling back to
+    nominal_rate_kgph for rows with no usable calc rate. A line with no capable
+    rows inherits the overall mean of the lines that do have one. Missing or
+    malformed file -> empty mapping; callers then treat the rate as 0. This must
+    never raise: the scorecard has to render even with reference data absent.
+    """
+    path = ref / "capabilities_rates.csv"
+    mapping: dict[str, float] = {}
+    try:
+        if not path.exists():
+            return mapping
+        df = pd.read_csv(path)
+        if "line_name" not in df.columns:
+            return mapping
+        sums: dict[str, list[float]] = {}
+        all_lines: set[str] = set()
+        for _, r in df.iterrows():
+            name = str(r.get("line_name", "")).strip()
+            if not name:
+                continue
+            all_lines.add(name)
+            try:
+                if int(float(r.get("capable", 0) or 0)) != 1:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            rate = 0.0
+            for col in ("calc_rate_kgph", "nominal_rate_kgph"):
+                try:
+                    v = float(r.get(col, 0) or 0)
+                except (TypeError, ValueError):
+                    v = 0.0
+                if v > 0:
+                    rate = v
+                    break
+            if rate > 0:
+                sums.setdefault(name, []).append(rate)
+        for name, vals in sums.items():
+            mapping[name] = round(sum(vals) / len(vals), 2)
+        if mapping:
+            overall = round(sum(mapping.values()) / len(mapping), 2)
+            for name in all_lines:
+                mapping.setdefault(name, overall)
+    except Exception:
+        return {}
+    return mapping
+
+
 def _load_cip_intervals(ref: Path, fallback: float) -> dict[str, float]:
     path = ref / "line_cip_hrs.csv"
     mapping: dict[str, float] = {}
@@ -621,12 +673,24 @@ def score_changeovers(calendar: pd.DataFrame, cfg: dict, co_map: dict) -> dict[s
     }
 
 
-def score_cip(calendar: pd.DataFrame, cfg: dict, intervals: dict[str, float]) -> dict[str, Any]:
+def score_cip(
+    calendar: pd.DataFrame,
+    cfg: dict,
+    intervals: dict[str, float],
+    rates: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    """CIP discipline. `rates` maps line_name -> average kg/h (see
+    _load_line_avg_rates); forfeited dirty-time hours are converted to
+    forfeited KILOGRAMS of lost production at that line's average run rate.
+    A missing rate contributes 0 kg rather than raising.
+    """
+    rates = rates or {}
     cips = _by_type(calendar, "cip").sort_values(["line_id", "start_h"])
     prod = _production(calendar)
     count = len(cips)
     hours = float((cips["end_h"] - cips["start_h"]).clip(lower=0).sum()) if count else 0.0
     forfeited = 0.0
+    forfeited_kg = 0.0
 
     for line_id, cip_grp in cips.groupby("line_id"):
         line_name = str(cip_grp["line_name"].iloc[0]) if len(cip_grp) else str(line_id)
@@ -635,6 +699,7 @@ def score_cip(calendar: pd.DataFrame, cfg: dict, intervals: dict[str, float]) ->
             or intervals.get(str(line_id))
             or cfg["cip_interval_fallback_h"]
         )
+        rate = float(rates.get(line_name) or rates.get(str(line_id)) or 0.0)
         line_prod = prod[prod["line_id"] == line_id].sort_values("start_h")
         last_cip_end = 0.0  # assume clean at horizon start
         for _, cip in cip_grp.iterrows():
@@ -647,13 +712,17 @@ def score_cip(calendar: pd.DataFrame, cfg: dict, intervals: dict[str, float]) ->
                 if ps >= cip_start:
                     break
                 run_since += max(0.0, min(pe, cip_start) - max(ps, last_cip_end))
-            forfeited += max(0.0, interval - run_since)
+            lost_h = max(0.0, interval - run_since)
+            forfeited += lost_h
+            forfeited_kg += lost_h * rate
             last_cip_end = float(cip["end_h"])
 
     return {
         "cip_count": int(count),
         "cip_hours": round(hours, 2),
+        # Reported for continuity / diagnostics; the scored metric is the kg one.
         "cip_forfeited_h": round(forfeited, 2),
+        "cip_forfeited_kg": round(forfeited_kg, 2),
     }
 
 
@@ -828,7 +897,11 @@ def category_scores(raw: dict[str, dict], cfg: dict) -> dict[str, float | None]:
     cip_s = [
         _score_lower_better(cip["cip_count"], cfg["cap_cip_count"]),
         _score_lower_better(cip["cip_hours"], cfg["cap_cip_hours"]),
-        _score_lower_better(cip["cip_forfeited_h"], cfg["cap_cip_forfeited"]),
+        # Scored in KILOGRAMS of lost production, not hours (see score_cip).
+        # cip_forfeited_h is still reported but no longer feeds the score.
+        _score_lower_better(
+            cip.get("cip_forfeited_kg"), float(cfg["cap_cip_forfeited_kg"])
+        ),
     ]
     trial_s = [
         _score_lower_better(tr["trial_hours"], cfg["cap_trial_hours"]),
@@ -847,10 +920,14 @@ def category_scores(raw: dict[str, dict], cfg: dict) -> dict[str, float | None]:
         _score_lower_better(camp["short_run_count"], cfg["cap_short_runs"]),
     ]
     if camp.get("avg_run_h") is not None:
-        # closer to target is better (symmetric)
+        # Monotonic "longer is better" with a floor. The plant confirms long,
+        # consolidated runs are always preferable, so ONLY short runs are
+        # penalised: the score ramps linearly from 0 to 100 as avg_run_h goes
+        # 0 -> campaign_run_floor_h and stays at 100 above the floor. The old
+        # symmetric target (target_avg_run_h) is left in config but unused.
         avg = float(camp["avg_run_h"])
-        target = float(cfg["target_avg_run_h"])
-        camp_parts.append(_clamp01(100.0 * (1.0 - abs(avg - target) / max(target, 1))))
+        floor = float(cfg.get("campaign_run_floor_h") or 0.0)
+        camp_parts.append(_score_higher_better(avg, floor))
 
     if svc.get("available"):
         svc_parts = [
@@ -922,6 +999,7 @@ def score_calendar(
     ref = reference_dir(data_dir) if data_dir else reference_dir()
     co_map = _co_lookup(_load_changeovers(ref))
     intervals = _load_cip_intervals(ref, float(cfg["cip_interval_fallback_h"]))
+    rates = _load_line_avg_rates(ref)
     demand = load_demand(ref)
 
     notes: list[str] = []
@@ -929,12 +1007,16 @@ def score_calendar(
         notes.append("Calendar is empty — all metrics are zero / n/a.")
     if not co_map:
         notes.append("No changeover standards loaded — using default CO hour estimates.")
+    if not rates:
+        notes.append(
+            "No capabilities_rates.csv — forfeited CIP kg cannot be valued and reads 0."
+        )
     if demand is None:
         notes.append("No demand_plan.csv — Service metrics are n/a.")
 
     raw = {
         "changeovers": score_changeovers(calendar, cfg, co_map),
-        "cip": score_cip(calendar, cfg, intervals),
+        "cip": score_cip(calendar, cfg, intervals, rates),
         "trials": score_trials(calendar, co_map),
         "maintenance": score_maintenance(calendar, cfg),
         "campaigns": score_campaigns(calendar, cfg),

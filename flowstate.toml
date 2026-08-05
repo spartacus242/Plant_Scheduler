@@ -53,7 +53,14 @@ cap_format_changes = 40
 cap_co_hours = 80
 cap_cip_count = 30
 cap_cip_hours = 120
+# Forfeited CIP hours cap. Retained only for the reported (unscored)
+# cip_forfeited_h metric - the SCORED metric is cip_forfeited_kg below.
 cap_cip_forfeited = 200
+# Forfeited CIP expressed as KILOGRAMS of lost production: for each CIP,
+# max(0, interval_h - run_h_since_last_cip) x that line's average kg/h from
+# data/reference/capabilities_rates.csv. AZAP baseline is ~9.5e5 kg, so this
+# cap (~1.6x baseline) leaves the score in a live, non-saturated band.
+cap_cip_forfeited_kg = 1500000.0
 cap_trial_hours = 48
 cap_trial_disruptions = 20
 cap_maint_conflicts = 10
@@ -61,4 +68,10 @@ cap_short_runs = 30
 cap_orders_late = 15
 cap_orders_at_risk = 20
 cap_excess_kg = 50000.0
+# DEPRECATED / UNUSED: drove the old symmetric run-length score (long runs were
+# penalised as hard as short ones). Left in place so nothing referencing it breaks.
 target_avg_run_h = 16.0
+# Average production run length (h) at which the campaigns run-length sub-metric
+# scores 100. Monotonic: score = clamp(100 * avg_run_h / floor, 0, 100), so only
+# SHORT runs are penalised and long campaigns are never punished.
+campaign_run_floor_h = 24.0
