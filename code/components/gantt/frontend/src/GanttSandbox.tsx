@@ -4,7 +4,7 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import {
   DndContext, DragOverlay, PointerSensor, useSensor, useSensors,
-  type DragEndEvent, type DragStartEvent,
+  type DragEndEvent, type DragStartEvent, type DragMoveEvent,
 } from "@dnd-kit/core";
 import type { SandboxArgs, ScheduleBlock } from "./types";
 import { isWindowBlock } from "./types";
@@ -15,6 +15,7 @@ import { computeKpis, computeAdherence } from "./utils/kpi";
 import { isCapable, recalcDuration, findOverlapsOnLine } from "./utils/validation";
 import { LINE_HEIGHT, MIN_HOUR_WIDTH, MAX_HOUR_WIDTH, snapToHour, fitToWidth, xToHour } from "./utils/layout";
 import { getRate } from "./utils/validation";
+import { computeDragPreview, type DragPreview } from "./utils/dragPreview";
 import { skuColor, skuTextColor, blockLabel } from "./utils/colors";
 import { setComponentValue, setFrameHeight } from "./streamlit";
 
@@ -25,6 +26,7 @@ import { Palette } from "./components/Palette";
 import { AdherenceTable } from "./components/AdherenceTable";
 import { ContextMenu } from "./components/ContextMenu";
 import { BlockPopover } from "./components/BlockPopover";
+import { DragPreviewBadge } from "./components/DragPreviewBadge";
 
 interface Props {
   args: SandboxArgs;
@@ -64,6 +66,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   const [highlightSku, setHighlightSku] = useState<string | null>(null);
   const [activeDragSku, setActiveDragSku] = useState<string | null>(null);
   const [activeDragBlock, setActiveDragBlock] = useState<ScheduleBlock | null>(null);
+  const [dragPreview, setDragPreview] = useState<DragPreview | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const capableLines = useMemo(() => {
@@ -95,6 +98,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   const onDragStart = useCallback(
     (event: DragStartEvent) => {
       setErrorMsg(null);
+      setDragPreview(null);
       const blockData = event.active.data.current?.block as ScheduleBlock | undefined;
       if (blockData) {
         setActiveDragBlock(blockData);
@@ -106,10 +110,50 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     [],
   );
 
+  // Live, rate-aware preview of the placement the drop would produce.
+  // Never mutates committed state - purely visual until onDragEnd.
+  const onDragMove = useCallback(
+    (event: DragMoveEvent) => {
+      const { active, over, delta } = event;
+      if (!active) return;
+      const activeId = active.id as string;
+      const block =
+        (active.data.current?.block as ScheduleBlock | undefined) ??
+        schedule.find((b) => b.id === activeId) ??
+        cipWindows.find((b) => b.id === activeId);
+      if (!block) return;
+      const translated = active.rect.current.translated;
+      const pointerX = translated ? translated.left + translated.width / 2 : undefined;
+      setDragPreview(
+        computeDragPreview({
+          block,
+          activeId,
+          overId: over?.id as string | undefined,
+          deltaX: delta.x,
+          deltaY: delta.y,
+          pointerHour: hourFromPointer(pointerX),
+          lines,
+          caps,
+          allBlocks: [...schedule, ...cipWindows],
+          hourWidth,
+          lineHeight: LINE_HEIGHT,
+        }),
+      );
+    },
+    [schedule, cipWindows, lines, caps, hourWidth, hourFromPointer],
+  );
+
+  const onDragCancel = useCallback(() => {
+    setActiveDragSku(null);
+    setActiveDragBlock(null);
+    setDragPreview(null);
+  }, []);
+
   const onDragEnd = useCallback(
     (event: DragEndEvent) => {
       setActiveDragSku(null);
       setActiveDragBlock(null);
+      setDragPreview(null);
       const { active, over, delta } = event;
       if (!active) return;
 
@@ -306,6 +350,11 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     : "#00f2c3";
   const ghostFg = skuTextColor(ghostBg);
 
+  // Width of the drag ghost in px: the previewed duration on the hovered line,
+  // falling back to the block's committed duration before the first move event.
+  const ghostHours = dragPreview?.hours ?? activeDragBlock?.run_hours ?? 0;
+  const ghostWidth = Math.max(60, ghostHours * hourWidth);
+
   return (
     <div
       ref={containerRef}
@@ -330,7 +379,13 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         </div>
       )}
 
-      <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd}>
+      <DndContext
+        sensors={sensors}
+        onDragStart={onDragStart}
+        onDragMove={onDragMove}
+        onDragEnd={onDragEnd}
+        onDragCancel={onDragCancel}
+      >
         <GanttChart
           schedule={schedule}
           cipWindows={cipWindows}
@@ -357,20 +412,34 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
 
         <DragOverlay dropAnimation={null}>
           {activeDragBlock ? (
-            <div
-              style={{
-                background: ghostBg,
-                color: ghostFg,
-                padding: "6px 10px",
-                borderRadius: 4,
-                fontSize: 12,
-                fontWeight: 600,
-                boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
-                opacity: 0.9,
-                whiteSpace: "nowrap",
-              }}
-            >
-              {blockLabel(activeDragBlock.block_type, activeDragBlock.sku, activeDragBlock.label)}
+            <div style={{ pointerEvents: "none" }}>
+              <div
+                style={{
+                  background: ghostBg,
+                  color: ghostFg,
+                  padding: "6px 10px",
+                  borderRadius: 4,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
+                  opacity: 0.9,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  boxSizing: "border-box",
+                  // Rate-aware live resize: the ghost takes the width the block
+                  // would occupy on the hovered line (hours x hourWidth).
+                  width: ghostWidth,
+                  height: LINE_HEIGHT - 8,
+                  lineHeight: `${LINE_HEIGHT - 20}px`,
+                  border: dragPreview && !dragPreview.valid ? "2px solid #b71c1c" : "2px solid #333",
+                  filter: dragPreview && !dragPreview.valid ? "saturate(0.4)" : undefined,
+                }}
+              >
+                {blockLabel(activeDragBlock.block_type, activeDragBlock.sku, activeDragBlock.label)}
+                {dragPreview ? ` (${dragPreview.hours}h)` : ""}
+              </div>
+              {dragPreview && <DragPreviewBadge preview={dragPreview} anchor={anchor} />}
             </div>
           ) : null}
         </DragOverlay>
