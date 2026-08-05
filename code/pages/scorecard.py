@@ -22,6 +22,7 @@ from helpers.config import load_toml
 from helpers.paths import data_dir, legacy_dir, reference_dir
 from helpers.scorecard_engine import list_scorecards, save_scorecard, score_calendar
 from helpers.scorecard_ui import render_scorecard, scorecard_table
+from helpers.timefmt import with_display_times
 from helpers.version_manager import upsert_version
 
 st.header("Schedule Scorecard")
@@ -149,4 +150,8 @@ else:
     st.caption("No saved scorecards yet. Click **Score this week** to snapshot history.")
 
 with st.expander("Calendar preview"):
-    st.dataframe(cal, use_container_width=True, hide_index=True)
+    st.caption(
+        "`start_h` / `end_h` are horizon hour offsets from the planning anchor "
+        f"({anchor}); `start` / `end` are the same moments as date + time."
+    )
+    st.dataframe(with_display_times(cal, anchor), use_container_width=True, hide_index=True)

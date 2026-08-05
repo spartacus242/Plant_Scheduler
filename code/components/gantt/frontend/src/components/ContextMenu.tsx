@@ -2,6 +2,7 @@
 
 import React from "react";
 import type { ContextMenuState } from "../hooks/useContextMenu";
+import { hourToStamp } from "../utils/layout";
 
 interface Props {
   menu: ContextMenuState;
@@ -10,6 +11,8 @@ interface Props {
   onDetails: (blockId: string) => void;
   onClose: () => void;
   minRunHours: number;
+  /** Planning anchor, so the split point reads as a wall-clock moment. */
+  anchor: Date;
 }
 
 const itemStyle: React.CSSProperties = {
@@ -20,7 +23,7 @@ const itemStyle: React.CSSProperties = {
 };
 
 export const ContextMenu: React.FC<Props> = ({
-  menu, onSplit, onRemove, onDetails, onClose, minRunHours,
+  menu, onSplit, onRemove, onDetails, onClose, minRunHours, anchor,
 }) => {
   if (!menu.visible || !menu.blockId) return null;
 
@@ -56,7 +59,7 @@ export const ContextMenu: React.FC<Props> = ({
             onMouseEnter={(e) => { (e.target as HTMLElement).style.background = "#f0f4ff"; }}
             onMouseLeave={(e) => { (e.target as HTMLElement).style.background = "transparent"; }}
           >
-            ✂ Split at h{midpoint}
+            ✂ Split at {hourToStamp(midpoint, anchor)}
           </div>
         )}
         <div

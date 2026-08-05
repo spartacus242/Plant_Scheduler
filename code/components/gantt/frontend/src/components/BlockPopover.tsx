@@ -2,16 +2,19 @@
 
 import React from "react";
 import type { ScheduleBlock } from "../types";
+import { hourToStamp } from "../utils/layout";
 
 interface Props {
   block: ScheduleBlock | null;
   x: number;
   y: number;
   rate: number;
+  /** Planning anchor, so hour offsets render as wall-clock date + time. */
+  anchor: Date;
   onClose: () => void;
 }
 
-export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, onClose }) => {
+export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClose }) => {
   if (!block) return null;
 
   const qty = rate > 0 ? Math.round(rate * block.run_hours) : "—";
@@ -46,8 +49,8 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, onClose }) =>
           {block.sku_description && (
             <tr><td style={{ color: "#888", paddingRight: 12 }}>Description</td><td>{block.sku_description}</td></tr>
           )}
-          <tr><td style={{ color: "#888", paddingRight: 12 }}>Start</td><td>h{block.start_hour}</td></tr>
-          <tr><td style={{ color: "#888", paddingRight: 12 }}>End</td><td>h{block.end_hour}</td></tr>
+          <tr><td style={{ color: "#888", paddingRight: 12 }}>Start</td><td>{hourToStamp(block.start_hour, anchor)}</td></tr>
+          <tr><td style={{ color: "#888", paddingRight: 12 }}>End</td><td>{hourToStamp(block.end_hour, anchor)}</td></tr>
           <tr><td style={{ color: "#888", paddingRight: 12 }}>Duration</td><td>{block.run_hours}h</td></tr>
           <tr><td style={{ color: "#888", paddingRight: 12 }}>Rate</td><td>{rate > 0 ? `${rate} UPH` : "N/A"}</td></tr>
           <tr><td style={{ color: "#888", paddingRight: 12 }}>Est. Qty</td><td>{qty}</td></tr>

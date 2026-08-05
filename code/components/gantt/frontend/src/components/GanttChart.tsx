@@ -121,6 +121,7 @@ export const GanttChart: React.FC<Props> = ({
                   lineIndex={lineIndex}
                   viewStart={viewStart}
                   hourWidth={hourWidth}
+                  anchor={anchor}
                   isResizing={isThisResizing}
                   previewStart={isThisResizing ? resizing.previewStart : undefined}
                   previewEnd={isThisResizing ? resizing.previewEnd : undefined}

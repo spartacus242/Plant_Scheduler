@@ -15,6 +15,7 @@ import pandas as pd
 from helpers.calendar_io import load_calendar, save_calendar
 from helpers.paths import versions_dir
 from helpers.safe_io import safe_write_json
+from helpers.timefmt import planning_anchor, with_display_times
 
 MAX_VERSIONS = 5
 _SLUG_RE = re.compile(r"^[a-z0-9_]{1,64}$")
@@ -197,7 +198,10 @@ def export_version_excel(slug: str, data_dir: Path) -> bytes:
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         cal = vdir / "calendar_blocks.csv"
         if cal.exists():
-            pd.read_csv(cal).to_excel(writer, sheet_name="Calendar", index=False)
+            # Raw start_h/end_h stay (the solver round-trips on them); human
+            # start/end datetime columns are added alongside for readers.
+            cal_df = with_display_times(pd.read_csv(cal), planning_anchor(), iso=True)
+            cal_df.to_excel(writer, sheet_name="Calendar", index=False)
         meta_path = vdir / "metadata.json"
         if meta_path.exists():
             meta = json.loads(meta_path.read_text(encoding="utf-8"))

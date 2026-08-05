@@ -4,7 +4,7 @@
 
 import type { ScheduleBlock, LineInfo } from "../types";
 import { isCapable, recalcDuration, findOverlapsOnLine, getRate } from "./validation";
-import { snapToHour } from "./layout";
+import { snapToHour, hourToStamp } from "./layout";
 
 export interface DragPreview {
   /** Line the block would land on. */
@@ -41,6 +41,8 @@ export interface DragPreviewInput {
   allBlocks: ScheduleBlock[];
   hourWidth: number;
   lineHeight: number;
+  /** Planning anchor, so rejection reasons name a wall-clock moment. */
+  anchor: Date;
 }
 
 /**
@@ -51,7 +53,7 @@ export interface DragPreviewInput {
 export function computeDragPreview(input: DragPreviewInput): DragPreview | null {
   const {
     block, activeId, overId, deltaX, deltaY, pointerHour,
-    lines, caps, allBlocks, hourWidth, lineHeight,
+    lines, caps, allBlocks, hourWidth, lineHeight, anchor,
   } = input;
 
   const sourceRate = getRate(block.line_name, block.sku, caps);
@@ -112,7 +114,7 @@ export function computeDragPreview(input: DragPreviewInput): DragPreview | null 
 
   if (valid && findOverlapsOnLine(allBlocks, targetLineName, block.id, startHour, endHour)) {
     valid = false;
-    reason = `Overlap on ${targetLineName} at h${startHour}`;
+    reason = `Overlap on ${targetLineName} at ${hourToStamp(startHour, anchor)}`;
   }
 
   return {

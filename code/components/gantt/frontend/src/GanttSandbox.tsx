@@ -13,7 +13,7 @@ import { useBlockResize } from "./hooks/useBlockResize";
 import { useContextMenu } from "./hooks/useContextMenu";
 import { computeKpis, computeAdherence } from "./utils/kpi";
 import { isCapable, recalcDuration, findOverlapsOnLine } from "./utils/validation";
-import { LINE_HEIGHT, MIN_HOUR_WIDTH, MAX_HOUR_WIDTH, snapToHour, fitToWidth, xToHour } from "./utils/layout";
+import { LINE_HEIGHT, MIN_HOUR_WIDTH, MAX_HOUR_WIDTH, snapToHour, fitToWidth, xToHour, hourToStamp } from "./utils/layout";
 import { getRate } from "./utils/validation";
 import { computeDragPreview, type DragPreview } from "./utils/dragPreview";
 import { skuColor, skuTextColor, blockLabel } from "./utils/colors";
@@ -137,10 +137,11 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           allBlocks: [...schedule, ...cipWindows],
           hourWidth,
           lineHeight: LINE_HEIGHT,
+          anchor,
         }),
       );
     },
-    [schedule, cipWindows, lines, caps, hourWidth, hourFromPointer],
+    [schedule, cipWindows, lines, caps, hourWidth, hourFromPointer, anchor],
   );
 
   const onDragCancel = useCallback(() => {
@@ -193,7 +194,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         const endHour = startHour + dur;
         const allBlocks = [...schedule, ...cipWindows];
         if (findOverlapsOnLine(allBlocks, targetLineName, block.id, startHour, endHour)) {
-          reject(`Overlap on ${targetLineName} at h${startHour}`);
+          reject(`Overlap on ${targetLineName} at ${hourToStamp(startHour, anchor)}`);
           return;
         }
         setErrorMsg(null);
@@ -241,7 +242,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         const newEnd = newStart + block.run_hours;
         const allBlocks = [...schedule, ...cipWindows];
         if (findOverlapsOnLine(allBlocks, block.line_name, block.id, newStart, newEnd)) {
-          reject(`Overlap on ${block.line_name} at h${newStart}`);
+          reject(`Overlap on ${block.line_name} at ${hourToStamp(newStart, anchor)}`);
           return;
         }
         setErrorMsg(null);
@@ -264,14 +265,14 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         const newEnd = newStart + dur;
         const allBlocks = [...schedule, ...cipWindows];
         if (findOverlapsOnLine(allBlocks, targetLine.line_name, block.id, newStart, newEnd)) {
-          reject(`Overlap on ${targetLine.line_name} at h${newStart}`);
+          reject(`Overlap on ${targetLine.line_name} at ${hourToStamp(newStart, anchor)}`);
           return;
         }
         setErrorMsg(null);
         actions.moveBlock(block.id, targetLine.line_name, targetLine.line_id, newStart, dur);
       }
     },
-    [schedule, cipWindows, holdingArea, actions, hourWidth, caps, lines, hourFromPointer, reject],
+    [schedule, cipWindows, holdingArea, actions, hourWidth, caps, lines, hourFromPointer, reject, anchor],
   );
 
   const onResizeCommit = useCallback(
@@ -471,6 +472,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         onDetails={handleBlockClick}
         onClose={closeMenu}
         minRunHours={args.config.min_run_hours}
+        anchor={anchor}
       />
 
       {popover && (
@@ -479,6 +481,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           x={popover.x}
           y={popover.y}
           rate={getRate(popover.block.line_name, popover.block.sku, args.capabilities)}
+          anchor={anchor}
           onClose={() => setPopover(null)}
         />
       )}
