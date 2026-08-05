@@ -139,6 +139,7 @@ st.markdown(
 )
 
 PRESETS = [s for s in SCENARIOS if s["id"] != CUSTOM_SCENARIO_ID]
+_obj_cfg_flex = cfg.get("objective", {})
 
 
 def _render_knobs(scenario: dict, overrides: dict | None = None) -> None:
@@ -172,6 +173,39 @@ selected = st.multiselect(
     format_func=lambda i: next(s["name"] for s in PRESETS if s["id"] == i),
 )
 
+st.markdown("**Planning flexibility (applies to every scenario generated below)**")
+fx1, fx2 = st.columns(2)
+with fx1:
+    cross_week_on = st.checkbox(
+        "Allow moving SKUs between week 1 and week 2",
+        value=False,
+        help=(
+            "AZAP's week becomes a preference, not a hard rule. The solver looks "
+            "at the whole two-week (336h) horizon at once and may pull a week-2 "
+            "SKU into week 1 (or push a week-1 SKU into week 2) to build a longer "
+            "run and avoid a changeover. Total two-week demand still has to be "
+            "met in full. Off = today's behaviour (each week solved separately)."
+        ),
+    )
+with fx2:
+    cip_flex_on = st.checkbox(
+        "Let CIPs move earlier to save a changeover",
+        value=False,
+        help=(
+            "A wash can be pulled FORWARD when doing so removes a changeover. "
+            "It can never be pushed past the line's maximum allowable CIP "
+            "interval - that limit stays a hard rule at every relax level "
+            "(food safety). Off = today's behaviour (CIPs sit as late as legal)."
+        ),
+    )
+if cross_week_on:
+    st.info(
+        "Cross-week is ON: scenarios solve as a single 336h model instead of "
+        "week-0-then-week-1, so orders can merge across AZAP's week boundary. "
+        f"Deviation costs {int(_obj_cfg_flex.get('week_deviation_weight', 40))} "
+        "per order-hour outside the requested week."
+    )
+
 st.caption(f"Versions in use: {len(list_versions(dd))} / 5. Generating will replace prior Scenario X slots when needed.")
 
 
@@ -195,13 +229,36 @@ def _feasibility_summary(feas: dict) -> str:
     if short:
         ids = ", ".join(str(o.get("order_id")) for o in short[:4])
         extras.append(f"{len(short)} order(s) short of min ({ids})")
+    moved = feas.get("week_moved_orders") or []
+    if moved:
+        ids = ", ".join(str(o.get("order_id")) for o in moved[:4])
+        extras.append(f"{len(moved)} order(s) moved out of AZAP's week ({ids})")
+    elif feas.get("cross_week"):
+        extras.append("cross-week on, no order left its AZAP week")
     return " — ".join([base] + extras) if extras else base
 
 
-def _generate_one(scenario: dict, time_limit: int, overrides: dict | None = None) -> bool:
+def _generate_one(
+    scenario: dict,
+    time_limit: int,
+    overrides: dict | None = None,
+    *,
+    cross_week: bool = False,
+    cip_flex: bool = False,
+) -> bool:
     """Solve one scenario, render its result, and save it as a version."""
+    scenario = dict(scenario)
+    scenario["cross_week"] = bool(cross_week)
+    scenario["cip_flex"] = bool(cip_flex)
     with st.status(f"Solving {scenario['name']}...", expanded=True) as status:
         st.write(scenario["intent"])
+        if cross_week or cip_flex:
+            modes = []
+            if cross_week:
+                modes.append("cross-week (AZAP week is a preference)")
+            if cip_flex:
+                modes.append("flexible CIP timing (earlier only)")
+            st.caption("Flexibility: " + "; ".join(modes))
         try:
             result = run_scenario(scenario, dd, time_limit=int(time_limit), overrides=overrides)
         except Exception as e:
@@ -249,7 +306,10 @@ if st.button("Generate selected scenarios", type="primary", disabled=not selecte
         made = 0
         for sid in selected:
             scenario = next(s for s in PRESETS if s["id"] == sid)
-            if _generate_one(scenario, int(tl)):
+            if _generate_one(
+                scenario, int(tl),
+                cross_week=cross_week_on, cip_flex=cip_flex_on,
+            ):
                 made += 1
         if made:
             st.success("Done. Open **Version Compare** to inspect side-by-side and add pros/cons.")
@@ -303,6 +363,24 @@ with oc3:
         value=int(_obj_cfg.get("late_weight", 200)), step=10,
         help="Penalty per hour an order finishes past its due date.",
     )
+    w_week_dev = st.number_input(
+        "week_deviation_weight", min_value=0, max_value=10000,
+        value=int(_obj_cfg.get("week_deviation_weight", 40)), step=5,
+        help=(
+            "Cross-week mode only. Cost per hour an order runs outside AZAP's "
+            "requested week. Lower = more willing to move a SKU between week 1 "
+            "and week 2 to build a longer run."
+        ),
+    )
+    w_cip_flex = st.number_input(
+        "cip_flex_weight", min_value=0, max_value=100,
+        value=int(_obj_cfg.get("cip_flex_weight", 20)), step=5,
+        help=(
+            "CIP flexibility mode only. Percent the CIP-deferral reward is "
+            "scaled to, so a CIP can be pulled earlier to absorb a changeover. "
+            "The line's max allowable CIP interval always stays hard."
+        ),
+    )
 
 st.markdown("**Per-machine changeover weights**")
 cc1, cc2, cc3, cc4 = st.columns(4)
@@ -325,6 +403,8 @@ custom_overrides = {
     "cip_defer_weight": int(w_cip),
     "idle_weight": int(w_idle),
     "late_weight": int(w_late),
+    "week_deviation_weight": int(w_week_dev),
+    "cip_flex_weight": int(w_cip_flex),
     "topload_weight": int(w_topload),
     "ffs_weight": int(w_ffs),
     "ttp_weight": int(w_ttp),
@@ -335,13 +415,22 @@ custom_overrides = {
     "flavor_weight": int(w_flavor),
 }
 
-custom_scenario = make_custom_scenario(custom_name, custom_mode, custom_overrides)
+custom_scenario = make_custom_scenario(
+    custom_name,
+    custom_mode,
+    custom_overrides,
+    cross_week=cross_week_on,
+    cip_flex=cip_flex_on,
+)
 _render_knobs(custom_scenario, custom_overrides)
 
 if st.button("Generate custom scenario", type="primary"):
     if baseline_cal.empty:
         st.error("Need a baseline calendar first.")
-    elif _generate_one(custom_scenario, int(tl), custom_overrides):
+    elif _generate_one(
+        custom_scenario, int(tl), custom_overrides,
+        cross_week=cross_week_on, cip_flex=cip_flex_on,
+    ):
         st.success("Done. Open **Version Compare** to inspect side-by-side and add pros/cons.")
 
 st.divider()

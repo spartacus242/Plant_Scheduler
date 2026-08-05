@@ -26,6 +26,8 @@ def build_model(
     maximize_production: bool = False,
     objective_mode: str = "balanced",
     relax_due: bool = False,
+    cross_week: bool = False,
+    cip_flex: bool = False,
 ) -> Tuple[cp_model.CpModel, Dict[str, Any]]:
     model = cp_model.CpModel()
     orders = data.orders
@@ -59,6 +61,7 @@ def build_model(
     seg_b_interval = {}
     eff_end = {}        # IntVar: effective order end (seg_b_end or seg_a_end)
     lateness = {}       # IntVar: hours past due_end+1 (only when relax_due)
+    week_dev = {}       # (early, late) IntVars: AZAP-week deviation (cross_week)
 
     for l in lines:
         for o_idx, o in enumerate(orders):
@@ -130,8 +133,50 @@ def build_model(
             # Start stays hard in all modes. When relax_due is set, the
             # window END becomes soft: the order may finish up to
             # de + 1 + lateness, with lateness penalized in the objective.
-            model.Add(seg_a_start[key] >= ds_eff).OnlyEnforceIf(present[key])
-            if relax_due:
+            if cross_week:
+                # ── Cross-week mode ──────────────────────────────────
+                # AZAP's week becomes a weighted PREFERENCE instead of a
+                # hard wall: the order may run anywhere inside the full
+                # 0..H horizon (the horizon bounds themselves stay hard,
+                # enforced by the IntVar domains above).  Deviation from
+                # the AZAP window - starting earlier than ds_eff or
+                # finishing later than de+1 - is charged in the objective
+                # at P.objective_week_deviation_weight per hour, so the
+                # solver only moves an order when the changeover /
+                # campaign saving outweighs the deviation cost.
+                # Demand bounds (qty_min/qty_max) are NOT touched here:
+                # moving WHEN something runs is allowed, not making it is
+                # not.
+                early_max = max(0, ds_eff)
+                late_max = max(0, H - (de + 1))
+                early_v = model.NewIntVar(
+                    0, early_max, f"wkEarly_l{l}_o{oid}"
+                )
+                late_v = model.NewIntVar(
+                    0, late_max, f"wkLate_l{l}_o{oid}"
+                )
+                model.Add(early_v == 0).OnlyEnforceIf(present[key].Not())
+                model.Add(late_v == 0).OnlyEnforceIf(present[key].Not())
+                model.Add(
+                    early_v >= ds_eff - seg_a_start[key]
+                ).OnlyEnforceIf(present[key])
+                model.Add(
+                    late_v >= seg_a_end[key] - (de + 1)
+                ).OnlyEnforceIf(present[key])
+                model.Add(
+                    late_v >= seg_b_end[key] - (de + 1)
+                ).OnlyEnforceIf(seg_b_present[key])
+                week_dev[key] = (early_v, late_v)
+                continue_due_block = False
+            else:
+                model.Add(
+                    seg_a_start[key] >= ds_eff
+                ).OnlyEnforceIf(present[key])
+                continue_due_block = True
+
+            if not continue_due_block:
+                pass
+            elif relax_due:
                 late_max = max(0, H - (de + 1))
                 lateness[key] = model.NewIntVar(
                     0, late_max, f"late_l{l}_o{oid}"
@@ -474,7 +519,10 @@ def build_model(
                 weighted_co_cost_per_line.append(co_cost_l)
 
     # ── Week-0 / Week-1 gap constraint ────────────────────────────────────
-    if P.allow_week1_in_week0:
+    # Skipped in cross-week mode: that constraint pins Week-1 production to
+    # start immediately after the line's last Week-0 order, which structurally
+    # forbids the interleaving/merging cross-week mode exists to allow.
+    if P.allow_week1_in_week0 and not cross_week:
         week0_order_idxs = [
             o_idx
             for o_idx, o in enumerate(orders)
@@ -678,6 +726,15 @@ def build_model(
             )
             line_intervals[l].append(c1_int)
             model.Add(c1s >= avail_from).OnlyEnforceIf(b1)
+            # ── CIP MAX-INTERVAL DEADLINE: HARD, ALWAYS ──────────────
+            # FOOD-SAFETY / COMPLIANCE CONSTRAINT.  A CIP may be pulled
+            # EARLIER than this point freely (the only lower bound is
+            # avail_from), but it may NEVER start later.  `interval` here
+            # is the line's max_cip_hrs from data/reference/line_cip_hrs.csv
+            # (P09/P12/P14/P17-P22 = 120h, P10/P11/P13/P15/P16 = 144h).
+            # DO NOT relax this at any relax level and DO NOT gate it on
+            # cip_flex - exceeding max CIP hours is a compliance violation.
+            #
             # CIP deadline is absolute from the line's availability, not
             # from when production first starts.  With carryover hours the
             # line has already been running *before* the planning horizon,
@@ -722,6 +779,8 @@ def build_model(
             )
             line_intervals[l].append(c2_int)
             model.Add(c2s >= c1e).OnlyEnforceIf(b2)
+            # HARD max-interval (see CIP 1 note): never later than one full
+            # line interval after the previous CIP ended.  Earlier is free.
             model.Add(c2s <= c1e + interval).OnlyEnforceIf(b2)
 
             # CIP 3: wide window from c2e to c2e + interval
@@ -732,6 +791,7 @@ def build_model(
             )
             line_intervals[l].append(c3_int)
             model.Add(c3s >= c2e).OnlyEnforceIf(b3)
+            # HARD max-interval (see CIP 1 note). Earlier is free.
             model.Add(c3s <= c2e + interval).OnlyEnforceIf(b3)
 
             # Aggregate: production + CIP time <= available hours
@@ -810,9 +870,24 @@ def build_model(
 
     # ── CIP deferral: collect present-CIP starts for objective term ──────
     #
-    # Incentivise the solver to push CIPs as close to the 120h deadline as
-    # possible by adding sum(cip_starts) to the objective.  Absent CIPs
-    # contribute 0 so they don't distort the term.
+    # WHAT cip_defer DOES: sum(cip_starts) enters every objective branch as
+    # `- cip_defer_total * W_cip`, i.e. a REWARD for a later CIP start.  It
+    # exists so CIPs drift toward their legal deadline instead of being
+    # dumped at hour 0, which would forfeit usable run hours.
+    #
+    # THE TENSION with the plant rule ("a CIP may be moved EARLIER, never
+    # later than the line's max interval"): with a large W_cip the solver
+    # always parks a CIP at the last legal moment, so it will never pull one
+    # forward even when doing so would absorb a changeover (a 6h CIP is
+    # longer than any changeover, so a CIP landing between two different
+    # SKUs makes that changeover free).
+    #
+    # cip_flex resolves it: when enabled, W_cip is scaled down by
+    # P.objective_cip_flex_weight / 100 so the deferral reward no longer
+    # dominates the changeover savings and pulling a CIP forward a few hours
+    # becomes a decision the solver can actually make.  The max-interval
+    # deadline above is untouched and stays HARD - only the *preference* for
+    # lateness is softened, never the legal limit.
     all_cip_starts: list = []
     for l in lines:
         if l in cip_model_vars:
@@ -825,6 +900,12 @@ def build_model(
                 all_cip_starts.append(w_s)
     cip_defer_total = sum(all_cip_starts) if all_cip_starts else 0
     W_cip = P.objective_cip_defer_weight
+    if cip_flex:
+        W_cip = max(
+            0,
+            (P.objective_cip_defer_weight
+             * P.objective_cip_flex_weight) // 100,
+        )
 
     # ── CIP absorption: waive conv→org / cinn→non when CIP is between ──
     #
@@ -1005,6 +1086,15 @@ def build_model(
     late_total = sum(lateness.values()) if lateness else 0
     W_late = P.objective_late_weight
 
+    # AZAP week-deviation penalty (cross_week only; empty dict -> 0 otherwise).
+    # Cost per hour an order runs outside the week AZAP asked for. Added to
+    # every objective branch so the mode behaves identically in all of them.
+    week_dev_total = (
+        sum(e + lt for (e, lt) in week_dev.values()) if week_dev else 0
+    )
+    W_week = P.objective_week_deviation_weight
+    week_pen = week_dev_total * W_week if week_dev else 0
+
     if maximize_production:
         prod_sum = sum(produced[o_idx] for o_idx in range(len(orders)))
         # Production is the primary objective.  Secondary terms from the
@@ -1038,7 +1128,9 @@ def build_model(
         # Scale production so it always dominates secondary terms.
         # Max secondary is ~50k; prod_sum * 1000 puts production in the
         # hundreds-of-millions range, guaranteeing it is never sacrificed.
-        model.Maximize(prod_sum * 1000 - secondary - late_total * W_late)
+        model.Maximize(
+            prod_sum * 1000 - secondary - late_total * W_late - week_pen
+        )
     elif objective_mode == "min-changeovers":
         obj = model.NewIntVar(-(10**12), 10**12, "obj")
         if use_weighted_co:
@@ -1049,6 +1141,7 @@ def build_model(
                 + total_idle * W_idle
                 - cip_defer_total * W_cip
                 + late_total * W_late
+                + week_pen
             )
         else:
             model.Add(
@@ -1057,6 +1150,7 @@ def build_model(
                 + total_idle * W_idle
                 - cip_defer_total * W_cip
                 + late_total * W_late
+                + week_pen
             )
         model.Minimize(obj)
     elif objective_mode == "spread-load":
@@ -1090,6 +1184,7 @@ def build_model(
                 + total_idle * W_idle
                 - cip_defer_total * W_cip
                 + late_total * W_late
+                + week_pen
             )
         else:
             model.Add(
@@ -1100,6 +1195,7 @@ def build_model(
                 + total_idle * W_idle
                 - cip_defer_total * W_cip
                 + late_total * W_late
+                + week_pen
             )
         model.Minimize(obj)
     else:  # balanced (default)
@@ -1115,6 +1211,7 @@ def build_model(
                 + total_idle * W_idle
                 - cip_defer_total * W_cip
                 + late_total * W_late
+                + week_pen
             )
         else:
             model.Add(
@@ -1123,6 +1220,7 @@ def build_model(
                 + total_idle * W_idle
                 - cip_defer_total * W_cip
                 + late_total * W_late
+                + week_pen
             )
         model.Minimize(obj)
 
@@ -1140,5 +1238,6 @@ def build_model(
         "produced": produced,
         "cip_vars": cip_model_vars,
         "lateness": lateness,
+        "week_dev": week_dev,
     }
     return model, vars_dict
