@@ -7,6 +7,7 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from helpers.labels import display_label
 from helpers.scorecard_engine import (
     CATEGORY_DOCS,
     CATEGORY_ORDER,
@@ -268,7 +269,7 @@ def scorecard_table(
             except (TypeError, ValueError):
                 delta_base = None
         rows.append({
-            "week": r.get("week_label"),
+            "week": display_label(r.get("week_label")),
             "scored_at": r.get("scored_at"),
             "composite": comp,
             "Δ vs prior": delta_prev,
