@@ -1,34 +1,59 @@
 // validation.ts — Client-side validation for sandbox operations.
 
 import type { ScheduleBlock } from "../types";
+import type { SideDowntime } from "./abLines";
+import { groupOf, groupRate, hoursForQty, qtyOverWindow } from "./abLines";
 
 export function isCapable(
   lineName: string,
   sku: string,
   caps: Record<string, Record<string, number>>,
 ): boolean {
-  return (caps[lineName]?.[sku] ?? 0) > 0;
+  return getRate(lineName, sku, caps) > 0;
 }
 
+/**
+ * Whole-line rate (kg/h) for a SKU on a line. For a Bossar double line this is
+ * the BOTH-SIDES-UP rate, whether capabilities_rates.csv is keyed by the group
+ * ("P17") or by the halved per-side rows ("P17A"/"P17B").
+ */
 export function getRate(
   lineName: string,
   sku: string,
   caps: Record<string, Record<string, number>>,
 ): number {
-  return caps[lineName]?.[sku] ?? 0;
+  const direct = caps[lineName]?.[sku] ?? 0;
+  if (direct > 0) return direct;
+  return groupRate(caps, lineName, sku);
 }
 
+/**
+ * Duration of `block` if it moved to `newLine` starting at `startHour`.
+ *
+ * The block's quantity is recovered from what it actually produces where it
+ * sits today (which already accounts for any one-sided hours it crosses), then
+ * re-integrated hour by hour on the target line: full rate with both sides up,
+ * half rate with one side down, zero with both down. With no downtime this
+ * reduces exactly to the old qty / rate calculation.
+ */
 export function recalcDuration(
   block: ScheduleBlock,
   newLine: string,
   caps: Record<string, Record<string, number>>,
+  downtime: SideDowntime = {},
+  startHour?: number,
 ): number | null {
   const oldRate = getRate(block.line_name, block.sku, caps);
   const newRate = getRate(newLine, block.sku, caps);
   if (newRate <= 0) return null;
   if (oldRate <= 0) return block.run_hours;
-  const qty = oldRate * block.run_hours;
-  return Math.ceil(qty / newRate);
+  const srcGroup = groupOf(block.line_name);
+  const qty =
+    qtyOverWindow(srcGroup, block.start_hour, block.start_hour + block.run_hours, downtime, oldRate) ||
+    oldRate * block.run_hours;
+  const start = startHour ?? block.start_hour;
+  const hours = hoursForQty(groupOf(newLine), qty, start, downtime, newRate);
+  return hours === null ? null : Math.max(1, hours);
 }
 
 export function checkOverlaps(blocks: ScheduleBlock[]): string[] {

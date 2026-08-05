@@ -5,6 +5,8 @@
 import type { ScheduleBlock, LineInfo } from "../types";
 import { isCapable, recalcDuration, findOverlapsOnLine, getRate } from "./validation";
 import { snapToHour, hourToStamp } from "./layout";
+import type { SideDowntime } from "./abLines";
+import { groupOf, hasOneSidedStretch, isDouble } from "./abLines";
 
 export interface DragPreview {
   /** Line the block would land on. */
@@ -23,6 +25,8 @@ export interface DragPreview {
   valid: boolean;
   /** Human reason when invalid. */
   reason: string | null;
+  /** True when the placement crosses hours where only one side is running. */
+  oneSided: boolean;
 }
 
 export interface DragPreviewInput {
@@ -43,6 +47,8 @@ export interface DragPreviewInput {
   lineHeight: number;
   /** Planning anchor, so rejection reasons name a wall-clock moment. */
   anchor: Date;
+  /** Per-side scheduled downtime, keyed by line/side name. */
+  downtime?: SideDowntime;
 }
 
 /**
@@ -53,7 +59,7 @@ export interface DragPreviewInput {
 export function computeDragPreview(input: DragPreviewInput): DragPreview | null {
   const {
     block, activeId, overId, deltaX, deltaY, pointerHour,
-    lines, caps, allBlocks, hourWidth, lineHeight, anchor,
+    lines, caps, allBlocks, hourWidth, lineHeight, anchor, downtime = {},
   } = input;
 
   const sourceRate = getRate(block.line_name, block.sku, caps);
@@ -83,6 +89,7 @@ export function computeDragPreview(input: DragPreviewInput): DragPreview | null 
 
   const sameLine = targetLineName === block.line_name && !activeId.startsWith("holding_");
   const rate = getRate(targetLineName, block.sku, caps);
+  const targetGroup = groupOf(targetLineName);
 
   // Duration: window blocks (cip/maintenance/contractor/line_down) and same-line
   // moves keep their hours; production/trial moves recalculate from the rate map.
@@ -90,18 +97,26 @@ export function computeDragPreview(input: DragPreviewInput): DragPreview | null 
   let valid = true;
   let reason: string | null = null;
 
-  if (!sameLine) {
-    if (block.block_type !== "cip" && !isCapable(targetLineName, block.sku, caps)) {
+  // Duration is recalculated whenever the placement could cross a one-sided
+  // (half-rate) stretch, not only on a line change: sliding a block along a
+  // double line into or out of a side-down window changes how long it takes.
+  const needsRecalc =
+    block.block_type !== "cip" &&
+    (!sameLine ||
+      (isDouble(targetGroup) &&
+        (hasOneSidedStretch(targetGroup, startHour, startHour + block.run_hours, downtime) ||
+          hasOneSidedStretch(targetGroup, block.start_hour, block.start_hour + block.run_hours, downtime))));
+
+  if (!sameLine && block.block_type !== "cip" && !isCapable(targetLineName, block.sku, caps)) {
+    valid = false;
+    reason = `Line ${targetLineName} cannot run ${block.sku}`;
+  } else if (needsRecalc) {
+    const newDur = recalcDuration(block, targetLineName, caps, downtime, startHour);
+    if (newDur === null) {
       valid = false;
-      reason = `Line ${targetLineName} cannot run ${block.sku}`;
-    } else if (block.block_type !== "cip") {
-      const newDur = recalcDuration(block, targetLineName, caps);
-      if (newDur === null) {
-        valid = false;
-        reason = `No rate for ${block.sku} on ${targetLineName}`;
-      } else {
-        hours = newDur;
-      }
+      reason = `No rate for ${block.sku} on ${targetLineName}`;
+    } else {
+      hours = newDur;
     }
   }
 
@@ -111,6 +126,8 @@ export function computeDragPreview(input: DragPreviewInput): DragPreview | null 
   }
 
   const endHour = startHour + hours;
+
+  const oneSided = hasOneSidedStretch(targetGroup, startHour, endHour, downtime);
 
   if (valid && findOverlapsOnLine(allBlocks, targetLineName, block.id, startHour, endHour)) {
     valid = false;
@@ -127,5 +144,6 @@ export function computeDragPreview(input: DragPreviewInput): DragPreview | null 
     sourceHours,
     valid,
     reason,
+    oneSided,
   };
 }
