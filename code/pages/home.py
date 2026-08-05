@@ -26,10 +26,16 @@ STEPS = (
         "Open Data Files",
     ),
     (
-        "2. Score the AZAP schedule",
-        "Rate this week's planned schedule so you know where it hurts before you change it.",
+        "2. Score the current schedule",
+        "Rate the plant's own line schedule so you know where it hurts before you change it. AZAP (the demand plan) only says which SKUs and how many kg.",
         "pages/scorecard.py",
         "Open Schedule Scorecard",
+    ),
+    (
+        "2b. (Optional) Naive baseline from the demand plan",
+        "No schedule yet, or want a strawman? Lay AZAP's demand out as-is -- no solver, instant.",
+        "pages/generate.py",
+        "Open Generate Scenarios",
     ),
     (
         "3. What-if in the Plant Calendar",
@@ -104,9 +110,13 @@ that scores a schedule the same way every week.
 
 | Phase | Question |
 | --- | --- |
-| **Schedule Scorecard** | How good is this week's (AZAP) schedule? |
+| **Schedule Scorecard** | How good is this week's line schedule? |
 | **Plant Calendar** | If I move this block, what happens to the score? |
 | **Generate Scenarios** | Which solver alternatives beat the baseline -- and why? |
+
+AZAP (`data/reference/demand_plan.csv`) is the customer / corporate **demand plan**: which SKUs,
+how many kg, which week. It is not a schedule -- it never assigns lines, sequence or equipment.
+The line schedule (`data/calendar_blocks.csv`) is the plant's own, built by the production planner.
 
 CIP stays critical. One planner enters production, maintenance, trials, contractor work, and line-downs.
 

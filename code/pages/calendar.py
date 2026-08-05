@@ -88,9 +88,9 @@ if dem_path.exists():
 
 schedule, windows = calendar_to_gantt_payload(cal)
 
-# Freeze AZAP / disk baseline once per session (or after reload / save)
+# Freeze the on-disk current schedule as baseline once per session (or after reload / save)
 if "cal_baseline_score" not in st.session_state or st.session_state.get("cal_baseline_path") != str(cal_path):
-    baseline_res = score_calendar(cal, week_label="AZAP", data_dir=dd)
+    baseline_res = score_calendar(cal, week_label="current schedule", data_dir=dd)
     st.session_state["cal_baseline_score"] = baseline_res.to_dict()
     st.session_state["cal_baseline_path"] = str(cal_path)
 
@@ -150,7 +150,7 @@ live = score_calendar(working, week_label="what-if", data_dir=dd)
 baseline_dict = st.session_state.get("cal_baseline_score") or {}
 if baseline_dict:
     baseline = ScorecardResult.from_dict(baseline_dict)
-    render_delta_strip(baseline, live, title="Δ vs AZAP / disk baseline")
+    render_delta_strip(baseline, live, title="Δ vs current schedule (on disk)")
     for line in delta_narrative(baseline, live)[:8]:
         st.caption(line)
 

@@ -1,6 +1,6 @@
 # helpers/scorecard_engine.py — Operational truth model (Phase 0).
 #
-# Same functions score AZAP baseline, DnD what-if calendars, and solver scenarios.
+# Same functions score the current schedule, DnD what-if calendars, and solver scenarios.
 # Draft v0 formulas — thresholds live in flowstate.toml [scorecard].
 
 from __future__ import annotations

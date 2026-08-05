@@ -46,7 +46,7 @@ def scorecard_config(cfg: dict | None = None) -> dict[str, Any]:
         "cap_cip_hours": 120,
         "cap_cip_forfeited": 200,
         # Forfeited CIP is scored in kg of lost production (hours x line avg
-        # kg/h). Calibrated ~1.6x the AZAP baseline so it does not clamp to 0.
+        # kg/h). Calibrated ~1.6x the seed schedule so it does not clamp to 0.
         "cap_cip_forfeited_kg": 1500000.0,
         "cap_trial_hours": 48,
         "cap_trial_disruptions": 20,

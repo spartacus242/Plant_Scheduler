@@ -14,7 +14,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
+from helpers.config import load_toml
 from helpers.data_catalog import CATALOG, CSV_ENCODING, missing_columns, read_csv, status
+from helpers.manual_import_ui import render_manual_import
 from helpers.paths import data_dir
 from helpers.safe_io import safe_write_csv
 
@@ -34,6 +36,23 @@ def backup(path: Path) -> Path:
     dest.write_bytes(path.read_bytes())
     return dest
 
+
+st.divider()
+st.subheader("Upload the planner's manual line schedule")
+st.caption(
+    "AZAP (the demand plan, data/reference/demand_plan.csv) says which SKUs and how many kg -- "
+    "it never assigns lines. The production planner builds the real line schedule himself. "
+    "Upload it here to make it the base model."
+)
+_cfg = load_toml()
+_sched = _cfg.get("scheduler", {})
+with st.expander("Import manual line schedule (CSV / Excel)", expanded=False):
+    render_manual_import(
+        dd,
+        _sched.get("planning_start_date", "2026-02-15 00:00:00"),
+        int(_sched.get("horizon_hours", 336)),
+        key="data_manual",
+    )
 
 for spec in CATALOG:
     info = status(spec, dd)

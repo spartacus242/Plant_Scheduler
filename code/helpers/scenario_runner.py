@@ -1,4 +1,4 @@
-# helpers/scenario_runner.py — Phase 2: generate solver scenarios A–D vs AZAP baseline.
+# helpers/scenario_runner.py - Phase 2: generate solver scenarios A-D vs the current schedule.
 #
 # Wraps Flowstate-legacy CP-SAT with different objective modes, imports results
 # into calendar_blocks shape, and scores with the same scorecard engine.

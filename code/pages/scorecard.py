@@ -19,44 +19,48 @@ from helpers.calendar_io import (
     save_calendar,
 )
 from helpers.config import load_toml
+from helpers.labels import display_label
+from helpers.manual_import_ui import (
+    backup_file,
+    render_manual_import,
+    snapshot_current_schedule,
+)
 from helpers.paths import data_dir, legacy_dir, reference_dir
 from helpers.scorecard_engine import list_scorecards, save_scorecard, score_calendar
 from helpers.scorecard_ui import render_scorecard, scorecard_table
 from helpers.timefmt import with_display_times
-from helpers.version_manager import upsert_version
 
 st.header("Schedule Scorecard")
 st.caption(
-    "Phase 0 — score the corporate / AZAP schedule consistently every week. "
+    "Phase 0 - score the plant's own line schedule consistently every week. "
     "No optimization. Answer: **How good is this week's schedule?**"
+)
+st.info(
+    "**AZAP is the demand plan, not a schedule.** AZAP tells the plant which SKUs to make, "
+    "how many kg, and in which week (`data/reference/demand_plan.csv`). It never assigns "
+    "lines, sequence or equipment. The schedule scored on this page is the plant's own "
+    "line schedule (`data/calendar_blocks.csv`), built by the production planner.",
+    icon=":material/info:",
 )
 
 dd = data_dir()
 cal_path = dd / "calendar_blocks.csv"
 cfg = load_toml()
 anchor = cfg.get("scheduler", {}).get("planning_start_date", "2026-02-15 00:00:00")
-week_label = st.text_input("Week label", value=f"AZAP-{date.today().isoformat()}")
+horizon_h = int(cfg.get("scheduler", {}).get("horizon_hours", 336))
+week_label = st.text_input("Week label", value=f"Week-{date.today().isoformat()}")
 
 
-def _snapshot_azap_baseline(cal) -> None:
-    """Keep Compare/Generate in sync with the official imported schedule."""
-    result = score_calendar(cal, week_label="AZAP Baseline", data_dir=dd)
-    try:
-        upsert_version(
-            "azap_baseline",
-            "AZAP Baseline",
-            cal,
-            result.to_dict(),
-            dd,
-            source="azap_import",
-            notes="Official calendar_blocks.csv snapshot from Schedule Scorecard import.",
-        )
-    except ValueError as e:
-        st.warning(f"Could not upsert azap_baseline version: {e}")
+# -- Import the planner's own manual schedule ---------------------------
+with st.expander(
+    "Upload the planner's manual line schedule (recommended base model)",
+    expanded=not cal_path.exists(),
+):
+    render_manual_import(dd, anchor, horizon_h, key="sc_manual")
 
 
-# ── Import ──────────────────────────────────────────────────────────────
-with st.expander("Import corporate / AZAP schedule", expanded=not cal_path.exists()):
+# -- Import the legacy seed data ----------------------------------------
+with st.expander("Import legacy seed schedule (developer / first run)"):
     st.markdown(
         "Import converts legacy `schedule_phase2.csv` + `cip_windows.csv` + downtimes "
         "into the unified `calendar_blocks.csv` used by scoring, the digital twin, and scenarios."
@@ -69,17 +73,18 @@ with st.expander("Import corporate / AZAP schedule", expanded=not cal_path.exist
 
     if src_choice == "Flowstate-legacy data (seed)":
         leg = legacy_dir() / "data"
-        if st.button("Import from Flowstate-legacy", type="primary"):
+        if st.button("Import from Flowstate-legacy"):
             cal = import_legacy_schedule(
                 leg / "schedule_phase2.csv",
                 leg / "cip_windows.csv",
                 reference_dir(dd) / "downtimes.csv",
                 planning_anchor=anchor,
             )
+            backup_file(cal_path, dd)
             save_calendar(cal, cal_path)
             ensure_lines_from_calendar(cal, dd / "lines.csv")
-            _snapshot_azap_baseline(cal)
-            st.success(f"Imported {len(cal)} blocks into calendar_blocks.csv (+ azap_baseline version)")
+            snapshot_current_schedule(cal, dd)
+            st.success(f"Imported {len(cal)} blocks into calendar_blocks.csv (+ saved version)")
             st.rerun()
     elif src_choice == "Upload CSVs":
         up_sched = st.file_uploader("schedule_phase2.csv", type=["csv"])
@@ -94,10 +99,11 @@ with st.expander("Import corporate / AZAP schedule", expanded=not cal_path.exist
                 cip_p = tmp / "cip_windows.csv"
                 cip_p.write_bytes(up_cip.getvalue())
             cal = import_legacy_schedule(sched_p, cip_p, reference_dir(dd) / "downtimes.csv", anchor)
+            backup_file(cal_path, dd)
             save_calendar(cal, cal_path)
             ensure_lines_from_calendar(cal, dd / "lines.csv")
-            _snapshot_azap_baseline(cal)
-            st.success(f"Imported {len(cal)} blocks (+ azap_baseline version)")
+            snapshot_current_schedule(cal, dd)
+            st.success(f"Imported {len(cal)} blocks (+ saved version)")
             st.rerun()
 
 # ── Score ───────────────────────────────────────────────────────────────
@@ -121,14 +127,14 @@ result_dict = st.session_state.get("last_scorecard")
 if result_dict is None:
     result_dict = score_calendar(cal, week_label=week_label, data_dir=dd).to_dict()
 
-# Official / AZAP composite for history deltas
-azap_live = score_calendar(cal, week_label="official", data_dir=dd)
+# Current-schedule composite for history deltas
+current_live = score_calendar(cal, week_label="official", data_dir=dd)
 
 st.divider()
 history = list_scorecards(dd)
 if history:
     labels = [
-        f"{h.get('week_label', '?')} · {h.get('scored_at', '')} · composite={h.get('composite', '—')}"
+        f"{display_label(h.get('week_label', '?'))} · {h.get('scored_at', '')} · composite={h.get('composite', '—')}"
         for h in history
     ]
     pick = st.selectbox("View scorecard", ["Current / latest"] + labels, index=0)
@@ -142,7 +148,7 @@ st.divider()
 st.subheader("Prior weeks")
 if history:
     st.dataframe(
-        scorecard_table(history, azap_composite=azap_live.composite),
+        scorecard_table(history, baseline_composite=current_live.composite),
         use_container_width=True,
         hide_index=True,
     )

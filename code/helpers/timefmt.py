@@ -68,6 +68,54 @@ def hour_to_iso(hour: float, anchor: datetime | str | None = None) -> str:
     return hour_to_datetime(hour, anchor).strftime("%Y-%m-%d %H:%M")
 
 
+_DATETIME_FORMATS = (
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%d %H:%M",
+    "%Y-%m-%dT%H:%M",
+    "%Y-%m-%d",
+    "%m/%d/%Y %H:%M:%S",
+    "%m/%d/%Y %H:%M",
+    "%m/%d/%Y",
+    "%d/%m/%Y %H:%M",
+    "%d.%m.%Y %H:%M",
+    "%d.%m.%Y",
+)
+
+
+def parse_datetime(value: Any) -> datetime | None:
+    """Best-effort parse of a planner-supplied datetime cell. None if unparseable."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    text = str(value).strip().lstrip("\ufeff")
+    if not text or text.lower() in ("nan", "nat", "none"):
+        return None
+    for fmt in _DATETIME_FORMATS:
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def datetime_to_hour(value: Any, anchor: datetime | str | None = None) -> float | None:
+    """Hour offset from the planning anchor for a datetime-ish value.
+
+    Inverse of hour_to_datetime. Returns None when the value cannot be parsed,
+    so callers can report a per-row error instead of raising.
+    """
+    dt = parse_datetime(value)
+    if dt is None:
+        return None
+    delta = dt - parse_anchor(anchor)
+    return delta.total_seconds() / 3600.0
+
+
 def with_display_times(
     df: Any,
     anchor: datetime | str | None = None,

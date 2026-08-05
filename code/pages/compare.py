@@ -13,6 +13,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from helpers.calendar_io import load_calendar, save_calendar
+from helpers.labels import display_name
 from helpers.paths import data_dir
 from helpers.scorecard_engine import ScorecardResult, delta_narrative, score_calendar
 from helpers.scorecard_ui import render_delta_strip, render_scorecard
@@ -29,7 +30,7 @@ from helpers.version_manager import (
 
 st.header("Version Compare")
 st.caption(
-    "Compare named options and solver scenarios against the AZAP / official baseline. "
+    "Compare named options and solver scenarios against the current schedule. "
     "Raw metrics drive 'show me why'; the composite is only a conversation starter."
 )
 
@@ -47,7 +48,7 @@ if not versions and baseline is None:
     st.stop()
 
 if baseline:
-    st.subheader("Official AZAP / current calendar")
+    st.subheader("Current schedule (official calendar)")
     render_scorecard(baseline, show_formulas=False, show_contribution=True)
 
 if not versions:
@@ -55,12 +56,14 @@ if not versions:
     st.stop()
 
 # Side-by-side picker — default left = official AZAP when available
-names = {v["slug"]: v.get("name", v["slug"]) for v in versions}
+# display_name() remaps legacy on-disk names (e.g. the azap_baseline slug)
+# without renaming anything under data/versions/.
+names = {v["slug"]: display_name(v["slug"], v.get("name")) for v in versions}
 left_options = ([OFFICIAL_KEY] if baseline else []) + list(names.keys())
 
 def _fmt_left(s: str) -> str:
     if s == OFFICIAL_KEY:
-        return "Official AZAP / current"
+        return "Current schedule (official)"
     return names.get(s, s)
 
 default_left = OFFICIAL_KEY if baseline else list(names.keys())[0]
@@ -75,7 +78,7 @@ with c1:
     )
 with c2:
     right_opts = [s for s in names if s != left_slug] or list(names.keys())
-    # Prefer a non-azap_baseline scenario when left is official
+    # Prefer something other than the imported-schedule snapshot when left is official
     preferred = next((s for s in right_opts if s != "azap_baseline"), right_opts[0])
     right_slug = st.selectbox(
         "Proposed (right)",
@@ -88,7 +91,7 @@ with c2:
 if left_slug == OFFICIAL_KEY:
     left_cal = official
     left_sc = baseline.to_dict() if baseline else {}
-    left_label = "Official AZAP / current"
+    left_label = "Current schedule (official)"
     left_res = baseline
 else:
     left = load_version(left_slug, dd)
@@ -167,7 +170,7 @@ else:
     st.caption("No material differences.")
 
 if baseline and left_slug != OFFICIAL_KEY:
-    st.subheader("vs Official AZAP / current")
+    st.subheader("vs current schedule (official)")
     for label, res in ((left_label, left_res), (right_label, right_res)):
         with st.expander(f"{label} vs official"):
             for d in delta_narrative(baseline, res):
@@ -178,7 +181,7 @@ st.divider()
 st.subheader("Manage versions")
 for v in versions:
     slug = v["slug"]
-    with st.expander(f"{v.get('name', slug)}  ·  composite={(v.get('scorecard') or {}).get('composite', '—')}  ·  {v.get('source', '')}"):
+    with st.expander(f"{display_name(slug, v.get('name'))}  ·  composite={(v.get('scorecard') or {}).get('composite', '—')}  ·  {v.get('source', '')}"):
         st.caption(v.get("timestamp", ""))
         pros = st.text_area("Pros", value=v.get("pros", ""), key=f"pros_{slug}")
         cons = st.text_area("Cons", value=v.get("cons", ""), key=f"cons_{slug}")
@@ -191,7 +194,7 @@ for v in versions:
         if sc:
             render_scorecard(sc, show_formulas=False)
 
-        new_name = st.text_input("Rename", value=v.get("name", slug), key=f"rename_{slug}")
+        new_name = st.text_input("Rename", value=display_name(slug, v.get("name")), key=f"rename_{slug}")
         a, b, c, d = st.columns(4)
         if a.button("Rename", key=f"do_rename_{slug}"):
             rename_version(slug, new_name, dd)

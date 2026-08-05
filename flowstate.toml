@@ -58,7 +58,7 @@ cap_cip_hours = 120
 cap_cip_forfeited = 200
 # Forfeited CIP expressed as KILOGRAMS of lost production: for each CIP,
 # max(0, interval_h - run_h_since_last_cip) x that line's average kg/h from
-# data/reference/capabilities_rates.csv. AZAP baseline is ~9.5e5 kg, so this
+# data/reference/capabilities_rates.csv. The seed schedule is ~9.5e5 kg, so this
 # cap (~1.6x baseline) leaves the score in a live, non-saturated band.
 cap_cip_forfeited_kg = 1500000.0
 cap_trial_hours = 48

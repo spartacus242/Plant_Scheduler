@@ -8,7 +8,7 @@ The hard part is not generating a Gantt chart. It is building a model that can s
 
 Once that exists, optimization is a mathematically solvable problem. Planners will not accept "the computer says do this," but they will accept:
 
-> "Current (AZAP) schedule scores 62. Proposed balanced schedule scores 84 — show me why."
+> "Current schedule scores 62. Proposed balanced schedule scores 84 - show me why."
 
 ## Phases
 
@@ -16,7 +16,7 @@ Once that exists, optimization is a mathematically solvable problem. Planners wi
 | --- | --- | --- |
 | **0 — Schedule Scorecard** | How good is this week's schedule? | Primary home page |
 | **1 — Digital Twin** | If I move X, what happens to the score? | Plant Calendar (DnD) |
-| **2 — Optimizer** | Which scenarios beat AZAP, and why? | Generate Scenarios |
+| **2 — Optimizer** | Which scenarios beat the current schedule, and why? | Generate Scenarios |
 
 CIP remains first-class. The solver is a **scenario generator**, not the home screen.
 

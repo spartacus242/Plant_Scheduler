@@ -41,10 +41,10 @@ class DataFile:
 CATALOG: tuple = (
     DataFile(
         key="calendar_blocks",
-        name="AZAP schedule (calendar blocks)",
+        name="Current schedule (calendar blocks)",
         subdir="",
         filename="calendar_blocks.csv",
-        blurb="This week's planned blocks -- what runs on which line, when.",
+        blurb="The plant's own line schedule: what runs on which line, when. Not AZAP -- AZAP only says which SKUs and how many kg.",
         key_columns=("block_id", "block_type", "line_id", "start_h", "end_h"),
     ),
     DataFile(
@@ -73,10 +73,10 @@ CATALOG: tuple = (
     ),
     DataFile(
         key="demand_plan",
-        name="Demand plan",
+        name="Demand plan (AZAP)",
         subdir="reference",
         filename="demand_plan.csv",
-        blurb="Orders to cover this horizon, with target quantities and due windows.",
+        blurb="AZAP: the customer / corporate demand plan -- which SKU, how many kg, which week. It does not assign lines.",
         key_columns=("order_id", "sku", "qty_target"),
     ),
     DataFile(

@@ -1,4 +1,4 @@
-# helpers/calendar_io.py — Unified calendar_blocks load/save + AZAP/legacy import.
+# helpers/calendar_io.py - Unified calendar_blocks load/save + legacy import.
 
 from __future__ import annotations
 

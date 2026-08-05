@@ -1,18 +1,25 @@
-# pages/generate.py — Phase 2: Optimizer scenarios vs AZAP baseline.
+# pages/generate.py - Phase 2: Optimizer scenarios vs the current schedule.
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from helpers.calendar_io import load_calendar
+from helpers.calendar_io import load_calendar, save_calendar
 from helpers.config import load_toml
+from helpers.labels import display_name
+from helpers.naive_baseline import (
+    NAIVE_VERSION_NAME,
+    NAIVE_VERSION_SLUG,
+    build_naive_calendar,
+)
 from helpers.paths import data_dir, legacy_dir
 from helpers.scenario_runner import (
     CUSTOM_SCENARIO_ID,
@@ -25,11 +32,11 @@ from helpers.scenario_runner import (
 )
 from helpers.scorecard_engine import delta_narrative, score_calendar
 from helpers.scorecard_ui import render_scorecard
-from helpers.version_manager import list_versions
+from helpers.version_manager import list_versions, upsert_version
 
 st.header("Generate Scenarios")
 st.caption(
-    "Phase 2 — let the solver propose alternatives. Compare each to the AZAP / official baseline. "
+    "Phase 2 - let the solver propose alternatives. Compare each to the current schedule (the plant's own line schedule). "
     "Planners accept 'baseline 62 → proposed 84 — show me why,' not 'the computer says do this.'"
 )
 
@@ -43,13 +50,81 @@ default_tl = int(cfg.get("scheduler", {}).get("time_limit", 60))
 
 baseline_cal = load_calendar(dd / "calendar_blocks.csv")
 if baseline_cal.empty:
-    st.warning("Import / score an official calendar on the Scorecard page first (AZAP baseline).")
+    st.warning("No current schedule yet. Import the planner's schedule on the Scorecard page, or generate the naive demand-plan baseline below.")
 else:
-    baseline = score_calendar(baseline_cal, week_label="AZAP baseline", data_dir=dd)
-    st.subheader("AZAP / official baseline")
+    baseline = score_calendar(baseline_cal, week_label="current schedule", data_dir=dd)
+    st.subheader("Current schedule (baseline)")
     st.metric("Composite", f"{baseline.composite:.0f}" if baseline.composite is not None else "n/a")
     with st.expander("Baseline scorecard"):
         render_scorecard(baseline, show_formulas=False)
+
+st.divider()
+
+# -- Naive strawman straight from the demand plan (no solver) -------------
+st.subheader("Naive baseline from the demand plan (no solver)")
+st.caption(
+    "AZAP is the customer / corporate **demand plan**: which SKU, how many kg, which week. "
+    "It does not schedule lines. This button takes AZAP literally -- every order runs in the "
+    "week it asked for, on the fastest capable line, back to back -- with no changeover, CIP "
+    "or optimization logic at all. It is the deliberate strawman: it shows what 'just do what "
+    "AZAP said' actually costs. It runs instantly (plain Python, no CP-SAT)."
+)
+
+nc1, nc2 = st.columns([1, 2])
+with nc1:
+    naive_strategy = st.selectbox(
+        "Line pick",
+        options=["fastest", "least_loaded"],
+        format_func=lambda s: "Fastest capable line" if s == "fastest" else "Least-loaded capable line",
+        key="naive_strategy",
+    )
+with nc2:
+    naive_set_base = st.checkbox(
+        "Also write it to data/calendar_blocks.csv (make it the current schedule)",
+        value=False,
+        key="naive_set_base",
+        help="Off by default: the planner's own manual schedule is usually the better base model.",
+    )
+
+if st.button("Generate naive baseline", key="gen_naive"):
+    horizon = int(cfg.get("scheduler", {}).get("horizon_hours", 336))
+    nres = build_naive_calendar(dd, horizon_hours=horizon, strategy=naive_strategy)
+    for note in nres.notes:
+        st.caption(note)
+    if not nres.ok:
+        st.error("Could not build a naive baseline. See the notes above.")
+    else:
+        nsc = score_calendar(nres.calendar, week_label=NAIVE_VERSION_NAME, data_dir=dd)
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Composite", f"{nsc.composite:.0f}" if nsc.composite is not None else "n/a")
+        m2.metric("Orders placed", len(nres.placed))
+        m3.metric("Unplaced", len(nres.unplaced))
+        try:
+            slug = upsert_version(
+                NAIVE_VERSION_SLUG,
+                NAIVE_VERSION_NAME,
+                nres.calendar,
+                nsc.to_dict(),
+                dd,
+                source="naive_demand_plan",
+                notes=(
+                    "Strawman: demand plan laid out as-is (AZAP week honoured, "
+                    f"{naive_strategy} capable line, no changeover/CIP/optimization)."
+                ),
+            )
+            st.success(f"Saved version `{slug}` - {NAIVE_VERSION_NAME}")
+        except ValueError as e:
+            st.warning(f"Could not save the naive version: {e}")
+        if naive_set_base:
+            save_calendar(nres.calendar, dd / "calendar_blocks.csv")
+            st.success("Written to data/calendar_blocks.csv as the current schedule.")
+        if nres.unplaced:
+            st.warning(f"{len(nres.unplaced)} order(s) could not be placed:")
+            st.dataframe(pd.DataFrame(nres.unplaced), use_container_width=True, hide_index=True)
+        with st.expander("Naive placement detail"):
+            st.dataframe(pd.DataFrame(nres.placed), use_container_width=True, hide_index=True)
+        with st.expander("Naive scorecard"):
+            render_scorecard(nsc, show_formulas=False)
 
 st.divider()
 st.markdown(
@@ -273,4 +348,4 @@ st.divider()
 st.subheader("Saved versions")
 for v in list_versions(dd):
     sc = (v.get("scorecard") or {}).get("composite")
-    st.write(f"- **{v.get('name')}** (`{v['slug']}`) · composite={sc} · {v.get('source', '')}")
+    st.write(f"- **{display_name(v['slug'], v.get('name'))}** (`{v['slug']}`) · composite={sc} · {v.get('source', '')}")

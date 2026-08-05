@@ -2,7 +2,7 @@
 #
 # Phase 0: Schedule Scorecard
 # Phase 1: Digital Twin (DnD what-if)
-# Phase 2: Optimizer scenarios vs AZAP baseline
+# Phase 2: Optimizer scenarios vs the current schedule
 
 from __future__ import annotations
 

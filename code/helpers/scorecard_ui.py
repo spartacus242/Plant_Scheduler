@@ -229,7 +229,7 @@ def render_delta_strip(
     cols = st.columns(7)
     if b_comp is not None and p_comp is not None:
         delta = float(p_comp) - float(b_comp)
-        cols[0].metric("Composite", f"{p_comp:.0f}", f"{delta:+.1f} vs AZAP {b_comp:.0f}")
+        cols[0].metric("Composite", f"{p_comp:.0f}", f"{delta:+.1f} vs base {b_comp:.0f}")
     else:
         cols[0].metric("Composite", f"{p_comp:.0f}" if p_comp is not None else "n/a")
 
@@ -247,7 +247,7 @@ def render_delta_strip(
 def scorecard_table(
     results: list[dict[str, Any]],
     *,
-    azap_composite: float | None = None,
+    baseline_composite: float | None = None,
 ) -> pd.DataFrame:
     # Chronological for prior-week delta (list_scorecards is reverse chrono)
     chronological = list(reversed(results))
@@ -261,18 +261,18 @@ def scorecard_table(
                 delta_prev = round(float(comp) - float(prev_comp), 1)
             except (TypeError, ValueError):
                 delta_prev = None
-        delta_azap = None
-        if comp is not None and azap_composite is not None:
+        delta_base = None
+        if comp is not None and baseline_composite is not None:
             try:
-                delta_azap = round(float(comp) - float(azap_composite), 1)
+                delta_base = round(float(comp) - float(baseline_composite), 1)
             except (TypeError, ValueError):
-                delta_azap = None
+                delta_base = None
         rows.append({
             "week": r.get("week_label"),
             "scored_at": r.get("scored_at"),
             "composite": comp,
             "Δ vs prior": delta_prev,
-            "Δ vs AZAP": delta_azap,
+            "Δ vs current": delta_base,
             "recipe_co": (r.get("changeovers") or {}).get("recipe_changes"),
             "format_co": (r.get("changeovers") or {}).get("format_changes"),
             "co_hours": (r.get("changeovers") or {}).get("total_co_hours"),
