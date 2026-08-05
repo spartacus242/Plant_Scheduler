@@ -62,7 +62,9 @@ CATEGORY_DOCS = {
     ),
     "campaigns": (
         "Run-length discipline. Long, consolidated campaigns are efficient; a week "
-        "chopped into short runs bleeds changeover and ramp time."
+        "chopped into short runs bleeds changeover and ramp time. Scored "
+        "longer-is-better against campaign_run_floor_h - long runs are never "
+        "penalised."
     ),
     "maintenance": (
         "Whether planned maintenance is piggy-backed onto CIP downtime instead of "
@@ -77,11 +79,13 @@ CATEGORY_DOCS = {
 # Known distortions in draft v0 - surfaced in the UI so nobody over-trusts a number.
 KNOWN_LIMITATIONS = [
     (
-        "CIP forfeited hours saturate easily",
-        "cip_forfeited_h is capped at cap_cip_forfeited. On the AZAP baseline it is "
-        "~1120 h against a cap of 200, so that sub-score clamps to 0 and drags the "
-        "whole CIP category to about 2/100. Below the cap the metric is informative; "
-        "at/above it, the score stops distinguishing 'bad' from 'much worse'."
+        "Forfeited CIP is an estimate, not a measurement",
+        "cip_forfeited_kg values each forfeited dirty-time hour at the line's "
+        "AVERAGE kg/h across every SKU it is capable of running. The actual SKU "
+        "that would have run in that hour may be faster or slower, so treat the "
+        "kg figure as an order-of-magnitude cost, not an exact tonnage. If "
+        "capabilities_rates.csv is missing the metric reads 0 kg and the CIP "
+        "category quietly looks better than it is."
     ),
     (
         "Maintenance scores 100 when nothing is scheduled",
@@ -190,7 +194,8 @@ METRIC_DOCS: dict[str, dict[str, Any]] = {
     "cip_forfeited_h": {
         "definition": (
             "For each CIP: max(0, line_cip_interval_h - run_hours_since_last_cip). "
-            "Cleaning earlier than the interval forfeits unused dirty-time budget."
+            "Cleaning earlier than the interval forfeits unused dirty-time budget. "
+            "REPORTED ONLY - the scored version of this metric is cip_forfeited_kg."
         ),
         "formula": (
             "Per line, walk CIPs in start_h order with last_cip_end starting at 0. "
@@ -200,13 +205,43 @@ METRIC_DOCS: dict[str, dict[str, Any]] = {
             "Then last_cip_end = cip.end_h."
         ),
         "direction": "lower",
-        "cap_key": "cap_cip_forfeited",
-        "scoring": "score = clamp(100 * (1 - cip_forfeited_h / cap_cip_forfeited), 0, 100)",
+        "cap_key": None,
+        "scoring": (
+            "Not scored. Kept as a diagnostic so the raw hour count stays visible; "
+            "the CIP category scores cip_forfeited_kg instead."
+        ),
         "category": "cip",
         "why": (
-            "The line is allowed to run dirty for a set number of hours. Cleaning at "
-            "hour 20 of a 120-hour allowance throws away 100 hours of paid-for run "
-            "time. This metric measures that waste."
+            "The raw hour count behind the kg figure. Useful for seeing WHERE the "
+            "waste is in time terms, but hours alone treat a slow line and a fast "
+            "line as equally costly, which is why the scored metric is in kg."
+        ),
+    },
+    "cip_forfeited_kg": {
+        "definition": (
+            "Forfeited CIP dirty-time converted to KILOGRAMS of lost production, "
+            "valuing each forfeited hour at that line's average run rate (kg/h)."
+        ),
+        "formula": (
+            "Same per-line CIP walk as cip_forfeited_h; for each CIP add "
+            "max(0, interval - run_since) * avg_rate_kgph(line). "
+            "avg_rate_kgph(line) = mean of calc_rate_kgph over rows in "
+            "reference/capabilities_rates.csv where capable == 1 for that "
+            "line_name (nominal_rate_kgph is used when calc is missing, then the "
+            "overall line mean, then 0 if the file is absent)."
+        ),
+        "direction": "lower",
+        "cap_key": "cap_cip_forfeited_kg",
+        "scoring": (
+            "score = clamp(100 * (1 - cip_forfeited_kg / cap_cip_forfeited_kg), 0, 100)"
+        ),
+        "category": "cip",
+        "why": (
+            "An hour lost on a 1,240 kg/h line costs more than twice an hour lost "
+            "on a 540 kg/h line. Measuring the forfeited dirty-time budget in "
+            "kilograms prices CIP discipline in the only unit the plant sells in, "
+            "so cleaning early on a fast line is correctly flagged as the more "
+            "expensive mistake."
         ),
     },
     # --- trials ------------------------------------------------------------
@@ -291,17 +326,21 @@ METRIC_DOCS: dict[str, dict[str, Any]] = {
     "avg_run_h": {
         "definition": "Mean duration (hours) of production blocks.",
         "formula": "mean(max(0, end_h - start_h)) over blocks where block_type == 'production'",
-        "direction": "symmetric",
-        "cap_key": "target_avg_run_h",
+        "direction": "higher",
+        "cap_key": "campaign_run_floor_h",
         "scoring": (
-            "score = clamp(100 * (1 - abs(avg_run_h - target_avg_run_h) / "
-            "max(target_avg_run_h, 1)), 0, 100). Symmetric: both shorter AND longer "
-            "than target lose points, and anything at or beyond 2x the target scores 0."
+            "score = clamp(100 * avg_run_h / campaign_run_floor_h, 0, 100). "
+            "Monotonic longer-is-better: the score ramps up from 0 to 100 as the "
+            "average run grows from 0 to the floor and stays at 100 above it. "
+            "Only SHORT runs are penalised; long campaigns are never punished. "
+            "(The old symmetric target_avg_run_h remains in config but is unused.)"
         ),
         "category": "campaigns",
         "why": (
-            "There is a sweet spot. Too short and changeovers dominate; too long and "
-            "the plan becomes inflexible and inventory piles up ahead of demand."
+            "Long, consolidated campaigns are what the plant wants: every extra "
+            "hour of uninterrupted running amortises the startup and changeover "
+            "you already paid for. A week averaging under the floor is being "
+            "chopped up; anything at or above it is running the way it should."
         ),
     },
     "short_run_count": {
@@ -1074,6 +1113,7 @@ def delta_narrative(baseline: ScorecardResult, proposed: ScorecardResult) -> lis
         ("cip", "cip_count", "CIPs"),
         ("cip", "cip_hours", "CIP hours"),
         ("cip", "cip_forfeited_h", "forfeited CIP hours"),
+        ("cip", "cip_forfeited_kg", "forfeited CIP kg"),
         ("trials", "trial_hours", "trial hours"),
         ("trials", "trial_disruptions", "trial disruptions"),
         ("maintenance", "maint_aligned", "CIP-aligned maintenance"),
@@ -1141,7 +1181,7 @@ def contribution_breakdown(
         "cip": [
             ("cip_count", "cap_cip_count"),
             ("cip_hours", "cap_cip_hours"),
-            ("cip_forfeited_h", "cap_cip_forfeited"),
+            ("cip_forfeited_kg", "cap_cip_forfeited_kg"),
         ],
         "trials": [
             ("trial_hours", "cap_trial_hours"),

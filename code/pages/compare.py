@@ -113,6 +113,7 @@ sections = [
     ("cip", "cip_count", "CIP count", False),
     ("cip", "cip_hours", "CIP hours", False),
     ("cip", "cip_forfeited_h", "CIP forfeited h", False),
+    ("cip", "cip_forfeited_kg", "CIP forfeited kg", False),
     ("trials", "trial_hours", "Trial hours", False),
     ("trials", "trial_disruptions", "Trial disruptions", False),
     ("maintenance", "maint_aligned", "Maint aligned", True),

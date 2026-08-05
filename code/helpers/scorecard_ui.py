@@ -50,6 +50,7 @@ def render_scorecard(
         cip = data.get("cip") or {}
         st.write(f"**Count:** {cip.get('cip_count', '—')}")
         st.write(f"**Hours:** {cip.get('cip_hours', '—')}")
+        st.write(f"**Forfeited CIP (kg lost):** {cip.get('cip_forfeited_kg', '—')}")
         st.write(f"**Forfeited CIP hours:** {cip.get('cip_forfeited_h', '—')}")
     with c2:
         st.subheader("Trials")
@@ -118,10 +119,11 @@ def render_metric_reference(
             "scores. Every sub-metric is normalised to 0-100 before averaging:\n\n"
             "- *lower is better*: `score = clamp(100 * (1 - value / cap), 0, 100)` - "
             "a value **at or above its cap scores 0**.\n"
-            "- *higher is better*: `score = clamp(100 * value / target, 0, 100)`.\n"
-            "- *symmetric* (avg_run_h only): "
-            "`score = clamp(100 * (1 - abs(value - target) / target), 0, 100)` - "
-            "over-target is penalised the same as under-target.\n\n"
+            "- *higher is better*: `score = clamp(100 * value / target, 0, 100)` - "
+            "used for `maint_aligned` and, since the run-length recalibration, for "
+            "`avg_run_h` against `campaign_run_floor_h`: the score ramps 0 -> 100 up "
+            "to the floor and **stays 100 above it**, so only short runs lose "
+            "points and long campaigns are never penalised.\n\n"
             "Caps and targets are read live from `flowstate.toml [scorecard]`, so the "
             "numbers below are the ones actually in force."
         )
@@ -275,7 +277,7 @@ def scorecard_table(
             "format_co": (r.get("changeovers") or {}).get("format_changes"),
             "co_hours": (r.get("changeovers") or {}).get("total_co_hours"),
             "cip_count": (r.get("cip") or {}).get("cip_count"),
-            "cip_forfeited": (r.get("cip") or {}).get("cip_forfeited_h"),
+            "cip_forfeited_kg": (r.get("cip") or {}).get("cip_forfeited_kg"),
             "short_runs": (r.get("campaigns") or {}).get("short_run_count"),
             "late": (r.get("service") or {}).get("orders_late"),
         })
