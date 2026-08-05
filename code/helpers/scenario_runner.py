@@ -89,6 +89,16 @@ _COMMON_KNOBS = [
         "config": "objective.late_weight",
         "effect": "Penalty per hour an order finishes past its due date (active from relax level 2).",
     },
+    {
+        "param": "objective.week_deviation_weight",
+        "config": "objective.week_deviation_weight",
+        "effect": "Cross-week mode only: penalty per hour an order runs outside AZAP's requested week. Lower = more willing to move a SKU between week 1 and week 2 to build a longer run.",
+    },
+    {
+        "param": "objective.cip_flex_weight",
+        "config": "objective.cip_flex_weight",
+        "effect": "CIP flexibility mode only: percent the cip_defer reward is scaled to, so a CIP can be pulled EARLIER to absorb a changeover. The line's max allowable CIP interval stays HARD.",
+    },
 ]
 
 _FORMULA_MIN_CO = (
@@ -174,6 +184,8 @@ OVERRIDE_SECTIONS: dict[str, str] = {
     "cip_defer_weight": "objective",
     "idle_weight": "objective",
     "late_weight": "objective",
+    "week_deviation_weight": "objective",
+    "cip_flex_weight": "objective",
     "base_changeover_weight": "changeover",
     "topload_weight": "changeover",
     "ttp_weight": "changeover",
@@ -194,6 +206,8 @@ SOLVER_DEFAULTS: dict[str, int] = {
     "objective.cip_defer_weight": 10,
     "objective.idle_weight": 0,
     "objective.late_weight": 200,
+    "objective.week_deviation_weight": 40,
+    "objective.cip_flex_weight": 20,
     "changeover.topload_weight": 50,
     "changeover.ttp_weight": 10,
     "changeover.ffs_weight": 10,
@@ -274,6 +288,8 @@ def make_custom_scenario(
     overrides: dict[str, Any] | None = None,
     *,
     two_phase: bool = True,
+    cross_week: bool = False,
+    cip_flex: bool = False,
 ) -> dict[str, Any]:
     """Build a runnable CUSTOM scenario dict from planner input."""
     mode = objective if objective in OBJECTIVE_MODES else "balanced"
@@ -283,6 +299,8 @@ def make_custom_scenario(
         "name": (name or "Custom scenario").strip() or "Custom scenario",
         "objective": mode,
         "two_phase": two_phase,
+        "cross_week": bool(cross_week),
+        "cip_flex": bool(cip_flex),
         "custom": True,
         "intent": f"Custom solve ({mode}) with planner weight overrides.",
         "objective_formula": docs["objective_formula"],
@@ -525,6 +543,13 @@ def run_scenario(
     ]
     if scenario.get("two_phase"):
         cmd.append("--two-phase")
+    # Cross-week mode makes the solver ignore --two-phase and solve the whole
+    # 336h horizon at once (see phase2_scheduler). Both default to off, so a
+    # scenario that does not set them behaves exactly as before.
+    if scenario.get("cross_week"):
+        cmd.append("--cross-week")
+    if scenario.get("cip_flex"):
+        cmd.append("--cip-flex")
     # legacy reads time_limit + all weights from the toml; patch the work copy.
     eff_overrides = overrides if overrides is not None else scenario.get("overrides")
     _patch_work_toml(toml, time_limit, eff_overrides)
