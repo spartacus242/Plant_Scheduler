@@ -6,7 +6,7 @@ import {
   DndContext, DragOverlay, PointerSensor, useSensor, useSensors,
   type DragEndEvent, type DragStartEvent, type DragMoveEvent,
 } from "@dnd-kit/core";
-import type { SandboxArgs, ScheduleBlock } from "./types";
+import type { SandboxArgs, ScheduleBlock, LineInfo } from "./types";
 import { isWindowBlock } from "./types";
 import { useScheduleState } from "./hooks/useScheduleState";
 import { useBlockResize } from "./hooks/useBlockResize";
@@ -16,6 +16,8 @@ import { isCapable, recalcDuration, findOverlapsOnLine } from "./utils/validatio
 import { LINE_HEIGHT, MIN_HOUR_WIDTH, MAX_HOUR_WIDTH, snapToHour, fitToWidth, xToHour, hourToStamp } from "./utils/layout";
 import { getRate } from "./utils/validation";
 import { computeDragPreview, type DragPreview } from "./utils/dragPreview";
+import { isDouble } from "./utils/abLines";
+import { buildRows } from "./utils/ganttRows";
 import { skuColor, skuTextColor, blockLabel } from "./utils/colors";
 import { setComponentValue, setFrameHeight } from "./streamlit";
 
@@ -50,7 +52,21 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
 
   const anchor = useMemo(() => new Date(args.config.planning_anchor), [args.config.planning_anchor]);
   const caps = args.capabilities;
-  const lines = args.lines;
+  // The chart draws ONE row per group (a double line's A and B sides share a
+  // row), so every index-based drag calculation must use the same collapsed
+  // list, not the raw per-side lines.csv rows.
+  const lines = useMemo<LineInfo[]>(
+    () => buildRows(args.lines).map((r) => ({
+      line_id: r.lineId,
+      line_name: r.name,
+      line_group: r.name,
+      is_double: r.isDouble,
+    })),
+    [args.lines],
+  );
+  // Per-side scheduled downtime (STEP 1 of the workflow). Drives the half-rate
+  // duration maths for the Bossar double lines P17-P22.
+  const downtime = useMemo(() => args.sideDowntime ?? {}, [args.sideDowntime]);
 
   useEffect(() => {
     const measure = () => {
@@ -138,10 +154,11 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           hourWidth,
           lineHeight: LINE_HEIGHT,
           anchor,
+          downtime,
         }),
       );
     },
-    [schedule, cipWindows, lines, caps, hourWidth, hourFromPointer, anchor],
+    [schedule, cipWindows, lines, caps, hourWidth, hourFromPointer, anchor, downtime],
   );
 
   const onDragCancel = useCallback(() => {
@@ -187,7 +204,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         }
         let dur = block.run_hours;
         if (block.block_type !== "cip") {
-          const newDur = recalcDuration(block, targetLineName, caps);
+          const newDur = recalcDuration(block, targetLineName, caps, downtime, hourFromPointer(pointerX));
           if (newDur !== null) dur = newDur;
         }
         const startHour = hourFromPointer(pointerX);
@@ -239,14 +256,21 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       if (sameLine) {
         const newStart = Math.max(0, snapToHour(block.start_hour + deltaHours));
         if (newStart === block.start_hour) return;
-        const newEnd = newStart + block.run_hours;
+        // On a double line, sliding into or out of a side-down window changes
+        // how long the block takes, so re-integrate rather than keep the hours.
+        let dur = block.run_hours;
+        if (block.block_type !== "cip" && isDouble(block.line_name)) {
+          const newDur = recalcDuration(block, block.line_name, caps, downtime, newStart);
+          if (newDur !== null) dur = newDur;
+        }
+        const newEnd = newStart + dur;
         const allBlocks = [...schedule, ...cipWindows];
         if (findOverlapsOnLine(allBlocks, block.line_name, block.id, newStart, newEnd)) {
           reject(`Overlap on ${block.line_name} at ${hourToStamp(newStart, anchor)}`);
           return;
         }
         setErrorMsg(null);
-        actions.moveBlock(block.id, block.line_name, block.line_id, newStart, block.run_hours);
+        actions.moveBlock(block.id, block.line_name, block.line_id, newStart, dur);
       } else {
         if (block.block_type !== "cip" && !isCapable(targetLine.line_name, block.sku, caps)) {
           reject(`Line ${targetLine.line_name} cannot run ${block.sku}`);
@@ -254,7 +278,8 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         }
         let dur = block.run_hours;
         if (block.block_type !== "cip") {
-          const newDur = recalcDuration(block, targetLine.line_name, caps);
+          const newStartForCalc = Math.max(0, snapToHour(block.start_hour + deltaHours));
+          const newDur = recalcDuration(block, targetLine.line_name, caps, downtime, newStartForCalc);
           if (newDur === null) {
             reject(`No rate for ${block.sku} on ${targetLine.line_name}`);
             return;
@@ -272,7 +297,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         actions.moveBlock(block.id, targetLine.line_name, targetLine.line_id, newStart, dur);
       }
     },
-    [schedule, cipWindows, holdingArea, actions, hourWidth, caps, lines, hourFromPointer, reject, anchor],
+    [schedule, cipWindows, holdingArea, actions, hourWidth, caps, lines, hourFromPointer, reject, anchor, downtime],
   );
 
   const onResizeCommit = useCallback(
@@ -447,7 +472,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       </DndContext>
 
       <Palette
-        lines={args.lines}
+        lines={lines}
         cipDuration={args.config.cip_duration_h}
         onAddCip={actions.addCip}
         onAddTrial={actions.addTrial}

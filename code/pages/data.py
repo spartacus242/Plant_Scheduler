@@ -16,6 +16,7 @@ if str(BASE_DIR) not in sys.path:
 
 from helpers.config import load_toml
 from helpers.data_catalog import CATALOG, CSV_ENCODING, missing_columns, read_csv, status
+from helpers.downtime_ui import render_side_downtime_editor
 from helpers.manual_import_ui import render_manual_import
 from helpers.paths import data_dir
 from helpers.safe_io import safe_write_csv
@@ -25,6 +26,13 @@ st.caption("Replace, edit or download the CSVs Flowstate reads. Every write back
 
 dd = data_dir()
 st.caption(f"Data folder: `{dd}`  |  backups: `{dd / '_backups'}`")
+
+st.subheader("STEP 1 - Scheduled downtime per side")
+with st.expander("Set downtime per line / side (do this before scheduling production)", expanded=False):
+    render_side_downtime_editor(dd, key_prefix="data_dt")
+
+st.divider()
+st.subheader("All input files")
 
 
 def backup(path: Path) -> Path:

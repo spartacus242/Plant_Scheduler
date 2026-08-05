@@ -34,6 +34,11 @@ export interface DemandTarget {
 export interface LineInfo {
   line_id: number;
   line_name: string;
+  /** Group a double line's sides belong to, e.g. "P17" for P17A/P17B. */
+  line_group?: string;
+  /** "A" / "B" on a Bossar double line; empty or absent on single lines. */
+  side?: string;
+  is_double?: boolean;
 }
 
 export interface SandboxConfig {
@@ -51,6 +56,8 @@ export interface SandboxArgs {
   demandTargets: DemandTarget[];
   lines: LineInfo[];
   holdingArea: ScheduleBlock[];
+  /** line/side name -> [startHour, endHour) windows where it is down. */
+  sideDowntime?: Record<string, number[][]>;
   config: SandboxConfig;
 }
 

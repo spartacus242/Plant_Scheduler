@@ -21,7 +21,7 @@ const rowStyle: React.CSSProperties = {
 const keyStyle: React.CSSProperties = { opacity: 0.65 };
 
 export const DragPreviewBadge: React.FC<Props> = ({ preview, anchor }) => {
-  const { targetLine, startHour, endHour, hours, rate, sourceHours, valid, reason } = preview;
+  const { targetLine, startHour, endHour, hours, rate, sourceHours, valid, reason, oneSided } = preview;
   const startLabel = hourToStamp(startHour, anchor);
   const endLabel = hourToStamp(endHour, anchor);
   const delta = hours - sourceHours;
@@ -69,6 +69,12 @@ export const DragPreviewBadge: React.FC<Props> = ({ preview, anchor }) => {
         <span style={keyStyle}>Rate</span>
         <span>{rate > 0 ? `${Math.round(rate)} kg/h` : "n/a"}</span>
       </div>
+      {oneSided && (
+        <div style={{ ...rowStyle, color: "#ffcc80", fontWeight: 700 }}>
+          <span>One-sided</span>
+          <span>half rate - stretched</span>
+        </div>
+      )}
       {!valid && reason && (
         <div style={{ marginTop: 3, fontWeight: 700 }}>{reason}</div>
       )}
