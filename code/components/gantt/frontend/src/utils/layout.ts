@@ -39,6 +39,21 @@ export function hourToTimeLabel(hour: number, anchor: Date): string {
 }
 
 /**
+ * Full wall-clock stamp for an hour offset, e.g. "Wed 2/18 11:00".
+ * Use this anywhere an hour offset is shown to a user as a moment in time.
+ * Durations stay in hours - only moments get stamped.
+ */
+export function hourToStamp(hour: number, anchor: Date): string {
+  return `${hourToDateLabel(hour, anchor)} ${hourToTimeLabel(hour, anchor)}`;
+}
+
+/** Short stamp for tight spaces, e.g. "2/18 11:00" (no day-of-week). */
+export function hourToShortStamp(hour: number, anchor: Date): string {
+  const d = new Date(anchor.getTime() + hour * 3600000);
+  return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours().toString().padStart(2, "0")}:00`;
+}
+
+/**
  * Compute hourWidth that fits the full horizon into a container.
  * Leaves a small margin so labels aren't clipped.
  */

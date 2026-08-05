@@ -4,7 +4,7 @@
 
 import React from "react";
 import type { DragPreview } from "../utils/dragPreview";
-import { hourToDateLabel, hourToTimeLabel } from "../utils/layout";
+import { hourToStamp, hourToShortStamp } from "../utils/layout";
 
 interface Props {
   preview: DragPreview;
@@ -22,8 +22,8 @@ const keyStyle: React.CSSProperties = { opacity: 0.65 };
 
 export const DragPreviewBadge: React.FC<Props> = ({ preview, anchor }) => {
   const { targetLine, startHour, endHour, hours, rate, sourceHours, valid, reason } = preview;
-  const startLabel = `${hourToDateLabel(startHour, anchor)} ${hourToTimeLabel(startHour, anchor)}`;
-  const endLabel = `${hourToDateLabel(endHour, anchor)} ${hourToTimeLabel(endHour, anchor)}`;
+  const startLabel = hourToStamp(startHour, anchor);
+  const endLabel = hourToStamp(endHour, anchor);
   const delta = hours - sourceHours;
   const deltaLabel = delta === 0 ? "" : delta > 0 ? ` (+${delta}h)` : ` (${delta}h)`;
 
@@ -48,7 +48,7 @@ export const DragPreviewBadge: React.FC<Props> = ({ preview, anchor }) => {
       <div style={{ ...rowStyle, fontWeight: 700, marginBottom: 2 }}>
         <span>{targetLine}</span>
         <span>
-          h{startHour} - h{endHour}
+          {hourToShortStamp(startHour, anchor)} -&gt; {hourToShortStamp(endHour, anchor)}
         </span>
       </div>
       <div style={rowStyle}>

@@ -3,7 +3,7 @@
 import React, { useCallback } from "react";
 import { useDraggable } from "@dnd-kit/core";
 import type { ScheduleBlock } from "../types";
-import { hourToX, LINE_HEIGHT } from "../utils/layout";
+import { hourToX, LINE_HEIGHT, hourToStamp } from "../utils/layout";
 import { skuColor, skuTextColor, blockLabel } from "../utils/colors";
 
 interface Props {
@@ -11,6 +11,8 @@ interface Props {
   lineIndex: number;
   viewStart: number;
   hourWidth: number;
+  /** Planning anchor, so the hover tooltip reads as date + time. */
+  anchor: Date;
   isResizing: boolean;
   previewStart?: number;
   previewEnd?: number;
@@ -21,7 +23,7 @@ interface Props {
 }
 
 export const GanttBlock: React.FC<Props> = ({
-  block, lineIndex, viewStart, hourWidth, isResizing, previewStart, previewEnd,
+  block, lineIndex, viewStart, hourWidth, anchor, isResizing, previewStart, previewEnd,
   isHighlighted, onResizeStart, onContextMenu, onClick,
 }) => {
   const { attributes, listeners, setNodeRef: setDragRef, transform, isDragging } = useDraggable({
@@ -94,6 +96,14 @@ export const GanttBlock: React.FC<Props> = ({
     }
   }
 
+  // Hover tooltip: wall-clock start/end, duration stays in hours.
+  const tooltip = [
+    baseLabel,
+    desc,
+    `${block.line_name}`,
+    `${hourToStamp(startH, anchor)} -> ${hourToStamp(endH, anchor)} (${endH - startH}h)`,
+  ].filter(Boolean).join("\n");
+
   const strokeColor = isDragging ? "#333" : "none";
   const strokeW = isDragging ? 2 : 0;
 
@@ -107,6 +117,7 @@ export const GanttBlock: React.FC<Props> = ({
       onContextMenu={handleContext}
       onClick={handleClick}
     >
+      <title>{tooltip}</title>
       {/* Highlight glow */}
       {isHighlighted && (
         <rect

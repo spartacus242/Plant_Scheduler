@@ -1,8 +1,9 @@
 // useScheduleState.ts — Central state management for the sandbox.
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useMemo, useRef } from "react";
 import type { BlockType, ScheduleBlock, SandboxArgs } from "../types";
 import { isWindowBlock } from "../types";
+import { hourToStamp } from "../utils/layout";
 
 let _nextId = 1;
 function ensureId(b: ScheduleBlock): ScheduleBlock {
@@ -58,6 +59,13 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
     (args?.holdingArea ?? []).map(ensureId),
   );
   const [lastAction, setLastAction] = useState("");
+
+  // Action messages report wall-clock moments, not raw horizon offsets.
+  const anchor = useMemo(
+    () => new Date(args?.config?.planning_anchor ?? "2026-02-15 00:00:00"),
+    [args?.config?.planning_anchor],
+  );
+  const stamp = useCallback((h: number) => hourToStamp(h, anchor), [anchor]);
 
   // Undo/redo stacks
   const undoStack = useRef<Snapshot[]>([]);
@@ -117,8 +125,8 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
           : b,
       ),
     );
-    setLastAction(`Moved ${id} to ${newLine} at h${newStart}`);
-  }, [pushUndo]);
+    setLastAction(`Moved ${id} to ${newLine} at ${stamp(newStart)}`);
+  }, [pushUndo, stamp]);
 
   const resizeBlock = useCallback((id: string, newStart: number, newEnd: number) => {
     pushUndo();
@@ -129,8 +137,8 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
     setCipWindows((prev) =>
       prev.map((b) => (b.id === id ? { ...b, start_hour: newStart, end_hour: newEnd, run_hours: dur } : b)),
     );
-    setLastAction(`Resized ${id} to h${newStart}-${newEnd}`);
-  }, [pushUndo]);
+    setLastAction(`Resized ${id} to ${stamp(newStart)} - ${stamp(newEnd)} (${dur}h)`);
+  }, [pushUndo, stamp]);
 
   const splitBlock = useCallback((id: string, splitHour: number) => {
     pushUndo();
@@ -144,8 +152,8 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
       next.splice(idx, 1, segA, segB);
       return next;
     });
-    setLastAction(`Split block at h${splitHour}`);
-  }, [pushUndo]);
+    setLastAction(`Split block at ${stamp(splitHour)}`);
+  }, [pushUndo, stamp]);
 
   const removeToHolding = useCallback((id: string) => {
     // Find the block FIRST from current state before queueing updates
@@ -195,8 +203,8 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
       label: "CIP",
     };
     setCipWindows((prev) => [...prev, b]);
-    setLastAction(`Added CIP on ${lineName} at h${startHour}`);
-  }, [pushUndo]);
+    setLastAction(`Added CIP on ${lineName} at ${stamp(startHour)}`);
+  }, [pushUndo, stamp]);
 
   const addTrial = useCallback((lineName: string, lineId: number, sku: string, startHour: number, duration: number) => {
     pushUndo();
@@ -240,8 +248,8 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
       label: tag,
     };
     setCipWindows((prev) => [...prev, b]);
-    setLastAction(`Added ${blockType} on ${lineName} at h${startHour}`);
-  }, [pushUndo]);
+    setLastAction(`Added ${blockType} on ${lineName} at ${stamp(startHour)}`);
+  }, [pushUndo, stamp]);
 
   const reportAction = useCallback((msg: string) => {
     setLastAction(msg);
