@@ -22,6 +22,8 @@ from helpers.calendar_io import (
     save_calendar,
 )
 from helpers.config import load_toml
+from helpers.downtime_ui import downtime_map_for_calendar, render_side_downtime_editor
+from helpers.lines_model import expand_caps_with_groups, is_double, side_of, sides_of
 from helpers.paths import data_dir, reference_dir
 from helpers.scorecard_engine import ScorecardResult, delta_narrative, score_calendar
 from helpers.scorecard_ui import render_delta_strip, render_scorecard
@@ -49,7 +51,15 @@ lines_df = load_lines(dd / "lines.csv")
 lines = lines_df.copy()
 if "active" in lines.columns:
     lines = lines[lines["active"] != False]
-lines = lines[["line_id", "line_name"]].to_dict("records")
+_line_cols = [c for c in ("line_id", "line_name", "line_group", "side", "is_double") if c in lines.columns]
+lines = lines[_line_cols].to_dict("records")
+# Annotate every row with its group / side so the Gantt can split double lines
+# into an A-over-B row even when lines.csv predates the A/B migration.
+for _l in lines:
+    _name = str(_l.get("line_name", ""))
+    _l["line_group"] = str(_l.get("line_group") or "") or (_name[:-1] if side_of(_name) else _name)
+    _l["side"] = side_of(_name) or str(_l.get("side") or "")
+    _l["is_double"] = bool(is_double(_name))
 
 # Capabilities map line_name -> sku -> rate
 caps: dict = {}
@@ -63,6 +73,25 @@ if caps_path.exists():
         sku = str(r["sku"])
         rate = float(r.get("calc_rate_kgph") or r.get("nominal_rate_kgph") or 0)
         caps.setdefault(ln, {})[sku] = rate
+# A double line's caps must be readable both per side (halved) and per group
+# (both sides running), whichever way capabilities_rates.csv is keyed.
+caps = expand_caps_with_groups(caps)
+
+# STEP 1 of the workflow: scheduled downtime per side, entered before production.
+with st.expander(
+    "STEP 1 - Set scheduled downtime per side first, then schedule production",
+    expanded=False,
+):
+    render_side_downtime_editor(dd, key_prefix="cal_dt")
+
+side_downtime = {k: [[s, e] for s, e in v] for k, v in downtime_map_for_calendar(dd, cal).items()}
+_one_sided = [g for g in sorted({str(l["line_group"]) for l in lines if l["is_double"]})
+              if any(side_downtime.get(s) for s in sides_of(g))]
+if _one_sided:
+    st.info(
+        "One-sided (half-rate) downtime recorded on: " + ", ".join(_one_sided) +
+        ". Blocks dragged across those hours are stretched automatically."
+    )
 
 changeovers: dict = {}
 co_path = reference_dir(dd) / "changeovers.csv"
@@ -117,6 +146,7 @@ state = gantt_calendar(
     demand_targets=demand_targets,
     lines=lines,
     holding_area=st.session_state.get("cal_holding", []),
+    side_downtime=side_downtime,
     config={
         "planning_anchor": sched_cfg.get("planning_start_date", "2026-02-15 00:00:00"),
         "cip_duration_h": int(cip_cfg.get("duration_h", 6)),

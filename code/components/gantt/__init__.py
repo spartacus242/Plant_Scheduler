@@ -28,10 +28,15 @@ def gantt_calendar(
     lines: List[Dict[str, Any]],
     holding_area: Optional[List[Dict[str, Any]]] = None,
     config: Optional[Dict[str, Any]] = None,
+    side_downtime: Optional[Dict[str, List[List[float]]]] = None,
     height: int = 800,
     key: str = "gantt_calendar",
 ) -> Optional[Dict[str, Any]]:
     """Mount the React plant-calendar Gantt.
+
+    `side_downtime` maps a line or double-line side name (e.g. "P17A") to a list
+    of [start_hour, end_hour] windows, so the drag preview can stretch a block
+    across the hours where a Bossar line runs one-sided at half rate.
 
     Returns None until interaction, then schedule / cipWindows / holdingArea / lastAction.
     """
@@ -43,6 +48,7 @@ def gantt_calendar(
         demandTargets=demand_targets,
         lines=lines,
         holdingArea=holding_area or [],
+        sideDowntime=side_downtime or {},
         config=config or {
             "planning_anchor": "2026-02-15 00:00:00",
             "cip_duration_h": 6,
