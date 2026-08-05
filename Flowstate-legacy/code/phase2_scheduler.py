@@ -162,6 +162,25 @@ def _parse_args() -> argparse.Namespace:
         help="Rolling weekly run: auto-load week1_initial_states.csv if it exists, then run --two-phase.",
     )
     parser.add_argument(
+        "--cross-week",
+        action="store_true",
+        help=(
+            "Cross-week mode: AZAP's week becomes a weighted soft preference "
+            "over the full 336h horizon instead of a hard wall, and the solve "
+            "runs single-phase so week-0 and week-1 runs of the same SKU can "
+            "merge. Demand quantities stay hard."
+        ),
+    )
+    parser.add_argument(
+        "--cip-flex",
+        action="store_true",
+        help=(
+            "CIP timing flexibility: scale down the cip_defer reward so a CIP "
+            "can be pulled EARLIER to absorb a changeover. The line's max "
+            "allowable CIP interval stays a HARD constraint (food safety)."
+        ),
+    )
+    parser.add_argument(
         "--config",
         type=Path,
         default=None,
@@ -214,6 +233,19 @@ TWO_PHASE = _ARGS.two_phase or _ARGS.rolling
 VALIDATE = _ARGS.validate or _CFG_SCHED.get("validate", False)
 ROLLING = _ARGS.rolling
 OBJECTIVE_MODE = _ARGS.objective or _CFG_SCHED.get("objective", "balanced")
+# Cross-week / CIP-flex modes. Default OFF everywhere -> current behavior.
+CROSS_WEEK = bool(_ARGS.cross_week or _CFG_SCHED.get("cross_week", False))
+CIP_FLEX = bool(_ARGS.cip_flex or _CFG_SCHED.get("cip_flex", False))
+# Cross-week routing: the two-phase driver solves Week-0 and then Week-1 as
+# two separate models, which structurally prevents a week-0 SKU from merging
+# with a week-1 run of the same SKU. When cross-week mode is on we must see
+# the whole 336h horizon in ONE model, so we force the single-phase path.
+# When cross-week is OFF, TWO_PHASE is exactly what it was before.
+if CROSS_WEEK and TWO_PHASE:
+    TWO_PHASE = False
+    _CROSS_WEEK_FORCED_SINGLE = True
+else:
+    _CROSS_WEEK_FORCED_SINGLE = False
 
 # Week boundaries (must match model_builder)
 WEEK0_END = 167
@@ -341,6 +373,39 @@ def _late_orders(
         }
         for o_idx, v in sorted(totals.items(), key=lambda kv: -kv[1])
     ]
+
+
+def _week_moved_orders(
+    solver: cp_model.CpSolver,
+    data: Data,
+    vars_dict: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Orders that ran outside their AZAP week (cross_week mode only).
+
+    Empty list when cross_week was off, so the report shape is unchanged.
+    """
+    week_dev = vars_dict.get("week_dev") or {}
+    if not week_dev:
+        return []
+    out: Dict[int, Dict[str, Any]] = {}
+    for (_l, o_idx), (early_v, late_v) in week_dev.items():
+        e = int(solver.Value(early_v))
+        lt = int(solver.Value(late_v))
+        if e <= 0 and lt <= 0:
+            continue
+        rec = out.setdefault(o_idx, {
+            "order_id": data.orders[o_idx]["order_id"],
+            "sku": data.orders[o_idx]["sku"],
+            "azap_week": 0 if int(data.orders[o_idx]["due_end"]) <= WEEK0_END else 1,
+            "hours_earlier": 0,
+            "hours_later": 0,
+        })
+        rec["hours_earlier"] += e
+        rec["hours_later"] += lt
+    return sorted(
+        out.values(),
+        key=lambda r: -(r["hours_earlier"] + r["hours_later"]),
+    )
 
 
 def write_feasibility_report(data_dir: Path, report: Dict[str, Any]) -> None:
@@ -819,6 +884,8 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         objective_cip_defer_weight=P.objective_cip_defer_weight,
         objective_idle_weight=P.objective_idle_weight,
         objective_late_weight=P.objective_late_weight,
+        objective_week_deviation_weight=P.objective_week_deviation_weight,
+        objective_cip_flex_weight=P.objective_cip_flex_weight,
         co_topload_weight=P.co_topload_weight,
         co_ttp_weight=P.co_ttp_weight,
         co_ffs_weight=P.co_ffs_weight,
@@ -880,6 +947,8 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
             max_lines_per_order_override=MAX_LINES_PER_ORDER,
             objective_mode=OBJECTIVE_MODE,
             relax_due=flags["relax_due"],
+            cross_week=CROSS_WEEK,
+            cip_flex=CIP_FLEX,
         )
         proto0 = model0.Proto()
         update_stage(
@@ -945,6 +1014,8 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         objective_cip_defer_weight=P.objective_cip_defer_weight,
         objective_idle_weight=P.objective_idle_weight,
         objective_late_weight=P.objective_late_weight,
+        objective_week_deviation_weight=P.objective_week_deviation_weight,
+        objective_cip_flex_weight=P.objective_cip_flex_weight,
         co_topload_weight=P.co_topload_weight,
         co_ttp_weight=P.co_ttp_weight,
         co_ffs_weight=P.co_ffs_weight,
@@ -1019,6 +1090,8 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
             maximize_production=True,
             objective_mode=OBJECTIVE_MODE,
             relax_due=flags["relax_due"],
+            cross_week=CROSS_WEEK,
+            cip_flex=CIP_FLEX,
         )
         proto1 = model1.Proto()
         update_stage(
@@ -1144,6 +1217,12 @@ def main() -> None:
         P.objective_idle_weight = int(_cfg_obj["idle_weight"])
     if _cfg_obj.get("late_weight") is not None:
         P.objective_late_weight = int(_cfg_obj["late_weight"])
+    if _cfg_obj.get("week_deviation_weight") is not None:
+        P.objective_week_deviation_weight = int(
+            _cfg_obj["week_deviation_weight"]
+        )
+    if _cfg_obj.get("cip_flex_weight") is not None:
+        P.objective_cip_flex_weight = int(_cfg_obj["cip_flex_weight"])
     # Changeover type penalty weights — saved by settings.py into [objective]
     if _cfg_obj.get("co_conv_org_weight") is not None:
         P.co_conv_org_weight = int(_cfg_obj["co_conv_org_weight"])
@@ -1199,6 +1278,8 @@ def main() -> None:
             objective_cip_defer_weight=P.objective_cip_defer_weight,
             objective_idle_weight=P.objective_idle_weight,
             objective_late_weight=P.objective_late_weight,
+            objective_week_deviation_weight=P.objective_week_deviation_weight,
+            objective_cip_flex_weight=P.objective_cip_flex_weight,
             co_topload_weight=P.co_topload_weight,
             co_ttp_weight=P.co_ttp_weight,
             co_ffs_weight=P.co_ffs_weight,
@@ -1213,10 +1294,16 @@ def main() -> None:
     log(
         f"[{datetime.now()}] START phase={PHASE} relax={RELAX_DEMAND} relax_due={RELAX_DUE} "
         f"ignoreCO={IGNORE_CHANGEOVERS} auto_relax={AUTO_RELAX} "
+        f"cross_week={CROSS_WEEK} cip_flex={CIP_FLEX} "
         f"tl={TIME_LIMIT} mlpo={P.max_lines_per_order}"
     )
 
     # Initialise structured progress
+    if _CROSS_WEEK_FORCED_SINGLE:
+        log(
+            "[cross-week] --two-phase overridden: solving single-phase over "
+            "the full horizon so orders can move between AZAP weeks"
+        )
     if TWO_PHASE:
         init_progress(DATA_DIR, STAGES_TWO_PHASE)
     else:
@@ -1279,6 +1366,8 @@ def main() -> None:
                         max_lines_per_order_override=MAX_LINES_PER_ORDER,
                         objective_mode=OBJECTIVE_MODE,
                         relax_due=flags["relax_due"],
+                        cross_week=CROSS_WEEK,
+                        cip_flex=CIP_FLEX,
                     )
                     proto = model.Proto()
                     n_vars = len(proto.variables)
@@ -1357,6 +1446,11 @@ def main() -> None:
                         "solver_status": status_name,
                         "orders_short_of_qmin": _orders_short_of_qmin(bounds_rows),
                         "late_orders": _late_orders(solver, data, vars_dict),
+                        "cross_week": CROSS_WEEK,
+                        "cip_flex": CIP_FLEX,
+                        "week_moved_orders": _week_moved_orders(
+                            solver, data, vars_dict
+                        ),
                     })
                 else:
                     update_stage(DATA_DIR, "solving", "error", status_name)

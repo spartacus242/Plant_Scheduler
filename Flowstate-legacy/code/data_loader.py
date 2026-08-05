@@ -64,6 +64,17 @@ class Params:
     # Soft due-date penalty (relax_due mode): cost per hour an order finishes
     # past its due window. Kept high so lateness is a last resort.
     objective_late_weight: int = 200
+    # Cross-week mode: cost per hour an order runs outside the week AZAP
+    # asked for. Only active when build_model(..., cross_week=True); AZAP's
+    # week is then a weighted preference instead of a hard wall. Lower =
+    # more willing to move a SKU between week 1 and week 2 to build a
+    # longer campaign. Demand quantities stay hard either way.
+    objective_week_deviation_weight: int = 40
+    # CIP timing flexibility: percentage the cip_defer reward is scaled to
+    # when cip_flex is on (100 = unchanged, 0 = no deferral pressure at all).
+    # Lets the solver pull a CIP EARLIER to absorb a changeover. Never
+    # affects the HARD max-interval deadline (food safety).
+    objective_cip_flex_weight: int = 20
     # Per-machine changeover weights (used in weighted changeover objective)
     co_topload_weight: int = 50
     co_ttp_weight: int = 10
