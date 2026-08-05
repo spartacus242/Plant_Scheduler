@@ -17,6 +17,12 @@ interface Props {
   previewStart?: number;
   previewEnd?: number;
   isHighlighted: boolean;
+  /** Vertical offset within the row (0 unless the block sits on one side). */
+  slotY?: number;
+  /** Height of the slot; the full row height unless one-sided. */
+  slotHeight?: number;
+  /** "A" / "B" when the block occupies a single side of a double line. */
+  side?: string | null;
   onResizeStart: (blockId: string, edge: "left" | "right", startH: number, endH: number, clientX: number, hourWidth: number) => void;
   onContextMenu: (e: React.MouseEvent, blockId: string) => void;
   onClick: (blockId: string) => void;
@@ -24,7 +30,7 @@ interface Props {
 
 export const GanttBlock: React.FC<Props> = ({
   block, lineIndex, viewStart, hourWidth, anchor, isResizing, previewStart, previewEnd,
-  isHighlighted, onResizeStart, onContextMenu, onClick,
+  isHighlighted, slotY = 0, slotHeight, side = null, onResizeStart, onContextMenu, onClick,
 }) => {
   const { attributes, listeners, setNodeRef: setDragRef, transform, isDragging } = useDraggable({
     id: block.id,
@@ -36,8 +42,12 @@ export const GanttBlock: React.FC<Props> = ({
   const endH = isResizing ? (previewEnd ?? block.end_hour) : block.end_hour;
   const x = hourToX(startH, viewStart, hourWidth);
   const w = (endH - startH) * hourWidth;
-  const y = 4;
-  const h = LINE_HEIGHT - 8;
+  // A one-sided block is inset into its half of the row; a full-row block keeps
+  // the original 4px padding top and bottom.
+  const rowH = slotHeight ?? LINE_HEIGHT;
+  const pad = rowH >= LINE_HEIGHT ? 4 : 2;
+  const y = slotY + pad;
+  const h = Math.max(6, rowH - pad * 2);
   const bg = skuColor(block.sku, block.block_type);
   const fg = skuTextColor(bg);
 
@@ -100,7 +110,7 @@ export const GanttBlock: React.FC<Props> = ({
   const tooltip = [
     baseLabel,
     desc,
-    `${block.line_name}`,
+    side ? `${block.line_name} (side ${side} only - half rate)` : `${block.line_name}`,
     `${hourToStamp(startH, anchor)} -> ${hourToStamp(endH, anchor)} (${endH - startH}h)`,
   ].filter(Boolean).join("\n");
 
@@ -148,7 +158,7 @@ export const GanttBlock: React.FC<Props> = ({
           y={y + h / 2 + 1}
           textAnchor="start"
           dominantBaseline="middle"
-          fontSize={w > 60 ? 11 : 9}
+          fontSize={h < LINE_HEIGHT / 2 ? 8 : w > 60 ? 11 : 9}
           fill={fg}
           fontWeight={600}
           pointerEvents="none"

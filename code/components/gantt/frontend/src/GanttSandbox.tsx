@@ -6,7 +6,7 @@ import {
   DndContext, DragOverlay, PointerSensor, useSensor, useSensors,
   type DragEndEvent, type DragStartEvent, type DragMoveEvent,
 } from "@dnd-kit/core";
-import type { SandboxArgs, ScheduleBlock } from "./types";
+import type { SandboxArgs, ScheduleBlock, LineInfo } from "./types";
 import { isWindowBlock } from "./types";
 import { useScheduleState } from "./hooks/useScheduleState";
 import { useBlockResize } from "./hooks/useBlockResize";
@@ -17,6 +17,7 @@ import { LINE_HEIGHT, MIN_HOUR_WIDTH, MAX_HOUR_WIDTH, snapToHour, fitToWidth, xT
 import { getRate } from "./utils/validation";
 import { computeDragPreview, type DragPreview } from "./utils/dragPreview";
 import { isDouble } from "./utils/abLines";
+import { buildRows } from "./utils/ganttRows";
 import { skuColor, skuTextColor, blockLabel } from "./utils/colors";
 import { setComponentValue, setFrameHeight } from "./streamlit";
 
@@ -51,7 +52,18 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
 
   const anchor = useMemo(() => new Date(args.config.planning_anchor), [args.config.planning_anchor]);
   const caps = args.capabilities;
-  const lines = args.lines;
+  // The chart draws ONE row per group (a double line's A and B sides share a
+  // row), so every index-based drag calculation must use the same collapsed
+  // list, not the raw per-side lines.csv rows.
+  const lines = useMemo<LineInfo[]>(
+    () => buildRows(args.lines).map((r) => ({
+      line_id: r.lineId,
+      line_name: r.name,
+      line_group: r.name,
+      is_double: r.isDouble,
+    })),
+    [args.lines],
+  );
   // Per-side scheduled downtime (STEP 1 of the workflow). Drives the half-rate
   // duration maths for the Bossar double lines P17-P22.
   const downtime = useMemo(() => args.sideDowntime ?? {}, [args.sideDowntime]);
@@ -460,7 +472,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       </DndContext>
 
       <Palette
-        lines={args.lines}
+        lines={lines}
         cipDuration={args.config.cip_duration_h}
         onAddCip={actions.addCip}
         onAddTrial={actions.addTrial}

@@ -6,6 +6,8 @@ import type { ScheduleBlock, LineInfo } from "../types";
 import { isWindowBlock } from "../types";
 import { GanttBlock } from "./GanttBlock";
 import { TimeAxisSvg, ZoomControls } from "./TimeAxis";
+import type { GanttRow } from "../utils/ganttRows";
+import { buildRows, blockSlot, rowIndexOf } from "../utils/ganttRows";
 import {
   LINE_HEIGHT,
   HEADER_HEIGHT,
@@ -33,16 +35,23 @@ interface Props {
   onResetZoom: () => void;
 }
 
-/** A droppable line row */
+/**
+ * A droppable row.
+ *
+ * A Bossar double line renders as ONE row split horizontally: an "A" half on
+ * top and a "B" half underneath, divided by a dashed rule, with the group name
+ * (e.g. "P17") as the heading. Single lines P09-P16 render exactly as before.
+ */
 const LineRow: React.FC<{
-  line: LineInfo;
+  row: GanttRow;
   index: number;
   svgWidth: number;
   isCapable: boolean | null;
-}> = ({ line, index, svgWidth, isCapable }) => {
-  const { setNodeRef: setDropRef, isOver } = useDroppable({ id: `line_${line.line_name}` });
+}> = ({ row, index, svgWidth, isCapable }) => {
+  const { setNodeRef: setDropRef, isOver } = useDroppable({ id: `line_${row.name}` });
   const setNodeRef = setDropRef as unknown as React.Ref<SVGGElement>;
   const y = HEADER_HEIGHT + index * LINE_HEIGHT;
+  const half = LINE_HEIGHT / 2;
 
   let fill: string;
   if (isOver) {
@@ -58,9 +67,28 @@ const LineRow: React.FC<{
   return (
     <g ref={setNodeRef}>
       <rect x={0} y={y} width={svgWidth} height={LINE_HEIGHT} fill={fill} />
+      {row.isDouble && (
+        <>
+          {/* Split rule between side A (top) and side B (bottom). */}
+          <line
+            x1={LINE_LABEL_WIDTH}
+            y1={y + half}
+            x2={svgWidth}
+            y2={y + half}
+            stroke="#c7ccd4"
+            strokeDasharray="3 3"
+          />
+          <text x={LINE_LABEL_WIDTH - 12} y={y + half / 2} textAnchor="end" dominantBaseline="middle" fontSize={8} fill="#777">
+            A
+          </text>
+          <text x={LINE_LABEL_WIDTH - 12} y={y + half + half / 2} textAnchor="end" dominantBaseline="middle" fontSize={8} fill="#777">
+            B
+          </text>
+        </>
+      )}
       <line x1={0} y1={y + LINE_HEIGHT} x2={svgWidth} y2={y + LINE_HEIGHT} stroke="#eee" />
       <text x={4} y={y + LINE_HEIGHT / 2} dominantBaseline="middle" fontSize={11} fontWeight={600} fill="#333">
-        {line.line_name}
+        {row.name}
       </text>
     </g>
   );
@@ -73,8 +101,10 @@ export const GanttChart: React.FC<Props> = ({
 }) => {
   const localSvgRef = useRef<SVGSVGElement>(null);
   const svgRef = externalSvgRef ?? localSvgRef;
+  // One display row per group: the two sides of a double line share a row.
+  const rows = React.useMemo(() => buildRows(lines), [lines]);
   const svgWidth = LINE_LABEL_WIDTH + (viewEnd - viewStart) * hourWidth;
-  const svgHeight = HEADER_HEIGHT + lines.length * LINE_HEIGHT + 4;
+  const svgHeight = HEADER_HEIGHT + rows.length * LINE_HEIGHT + 4;
 
   const allBlocks = [...schedule, ...cipWindows];
 
@@ -97,21 +127,24 @@ export const GanttChart: React.FC<Props> = ({
           />
 
           {/* Line rows (droppable zones) */}
-          {lines.map((line, i) => (
+          {rows.map((row, i) => (
             <LineRow
-              key={line.line_name}
-              line={line}
+              key={row.name}
+              row={row}
               index={i}
               svgWidth={svgWidth}
-              isCapable={capableLines ? capableLines.has(line.line_name) : null}
+              isCapable={capableLines ? capableLines.has(row.name) : null}
             />
           ))}
 
           {/* Blocks */}
           {allBlocks.map((block) => {
-            const lineIndex = lines.findIndex((l) => l.line_name === block.line_name);
+            const lineIndex = rowIndexOf(rows, block.line_name);
             if (lineIndex < 0) return null;
             const y = HEADER_HEIGHT + lineIndex * LINE_HEIGHT;
+            // A block named for a single side shades only its half of the row;
+            // anything on the group spans the full height (both sides running).
+            const slot = blockSlot(rows[lineIndex], block.line_name, LINE_HEIGHT);
             const isThisResizing = resizing.blockId === block.id;
             const isHighlighted = highlightSku !== null && block.sku === highlightSku && !isWindowBlock(block.block_type);
             return (
@@ -126,6 +159,9 @@ export const GanttChart: React.FC<Props> = ({
                   previewStart={isThisResizing ? resizing.previewStart : undefined}
                   previewEnd={isThisResizing ? resizing.previewEnd : undefined}
                   isHighlighted={isHighlighted}
+                  slotY={slot.y}
+                  slotHeight={slot.height}
+                  side={slot.side}
                   onResizeStart={onResizeStart}
                   onContextMenu={onContextMenu}
                   onClick={onBlockClick}
