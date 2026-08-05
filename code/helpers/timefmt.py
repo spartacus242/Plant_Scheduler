@@ -66,3 +66,33 @@ def hour_to_short_stamp(hour: float, anchor: datetime | str | None = None) -> st
 def hour_to_iso(hour: float, anchor: datetime | str | None = None) -> str:
     """Sortable stamp for exports, e.g. '2026-02-18 11:00'."""
     return hour_to_datetime(hour, anchor).strftime("%Y-%m-%d %H:%M")
+
+
+def with_display_times(
+    df: Any,
+    anchor: datetime | str | None = None,
+    *,
+    start_col: str = "start_h",
+    end_col: str = "end_h",
+    iso: bool = False,
+) -> Any:
+    """Return a copy of a calendar frame with human start/end columns added.
+
+    The raw hour columns are kept untouched - the solver round-trips on them.
+    Display columns are inserted right after the hour columns so the table
+    reads left-to-right. Returns the frame unchanged if the hour columns are
+    missing.
+    """
+    if df is None or not hasattr(df, "columns"):
+        return df
+    if start_col not in df.columns or end_col not in df.columns:
+        return df
+    fmt = hour_to_iso if iso else hour_to_stamp
+    a = parse_anchor(anchor)
+    out = df.copy()
+    out["start"] = [fmt(h, a) for h in out[start_col]]
+    out["end"] = [fmt(h, a) for h in out[end_col]]
+    cols = [c for c in out.columns if c not in ("start", "end")]
+    pos = cols.index(end_col) + 1
+    ordered = cols[:pos] + ["start", "end"] + cols[pos:]
+    return out[ordered]
