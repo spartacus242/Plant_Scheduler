@@ -30,6 +30,11 @@ code/validation_report.txt
 # Flowstate rebuild scratch
 data/_scenario_work/
 data/_upload/
+
+# Stock check local runtime state (VIF snapshots, settings, caches)
+data/stockcheck/snapshots/
+data/stockcheck/settings.json
+data/stockcheck/*.cache.json
 *.tmp
 node_modules/
 code/components/gantt/frontend/node_modules/
