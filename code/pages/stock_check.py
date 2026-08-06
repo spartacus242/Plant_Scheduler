@@ -71,6 +71,8 @@ STATUS_CHIP = {
     "UNK": ":gray[UNK]",
     "NOT_TRACKED": ":gray[NOT TRACKED]",
 }
+# plain labels for dataframe cells (st.dataframe does not render markdown)
+STATUS_TEXT = {k: v.split("[")[1].rstrip("]") for k, v in STATUS_CHIP.items()}
 
 # ---------------------------------------------------------------- header
 left, mid, right = st.columns([3, 2, 2])
@@ -199,12 +201,14 @@ with tab_demand:
     tbl = []
     for d in rows:
         c = d["constraining"][0] if d["constraining"] else {}
+        ratio = d["achievable_ratio"]
+        cov_s = ("—" if ratio is None
+                 else (f"{ratio:.1%}" if ratio >= 0.005 else f"{ratio:.2%}"))
         tbl.append({
             "SKU": d["sku"], "Wk": d["week_index"],
             "Target kg": d["target_kg"],
-            "Coverage": (f"{d['achievable_ratio']:.0%}"
-                         if d["achievable_ratio"] is not None else "—"),
-            "Status": STATUS_CHIP.get(d["status"], d["status"]),
+            "Coverage": cov_s,
+            "Status": STATUS_TEXT.get(d["status"], d["status"]),
             "Top constraint": (f"{c.get('item', '')} "
                                f"({c.get('available_total', '')}/"
                                f"{c.get('need', '')} {c.get('unit', '')})"
@@ -268,9 +272,21 @@ with tab_recv:
 
 with tab_dq:
     st.subheader("Data quality")
-    st.markdown(f"**NO_BOM SKUs ({len(rep['no_bom_skus'])})** — no recipe in "
-                "ediact 3, cannot be checked:")
-    st.code(", ".join(rep["no_bom_skus"]) or "none")
+    st.markdown(f"**NO_BOM SKUs ({len(rep['no_bom_skus'])})** in the current "
+                "schedule/demand universe — no recipe in ediact 3, cannot be "
+                "checked:")
+    st.code(", ".join(rep["no_bom_skus"]) or "none in the current plan")
+    st.markdown("**All SKUs without a BOM** (full catalog from `sku_info.csv`):")
+    try:
+        si = pd.read_csv(DATA / "reference" / "sku_info.csv", dtype={"sku": str})
+        from stockcheck.vif_import import import_vif_folder  # local already
+        from stockcheck.bom import BomGraph
+        snap = import_vif_folder(vif_folder)
+        bom_all = BomGraph(snap.frames["ediact 3.csv"])
+        no_bom_all = sorted(s for s in si["sku"] if not bom_all.has_bom(s))
+    except Exception:
+        no_bom_all = []
+    st.code(", ".join(no_bom_all) or "none")
     st.markdown(f"**UNK items ({len(rep['unk'])})** — requirement exists but "
                 "magnitude unknown:")
     if rep["unk"]:
