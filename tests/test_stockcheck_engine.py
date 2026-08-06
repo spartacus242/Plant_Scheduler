@@ -112,6 +112,28 @@ def test_scn_rows_dropped(snap):
     assert not bom.df["item"].str.endswith("SCN").any()
 
 
+def test_in_house_items_never_gate(snap):
+    """BT001/BT002 are made in-house (preprocessing lines), never in VIF
+    stock exports — they must always count as fully available."""
+    from stockcheck.bom import RequirementGroup
+    avail = cov.available_stock(snap.frames["jestkexp.csv"],
+                                snap.frames["jestkexp2.csv"])
+    assert "BT001" not in avail or avail.get("BT001", 0) == 0  # not stocked
+    g = RequirementGroup(primary_item="BT001",
+                         designation="FRESH APPLE PUREE",
+                         need_qty=12114.0, unit="Kg")
+    c = cov.coverage_for_requirement(g, avail, set(avail.keys()))
+    assert c["status"] == "OK"
+    assert c["note"] == "in-house"
+    assert c["ratio"] == float("inf")
+    # and via an alternate slot too
+    g2 = RequirementGroup(primary_item="730999", designation="X",
+                          need_qty=10.0, unit="Kg",
+                          alternates=[{"item": "BT002", "designation": "ORG"}])
+    c2 = cov.coverage_for_requirement(g2, avail, set(avail.keys()))
+    assert c2["status"] == "OK"
+
+
 def test_report_end_to_end(snap, tmp_path):
     from stockcheck.api import stock_check_report
     rep = stock_check_report(ROOT / "data", VIF)

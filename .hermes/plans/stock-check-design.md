@@ -98,6 +98,8 @@ Units stay **per item** (CAS, EA, M2, Kg, L, FT — labeled, never force-convert
 `available(item) = Σ qty over lots matching active depot×status toggles`.
 UI exposes toggles for every observed combination (statuses Ava/Loc/Out × depots M01/SB1/SC1/SF1/M02/SFG/M21). **Default: `Ava` only, all depots** — replicates the safe interpretation; `Loc` opt-in per depot (e.g. SB1 Loc = QC hold, SL3-adjacent stock the planner knows will release).
 
+**In-house ingredients never gate.** `BT001`/`BT002` (conventional / organic fresh apple puree) are made on the preprocessing lines on demand and never appear in the VIF inventory exports. They are always treated as fully available (`coverage.py: IN_HOUSE_ITEMS`), render with an "in-house" note, and never produce AT_RISK. The list is extensible if more in-house items surface.
+
 Lot-level detail retained for drill-down (SCN, batch, BBD) — BBD expiry-vs-run-date is a future enhancement, noted not built.
 
 ### 4.3 Coverage & status

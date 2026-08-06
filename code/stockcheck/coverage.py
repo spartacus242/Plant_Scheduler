@@ -13,6 +13,11 @@ STATUSES = ("Ava", "Loc", "Out")
 RM_DEPOTS = ("M01", "SB1", "SC1", "SF1", "M02")
 PKG_DEPOTS = ("SFG", "M21")
 
+# In-house produced ingredients: made on the preprocessing lines on demand,
+# never carried in the VIF inventory exports (per user). They must never gate
+# a SKU — always treated as fully available. Extensible if more appear.
+IN_HOUSE_ITEMS = {"BT001", "BT002"}
+
 OK_MARGIN = 1.10      # coverage >= 1.10 -> OK
 TIGHT_FLOOR = 0.95    # 0.95..1.10 -> TIGHT; below -> AT_RISK
 DNS_RATIO = 0.90      # demand view: achievable < 90% of target -> DO_NOT_SCHEDULE
@@ -70,28 +75,35 @@ def item_status(ratio: float) -> str:
 def coverage_for_requirement(group, avail: dict[str, float],
                              tracked_items: set[str] | None = None) -> dict:
     """Coverage of one RequirementGroup: primary + alternates pooled.
-    Items absent from every stock frame are NOT_TRACKED (unknown supply),
-    which must not poison the SKU status — they render as their own chip."""
+    - In-house items (IN_HOUSE_ITEMS) are always fully available.
+    - Items absent from every stock frame are NOT_TRACKED (unknown supply),
+      which must not poison the SKU status — they render as their own chip."""
+    in_house = (group.primary_item in IN_HOUSE_ITEMS
+                or any(a["item"] in IN_HOUSE_ITEMS for a in group.alternates))
     pool = avail.get(group.primary_item, 0.0)
     alt_rows = []
-    any_tracked = False
     for a in group.alternates:
         aq = avail.get(a["item"], 0.0)
         pool += aq
         alt_rows.append({"item": a["item"], "designation": a["designation"],
                          "available": aq})
+    any_tracked = True
     if tracked_items is not None:
         any_tracked = (group.primary_item in tracked_items
                        or any(a["item"] in tracked_items
                               for a in group.alternates))
-    else:
-        any_tracked = True
     ratio = (pool / group.need_qty) if group.need_qty > 0 else math.inf
-    if not any_tracked:
+    if in_house:
+        status = "OK"             # made in-house: never gates
+        ratio = math.inf
+        note = "in-house"
+    elif not any_tracked:
         status = "NOT_TRACKED"
         ratio = math.inf
+        note = "not in VIF stock exports"
     else:
         status = item_status(ratio)
+        note = ""
     return {
         "item": group.primary_item,
         "designation": group.designation,
@@ -102,6 +114,7 @@ def coverage_for_requirement(group, avail: dict[str, float],
         "available_total": pool,
         "ratio": ratio,
         "status": status,
+        "note": note,
     }
 
 
