@@ -46,6 +46,73 @@ def backup(path: Path) -> Path:
 
 
 st.divider()
+st.subheader("Import the raw corporate AZAP (.xlsx)")
+st.caption(
+    "The corporate 'Demand Plan Raw' export (pdp export AZAP) is the source of "
+    "truth for demand. Importing it rebuilds `data/reference/demand_plan.csv` "
+    "for a 3-week rolling window and re-anchors the planning calendar."
+)
+
+with st.expander("Import raw AZAP (.xlsx)", expanded=False):
+    from helpers.azap_import import aggregate, build_demand_plan, read_raw, iso_week
+    from helpers.timefmt import week_label
+
+    azap_up = st.file_uploader(
+        "Demand Plan Raw (.xlsx)", type=["xlsx"], key="azap_raw_upload")
+    if azap_up is not None:
+        import io as _io
+        try:
+            raw_df = read_raw(_io.BytesIO(azap_up.getvalue()))
+            agg, warns, dropped_machine, _ = aggregate(raw_df)
+            demand, anchor, dropped_window, weeks = build_demand_plan(agg)
+        except Exception as exc:
+            st.error(f"Not a readable AZAP export: {type(exc).__name__}: {exc}")
+            st.stop()
+
+        iso = [iso_week(w) for w in weeks]
+        st.success(
+            f"Parsed **{len(raw_df):,}** rows → kept P09–P22, anchored to "
+            f"**{anchor}** (WW{iso[0]:02d}), keeping weeks "
+            f"**{', '.join(f'WW{w:02d}' for w in iso)}** — **{len(demand)}** "
+            f"orders, **{demand['qty_target'].sum():,.0f} kg** total. "
+            f"Dropped {dropped_machine:,} non-plant rows and "
+            f"{dropped_window:,} beyond the 3-week window.")
+        if warns:
+            st.warning("Data warnings: " + "; ".join(warns))
+        st.warning(
+            "Re-anchoring moves `planning_start_date` to "
+            f"**{anchor} 00:00:00**. Saved schedules/scorecards under the old "
+            "anchor become stale. The current `demand_plan.csv` will be "
+            "backed up before overwrite.")
+        st.dataframe(demand.head(10), use_container_width=True, hide_index=True)
+
+        if st.button("Write demand_plan.csv + re-anchor", key="azap_commit",
+                     type="primary"):
+            from helpers.azap_import import import_azap
+            ref = dd / "reference"
+            old = ref / "demand_plan.csv"
+            if old.exists():
+                b = backup(old)
+                st.caption(f"Backed up old demand plan to `{b.name}`")
+
+            def _set_anchor(s: str) -> None:
+                from helpers.paths import toml_path
+                tp = toml_path()
+                txt = tp.read_text(encoding="utf-8")
+                import re as _re
+                txt2 = _re.sub(r'planning_start_date\s*=\s*"[^"]*"',
+                               f'planning_start_date = "{s}"', txt)
+                tp.write_text(txt2, encoding="utf-8")
+
+            res = import_azap(_io.BytesIO(azap_up.getvalue()), ref,
+                              update_anchor=_set_anchor)
+            st.success(
+                f"Wrote {res.rows_kept} orders to demand_plan.csv "
+                f"(weeks {', '.join(f'WW{w:02d}' for w in res.iso_weeks)}), "
+                f"anchor {res.anchor}. Provenance in demand_plan.source.json.")
+            st.rerun()
+
+st.divider()
 st.subheader("Upload the planner's manual line schedule")
 st.caption(
     "AZAP (the demand plan, data/reference/demand_plan.csv) says which SKUs and how many kg -- "
