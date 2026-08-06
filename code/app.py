@@ -34,6 +34,9 @@ pg = st.navigation(
         "Score": [
             st.Page("pages/scorecard.py", title="Schedule Scorecard", icon=":material/analytics:"),
         ],
+        "Stock": [
+            st.Page("pages/stock_check.py", title="Stock Check", icon=":material/inventory:"),
+        ],
         "Twin": [
             st.Page("pages/calendar.py", title="Plant Calendar", icon=":material/drag_indicator:"),
         ],
