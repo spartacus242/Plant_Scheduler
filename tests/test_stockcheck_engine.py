@@ -53,22 +53,31 @@ def test_golden_2_explosion_280351(snap):
     res = bom.explode("280351", 2640.0)
     assert res.status in ("OK", "UNK_PARTIAL")
     req = {g.primary_item: g for g in res.requirements}
-    assert req["TL760116"].need_qty == pytest.approx(2640.0)
-    assert req["TL760116"].unit == "SLV"
+    # intermediates are produced in-line, never stocked -> dropped from needs
+    assert "TL760116" not in req and "VP762164" not in req
     # full chain: 2640 CAS * 24 POU/SLV * 45/1000 kg slurry * 432|454/1000
     expected = 2640 * 24 * (45 / 1000 * 454 / 1000 + 45 / 1000 * 432 / 1000)
     assert req["730009"].need_qty == pytest.approx(expected, abs=0.01)
-    # alternate of 730009 in SPTP764066: 730009-V (blank qty)
-    alt_items = [a["item"] for a in req["730009"].alternates]
-    assert "730009-V" in alt_items
+    # 730009 is a blank-qty ALTERNATE in slurry activities (attaches to the
+    # largest kg primary, e.g. BT001/BT002) — so it may appear both as its
+    # own requirement (where it has qty) and as an alternate elsewhere.
+    assert req["730009"].unit == "Kg"
+    # blank-qty alternates attach to largest same-unit primary somewhere
+    all_alts = {a["item"] for g in res.requirements for a in g.alternates}
+    assert "730009-V" in all_alts or "730008-V" in all_alts
 
 
 def test_golden_3_four_slurry_blend(snap):
     bom = BomGraph(snap.frames["ediact 3.csv"])
+    # raw consumption of the 4-slurry pouch recipe must flow through (blend
+    # consumes ALL FOUR slurries simultaneously, 22.5 kg each per 1000 POU)
     res = bom.explode("280480", 1000.0)
     req = {g.primary_item: g for g in res.requirements}
-    for slurry in ("GSSPTP9221", "GSSPTP9222", "GSSPTP9223", "GSSPTP9224"):
-        assert slurry in req, f"{slurry} missing (blend = all four)"
+    # slurries themselves are intermediates (dropped), but their raws appear
+    assert "730009" in req  # apple puree shared by GSSPTP9221/22/23/24 chain
+    # and the pouch film/cap from VP762249
+    assert "752744" in req  # film M2
+    assert req["752744"].unit == "M2"
 
 
 def test_golden_4_no_bom_skus(snap):

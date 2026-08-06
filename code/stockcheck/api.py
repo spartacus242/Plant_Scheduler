@@ -73,6 +73,11 @@ def stock_check_report(data_dir: str | Path, vif_folder: str | Path,
     rm = frames.get("jestkexp.csv")
     pkg = frames.get("jestkexp2.csv")
     avail = cov.available_stock(rm, pkg, toggles)
+    tracked_items = set(avail.keys())
+    # items with stock rows entirely toggled off still count as tracked
+    for df in (rm, pkg):
+        if df is not None and not df.empty:
+            tracked_items |= set(df["item"]) - {""}
 
     blocks = pd.read_csv(data_dir / "calendar_blocks.csv",
                          dtype={"sku": str})
@@ -84,7 +89,7 @@ def stock_check_report(data_dir: str | Path, vif_folder: str | Path,
     schedule_view = []
     for b in schedule_requirements(blocks, bom, azapart, rates):
         exp = b["explosion"]
-        items = [cov.coverage_for_requirement(g, avail)
+        items = [cov.coverage_for_requirement(g, avail, tracked_items)
                  for g in exp.requirements]
         item_statuses = [i["status"] for i in items if i["need"]]
         status = cov.worst_status(item_statuses)
@@ -104,7 +109,7 @@ def stock_check_report(data_dir: str | Path, vif_folder: str | Path,
         if week_index is not None and d["week_index"] != week_index:
             continue
         exp = d["explosion"]
-        items = [cov.coverage_for_requirement(g, avail)
+        items = [cov.coverage_for_requirement(g, avail, tracked_items)
                  for g in exp.requirements]
         ratios = [i["ratio"] for i in items
                   if i["need"] and not math.isinf(i["ratio"])]

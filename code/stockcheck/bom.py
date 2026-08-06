@@ -82,6 +82,9 @@ class BomGraph:
                     and (self._by_act[a]["family"] == "FG").any()))
         for act in entries:
             self._walk(act, qty_cas, [], res, req, as_of)
+        # Intermediates are produced in-line, never purchased/stocked: their
+        # own "need" rows are meaningless once exploded through. Drop them.
+        req = {k: g for k, g in req.items() if g.primary_item not in self._by_act}
         res.requirements = sorted(req.values(), key=lambda r: r.primary_item)
         if res.unk_items:
             res.status = "UNK_PARTIAL"
@@ -132,10 +135,8 @@ class BomGraph:
         qty_ins = ins[ins["qty_act"].notna() & (ins["qty_act"] > 0)]
         blank_ins = ins[ins["qty_act"].isna() | (ins["qty_act"] <= 0)]
 
-        # unit -> MOST RECENT primary group in this activity (alternates
-        # follow their primary in ediact row order)
-        primary_by_unit: dict[str, RequirementGroup] = {}
         recurse: list[tuple[str, float]] = []
+        made: list[RequirementGroup] = []
 
         for _, r in qty_ins.iterrows():
             item = r["item"]
@@ -148,28 +149,33 @@ class BomGraph:
             need = run_scale * r["qty_act"]
             g = self._add_need(req, item, str(r["designation"]).strip(),
                                need, r["unit"], path)
-            primary_by_unit[r["unit"]] = g
+            made.append((g, r["qty_act"]))
             if item in self._by_act:
                 recurse.append((item, need))
 
-        # blank-qty rows attach to the nearest PRECEDING primary of same unit;
-        # a blank row may also precede its primary -> second pass fallback
-        pending: list = []
+        # Blank-qty rows are ALTERNATES (user-confirmed). In slurry activities
+        # they cluster BEFORE the primaries (730009 before BT001), so attach
+        # each blank row to the LARGEST same-unit primary of this activity —
+        # that is the base ingredient it substitutes for.
+        largest_by_unit: dict[str, RequirementGroup] = {}
+        for g, raw_qty in made:
+            cur = largest_by_unit.get(g.unit)
+            if cur is None or raw_qty > cur[1]:
+                largest_by_unit[g.unit] = (g, raw_qty)
         for _, r in blank_ins.iterrows():
             item = r["item"]
-            target = primary_by_unit.get(r["unit"])
-            if target is not None:
-                if all(a["item"] != item for a in target.alternates):
-                    target.alternates.append(
+            tgt = largest_by_unit.get(r["unit"])
+            if tgt is not None:
+                g = tgt[0]
+                if all(a["item"] != item for a in g.alternates):
+                    g.alternates.append(
                         {"item": item,
                          "designation": str(r["designation"]).strip()})
             else:
-                pending.append(r)
-        for r in pending:
-            res.unk_items.append({
-                "item": r["item"],
-                "reason": f"alternate without primary in {act_code}",
-                "path": path})
+                res.unk_items.append({
+                    "item": item,
+                    "reason": f"alternate without primary in {act_code}",
+                    "path": path})
 
         for item, need in recurse:
             self._walk(item, need, path, res, req, as_of)

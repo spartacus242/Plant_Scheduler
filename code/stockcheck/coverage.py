@@ -67,16 +67,31 @@ def item_status(ratio: float) -> str:
     return "AT_RISK"
 
 
-def coverage_for_requirement(group, avail: dict[str, float]) -> dict:
-    """Coverage of one RequirementGroup: primary + alternates pooled."""
+def coverage_for_requirement(group, avail: dict[str, float],
+                             tracked_items: set[str] | None = None) -> dict:
+    """Coverage of one RequirementGroup: primary + alternates pooled.
+    Items absent from every stock frame are NOT_TRACKED (unknown supply),
+    which must not poison the SKU status — they render as their own chip."""
     pool = avail.get(group.primary_item, 0.0)
     alt_rows = []
+    any_tracked = False
     for a in group.alternates:
         aq = avail.get(a["item"], 0.0)
         pool += aq
         alt_rows.append({"item": a["item"], "designation": a["designation"],
                          "available": aq})
+    if tracked_items is not None:
+        any_tracked = (group.primary_item in tracked_items
+                       or any(a["item"] in tracked_items
+                              for a in group.alternates))
+    else:
+        any_tracked = True
     ratio = (pool / group.need_qty) if group.need_qty > 0 else math.inf
+    if not any_tracked:
+        status = "NOT_TRACKED"
+        ratio = math.inf
+    else:
+        status = item_status(ratio)
     return {
         "item": group.primary_item,
         "designation": group.designation,
@@ -86,14 +101,17 @@ def coverage_for_requirement(group, avail: dict[str, float]) -> dict:
         "alternates": alt_rows,
         "available_total": pool,
         "ratio": ratio,
-        "status": item_status(ratio),
+        "status": status,
     }
 
 
-_WORST = {"AT_RISK": 0, "TIGHT": 1, "OK": 2}
+_WORST = {"NOT_TRACKED": -1, "AT_RISK": 0, "TIGHT": 1, "OK": 2}
 
 
 def worst_status(statuses: list[str]) -> str:
-    if not statuses:
-        return "OK"
-    return min(statuses, key=lambda s: _WORST.get(s, 2))
+    """NOT_TRACKED never dominates: a SKU is only AT_RISK/TIGHT on items we
+    actually count. NOT_TRACKED surfaces separately as a data-quality chip."""
+    tracked = [s for s in statuses if s != "NOT_TRACKED"]
+    if not tracked:
+        return "NOT_TRACKED" if statuses else "OK"
+    return min(tracked, key=lambda s: _WORST.get(s, 2))
