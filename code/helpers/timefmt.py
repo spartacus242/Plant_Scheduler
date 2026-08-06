@@ -68,6 +68,18 @@ def hour_to_iso(hour: float, anchor: datetime | str | None = None) -> str:
     return hour_to_datetime(hour, anchor).strftime("%Y-%m-%d %H:%M")
 
 
+def week_index_to_iso(week_index: int, anchor: datetime | str | None = None
+                      ) -> int:
+    """ISO calendar week number for a stored week_index (0 = anchor week)."""
+    d = parse_anchor(anchor) + timedelta(weeks=int(week_index))
+    return d.isocalendar()[1]
+
+
+def week_label(week_index: int, anchor: datetime | str | None = None) -> str:
+    """Display label for a week_index, e.g. 'WW32' (ISO calendar week)."""
+    return f"WW{week_index_to_iso(week_index, anchor):02d}"
+
+
 _DATETIME_FORMATS = (
     "%Y-%m-%d %H:%M:%S",
     "%Y-%m-%dT%H:%M:%S",
