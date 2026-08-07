@@ -51,7 +51,7 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClo
           )}
           <tr><td style={{ color: "#888", paddingRight: 12 }}>Start</td><td>{hourToStamp(block.start_hour, anchor)}</td></tr>
           <tr><td style={{ color: "#888", paddingRight: 12 }}>End</td><td>{hourToStamp(block.end_hour, anchor)}</td></tr>
-          <tr><td style={{ color: "#888", paddingRight: 12 }}>Duration</td><td>{block.run_hours}h</td></tr>
+          <tr><td style={{ color: "#888", paddingRight: 12 }}>Duration</td><td>{block.run_hours.toFixed(1)}h</td></tr>
           <tr><td style={{ color: "#888", paddingRight: 12 }}>Rate</td><td>{rate > 0 ? `${rate} UPH` : "N/A"}</td></tr>
           <tr><td style={{ color: "#888", paddingRight: 12 }}>Est. Qty</td><td>{qty}</td></tr>
           <tr><td style={{ color: "#888", paddingRight: 12 }}>Type</td><td>{block.block_type}</td></tr>

@@ -82,8 +82,10 @@ export const GanttBlock: React.FC<Props> = ({
   const dragX = isDragging && transform ? transform.x : 0;
   const dragY = isDragging && transform ? transform.y : 0;
 
-  const desc = block.sku_description || "";
+  const rawDesc = block.sku_description || "";
+  const desc = /^nan$/i.test(rawDesc.trim()) ? "" : rawDesc;  // defensive: never render 'nan'
   const baseLabel = blockLabel(block.block_type, block.sku, block.label);
+  const hoursTxt = (Number.isFinite(block.run_hours) ? block.run_hours : 0).toFixed(1);
 
   // Estimate available characters from pixel width (~6.5px per char at 11px font)
   const charBudget = Math.floor((w - 12) / 6.5);
@@ -93,8 +95,8 @@ export const GanttBlock: React.FC<Props> = ({
   } else if (charBudget <= 0) {
     label = "";
   } else {
-    const withHours = `${baseLabel} (${block.run_hours}h)`;
-    const withDesc = desc ? `${baseLabel} ${desc} (${block.run_hours}h)` : withHours;
+    const withHours = `${baseLabel} (${hoursTxt}h)`;
+    const withDesc = desc ? `${baseLabel} ${desc} (${hoursTxt}h)` : withHours;
     if (withDesc.length <= charBudget) {
       label = withDesc;
     } else if (withHours.length <= charBudget) {
@@ -111,7 +113,7 @@ export const GanttBlock: React.FC<Props> = ({
     baseLabel,
     desc,
     side ? `${block.line_name} (side ${side} only - half rate)` : `${block.line_name}`,
-    `${hourToStamp(startH, anchor)} -> ${hourToStamp(endH, anchor)} (${endH - startH}h)`,
+    `${hourToStamp(startH, anchor)} -> ${hourToStamp(endH, anchor)} (${(endH - startH).toFixed(1)}h)`,
   ].filter(Boolean).join("\n");
 
   const strokeColor = isDragging ? "#333" : "none";

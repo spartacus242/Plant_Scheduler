@@ -62,7 +62,7 @@ export const DragPreviewBadge: React.FC<Props> = ({ preview, anchor }) => {
       <div style={rowStyle}>
         <span style={keyStyle}>Duration</span>
         <span>
-          {hours}h{deltaLabel}
+          {typeof hours === "number" ? hours.toFixed(1) : hours}h{deltaLabel}
         </span>
       </div>
       <div style={rowStyle}>
