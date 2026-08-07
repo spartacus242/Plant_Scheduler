@@ -53,6 +53,16 @@ def test_spot_values(res):
     assert c.hours == pytest.approx(8.0)
 
 
+def test_ww32_pdf_parses():
+    """The WW32 schedule (a second real week) parses with the same importer."""
+    res = parse_schedule_pdf(str(ROOT / "data" / "reference"
+                                   / "Week 32 2026 production schedule.pdf"))
+    assert res.year == 2026
+    assert len(res.blocks) == 54
+    assert res.warnings == []
+    assert {b.block_type for b in res.blocks} >= {"production", "cip", "trial"}
+
+
 def test_to_calendar_rows(res):
     anchor = datetime(2026, 8, 10, 0, 0)  # Monday of WW33 (08/10 is Monday)
     rows = to_calendar_rows(res, anchor)

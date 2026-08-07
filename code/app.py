@@ -48,6 +48,7 @@ pg = st.navigation(
         ],
         "Setup": [
             st.Page("pages/lines.py", title="Lines", icon=":material/view_week:"),
+            st.Page("pages/settings.py", title="Settings", icon=":material/settings:"),
         ],
     },
     expanded=True,
