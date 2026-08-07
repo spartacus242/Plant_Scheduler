@@ -1364,6 +1364,10 @@ def main() -> None:
                         flags["relax_demand"],
                         flags["ignore_co"],
                         max_lines_per_order_override=MAX_LINES_PER_ORDER,
+                        # Single-phase (forced by cross-week) must also push
+                        # production, else a relaxed demand floor lets the
+                        # changeover/makespan objective abandon orders.
+                        maximize_production=True,
                         objective_mode=OBJECTIVE_MODE,
                         relax_due=flags["relax_due"],
                         cross_week=CROSS_WEEK,

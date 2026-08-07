@@ -37,7 +37,7 @@ const HoldingCard: React.FC<{ block: ScheduleBlock }> = ({ block }) => {
         whiteSpace: "nowrap",
       }}
     >
-      {block.block_type === "cip" ? "CIP" : block.order_id}: {block.sku}, {block.run_hours}h
+      {block.block_type === "cip" ? "CIP" : block.order_id}: {block.sku}, {block.run_hours.toFixed(1)}h
     </div>
   );
 };

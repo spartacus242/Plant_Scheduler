@@ -84,9 +84,10 @@ with left:
                            else str(DEV_VIF)),
         help="Network share on Carsten's machine; dev fixtures locally.")
 with mid:
+    from helpers.timefmt import week_label as _wk_label
     week_index = st.selectbox("Demand week", options=[None, 0, 1, 2],
                               format_func=lambda x: "All weeks" if x is None
-                              else f"Week {x}")
+                              else _wk_label(x))
 with right:
     refresh = st.button("Refresh from VIF", type="primary",
                         help="Re-imports only if source files changed.")
@@ -205,7 +206,7 @@ with tab_demand:
         cov_s = ("—" if ratio is None
                  else (f"{ratio:.1%}" if ratio >= 0.005 else f"{ratio:.2%}"))
         tbl.append({
-            "SKU": d["sku"], "Wk": d["week_index"],
+            "SKU": d["sku"], "Wk": _wk_label(d["week_index"]),
             "Target kg": d["target_kg"],
             "Coverage": cov_s,
             "Status": STATUS_TEXT.get(d["status"], d["status"]),

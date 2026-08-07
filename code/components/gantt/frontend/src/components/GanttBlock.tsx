@@ -82,8 +82,10 @@ export const GanttBlock: React.FC<Props> = ({
   const dragX = isDragging && transform ? transform.x : 0;
   const dragY = isDragging && transform ? transform.y : 0;
 
-  const desc = block.sku_description || "";
+  const rawDesc = block.sku_description || "";
+  const desc = /^nan$/i.test(rawDesc.trim()) ? "" : rawDesc;  // defensive: never render 'nan'
   const baseLabel = blockLabel(block.block_type, block.sku, block.label);
+  const hoursTxt = (Number.isFinite(block.run_hours) ? block.run_hours : 0).toFixed(1);
 
   // Estimate available characters from pixel width (~6.5px per char at 11px font)
   const charBudget = Math.floor((w - 12) / 6.5);
@@ -93,8 +95,8 @@ export const GanttBlock: React.FC<Props> = ({
   } else if (charBudget <= 0) {
     label = "";
   } else {
-    const withHours = `${baseLabel} (${block.run_hours}h)`;
-    const withDesc = desc ? `${baseLabel} ${desc} (${block.run_hours}h)` : withHours;
+    const withHours = `${baseLabel} (${hoursTxt}h)`;
+    const withDesc = desc ? `${baseLabel} ${desc} (${hoursTxt}h)` : withHours;
     if (withDesc.length <= charBudget) {
       label = withDesc;
     } else if (withHours.length <= charBudget) {
@@ -106,12 +108,15 @@ export const GanttBlock: React.FC<Props> = ({
     }
   }
 
-  // Hover tooltip: wall-clock start/end, duration stays in hours.
+  // Hover tooltip: wall-clock start/end, duration, live completion, cases left.
   const tooltip = [
     baseLabel,
     desc,
     side ? `${block.line_name} (side ${side} only - half rate)` : `${block.line_name}`,
-    `${hourToStamp(startH, anchor)} -> ${hourToStamp(endH, anchor)} (${endH - startH}h)`,
+    `${hourToStamp(startH, anchor)} -> ${hourToStamp(endH, anchor)} (${(endH - startH).toFixed(1)}h)`,
+    typeof block.completion_pct === "number"
+      ? `Completion: ${block.completion_pct.toFixed(1)}%${typeof block.cases_left === "number" ? ` · ${block.cases_left.toLocaleString()} cases left` : ""}`
+      : "",
   ].filter(Boolean).join("\n");
 
   const strokeColor = isDragging ? "#333" : "none";
@@ -152,6 +157,25 @@ export const GanttBlock: React.FC<Props> = ({
         stroke={strokeColor}
         strokeWidth={strokeW}
       />
+      {/* Live completion fill (manprg): left-to-right progress on production bars */}
+      {typeof block.completion_pct === "number" && block.completion_pct > 0 && (() => {
+        const pct = Math.min(Math.max(block.completion_pct, 0), 100);
+        const fw = Math.max((w * pct) / 100, 0);
+        return (
+          <>
+            <rect
+              x={x}
+              y={y}
+              width={fw}
+              height={h}
+              rx={4}
+              fill="rgba(255,255,255,0.35)"
+              pointerEvents="none"
+            />
+            <line x1={x + fw} y1={y} x2={x + fw} y2={y + h} stroke="rgba(255,255,255,0.7)" strokeWidth={1.5} pointerEvents="none" />
+          </>
+        );
+      })()}
       {w > 20 && label && (
         <text
           x={x + 6}

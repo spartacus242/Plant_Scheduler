@@ -373,11 +373,15 @@ class Data:
                 (start_dt - pd.Timestamp(anchor)).total_seconds() / 3600
             )
             if start_hour < 0:
-                raise ValueError(
-                    f"trials.csv row {row_i}: start_datetime "
+                # A trial dated before the planning anchor is stale (e.g. left
+                # over from a prior week's horizon after a re-anchor). Skip it
+                # with a warning rather than crashing the whole solve.
+                print(
+                    f"[trials] skipping row {row_i}: start_datetime "
                     f"({start_raw}) is before planning start "
-                    f"({self.P.planning_start_date})"
+                    f"({self.P.planning_start_date}) — stale trial, ignored."
                 )
+                continue
 
             # Parse end_datetime (optional)
             end_raw = str(r.get("end_datetime", "")).strip()

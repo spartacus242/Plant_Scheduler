@@ -463,7 +463,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
                 }}
               >
                 {blockLabel(activeDragBlock.block_type, activeDragBlock.sku, activeDragBlock.label)}
-                {dragPreview ? ` (${dragPreview.hours}h)` : ""}
+                {dragPreview ? ` (${dragPreview.hours.toFixed(1)}h)` : ""}
               </div>
               {dragPreview && <DragPreviewBadge preview={dragPreview} anchor={anchor} />}
             </div>

@@ -160,19 +160,30 @@ def calendar_to_gantt_payload(df: pd.DataFrame) -> tuple[list[dict], list[dict]]
         btype = str(r["block_type"])
         start = float(r["start_h"])
         end = float(r["end_h"])
+
+        def _txt(v) -> str:
+            """Clean optional text: NaN/None/'nan' -> ''."""
+            s = str(v or "").strip()
+            return "" if s.lower() in ("nan", "none", "nat") else s
+
+        def _code(v) -> str:
+            """Item/MO codes: strip a trailing '.0' from float-typed CSV cells."""
+            s = _txt(v)
+            return s[:-2] if s.endswith(".0") and s[:-2].isdigit() else s
+
         block = {
             "id": str(r["block_id"]),
             "line_id": int(r["line_id"]) if pd.notna(r["line_id"]) else 0,
             "line_name": str(r["line_name"]),
-            "order_id": str(r.get("order_id") or ""),
-            "sku": str(r.get("sku") or r.get("label") or btype),
-            "sku_description": str(r.get("sku_description") or ""),
+            "order_id": _code(r.get("order_id")),
+            "sku": _code(r.get("sku")) or _code(r.get("label")) or btype,
+            "sku_description": _txt(r.get("sku_description")),
             "start_hour": start,
             "end_hour": end,
-            "run_hours": max(0.0, end - start),
+            "run_hours": round(max(0.0, end - start), 1),
             "is_trial": btype == "trial",
             "block_type": _to_gantt_type(btype),
-            "label": str(r.get("label") or ""),
+            "label": _code(r.get("label")),
             "locked": bool(r.get("locked", False)),
         }
         if btype in ("production", "trial"):

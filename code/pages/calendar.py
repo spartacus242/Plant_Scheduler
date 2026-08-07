@@ -39,6 +39,18 @@ dd = data_dir()
 cal_path = dd / "calendar_blocks.csv"
 cfg = load_toml()
 sched_cfg = cfg.get("scheduler", {})
+
+# Show which ISO calendar week(s) the horizon covers so hour offsets read as
+# real weeks (WW33 ...) rather than abstract W0/W1.
+from helpers.timefmt import planning_anchor, week_index_to_iso
+_anchor = planning_anchor(cfg)
+_w0 = week_index_to_iso(0, _anchor)
+_w1 = week_index_to_iso(1, _anchor)
+_w2 = week_index_to_iso(2, _anchor)
+st.caption(
+    f"Planning weeks: **WW{_w0:02d}** → WW{_w1:02d} / WW{_w2:02d} "
+    f"(planning anchor {_anchor:%a %Y-%m-%d})."
+)
 cip_cfg = cfg.get("cip", {})
 
 cal = load_calendar(cal_path)
@@ -117,6 +129,71 @@ if dem_path.exists():
 
 schedule, windows = calendar_to_gantt_payload(cal)
 
+# ---- Live ops overlay: MO completion (manprg) + CIP schedule (cip_info) ----
+from helpers.cip_import import read_cip_info
+from helpers.config import datasources_config
+from helpers.manprg_import import read_manprg
+from helpers.ops_sql import SqlConfig, available as sql_available, fetch_current_mo
+
+_ds = datasources_config(cfg)
+_manprg_paths = [p.strip() for p in str(_ds.get("manprg_files", "")).split(";")
+                 if p.strip()] or [
+                     str(dd / "reference" / "manprg.txt"),
+                     str(dd / "reference" / "manprg2.txt")]
+_cip_path = str(_ds.get("cip_info_csv", "")).strip() or str(dd / "reference" / "cip_info.csv")
+
+# completion % per MO (manprg by_mo) + per line for the now-running strip
+_completion_by_mo: dict[str, float] = {}
+_left_by_mo: dict[str, float] = {}
+_now_running: list[dict] = []
+_mp = read_manprg(_manprg_paths)
+for mo, lp in _mp.by_mo.items():
+    _completion_by_mo[mo] = lp.completion_pct
+    _left_by_mo[mo] = lp.left_cas
+for line, lp in _mp.current.items():
+    _now_running.append({
+        "line": line, "mo": lp.mo, "item": lp.item,
+        "pct": lp.completion_pct, "left": lp.left_cas,
+    })
+_sql_cfg = SqlConfig(dsn=str(_ds.get("sql_dsn", "")),
+                     enabled=bool(_ds.get("sql_enabled", False)))
+if sql_available(_sql_cfg):
+    _rows = fetch_current_mo(_sql_cfg)
+    if _rows:
+        for r in _rows:
+            ln = str(r.get("Line", "")).strip()
+            pct = r.get("MO Completion %")
+            if ln and pct is not None:
+                # SQL gives current MO per line; map onto that line's current MO
+                cur = _mp.current.get(ln)
+                if cur is not None:
+                    _completion_by_mo[cur.mo] = round(float(pct) * 100.0, 1)
+
+# attach completion to production blocks by MATCHING MO (order_id) — sequential
+# MOs on a line each carry their own %; a finished block is full, a future one 0.
+for b in schedule:
+    if b.get("block_type") == "sku":
+        mo = b.get("order_id", "")
+        if mo in _completion_by_mo:
+            b["completion_pct"] = _completion_by_mo[mo]
+            b["cases_left"] = _left_by_mo.get(mo)
+
+# scheduled CIPs from cip_info as overlay windows (drawn, not editable)
+_cip = read_cip_info(_cip_path)
+from helpers.timefmt import planning_anchor as _pa
+_anchor = _pa(cfg)
+for line, ci in _cip.by_line.items():
+    if ci.scheduled_cip is not None:
+        start_h = (ci.scheduled_cip - _anchor).total_seconds() / 3600.0
+        dur = float(cip_cfg.get("duration_h", 6))
+        windows.append({
+            "id": f"cipinfo_{line}", "line_id": int(line[1:]) - 9 if line[1:].isdigit() else 0,
+            "line_name": line, "order_id": "", "sku": "", "sku_description": "",
+            "start_hour": start_h, "end_hour": start_h + dur,
+            "run_hours": dur, "is_trial": False, "block_type": "cip",
+            "label": "CIP (sched)", "locked": True,
+        })
+
 # Freeze the on-disk current schedule as baseline once per session (or after reload / save)
 if "cal_baseline_score" not in st.session_state or st.session_state.get("cal_baseline_path") != str(cal_path):
     baseline_res = score_calendar(cal, week_label="current schedule", data_dir=dd)
@@ -137,6 +214,21 @@ with c2:
     save_name = st.text_input("Save as version name", value="Option 1", label_visibility="collapsed")
 with c3:
     pass
+
+# ---- Now-running table: current MO per line from manprg ----
+# Only MOs actually in progress (not completed, not future) belong here; the
+# user doesn't want finished MOs cluttering the view.
+_active = [r for r in _now_running if 0 < r["pct"] < 100]
+if _active:
+    st.subheader("Now running (live from manprg)")
+    _desig = {line: lp.designation for line, lp in _mp.current.items()}
+    _nr = sorted(_active, key=lambda r: r["line"])
+    st.dataframe(
+        [{"Line": r["line"], "MO": r["mo"], "SKU": r["item"],
+          "Designation": _desig.get(r["line"], ""),
+          "Completion": f"{r['pct']:.1f}%",
+          "Cases left": int(r["left"])} for r in _nr],
+        use_container_width=True, hide_index=True)
 
 state = gantt_calendar(
     schedule=schedule,

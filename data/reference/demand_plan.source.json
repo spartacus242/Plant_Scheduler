@@ -1,0 +1,15 @@
+{
+  "source_file": "<_io.BytesIO object at 0x000002B9BCBD5120>",
+  "imported_at": "2026-08-07T10:17:28",
+  "anchor_monday": "2026-08-03",
+  "iso_weeks": {
+    "W0": 32,
+    "W1": 33,
+    "W2": 34
+  },
+  "rows_kept": 100,
+  "rows_dropped_window": 3754,
+  "rows_dropped_machine": 2205,
+  "total_kg": 5481949.0,
+  "warnings": []
+}
