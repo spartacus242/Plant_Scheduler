@@ -287,7 +287,15 @@ def build_model(
         else:
             model.Add(prod == 0)
         produced[o_idx] = prod
-        qmin = int(o["qty_min"]) if not relax_demand else 0
+        # An order with NO capable, available line (e.g. 570560/280698 absent
+        # from capabilities, or one only fitting a fully-down line) can never
+        # be produced — zero its floor so it reports "short of qmin" instead of
+        # making the whole model INFEASIBLE.
+        producible = any(
+            (data.rate.get((l, o["sku"])) or 0) > 0
+            and available_hours_line(P, data, l) > 0
+            for l in lines)
+        qmin = (int(o["qty_min"]) if not relax_demand else 0) if producible else 0
         qmax = int(o["qty_max"])
         model.Add(prod >= qmin)
         model.Add(prod <= qmax)
