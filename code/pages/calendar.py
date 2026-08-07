@@ -39,6 +39,18 @@ dd = data_dir()
 cal_path = dd / "calendar_blocks.csv"
 cfg = load_toml()
 sched_cfg = cfg.get("scheduler", {})
+
+# Show which ISO calendar week(s) the horizon covers so hour offsets read as
+# real weeks (WW33 ...) rather than abstract W0/W1.
+from helpers.timefmt import planning_anchor, week_index_to_iso
+_anchor = planning_anchor(cfg)
+_w0 = week_index_to_iso(0, _anchor)
+_w1 = week_index_to_iso(1, _anchor)
+_w2 = week_index_to_iso(2, _anchor)
+st.caption(
+    f"Planning weeks: **WW{_w0:02d}** → WW{_w1:02d} / WW{_w2:02d} "
+    f"(planning anchor {_anchor:%a %Y-%m-%d})."
+)
 cip_cfg = cfg.get("cip", {})
 
 cal = load_calendar(cal_path)
