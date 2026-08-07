@@ -129,6 +129,63 @@ if dem_path.exists():
 
 schedule, windows = calendar_to_gantt_payload(cal)
 
+# ---- Live ops overlay: MO completion (manprg) + CIP schedule (cip_info) ----
+from helpers.cip_import import read_cip_info
+from helpers.config import datasources_config
+from helpers.manprg_import import read_manprg
+from helpers.ops_sql import SqlConfig, available as sql_available, fetch_current_mo
+
+_ds = datasources_config(cfg)
+_manprg_paths = [p.strip() for p in str(_ds.get("manprg_files", "")).split(";")
+                 if p.strip()] or [
+                     str(dd / "reference" / "manprg.txt"),
+                     str(dd / "reference" / "manprg2.txt")]
+_cip_path = str(_ds.get("cip_info_csv", "")).strip() or str(dd / "reference" / "cip_info.csv")
+
+# completion % per line (file first; SQL override when configured+reachable)
+_completion: dict[str, float] = {}
+_now_running: list[dict] = []
+_mp = read_manprg(_manprg_paths)
+for line, lp in _mp.current.items():
+    _completion[line] = lp.completion_pct
+    _now_running.append({
+        "line": line, "mo": lp.mo, "item": lp.item,
+        "pct": lp.completion_pct, "left": lp.left_cas,
+    })
+_sql_cfg = SqlConfig(dsn=str(_ds.get("sql_dsn", "")),
+                     enabled=bool(_ds.get("sql_enabled", False)))
+if sql_available(_sql_cfg):
+    _rows = fetch_current_mo(_sql_cfg)
+    if _rows:
+        for r in _rows:
+            ln = str(r.get("Line", "")).strip()
+            pct = r.get("MO Completion %")
+            if ln and pct is not None:
+                _completion[ln] = round(float(pct) * 100.0, 1)
+
+# attach completion to production blocks (matched by line -> current MO item)
+for b in schedule:
+    if b.get("block_type") == "sku":
+        ln = b.get("line_name", "")
+        if ln in _completion:
+            b["completion_pct"] = _completion[ln]
+
+# scheduled CIPs from cip_info as overlay windows (drawn, not editable)
+_cip = read_cip_info(_cip_path)
+from helpers.timefmt import planning_anchor as _pa
+_anchor = _pa(cfg)
+for line, ci in _cip.by_line.items():
+    if ci.scheduled_cip is not None:
+        start_h = (ci.scheduled_cip - _anchor).total_seconds() / 3600.0
+        dur = float(cip_cfg.get("duration_h", 6))
+        windows.append({
+            "id": f"cipinfo_{line}", "line_id": int(line[1:]) - 9 if line[1:].isdigit() else 0,
+            "line_name": line, "order_id": "", "sku": "", "sku_description": "",
+            "start_hour": start_h, "end_hour": start_h + dur,
+            "run_hours": dur, "is_trial": False, "block_type": "cip",
+            "label": "CIP (sched)", "locked": True,
+        })
+
 # Freeze the on-disk current schedule as baseline once per session (or after reload / save)
 if "cal_baseline_score" not in st.session_state or st.session_state.get("cal_baseline_path") != str(cal_path):
     baseline_res = score_calendar(cal, week_label="current schedule", data_dir=dd)
@@ -149,6 +206,16 @@ with c2:
     save_name = st.text_input("Save as version name", value="Option 1", label_visibility="collapsed")
 with c3:
     pass
+
+# ---- Now-running strip: current MO per line from manprg ----
+if _now_running:
+    st.subheader("Now running (live from manprg)")
+    _nr = sorted(_now_running, key=lambda r: r["line"])
+    cols = st.columns(min(len(_nr), 7))
+    for idx, r in enumerate(_nr):
+        with cols[idx % len(cols)]:
+            st.metric(r["line"], f"{r['pct']:.0f}%",
+                      delta=f"{r['item']} · MO {r['mo']}")
 
 state = gantt_calendar(
     schedule=schedule,

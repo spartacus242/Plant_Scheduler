@@ -154,6 +154,25 @@ export const GanttBlock: React.FC<Props> = ({
         stroke={strokeColor}
         strokeWidth={strokeW}
       />
+      {/* Live completion fill (manprg): left-to-right progress on production bars */}
+      {typeof block.completion_pct === "number" && block.completion_pct > 0 && (() => {
+        const pct = Math.min(Math.max(block.completion_pct, 0), 100);
+        const fw = Math.max((w * pct) / 100, 0);
+        return (
+          <>
+            <rect
+              x={x}
+              y={y}
+              width={fw}
+              height={h}
+              rx={4}
+              fill="rgba(255,255,255,0.35)"
+              pointerEvents="none"
+            />
+            <line x1={x + fw} y1={y} x2={x + fw} y2={y + h} stroke="rgba(255,255,255,0.7)" strokeWidth={1.5} pointerEvents="none" />
+          </>
+        );
+      })()}
       {w > 20 && label && (
         <text
           x={x + 6}

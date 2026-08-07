@@ -20,6 +20,26 @@ def load_toml(path: Path | None = None) -> dict[str, Any]:
         return tomllib.load(f)
 
 
+def datasources_config(cfg: dict | None = None) -> dict[str, Any]:
+    """Return [datasources] section with defaults applied. Every importer
+    reads its path/connection from here so Carsten can point Flowstate at his
+    own files/SQL without code edits."""
+    cfg = cfg if cfg is not None else load_toml()
+    ds = dict(cfg.get("datasources", {}))
+    defaults = {
+        "vif_folder": r"\\usnpa-appfs\DATA\vif-export\auto editions",
+        "azap_csv": "",                       # path to Demand Plan Raw.csv
+        "manprg_files": "",                   # two paths, ';'-separated
+        "schedule_pdf_folder": "",
+        "cip_info_csv": "",
+        "sql_enabled": False,
+        "sql_dsn": "",                        # ODBC connection string for NPA
+    }
+    for k, v in defaults.items():
+        ds.setdefault(k, v)
+    return ds
+
+
 def scorecard_config(cfg: dict | None = None) -> dict[str, Any]:
     """Return [scorecard] section with v0 defaults applied."""
     cfg = cfg if cfg is not None else load_toml()

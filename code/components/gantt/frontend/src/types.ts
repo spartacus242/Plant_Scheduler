@@ -22,6 +22,7 @@ export interface ScheduleBlock {
   block_type: BlockType;
   label?: string;
   locked?: boolean;
+  completion_pct?: number;
 }
 
 export interface DemandTarget {

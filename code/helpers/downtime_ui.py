@@ -111,13 +111,21 @@ def side_downtime_summary(dd: Path) -> pd.DataFrame:
 
 
 def render_side_downtime_editor(dd: Path, *, key_prefix: str = "dt") -> None:
-    """Add / review per-side scheduled downtime. Writes reference/downtimes.csv."""
+    """Add / review per-side scheduled downtime. Writes reference/downtimes.csv.
+
+    The user picks real start/end DATE + TIME; we convert to hour offsets
+    against the planning anchor for storage (the solver reads start_hour/
+    end_hour, so the on-disk schema is unchanged)."""
     st.markdown(STEP1_CAPTION)
 
     options = line_options(dd)
     if not options:
         st.info("No lines defined yet -- add data/lines.csv first.")
         return
+
+    from helpers.config import load_toml
+    from helpers.timefmt import hour_to_datetime, planning_anchor
+    anchor = planning_anchor(load_toml())
 
     doubles = [o for o in options if is_double(o)]
     if doubles:
@@ -131,34 +139,44 @@ def render_side_downtime_editor(dd: Path, *, key_prefix: str = "dt") -> None:
             "`python scripts/migrate_ab_lines.py` to expand P17-P22 into A/B rows."
         )
 
-    c1, c2, c3 = st.columns([2, 1, 1])
+    c1 = st.columns(1)[0]
     with c1:
         line_name = st.selectbox("Line / side to take down", options, key=f"{key_prefix}_line")
-    with c2:
-        start_h = st.number_input("Start hour", min_value=0, value=0, step=1, key=f"{key_prefix}_start")
-    with c3:
-        end_h = st.number_input("End hour", min_value=0, value=24, step=1, key=f"{key_prefix}_end")
+
+    # default window: anchor now -> anchor+24h
+    d1, d2 = st.columns(2)
+    with d1:
+        start_date = st.date_input("Start date", value=anchor.date(), key=f"{key_prefix}_sdate")
+        start_time = st.time_input("Start time", value=datetime(anchor.year, anchor.month, anchor.day, 0, 0).time(), key=f"{key_prefix}_stime")
+    with d2:
+        end_date = st.date_input("End date", value=(anchor).date(), key=f"{key_prefix}_edate")
+        end_time = st.time_input("End time", value=datetime(anchor.year, anchor.month, anchor.day, 23, 59).time(), key=f"{key_prefix}_etime")
     reason = st.text_input("Reason", value="Down", key=f"{key_prefix}_reason")
+
+    start_dt = datetime.combine(start_date, start_time)
+    end_dt = datetime.combine(end_date, end_time)
+    start_h = (start_dt - anchor).total_seconds() / 3600.0
+    end_h = (end_dt - anchor).total_seconds() / 3600.0
 
     grp = group_of(line_name)
     if is_double(line_name) and side_of(line_name):
         other = [s for s in sides_of(grp) if s != line_name][0]
         st.caption(
             f"{line_name} down means {grp} runs one-sided at **half rate** for "
-            f"h{int(start_h)}-h{int(end_h)} (unless {other} is also down, which "
-            f"stops {grp} completely)."
+            f"{start_dt:%m/%d %H:%M} - {end_dt:%m/%d %H:%M} (unless {other} is also down, "
+            f"which stops {grp} completely)."
         )
 
     if st.button("Add downtime", key=f"{key_prefix}_add", type="primary"):
-        if end_h <= start_h:
-            st.error("End hour must be after start hour.")
+        if end_dt <= start_dt:
+            st.error("End date/time must be after start date/time.")
         else:
             df = load_downtimes(dd)
             row = {
                 "line_id": line_id_for(dd, line_name),
                 "line_name": line_name,
-                "start_hour": str(int(start_h)),
-                "end_hour": str(int(end_h)),
+                "start_hour": str(round(start_h, 3)),
+                "end_hour": str(round(end_h, 3)),
                 "reason": reason or "Down",
             }
             df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
@@ -167,7 +185,7 @@ def render_side_downtime_editor(dd: Path, *, key_prefix: str = "dt") -> None:
             if path.exists():
                 note = f"  Backup: {_backup(path, dd)}"
             safe_write_csv(df[DOWNTIME_COLUMNS], path)
-            st.success(f"{line_name} down h{int(start_h)}-h{int(end_h)} ({reason}).{note}")
+            st.success(f"{line_name} down {start_dt:%m/%d %H:%M}-{end_dt:%m/%d %H:%M} ({reason}).{note}")
             st.rerun()
 
     summary = side_downtime_summary(dd)
@@ -175,9 +193,14 @@ def render_side_downtime_editor(dd: Path, *, key_prefix: str = "dt") -> None:
         st.caption("No scheduled downtime recorded yet.")
         return
 
+    # display start/end as real date-times (from stored hour offsets)
+    disp = summary.copy()
+    disp["start"] = disp["start_hour"].apply(lambda h: hour_to_datetime(h, anchor).strftime("%m/%d %H:%M"))
+    disp["end"] = disp["end_hour"].apply(lambda h: hour_to_datetime(h, anchor).strftime("%m/%d %H:%M"))
+    disp = disp[["line_name", "group", "side", "start", "end", "reason"]]
     st.caption("Scheduled downtime on record (edit or delete rows, then Save):")
     edited = st.data_editor(
-        summary,
+        disp,
         num_rows="dynamic",
         use_container_width=True,
         hide_index=True,
@@ -187,6 +210,22 @@ def render_side_downtime_editor(dd: Path, *, key_prefix: str = "dt") -> None:
     if st.button("Save downtime table", key=f"{key_prefix}_save"):
         out = pd.DataFrame(edited)
         rows = []
+
+        def _to_hours(v) -> str:
+            """Accept a 'MM/DD HH:MM' display string or a raw hour number."""
+            s = str(v or "").strip()
+            if not s:
+                return ""
+            try:
+                dt = datetime.strptime(f"{anchor.year}/{s}", "%Y/%m/%d %H:%M")
+                return str(round((dt - anchor).total_seconds() / 3600.0, 3))
+            except ValueError:
+                pass
+            try:
+                return str(round(float(s), 3))  # already an hour number
+            except ValueError:
+                return ""
+
         for rec in out.to_dict("records"):
             name = str(rec.get("line_name", "") or "").strip()
             if not name:
@@ -194,8 +233,8 @@ def render_side_downtime_editor(dd: Path, *, key_prefix: str = "dt") -> None:
             rows.append({
                 "line_id": line_id_for(dd, name),
                 "line_name": name,
-                "start_hour": rec.get("start_hour", ""),
-                "end_hour": rec.get("end_hour", ""),
+                "start_hour": _to_hours(rec.get("start", rec.get("start_hour", ""))),
+                "end_hour": _to_hours(rec.get("end", rec.get("end_hour", ""))),
                 "reason": rec.get("reason", "") or "Down",
             })
         path = downtimes_path(dd)
