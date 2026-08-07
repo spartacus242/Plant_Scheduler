@@ -207,15 +207,17 @@ with c2:
 with c3:
     pass
 
-# ---- Now-running strip: current MO per line from manprg ----
+# ---- Now-running table: current MO per line from manprg ----
 if _now_running:
     st.subheader("Now running (live from manprg)")
+    _desig = {line: lp.designation for line, lp in _mp.current.items()}
     _nr = sorted(_now_running, key=lambda r: r["line"])
-    cols = st.columns(min(len(_nr), 7))
-    for idx, r in enumerate(_nr):
-        with cols[idx % len(cols)]:
-            st.metric(r["line"], f"{r['pct']:.0f}%",
-                      delta=f"{r['item']} · MO {r['mo']}")
+    st.dataframe(
+        [{"Line": r["line"], "MO": r["mo"], "SKU": r["item"],
+          "Designation": _desig.get(r["line"], ""),
+          "Completion": f"{r['pct']:.1f}%",
+          "Cases left": int(r["left"])} for r in _nr],
+        use_container_width=True, hide_index=True)
 
 state = gantt_calendar(
     schedule=schedule,
