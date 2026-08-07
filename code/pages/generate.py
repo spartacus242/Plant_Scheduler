@@ -46,7 +46,56 @@ if not (legacy_dir() / "code" / "phase2_scheduler.py").exists():
     st.stop()
 
 cfg = load_toml()
-default_tl = int(cfg.get("scheduler", {}).get("time_limit", 60))
+sched_cfg = cfg.get("scheduler", {})
+default_tl = int(sched_cfg.get("time_limit", 60))
+cip_cfg = cfg.get("cip", {})
+
+# Structures the scenario Gantt preview needs (same shapes the calendar builds).
+import pandas as _pd
+from helpers.lines_model import expand_caps_with_groups, is_double, side_of
+from helpers.paths import reference_dir as _ref_dir
+
+caps: dict = {}
+_caps_p = _ref_dir(dd) / "capabilities_rates.csv"
+if _caps_p.exists():
+    for _, r in _pd.read_csv(_caps_p).iterrows():
+        if int(r.get("capable", 0) or 0) != 1:
+            continue
+        caps.setdefault(str(r["line_name"]), {})[str(r["sku"])] = float(
+            r.get("calc_rate_kgph") or r.get("nominal_rate_kgph") or 0)
+caps = expand_caps_with_groups(caps)
+
+changeovers: dict = {}
+_co_p = _ref_dir(dd) / "changeovers.csv"
+if _co_p.exists():
+    for _, r in _pd.read_csv(_co_p).iterrows():
+        changeovers.setdefault(str(r["from_sku"]), {})[str(r["to_sku"])] = float(
+            r.get("setup_hours") or 0)
+
+demand_targets: list = []
+_dem_p = _ref_dir(dd) / "demand_plan.csv"
+if _dem_p.exists():
+    for _, r in _pd.read_csv(_dem_p).iterrows():
+        t = float(r.get("qty_target", 0) or 0)
+        demand_targets.append({
+            "order_id": str(r["order_id"]), "sku": str(r["sku"]),
+            "qty_min": t * float(r.get("lower_pct", 0.9) or 0.9),
+            "qty_max": t * float(r.get("upper_pct", 1.1) or 1.1),
+        })
+
+lines: list = []
+_lp = dd / "lines.csv"
+if _lp.exists():
+    _ldf = _pd.read_csv(_lp)
+    if "active" in _ldf.columns:
+        _ldf = _ldf[_ldf["active"] != False]
+    _lcols = [c for c in ("line_id", "line_name", "line_group", "side", "is_double") if c in _ldf.columns]
+    lines = _ldf[_lcols].to_dict("records")
+    for _l in lines:
+        _nm = str(_l.get("line_name", ""))
+        _l["line_group"] = str(_l.get("line_group") or "") or (_nm[:-1] if side_of(_nm) else _nm)
+        _l["side"] = side_of(_nm) or str(_l.get("side") or "")
+        _l["is_double"] = bool(is_double(_nm))
 
 baseline_cal = load_calendar(dd / "calendar_blocks.csv")
 if baseline_cal.empty:
@@ -298,6 +347,37 @@ def _generate_one(
         st.markdown("**vs baseline**")
         for d in delta_narrative(baseline, sc):
             st.write(f"- {d}")
+
+        # Preview the generated schedule as a Gantt WITHOUT promoting it to the
+        # official calendar. Read-only view of the solver's calendar.
+        cal = result.get("calendar")
+        if cal is not None and not cal.empty:
+            with st.expander(f"Preview {scenario['name']} schedule (Gantt — not the official calendar)", expanded=True):
+                try:
+                    from components.gantt import gantt_calendar
+                    from helpers.calendar_io import calendar_to_gantt_payload
+                    _sched, _win = calendar_to_gantt_payload(cal)
+                    gantt_calendar(
+                        schedule=_sched,
+                        cip_windows=_win,
+                        capabilities=caps,
+                        changeovers=changeovers,
+                        demand_targets=demand_targets,
+                        lines=lines,
+                        holding_area=[],
+                        side_downtime={},
+                        config={
+                            "planning_anchor": sched_cfg.get("planning_start_date", "2026-02-15 00:00:00"),
+                            "cip_duration_h": int(cip_cfg.get("duration_h", 6)),
+                            "min_run_hours": int(sched_cfg.get("min_run_hours", 4)),
+                            "horizon_hours": int(sched_cfg.get("horizon_hours", 336)),
+                            "read_only": True,
+                        },
+                        height=600,
+                        key=f"gantt_preview_{scenario['id']}",
+                    )
+                except Exception as _e:
+                    st.warning(f"Gantt preview unavailable: {_e}")
         with st.expander("Raw solver log"):
             st.code((result.get("log") or "")[-4000:], language="text")
         return True

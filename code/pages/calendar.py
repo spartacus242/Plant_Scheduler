@@ -216,10 +216,13 @@ with c3:
     pass
 
 # ---- Now-running table: current MO per line from manprg ----
-if _now_running:
+# Only MOs actually in progress (not completed, not future) belong here; the
+# user doesn't want finished MOs cluttering the view.
+_active = [r for r in _now_running if 0 < r["pct"] < 100]
+if _active:
     st.subheader("Now running (live from manprg)")
     _desig = {line: lp.designation for line, lp in _mp.current.items()}
-    _nr = sorted(_now_running, key=lambda r: r["line"])
+    _nr = sorted(_active, key=lambda r: r["line"])
     st.dataframe(
         [{"Line": r["line"], "MO": r["mo"], "SKU": r["item"],
           "Designation": _desig.get(r["line"], ""),
