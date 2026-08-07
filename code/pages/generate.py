@@ -50,7 +50,11 @@ default_tl = int(cfg.get("scheduler", {}).get("time_limit", 60))
 
 baseline_cal = load_calendar(dd / "calendar_blocks.csv")
 if baseline_cal.empty:
-    st.warning("No current schedule yet. Import the planner's schedule on the Scorecard page, or generate the naive demand-plan baseline below.")
+    st.info(
+        "**No current schedule.** That's the normal starting point now — AZAP is "
+        "the source of truth. Build a **rough draft schedule from the demand plan** "
+        "below to get a working base, then refine it in the Plant Calendar or let "
+        "the solver improve it.")
 else:
     baseline = score_calendar(baseline_cal, week_label="current schedule", data_dir=dd)
     st.subheader("Current schedule (baseline)")
@@ -60,14 +64,14 @@ else:
 
 st.divider()
 
-# -- Naive strawman straight from the demand plan (no solver) -------------
-st.subheader("Naive baseline from the demand plan (no solver)")
+# -- Rough-draft schedule straight from the demand plan (no solver) --------
+st.subheader("Rough draft schedule from the demand plan (no solver)")
 st.caption(
     "AZAP is the customer / corporate **demand plan**: which SKU, how many kg, which week. "
-    "It does not schedule lines. This button takes AZAP literally -- every order runs in the "
-    "week it asked for, on the fastest capable line, back to back -- with no changeover, CIP "
-    "or optimization logic at all. It is the deliberate strawman: it shows what 'just do what "
-    "AZAP said' actually costs. It runs instantly (plain Python, no CP-SAT)."
+    "It does not schedule lines. This builds a **rough draft**: every order runs in the "
+    "week it asked for, on the fastest capable line, back to back — no changeover, CIP "
+    "or optimization logic. Use it as the starting point when there is no manual schedule "
+    "to import, or as a strawman to score against. Runs instantly (plain Python, no CP-SAT)."
 )
 
 nc1, nc2 = st.columns([1, 2])
@@ -83,10 +87,10 @@ with nc2:
         "Also write it to data/calendar_blocks.csv (make it the current schedule)",
         value=False,
         key="naive_set_base",
-        help="Off by default: the planner's own manual schedule is usually the better base model.",
+        help="Turn the rough draft into the base model you refine in the Plant Calendar.",
     )
 
-if st.button("Generate naive baseline", key="gen_naive"):
+if st.button("Generate rough draft schedule", key="gen_naive"):
     horizon = int(cfg.get("scheduler", {}).get("horizon_hours", 336))
     nres = build_naive_calendar(dd, horizon_hours=horizon, strategy=naive_strategy)
     for note in nres.notes:
