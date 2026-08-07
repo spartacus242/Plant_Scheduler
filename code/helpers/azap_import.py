@@ -53,11 +53,30 @@ class AzapImportResult:
 
 
 def read_raw(path: str | Path) -> pd.DataFrame:
-    df = pd.read_excel(path, sheet_name=0, dtype={
-        "Year Start": int, "Month Start": int, "Day Start": int,
+    """Read the raw AZAP export. CSV (preferred, UTF-8 BOM) or xlsx.
+    Accepts a path or a file-like object (Streamlit upload buffer)."""
+    import io
+    dtypes = {
+        "Year Start": "Int64", "Month Start": "Int64", "Day Start": "Int64",
         "Machine": str, "Product": str, "Tons": float,
-        "Year End": int, "Month End": int, "Day End": int, "Hours": float,
-    })
+        "Year End": "Int64", "Month End": "Int64", "Day End": "Int64",
+        "Hours": float,
+    }
+    if hasattr(path, "read"):  # uploaded buffer: sniff by content
+        raw = path.read()
+        path_obj = io.BytesIO(raw)
+        is_csv = raw[:4] != b"PK\x03\x04"  # xlsx is a zip
+        df = (pd.read_csv(io.BytesIO(raw), encoding="utf-8-sig", dtype=dtypes)
+              if is_csv else pd.read_excel(path_obj, sheet_name=0, dtype=dtypes))
+    else:
+        p = str(path)
+        if p.lower().endswith(".csv"):
+            df = pd.read_csv(p, encoding="utf-8-sig", dtype=dtypes)
+        else:
+            df = pd.read_excel(p, sheet_name=0, dtype=dtypes)
+    # drop fully-empty rows (the CSV export carries trailing blanks)
+    df = df.dropna(how="all")
+    df = df.dropna(subset=["Machine"])
     missing = [c for c in EXPECTED_COLS if c not in df.columns]
     if missing:
         raise ValueError(f"AZAP export missing columns: {missing}")

@@ -30,6 +30,18 @@ def test_read_raw_shape():
     assert not [c for c in azap_import.EXPECTED_COLS if c not in df.columns]
 
 
+def test_read_raw_csv_matches_xlsx():
+    """The CSV export (preferred) parses identically to the xlsx."""
+    csv_sample = ROOT / "data" / "reference" / "azap_raw_sample.csv"
+    df_csv = azap_import.read_raw(csv_sample)
+    df_xlsx = azap_import.read_raw(SAMPLE)
+    assert len(df_csv) == len(df_xlsx) == 6476
+    assert list(df_csv.columns) == list(df_xlsx.columns)
+    keep = [f"P{n:02d}" for n in range(9, 23)]
+    assert (df_csv[df_csv["Machine"].isin(keep)]["Tons"].sum()
+            == df_xlsx[df_xlsx["Machine"].isin(keep)]["Tons"].sum())
+
+
 def test_aggregate_filters_machines():
     df = azap_import.read_raw(SAMPLE)
     agg, warns, dropped_machine, _ = azap_import.aggregate(df)

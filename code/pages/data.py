@@ -46,19 +46,20 @@ def backup(path: Path) -> Path:
 
 
 st.divider()
-st.subheader("Import the raw corporate AZAP (.xlsx)")
+st.subheader("Import the raw corporate AZAP (CSV)")
 st.caption(
     "The corporate 'Demand Plan Raw' export (pdp export AZAP) is the source of "
     "truth for demand. Importing it rebuilds `data/reference/demand_plan.csv` "
     "for a 3-week rolling window and re-anchors the planning calendar."
 )
 
-with st.expander("Import raw AZAP (.xlsx)", expanded=False):
+with st.expander("Import raw AZAP (CSV or .xlsx)", expanded=False):
     from helpers.azap_import import aggregate, build_demand_plan, read_raw, iso_week
     from helpers.timefmt import week_label
 
     azap_up = st.file_uploader(
-        "Demand Plan Raw (.xlsx)", type=["xlsx"], key="azap_raw_upload")
+        "Demand Plan Raw (CSV or .xlsx)", type=["csv", "xlsx"],
+        key="azap_raw_upload")
     if azap_up is not None:
         import io as _io
         try:
