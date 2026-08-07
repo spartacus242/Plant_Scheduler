@@ -142,12 +142,15 @@ _manprg_paths = [p.strip() for p in str(_ds.get("manprg_files", "")).split(";")
                      str(dd / "reference" / "manprg2.txt")]
 _cip_path = str(_ds.get("cip_info_csv", "")).strip() or str(dd / "reference" / "cip_info.csv")
 
-# completion % per line (file first; SQL override when configured+reachable)
-_completion: dict[str, float] = {}
+# completion % per MO (manprg by_mo) + per line for the now-running strip
+_completion_by_mo: dict[str, float] = {}
+_left_by_mo: dict[str, float] = {}
 _now_running: list[dict] = []
 _mp = read_manprg(_manprg_paths)
+for mo, lp in _mp.by_mo.items():
+    _completion_by_mo[mo] = lp.completion_pct
+    _left_by_mo[mo] = lp.left_cas
 for line, lp in _mp.current.items():
-    _completion[line] = lp.completion_pct
     _now_running.append({
         "line": line, "mo": lp.mo, "item": lp.item,
         "pct": lp.completion_pct, "left": lp.left_cas,
@@ -161,14 +164,19 @@ if sql_available(_sql_cfg):
             ln = str(r.get("Line", "")).strip()
             pct = r.get("MO Completion %")
             if ln and pct is not None:
-                _completion[ln] = round(float(pct) * 100.0, 1)
+                # SQL gives current MO per line; map onto that line's current MO
+                cur = _mp.current.get(ln)
+                if cur is not None:
+                    _completion_by_mo[cur.mo] = round(float(pct) * 100.0, 1)
 
-# attach completion to production blocks (matched by line -> current MO item)
+# attach completion to production blocks by MATCHING MO (order_id) — sequential
+# MOs on a line each carry their own %; a finished block is full, a future one 0.
 for b in schedule:
     if b.get("block_type") == "sku":
-        ln = b.get("line_name", "")
-        if ln in _completion:
-            b["completion_pct"] = _completion[ln]
+        mo = b.get("order_id", "")
+        if mo in _completion_by_mo:
+            b["completion_pct"] = _completion_by_mo[mo]
+            b["cases_left"] = _left_by_mo.get(mo)
 
 # scheduled CIPs from cip_info as overlay windows (drawn, not editable)
 _cip = read_cip_info(_cip_path)

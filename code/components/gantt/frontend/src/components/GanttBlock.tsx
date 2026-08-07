@@ -108,12 +108,15 @@ export const GanttBlock: React.FC<Props> = ({
     }
   }
 
-  // Hover tooltip: wall-clock start/end, duration stays in hours.
+  // Hover tooltip: wall-clock start/end, duration, live completion, cases left.
   const tooltip = [
     baseLabel,
     desc,
     side ? `${block.line_name} (side ${side} only - half rate)` : `${block.line_name}`,
     `${hourToStamp(startH, anchor)} -> ${hourToStamp(endH, anchor)} (${(endH - startH).toFixed(1)}h)`,
+    typeof block.completion_pct === "number"
+      ? `Completion: ${block.completion_pct.toFixed(1)}%${typeof block.cases_left === "number" ? ` · ${block.cases_left.toLocaleString()} cases left` : ""}`
+      : "",
   ].filter(Boolean).join("\n");
 
   const strokeColor = isDragging ? "#333" : "none";
