@@ -40,23 +40,71 @@ cal_path = dd / "calendar_blocks.csv"
 cfg = load_toml()
 sched_cfg = cfg.get("scheduler", {})
 
-# Show which ISO calendar week(s) the horizon covers so hour offsets read as
-# real weeks (WW33 ...) rather than abstract W0/W1.
+# Rolling horizon (handoff WW32 #1): the calendar starts at TODAY. The stored
+# anchor in flowstate.toml only defines what hour 0 of the saved CSV means; the
+# view window is resolved against the wall clock.
+from helpers import horizon as _hz
 from helpers.timefmt import planning_anchor, week_index_to_iso
-_anchor = planning_anchor(cfg)
-_w0 = week_index_to_iso(0, _anchor)
-_w1 = week_index_to_iso(1, _anchor)
-_w2 = week_index_to_iso(2, _anchor)
-st.caption(
-    f"Planning weeks: **WW{_w0:02d}** → WW{_w1:02d} / WW{_w2:02d} "
-    f"(planning anchor {_anchor:%a %Y-%m-%d})."
-)
+_horizon = _hz.resolve(cfg)
+_anchor = planning_anchor(cfg)          # storage anchor (hour 0 of the CSV)
+st.caption(_hz.caption(_horizon))
 cip_cfg = cfg.get("cip", {})
 
 cal = load_calendar(cal_path)
 if cal.empty:
     st.warning("No calendar yet. Import a schedule on the **Schedule Scorecard** page.")
     st.stop()
+
+# --- Roll the stored schedule onto today's anchor -------------------------
+# Stored hours are offsets from `planning_start_date`. When that date is no
+# longer today, offer a one-click rebase: shift every block back by the delta
+# and move the anchor, so wall-clock position is preserved and hour 0 = today.
+if _horizon.mode == "today" and _horizon.stale:
+    _days = _horizon.shift_h / 24.0
+    st.warning(
+        f"Saved schedule is anchored to **{_horizon.config_anchor:%a %Y-%m-%d}**, "
+        f"{_days:.1f} day(s) before today. Blocks are shown against that anchor. "
+        "Roll the calendar to re-base every block onto today (hour 0 = "
+        f"{_horizon.anchor:%Y-%m-%d}).")
+    if st.button(f"Roll calendar to today ({_horizon.anchor:%Y-%m-%d})",
+                 key="cal_roll_today"):
+        import re as _re
+        from datetime import datetime as _dt
+
+        from helpers.paths import toml_path as _toml_path
+        _bdir = dd / "_backups"
+        _bdir.mkdir(parents=True, exist_ok=True)
+        (_bdir / f"calendar_blocks.{_dt.now():%Y%m%d-%H%M%S}.csv").write_bytes(
+            cal_path.read_bytes())
+        save_calendar(_hz.rebase_calendar(load_calendar(cal_path), _horizon.shift_h),
+                      cal_path)
+        _tp = _toml_path()
+        _txt = _tp.read_text(encoding="utf-8")
+        _tp.write_text(
+            _re.sub(r'planning_start_date\s*=\s*"[^"]*"',
+                    f'planning_start_date = "{_horizon.anchor:%Y-%m-%d %H:%M:%S}"',
+                    _txt),
+            encoding="utf-8")
+        st.session_state.pop("cal_baseline_score", None)
+        st.success("Calendar rolled to today. Reloading…")
+        st.rerun()
+
+# --- Hide what already happened ------------------------------------------
+# "Nothing in the past is shown." Hidden rows are held aside and merged back
+# in on save so hiding never destroys history.
+_hide_past = st.checkbox(
+    "Hide blocks that already finished", value=True, key="cal_hide_past",
+    help="Completed blocks (end before now) stay on disk — they are merged "
+         "back when you save.")
+_past_rows = cal.iloc[0:0]
+if _hide_past:
+    _now_h = (_horizon.now - _anchor).total_seconds() / 3600.0
+    _mask_past = cal["end_h"].astype(float) <= _now_h
+    _past_rows = cal[_mask_past].copy()
+    cal = cal[~_mask_past].copy()
+    if len(_past_rows):
+        st.caption(f"{len(_past_rows)} finished block(s) hidden (before "
+                   f"{_horizon.now:%a %Y-%m-%d %H:%M}).")
 
 ensure_lines_from_calendar(cal, dd / "lines.csv")
 lines_df = load_lines(dd / "lines.csv")
@@ -240,10 +288,10 @@ state = gantt_calendar(
     holding_area=st.session_state.get("cal_holding", []),
     side_downtime=side_downtime,
     config={
-        "planning_anchor": sched_cfg.get("planning_start_date", "2026-02-15 00:00:00"),
+        "planning_anchor": f"{_anchor:%Y-%m-%d %H:%M:%S}",
         "cip_duration_h": int(cip_cfg.get("duration_h", 6)),
         "min_run_hours": int(sched_cfg.get("min_run_hours", 4)),
-        "horizon_hours": int(sched_cfg.get("horizon_hours", 336)),
+        "horizon_hours": int(_horizon.hours),
     },
     height=820,
     key=f"gantt_calendar_{st.session_state['cal_reset_gen']}",
@@ -283,7 +331,11 @@ with b1:
     if st.button("Save calendar to disk", type="primary", use_container_width=True):
         if n_holding:
             st.warning(f"Saving without {n_holding} held block(s). Holding area cleared.")
-        save_calendar(working, cal_path)
+        # Merge hidden (already-finished) rows back so hiding the past never
+        # deletes it from disk.
+        _out = working if _past_rows.empty else pd.concat(
+            [_past_rows, working], ignore_index=True)
+        save_calendar(_out, cal_path)
         st.session_state["cal_holding"] = []
         st.session_state.pop("cal_baseline_score", None)
         st.success("Saved calendar_blocks.csv")
