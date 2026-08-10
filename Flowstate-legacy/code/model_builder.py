@@ -303,6 +303,38 @@ def build_model(
         if not o.get("is_trial"):
             model.Add(sum(present[(l, o_idx)] for l in lines) <= mlpo)
 
+    # -- Line availability floor (ALWAYS enforced) -------------------------
+    # initial_states.available_from_hour is when a line is genuinely free:
+    # the end of the MO it is currently running plus anything already queued
+    # behind it (see code/helpers/current_state.py). Nothing may be scheduled
+    # on the line before that hour.
+    #
+    # This used to be applied ONLY inside the changeover block below, which is
+    # skipped when phase not in (sanity3, full) or when ignore_co is set. Relax
+    # level 3 turns ignore_co on, so escalating the ladder silently unlocked
+    # every running MO and the solver happily planned over work in progress
+    # (measured: 12/12 lines started before their gate). The floor is a
+    # physical fact, not a changeover preference, so it is enforced here
+    # unconditionally at every relax level.
+    for l in lines:
+        avail_l = int(data.init_map.get(l, {}).get("available_from", 0))
+        if avail_l <= 0:
+            continue
+        for o_idx, o in enumerate(orders):
+            key = (l, o_idx)
+            if key not in seg_a_start:
+                continue
+            if o.get("is_trial"):
+                continue  # trials are pinned to an explicit start hour
+            model.Add(
+                seg_a_start[key] >= avail_l
+            ).OnlyEnforceIf(present[key])
+            if key in seg_b_start:
+                model.Add(
+                    seg_b_start[key] >= avail_l
+                ).OnlyEnforceIf(present[key])
+
+
     # ── Changeover constraints (pairwise ordering + setup times) ──────────
     #
     # Successor variables track which order *immediately follows* which on
