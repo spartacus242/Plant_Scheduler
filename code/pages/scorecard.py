@@ -25,7 +25,7 @@ from helpers.manual_import_ui import (
     render_manual_import,
     snapshot_current_schedule,
 )
-from helpers.paths import data_dir, legacy_dir, reference_dir
+from helpers.paths import data_dir, reference_dir, seed_dir
 from helpers.scorecard_engine import list_scorecards, save_scorecard, score_calendar
 from helpers.scorecard_ui import render_scorecard, scorecard_table
 from helpers.timefmt import with_display_times
@@ -59,21 +59,22 @@ with st.expander(
     render_manual_import(dd, anchor, horizon_h, key="sc_manual")
 
 
-# -- Import the legacy seed data ----------------------------------------
-with st.expander("Import legacy seed schedule (developer / first run)"):
+# -- Import the bundled seed data ----------------------------------------
+with st.expander("Import bundled seed schedule (developer / first run)"):
     st.markdown(
-        "Import converts legacy `schedule_phase2.csv` + `cip_windows.csv` + downtimes "
+        "Import converts the bundled seed `schedule_phase2.csv` + `cip_windows.csv` "
+        "(from `data/seed/`) + downtimes "
         "into the unified `calendar_blocks.csv` used by scoring, the digital twin, and scenarios."
     )
     src_choice = st.radio(
         "Source",
-        ["Flowstate-legacy data (seed)", "Upload CSVs", "Already imported"],
+        ["Bundled seed data", "Upload CSVs", "Already imported"],
         horizontal=True,
     )
 
-    if src_choice == "Flowstate-legacy data (seed)":
-        leg = legacy_dir() / "data"
-        if st.button("Import from Flowstate-legacy"):
+    if src_choice == "Bundled seed data":
+        leg = seed_dir(dd)
+        if st.button("Import from bundled seed data"):
             cal = import_legacy_schedule(
                 leg / "schedule_phase2.csv",
                 leg / "cip_windows.csv",

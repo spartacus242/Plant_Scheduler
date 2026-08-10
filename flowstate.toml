@@ -12,7 +12,7 @@ time_limit = 60
 min_run_hours = 4
 max_lines_per_order = 2
 validate = true
-use_sku_rates = false
+use_sku_rates = true
 
 [cip]
 interval_h = 120

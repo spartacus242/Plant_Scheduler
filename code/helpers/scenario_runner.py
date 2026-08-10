@@ -1,7 +1,7 @@
 # helpers/scenario_runner.py - Phase 2: generate solver scenarios A-D vs the current schedule.
 #
-# Wraps Flowstate-legacy CP-SAT with different objective modes, imports results
-# into calendar_blocks shape, and scores with the same scorecard engine.
+# Wraps the CP-SAT solver (code/solver/) with different objective modes, imports
+# results into calendar_blocks shape, and scores with the same scorecard engine.
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any
 
 from helpers.calendar_io import import_legacy_schedule
-from helpers.paths import legacy_dir
 from helpers.scorecard_engine import score_calendar
 from helpers.version_manager import list_versions, save_version
 
@@ -20,7 +19,7 @@ from helpers.version_manager import list_versions, save_version
 # Solver knob documentation
 #
 # Every knob below is a real input to the CP-SAT objective built in
-# Flowstate-legacy/code/model_builder.py (the objective branches live around
+# code/solver/model_builder.py (the objective branches live around
 # lines 1005-1127).  Knobs sourced from flowstate.toml are declared with a
 # "config" key of the form "<section>.<key>"; their live value is resolved by
 # scenario_knobs() against the loaded toml.  Knobs with a literal "value" are
@@ -198,7 +197,7 @@ OVERRIDE_SECTIONS: dict[str, str] = {
 
 OBJECTIVE_MODES = ("balanced", "min-changeovers", "spread-load")
 
-# Fallbacks matching Params in Flowstate-legacy/code/data_loader.py, used when a
+# Fallbacks matching Params in code/solver/data_loader.py, used when a
 # key is absent from flowstate.toml so the knob table never shows a blank.
 SOLVER_DEFAULTS: dict[str, int] = {
     "objective.makespan_weight": 1,
@@ -354,65 +353,48 @@ def scenario_knobs(
 
 
 def _prepare_work_dir(data_dir: Path, work: Path) -> None:
-    """Copy reference + legacy data needed by the solver into a work directory."""
+    """Copy the solver's data inputs into a work directory.
+
+    De-legacy (2026-08-10): the solver reads ONLY from its work dir, and the
+    work dir is sourced exclusively from data/reference/ — no more copies out
+    of Flowstate-legacy/data. All solver inputs are already in reference/.
+    """
     if work.exists():
         shutil.rmtree(work)
     work.mkdir(parents=True)
 
-    leg_data = legacy_dir() / "data"
     ref = data_dir / "reference"
 
-    skip_names = {
-        "schedule_phase2.csv",
-        "cip_windows.csv",
-        "produced_vs_bounds.csv",
-        "idle_kpis.csv",
-        "solver_error.txt",
-        "solver_kpis.txt",
-        "solver_progress.json",
-        "validation_report.txt",
-        "week1_initial_states.csv",
-        "diag_blockages.csv",
-        "diag_blockages.txt",
-        "diag_order_feasibility.csv",
-        "diag_order_linecap.csv",
-        "diag_summary.txt",
-        "diag_unique_line_load.csv",
-        "schedule_meta.json",
-        "feasibility_report.json",
+    mapping = {
+        "changeovers.csv": "changeovers.csv",
+        "downtimes.csv": "downtimes.csv",
+        "demand_plan.csv": "demand_plan.csv",
+        "capabilities_rates.csv": "capabilities_rates.csv",
+        "line_cip_hrs.csv": "line_cip_hrs.csv",
+        "trials.csv": "trials.csv",
+        "sku_info.csv": "sku_info.csv",
+        "initial_states.csv": "initial_states.csv",
     }
-
-    # Prefer legacy full dataset for solver feasibility; overlay reference when present.
-    # Normalize Windows-style case (Changeovers.csv) to what data_loader expects on Linux.
-    rename_map = {
-        "Changeovers.csv": "changeovers.csv",
-        "Downtimes.csv": "downtimes.csv",
-    }
-    if leg_data.exists():
-        for f in leg_data.iterdir():
-            if f.is_file() and f.name not in skip_names and not f.name.startswith("diag_"):
-                dest_name = rename_map.get(f.name, f.name)
-                shutil.copy2(f, work / dest_name)
-
-    if ref.exists():
-        mapping = {
-            "changeovers.csv": "changeovers.csv",
-            "downtimes.csv": "downtimes.csv",
-            "demand_plan.csv": "demand_plan.csv",
-            "capabilities_rates.csv": "capabilities_rates.csv",
-            "line_cip_hrs.csv": "line_cip_hrs.csv",
-            "trials.csv": "trials.csv",
-            "sku_info.csv": "sku_info.csv",
-            "initial_states.csv": "initial_states.csv",
-        }
-        for src_name, dst_name in mapping.items():
-            src = ref / src_name
-            if src.exists():
-                shutil.copy2(src, work / dst_name)
+    missing: list[str] = []
+    for src_name, dst_name in mapping.items():
+        src = ref / src_name
+        if src.exists():
+            shutil.copy2(src, work / dst_name)
+        else:
+            missing.append(src_name)
 
     root_toml = data_dir.parent / "flowstate.toml"
     if root_toml.exists():
         shutil.copy2(root_toml, work / "flowstate.toml")
+
+    if missing:
+        # The solver's data_loader raises on missing files; the caller turns
+        # that into a visible "solver failed" — but be loud about it here too.
+        import warnings
+
+        warnings.warn(
+            f"Solver work dir missing reference inputs: {', '.join(missing)}"
+        )
 
 
 def _overlay_current_state(work: Path, data_dir: Path) -> list[str]:
@@ -629,7 +611,7 @@ def run_scenario(
     except Exception as _exc:  # noqa: BLE001
         _cs_notes = [f"current-state overlay FAILED: {_exc}"]
 
-    scheduler = (legacy_dir() / "code" / "phase2_scheduler.py").resolve()
+    scheduler = (Path(data_dir).resolve().parent / "code" / "solver" / "phase2_scheduler.py").resolve()
     toml = work / "flowstate.toml"
     cmd = [
         python_exe or sys.executable,
@@ -653,7 +635,7 @@ def run_scenario(
 
     proc = subprocess.run(
         cmd,
-        cwd=str(legacy_dir() / "code"),
+        cwd=str((Path(data_dir).resolve().parent / "code" / "solver").resolve()),
         capture_output=True,
         text=True,
         timeout=max(120, (time_limit or 60) * 4 + 60),

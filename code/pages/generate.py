@@ -20,7 +20,7 @@ from helpers.naive_baseline import (
     NAIVE_VERSION_SLUG,
     build_naive_calendar,
 )
-from helpers.paths import data_dir, legacy_dir
+from helpers.paths import data_dir, solver_dir
 from helpers.scenario_runner import (
     CUSTOM_SCENARIO_ID,
     OBJECTIVE_MODES,
@@ -41,8 +41,8 @@ st.caption(
 )
 
 dd = data_dir()
-if not (legacy_dir() / "code" / "phase2_scheduler.py").exists():
-    st.error("Flowstate-legacy solver not found. Keep Flowstate-legacy/ in the repo.")
+if not (solver_dir() / "phase2_scheduler.py").exists():
+    st.error("CP-SAT solver not found at code/solver/phase2_scheduler.py.")
     st.stop()
 
 cfg = load_toml()
@@ -210,7 +210,7 @@ def _render_knobs(scenario: dict, overrides: dict | None = None) -> None:
         )
         st.caption(
             "Values come from flowstate.toml. Rows without a config path are hard-coded "
-            "multipliers inside the objective branch in Flowstate-legacy/code/model_builder.py."
+            "multipliers inside the objective branch in code/solver/model_builder.py."
         )
 
 

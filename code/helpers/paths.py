@@ -24,6 +24,16 @@ def legacy_dir() -> Path:
     return _REPO_ROOT / "Flowstate-legacy"
 
 
+def solver_dir() -> Path:
+    """Home of the live CP-SAT solver (moved out of Flowstate-legacy 2026-08-10)."""
+    return _CODE_DIR / "solver"
+
+
+def seed_dir(dd: Optional[Path] = None) -> Path:
+    """Developer seed fixtures (imported once on first run; kept in data/seed)."""
+    return (dd or data_dir()) / "seed"
+
+
 def reference_dir(dd: Optional[Path] = None) -> Path:
     return (dd or data_dir()) / "reference"
 
