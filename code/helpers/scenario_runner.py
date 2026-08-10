@@ -476,7 +476,14 @@ def _overlay_current_state(work: Path, data_dir: Path) -> list[str]:
         if info.previous_cip is not None:
             hrs = (hz.anchor - info.previous_cip.to_pydatetime()).total_seconds() / 3600.0
             if hrs > 0:
-                carry_map[line.upper()] = int(hrs)
+                # A carryover >= the line's max CIP interval says "a CIP was
+                # already overdue before hour 0", which the CIP constraints
+                # cannot satisfy and turns the whole solve INFEASIBLE. Clamp
+                # just below the limit so the solver schedules the CIP
+                # immediately instead of failing. phase2_scheduler does the
+                # same (min(carryover, 119)) when it writes week-1 states.
+                limit = int(info.max_hours_between or 120)
+                carry_map[line.upper()] = int(min(hrs, max(0, limit - 1)))
 
     changed = 0
     for idx, row in init.iterrows():
