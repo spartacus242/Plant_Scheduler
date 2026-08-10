@@ -57,6 +57,12 @@ def load_calendar(path: Path) -> pd.DataFrame:
     df["start_h"] = pd.to_numeric(df["start_h"], errors="coerce").fillna(0).astype(float)
     df["end_h"] = pd.to_numeric(df["end_h"], errors="coerce").fillna(0).astype(float)
     df["qty_kg"] = pd.to_numeric(df.get("qty_kg", 0), errors="coerce").fillna(0).astype(float)
+    # Strip trailing ".0" from code columns that were written by a previous
+    # pandas save with float dtype (e.g. "570468.0" in sku). dtype=str alone
+    # doesn't fix this because the CSV literally stores the string "570468.0".
+    for _col in ("sku", "order_id", "label"):
+        if _col in df.columns:
+            df[_col] = df[_col].str.replace(r"\.0$", "", regex=True)
     return df[CALENDAR_COLUMNS]
 
 

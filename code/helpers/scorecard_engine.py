@@ -566,15 +566,7 @@ def _co_lookup(co_df: pd.DataFrame) -> dict[tuple[str, str], dict]:
 
 
 def _load_line_avg_rates(ref: Path) -> dict[str, float]:
-    """Mean calc_rate_kgph per line over the SKUs that line is capable of running.
-
-    Reads data/reference/capabilities_rates.csv. Per line_name we average
-    calc_rate_kgph across rows with capable == 1, falling back to
-    nominal_rate_kgph for rows with no usable calc rate. A line with no capable
-    rows inherits the overall mean of the lines that do have one. Missing or
-    malformed file -> empty mapping; callers then treat the rate as 0. This must
-    never raise: the scorecard has to render even with reference data absent.
-    """
+    """Mean calc_rate_kgph per line over the SKUs that line is capable of running."""
     path = ref / "capabilities_rates.csv"
     mapping: dict[str, float] = {}
     try:
