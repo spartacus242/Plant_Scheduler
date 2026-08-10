@@ -353,17 +353,25 @@ Import adjustments (verified):
 ### 8.8 Verification (per flowstate-app-qa skill — solver internals are NOT
 browser-visible; verify with real CLI runs)
 
-1. Full pytest suite green.
+1. Full pytest suite green (84/84 on branch).
 2. Real CLI run from the new home:
    `PYTHONPATH= .venv/Scripts/python.exe code/solver/phase2_scheduler.py --data-dir <workdir> --objective balanced --config flowstate.toml --two-phase`
-   → expect `schedule_phase2.csv` + `feasibility_report.json` written, status
-   not INFEASIBLE.
+   → FEASIBLE, `schedule_phase2.csv` + `feasibility_report.json` written.
 3. Run `scripts/check_solver_current_state.py` (repeatable gate check) from
-   the new home.
+   the new home: **"lines starting BEFORE their gate: none"** — the
+   availability floor is enforced at every relax level.
 4. Browser: Generate Scenarios still runs a scenario A + D and renders a
-   preview without error.
+   preview without error (verified 2026-08-10).
 5. Confirm no `import Flowstate-legacy` / `legacy_dir` path remains in the
-   solver chain: `grep -rn "legacy" code/solver/` → empty.
+   solver chain: `grep -rn "legacy" code/solver/` → docstrings only.
+6. **Rate-flip A/B (verified 2026-08-10):** same work dir, `use_sku_rates`
+   false vs true, two-phase balanced, 60s:
+   - false: 113 blocks, 36 orders short of qmin, 4,069,544 kg produced
+   - true:  **134 blocks, 32 orders short of qmin, 4,255,487 kg produced**
+   The flip does NOT regress feasibility — it improves throughput. The
+   validation report's "1/4 checks / 106 issues" is the known relax-level-3
+   state (UNDER by design + changeover gaps ignored under `ignore_co`),
+   pre-documented in handoff-ww32; not a regression of this branch.
 
 ### 8.9 When is `Flowstate-legacy/` deletable?
 After 8.8 passes and the user confirms the moved solver on a real run:
