@@ -613,10 +613,14 @@ def run_scenario(
     work = (Path(data_dir) / "_scenario_work" / scenario["id"]).resolve()
     _prepare_work_dir(Path(data_dir).resolve(), work)
 
-    # Inject the current plant state: per-line free-from hour + running SKU so
-    # the solver can't schedule over a locked running MO. Best-effort; if the
-    # feeds are unavailable the solver falls back to the existing initial_states.
-    _overlay_current_state(work, data_dir)
+    # Inject the current plant state: per-line free-from hour, running SKU and
+    # CIP carryover so the solver cannot schedule over a locked running MO.
+    # Best-effort, but ALWAYS reported — a silent no-op here means the solver
+    # quietly plans from the stale fixture.
+    try:
+        _cs_notes = _overlay_current_state(work, data_dir)
+    except Exception as _exc:  # noqa: BLE001
+        _cs_notes = [f"current-state overlay FAILED: {_exc}"]
 
     scheduler = (legacy_dir() / "code" / "phase2_scheduler.py").resolve()
     toml = work / "flowstate.toml"
@@ -651,6 +655,8 @@ def run_scenario(
     err_file = work / "solver_error.txt"
     if err_file.exists():
         log += "\n" + err_file.read_text(encoding="utf-8")
+    if _cs_notes:
+        log = "[current state] " + "; ".join(_cs_notes) + "\n" + log
 
     sched = work / "schedule_phase2.csv"
     cip = work / "cip_windows.csv"

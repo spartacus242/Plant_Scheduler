@@ -114,6 +114,53 @@ with st.expander("Import raw AZAP (CSV or .xlsx)", expanded=False):
             st.rerun()
 
 st.divider()
+st.subheader("Import a cleaned demand plan summary (CSV)")
+st.caption(
+    "The planner's cleaner demand file: **Week, Product, kg_tons** — no machine "
+    "column, no Hours field. Ideal for the solver. Imports directly to "
+    "`demand_plan.csv` and writes provenance to `demand_plan.source.json`.")
+
+with st.expander("Import demand_plan_summary.csv", expanded=False):
+    from helpers.demand_summary_import import import_summary as _imps
+    from helpers.timefmt import planning_anchor as _panchor
+    sum_up = st.file_uploader("demand_plan_summary.csv", type=["csv"],
+                              key="summary_csv_upload",
+                              help="Columns: Week (ISO), Product (SKU), kg_tons")
+    if sum_up is not None:
+        try:
+            _payload = sum_up.getvalue()
+            # Write to a temp path; the importer reads a path
+            import tempfile as _tf
+            with _tf.NamedTemporaryFile(delete=False, suffix=".csv") as _t:
+                _t.write(_payload)
+                _tmp = _t.name
+            dem, meta = _imps(_tmp, anchor=_panchor())
+        except Exception as exc:
+            st.error(f"Not a readable summary: {type(exc).__name__}: {exc}")
+        else:
+            st.caption(f"{meta.rows} orders, {len(meta.skus)} SKUs, "
+                       f"weeks {meta.weeks}, {meta.warnings or 'no warnings'}")
+            st.dataframe(dem.head(8), use_container_width=True, hide_index=True)
+            if meta.warnings:
+                for w in meta.warnings:
+                    st.warning(w)
+            if st.button("Write to demand_plan.csv", key="write_summary",
+                         type="primary", disabled=not len(dem)):
+                ref_dir = reference_dir(dd)
+                dem_path = ref_dir / "demand_plan.csv"
+                dem.to_csv(dem_path, index=False)
+                import json as _json
+                (ref_dir / "demand_plan.source.json").write_text(
+                    _json.dumps({"source": "demand_plan_summary.csv",
+                                 "imported": pd.Timestamp.now().isoformat(),
+                                 "rows": meta.rows, "weeks": meta.weeks,
+                                 "skus": len(meta.skus)}, indent=2),
+                    encoding="utf-8")
+                st.success(f"Wrote {meta.rows} orders to demand_plan.csv "
+                           f"(weeks {meta.weeks}).")
+                st.rerun()
+
+st.divider()
 st.subheader("Import a weekly production schedule (PDF)")
 st.caption(
     "Upload the plant's weekly 'Production Schedule' PDF (the VIF print) to bring "
