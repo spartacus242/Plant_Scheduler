@@ -62,7 +62,7 @@ if _caps_p.exists():
         if int(r.get("capable", 0) or 0) != 1:
             continue
         caps.setdefault(str(r["line_name"]), {})[str(r["sku"])] = float(
-            r.get("calc_rate_kgph") or r.get("nominal_rate_kgph") or 0)
+            r.get("calc_rate_kgph") or 0)
 caps = expand_caps_with_groups(caps)
 
 changeovers: dict = {}

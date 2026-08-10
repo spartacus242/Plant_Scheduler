@@ -227,8 +227,7 @@ METRIC_DOCS: dict[str, dict[str, Any]] = {
             "max(0, interval - run_since) * avg_rate_kgph(line). "
             "avg_rate_kgph(line) = mean of calc_rate_kgph over rows in "
             "reference/capabilities_rates.csv where capable == 1 for that "
-            "line_name (nominal_rate_kgph is used when calc is missing, then the "
-            "overall line mean, then 0 if the file is absent)."
+            "line_name (then the overall line mean, then 0 if the file is absent)."
         ),
         "direction": "lower",
         "cap_key": "cap_cip_forfeited_kg",
@@ -597,14 +596,12 @@ def _load_line_avg_rates(ref: Path) -> dict[str, float]:
             except (TypeError, ValueError):
                 continue
             rate = 0.0
-            for col in ("calc_rate_kgph", "nominal_rate_kgph"):
-                try:
-                    v = float(r.get(col, 0) or 0)
-                except (TypeError, ValueError):
-                    v = 0.0
-                if v > 0:
-                    rate = v
-                    break
+            try:
+                v = float(r.get("calc_rate_kgph", 0) or 0)
+            except (TypeError, ValueError):
+                v = 0.0
+            if v > 0:
+                rate = v
             if rate > 0:
                 sums.setdefault(name, []).append(rate)
         for name, vals in sums.items():

@@ -189,7 +189,7 @@ if caps_path.exists():
             continue
         ln = str(r["line_name"])
         sku = str(r["sku"])
-        rate = float(r.get("calc_rate_kgph") or r.get("nominal_rate_kgph") or 0)
+        rate = float(r.get("calc_rate_kgph") or 0)
         caps.setdefault(ln, {})[sku] = rate
 # A double line's caps must be readable both per side (halved) and per group
 # (both sides running), whichever way capabilities_rates.csv is keyed.
@@ -292,8 +292,13 @@ for line, ci in _cip.by_line.items():
     if ci.scheduled_cip is not None:
         start_h = (ci.scheduled_cip - _anchor).total_seconds() / 3600.0
         dur = float(cip_cfg.get("duration_h", 6))
+        lid = -1
+        try:
+            lid = int(str(line)[1:]) - 9
+        except (ValueError, IndexError):
+            lid = 0
         windows.append({
-            "id": f"cipinfo_{line}", "line_id": int(line[1:]) - 9 if line[1:].isdigit() else 0,
+            "id": f"cipinfo_{line}", "line_id": lid,
             "line_name": line, "order_id": "", "sku": "", "sku_description": "",
             "start_hour": start_h, "end_hour": start_h + dur,
             "run_hours": dur, "is_trial": False, "block_type": "cip",

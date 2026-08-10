@@ -181,15 +181,17 @@ def to_calendar_rows(res: PdfParseResult, anchor_monday: datetime,
         end_h = start_h + b.hours
         bid = "pdf_" + hashlib.md5(
             f"{b.line}{b.mo}{b.item}{b.date}{b.time}".encode()).hexdigest()[:10]
-        # line_id: P09->0 ... P22->13 (matches data/lines.csv); P00/others -> -1
-        try:
-            line_id = int(b.line[1:]) - 9
-        except ValueError:
-            line_id = -1
+        # line_id via lines.csv lookup; fall back to P09=0 convention
+        lid = -1
+        if b.line:
+            try:
+                lid = int(str(b.line)[1:]) - 9
+            except (ValueError, IndexError):
+                lid = -1
         rows.append({
             "block_id": bid,
             "block_type": b.block_type,
-            "line_id": line_id,
+            "line_id": lid,
             "line_name": b.line,
             "start_h": round(start_h, 3),
             "end_h": round(end_h, 3),

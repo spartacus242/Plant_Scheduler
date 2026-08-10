@@ -43,16 +43,20 @@ def empty_calendar() -> pd.DataFrame:
 def load_calendar(path: Path) -> pd.DataFrame:
     if not path.exists():
         return empty_calendar()
-    df = pd.read_csv(path)
+    # Read all columns as strings; numeric columns are coerced explicitly below.
+    # Code columns (sku, order_id, label, block_id) get an integer dtype in a
+    # CSV with empty cells, producing "280351.0" labels. dtype=str prevents that.
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
     for col in CALENDAR_COLUMNS:
         if col not in df.columns:
             df[col] = None
     if "locked" in df.columns:
-        df["locked"] = df["locked"].fillna(False).astype(bool)
+        df["locked"] = df["locked"].str.lower().isin({"true", "1", "yes"})
     else:
         df["locked"] = False
     df["start_h"] = pd.to_numeric(df["start_h"], errors="coerce").fillna(0).astype(float)
     df["end_h"] = pd.to_numeric(df["end_h"], errors="coerce").fillna(0).astype(float)
+    df["qty_kg"] = pd.to_numeric(df.get("qty_kg", 0), errors="coerce").fillna(0).astype(float)
     return df[CALENDAR_COLUMNS]
 
 

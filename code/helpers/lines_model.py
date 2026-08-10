@@ -310,3 +310,27 @@ def line_rows_to_groups(rows: Iterable[Mapping]) -> list[dict]:
             "sides": sides_of(g) if double else [],
         })
     return out
+
+
+# ------------------------------------------------------------------
+# Line-name normalisation
+# ------------------------------------------------------------------
+
+def normalize_line(raw: str) -> str:
+    """Canonicalise a line name from any source: 'LMH-P09' | 'p09' | 'P09' → 'P09'.
+
+    The plant data uses three vocabularies for the same entity:
+      manprg / manprg2            "LMH-P09"
+      cip_info / lines.csv        "P09"
+      calendar_blocks.csv          P09 (unquoted, often int-typed)
+      manprg CIP pseudo-MOs       "CIP" preceded by an LMH-Pxx line
+
+    Every import boundary should normalise through this function, so the rest
+    of the code never has to guess.
+    """
+    s = str(raw or "").strip().upper()
+    if s.startswith("LMH-"):
+        s = s[4:]
+    if s.startswith("P") and s[1:].isdigit():
+        return s
+    return s  # unusual but valid (SQL can return bare digits, CIP, TRIALS…)

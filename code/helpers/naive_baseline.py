@@ -75,7 +75,7 @@ def _capable_lines(caps: pd.DataFrame) -> dict[str, list[tuple[float, int, str]]
     for _, r in caps.iterrows():
         if int(_num(r.get("capable"), 0)) != 1:
             continue
-        rate = _num(r.get("calc_rate_kgph"), 0.0) or _num(r.get("nominal_rate_kgph"), 0.0)
+        rate = _num(r.get("calc_rate_kgph"), 0.0)
         if rate <= 0:
             continue
         sku = str(r.get("sku", "")).strip()
