@@ -31,6 +31,9 @@ code/validation_report.txt
 data/_scenario_work/
 data/_upload/
 
+# Runtime backups (regenerable pre-write copies; do not version them)
+data/_backups/
+
 # Stock check local runtime state (VIF snapshots, settings, caches)
 data/stockcheck/snapshots/
 data/stockcheck/settings.json

@@ -7,8 +7,20 @@ Streamlit-based manufacturing schedule optimization / decision-support tool. See
 ### Services
 Flowstate is effectively a **single runtime service**: the Streamlit app (`code/app.py`, default port `8501`). There is no database or external API — all state lives in flat CSV/JSON files under `data/`.
 
-- **Phase 0 (Scorecard)** and **Phase 1 (Plant Calendar / Digital Twin)** run entirely inside that one Streamlit process.
-- **Phase 2 (Generate Scenarios)** spawns the Google OR-Tools CP-SAT solver as an on-demand subprocess (via `Flowstate-legacy/code/phase2_scheduler.py`, using the same Python interpreter). It is not a separate long-running service, but the `Flowstate-legacy/` tree and its data must remain present.
+- **Phase 0 (Scorecard)**, **Phase 1 (Plant Calendar / Digital Twin)**, and **Stock Check** run entirely inside that one Streamlit process.
+- **Phase 2 (Generate Scenarios)** spawns the Google OR-Tools CP-SAT solver as an on-demand subprocess via `code/solver/phase2_scheduler.py` (using the same Python interpreter). The solver reads its inputs from a scratch work dir under `data/_scenario_work/` that is rebuilt from `data/reference/` on every run — it must NOT depend on `Flowstate-legacy/`.
+
+### Repository layout (current)
+- `code/app.py` — Streamlit entry (8 nav groups, 10 pages).
+- `code/pages/` — home (Command Center), data, scorecard, stock_check, calendar, compare, generate, lines, settings.
+- `code/helpers/` — config, horizon, calendar_io, scorecard_engine, scenario_runner, current_state, data_health (freshness/health engine), process_flow (pipeline model), importers (azap, demand summary, PDF, manual, manprg, cip), stock-check API.
+- `code/solver/` — the live CP-SAT solver (moved out of `Flowstate-legacy/` 2026-08-10). Flat modules: `phase2_scheduler.py` (CLI), `model_builder.py`, `data_loader.py`, `diagnostics.py`, `validate_schedule.py`, `solver_progress.py`.
+- `code/components/gantt/` — React/TS Gantt (prebuilt `dist/` committed; no Node build needed to run).
+- `code/stockcheck/` — VIF BOM explosion + component coverage engine.
+- `data/reference/` — the 10 input CSVs + live feeds (manprg, cip_info) + demand samples.
+- `data/seed/` — bundled developer seed fixtures (schedule_phase2.csv + cip_windows.csv) used by the scorecard page's first-run import.
+- `Flowstate-legacy/` — **deprecated archive only**; nothing in `code/` may import from it. Scheduled for deletion once the moved solver is confirmed on a real run.
+- `tests/` — pytest suite (see Testing below).
 
 ### Running
 - Use `python3`, not `python` — this environment has no `python` alias. The README's `python -m streamlit ...` will fail; run `python3 -m streamlit run code/app.py --server.headless true` instead.
@@ -17,4 +29,10 @@ Flowstate is effectively a **single runtime service**: the Streamlit app (`code/
 - Quick open: `./scripts/open_flowstate.sh` (Linux/macOS/Cloud). On Windows, use `scripts/open_flowstate.bat` or `scripts/install_desktop_shortcut.ps1` (see README).
 
 ### Testing / lint
-There is **no** automated test suite and no configured linter in this repo (no pytest/unittest, no ESLint/ruff config). Validate changes by running the app and exercising the relevant page, plus `python3 -m py_compile` for a quick syntax check and `npm run build` (in the frontend dir) to type-check/build the Gantt component.
+- There **is** a pytest suite in `tests/` (8 files, 84 tests as of 2026-08-10): horizon, current-state, current-state overlay, AZAP import, live imports, PDF import, stock-check engine, stock-check receiving, and the data-health engine. Run it from the repo root:
+  ```bash
+  python3 -m pytest -q
+  ```
+  (On the Windows dev box: `PYTHONPATH=code .venv/Scripts/python.exe -m pytest -q` — scrub `PYTHONPATH` first if pandas crashes on import.)
+- No configured linter (no ruff/ESLint config). Validate changes by running the suite plus `python3 -m py_compile` for a quick syntax check; UI changes must be browser-verified (see the `flowstate-app-qa` Hermes skill).
+- Solver changes: the browser cannot see solver internals — verify with real CLI runs (`scripts/check_solver_current_state.py`, `scripts/diag_available_from.py`) and check `feasibility_report.json` in the work dir.

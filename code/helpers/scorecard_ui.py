@@ -34,6 +34,9 @@ def render_scorecard(
     composite = data.get("composite")
     cats = data.get("category_scores") or {}
 
+    # Visual layer first: category bars + composite gauge (Command Center).
+    render_scorecard_bars(data)
+
     top = st.columns(7)
     top[0].metric("Composite", f"{composite:.0f}" if composite is not None else "n/a")
     for i, key in enumerate(["service", "changeovers", "cip", "campaigns", "maintenance", "trials"], start=1):
@@ -88,6 +91,75 @@ def render_scorecard(
 
     if show_formulas:
         render_metric_reference(data)
+
+
+# Metric "no data" signals per category: when these raw values are empty/zero
+# the category score is NOT evidence of good performance — it is absence of data.
+_NO_DATA_KEYS: dict[str, tuple[str, ...]] = {
+    "maintenance": ("maint_count",),
+    "trials": ("trial_hours",),
+    "cip": ("cip_count",),
+    "service": ("orders_late",),
+}
+
+
+def _category_has_data(cat: str, data: dict[str, Any]) -> bool:
+    """True when a category's raw metrics indicate real data (not absence).
+
+    Maintenance with zero blocks, trials with zero hours, CIP with zero blocks
+    are 'no data' — the score of 100 is an artifact, not an achievement.
+    """
+    raw = data.get(cat) or {}
+    keys = _NO_DATA_KEYS.get(cat, ())
+    if not keys:
+        return True
+    for k in keys:
+        v = raw.get(k)
+        if v is not None and float(v or 0) > 0:
+            return True
+    # service: demand present means data exists even if all zero
+    if cat == "service":
+        return bool(raw.get("available", False))
+    return False
+
+
+def render_scorecard_bars(data: dict[str, Any]) -> None:
+    """Category contribution bars + composite gauge.
+
+    'No data' categories render gray with a 'no data' label instead of a green
+    bar — absence of maintenance/trials/CIP is not good performance.
+    """
+    composite = data.get("composite")
+    cats = data.get("category_scores") or {}
+    if not cats:
+        return
+
+    with st.container(border=True):
+        g1, g2 = st.columns([1, 4])
+        with g1:
+            st.markdown("**Composite**")
+            if composite is not None:
+                st.progress(max(0.0, min(1.0, float(composite) / 100.0)))
+                st.markdown(f"**{composite:.0f} / 100**")
+            else:
+                st.markdown("n/a")
+        with g2:
+            for key in CATEGORY_ORDER:
+                score = cats.get(key)
+                if score is None:
+                    st.markdown(f"**{key.title()}** — n/a")
+                    continue
+                has_data = _category_has_data(key, data)
+                if has_data:
+                    st.markdown(f"**{key.title()}** — {score:.0f}")
+                    st.progress(max(0.0, min(1.0, float(score) / 100.0)))
+                else:
+                    st.markdown(f"**{key.title()}** — :gray[no data]")
+                    st.progress(0.0)
+        st.caption(
+            "Gray = no data for that category (e.g. zero maintenance blocks), "
+            "not a good score. Saturation notes appear in the contribution table."
+        )
 
 
 def render_metric_reference(
