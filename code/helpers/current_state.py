@@ -295,9 +295,19 @@ def build_current_state(
             running = running[-1:]
         for r in running:
             end = _estimated_end(r, n)
-            blocks.append(_block(r, line, lid, r["start_dt"], end, RUNNING,
-                                 locked=True, anchor=hz.anchor))
-            state.running.append({**r, "est_end": end})
+            # A long-running MO can have started days before the anchor. Keep
+            # the block INSIDE the window (a start_h of -191 renders nowhere on
+            # a rolling Gantt) but record the true start so nothing is lost.
+            true_start = pd.Timestamp(r["start_dt"])
+            shown_start = max(true_start, pd.Timestamp(hz.anchor))
+            blk = _block(r, line, lid, shown_start, end, RUNNING,
+                         locked=True, anchor=hz.anchor)
+            blk["attrs"] += f";started={true_start:%Y-%m-%dT%H:%M}"
+            if shown_start > true_start:
+                blk["attrs"] += ";clamped_to_anchor"
+            blocks.append(blk)
+            state.running.append({**r, "est_end": end,
+                                  "shown_start": shown_start.to_pydatetime()})
             cursor = max(cursor, pd.Timestamp(end))
 
         # 2. queued MOs — sequential, no overlap, keep manprg's intended order

@@ -29,12 +29,18 @@ The user wants to **stop starting from the old fixture**. Build the calendar fro
    (Fri 8/7) silently re-defines week 0 as Fri→Thu. The horizon start should stay
    "today" while the *week grid* stays ISO-Monday-aligned — decouple them before the
    solver consumes the rolled anchor.
-2. ⬜ **Current state from manprg/manprg2 + cip_info**, per line:
-   - Currently-running MO (latest start with cases made >0, not complete) → **locked**,
-     runs to its estimated end; solver can't move it.
-   - Future MOs already in manprg (e.g. P16: 29807, 29918–29922) → placed sequentially by start date.
-   - Completed MOs → dropped (don't render).
-   - CIP: last-performed + next-scheduled from cip_info placed on calendar; future unscheduled CIPs spaced at MaxHoursBetweenCIP into weeks 2–3.
+2. ✅ **Current state from manprg/manprg2 + cip_info** — branch `feature/handoff-ww32`, commit `dfc2dcf`.
+   New module `code/helpers/current_state.py` (374 lines) + 18 tests (`tests/test_current_state.py`,
+   all pass including real-data golden). Exposed in the Plant Calendar as a collapsible expander
+   "🏭 Rebuild calendar from current plant state (manprg + cip_info)" that previews the resulting
+   blocks and replaces the calendar on click (backing up the old one first). Classification:
+   - Currently-running MO (latest start with cases made >0, not complete) → **locked**, runs to its
+     estimated end via pro-rata remaining work, clamped to now+0.25 h.
+   - Future MOs already in manprg → placed sequentially by start date, unlocked.
+   - Completed MOs → dropped. CIP pseudo-MOs in manprg → treated as CIP blocks.
+   - CIP: last-performed + next-scheduled from cip_info; future unscheduled CIPs spaced at
+     MaxHoursBetweenCIP (120/144, per-line authoritative) through weeks 2-3.
+   Suite **55/55** green. Browser-verified: expander renders, replace-button works.
 3. ⬜ **This is the initial state** — a feasible (unoptimized) schedule. Then the solver fills remaining demand from the demand plan, starting after each line's locked running MO.
 4. ⬜ **Demand source going forward:** `demand_plan_summary.csv` (Week, Product, kg_tons; weeks 33/34/35; NO machine col). **Not yet present in `data/reference/`** — importer can't be reconciled until the file is supplied or a mapper raw→summary is written.
 

@@ -94,6 +94,15 @@ def test_running_mo_is_locked_and_never_ends_in_the_past():
     assert blk["end_h"] > (NOW - ANCHOR).total_seconds() / 3600.0
 
 
+def test_running_mo_started_before_the_anchor_is_clamped_into_the_window():
+    st = _state([{"mo": "OLD", "made_cas": 50.0, "left_cas": 50.0, "hours": 200.0,
+                  "start_dt": pd.Timestamp(NOW) - timedelta(hours=190)}])
+    blk = st.blocks[st.blocks["order_id"] == "OLD"].iloc[0]
+    assert blk["start_h"] >= 0.0, "block must render inside the horizon"
+    assert "clamped_to_anchor" in blk["attrs"]
+    assert "started=" in blk["attrs"], "true start must be preserved"
+
+
 def test_queued_mos_are_sequential_and_do_not_overlap():
     st = _state([
         {"mo": "RUN", "made_cas": 50.0, "left_cas": 50.0, "hours": 10.0},

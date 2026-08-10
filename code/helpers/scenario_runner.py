@@ -415,6 +415,87 @@ def _prepare_work_dir(data_dir: Path, work: Path) -> None:
         shutil.copy2(root_toml, work / "flowstate.toml")
 
 
+def _overlay_current_state(work: Path, data_dir: Path) -> list[str]:
+    """Patch the work-dir initial_states.csv with the real plant state.
+
+    Handoff WW32 item 3: the solver must start from ground truth, not from the
+    seeded fixture. From `helpers.current_state` we take, per line:
+      * `available_from_hour` <- line_free_h (end of the locked running MO and
+        everything already queued behind it) — the solver may not place work
+        before it;
+      * `initial_sku`         <- the SKU actually running (so the changeover
+        matrix charges the real changeover, not a CLEAN start);
+      * `carryover_run_hours_since_last_cip_at_t0` <- hours since the line's
+        last CIP, so the first CIP is due at the right time.
+
+    Returns a list of human-readable notes. Best-effort: if the live feeds are
+    missing the initial_states file is left alone, but the reason is REPORTED
+    rather than silently swallowed (a bare `except ImportError` here previously
+    made the whole overlay a no-op because of a wrong import path).
+    """
+    notes: list[str] = []
+    import pandas as _pd
+
+    from helpers.calendar_io import load_lines as _ll  # NOT lines_model
+    from helpers.config import datasources_config as _ds
+    from helpers.config import load_toml as _lt
+    from helpers.current_state import build_current_state as _bcs
+    from helpers.horizon import resolve as _hr
+    from helpers.paths import data_dir as _dd
+
+    dd = data_dir if Path(data_dir).name == "data" else _dd()
+    dd = Path(dd)
+    cfg = _lt()
+    hz = _hr(cfg)
+    ds = _ds(cfg)
+    mp_paths = [p.strip() for p in str(ds.get("manprg_files", "")).split(";")
+                if p.strip()] or [
+                    str(dd / "reference" / "manprg.txt"),
+                    str(dd / "reference" / "manprg2.txt")]
+    cip_path = str(ds.get("cip_info_csv", "")).strip() or str(
+        dd / "reference" / "cip_info.csv")
+    try:
+        cs = _bcs(hz, manprg_paths=mp_paths, cip_path=cip_path,
+                  lines=_ll(dd / "lines.csv"), cfg=cfg)
+    except Exception as exc:  # noqa: BLE001
+        return [f"current-state overlay skipped: {exc}"]
+
+    init_path = Path(work) / "initial_states.csv"
+    if not init_path.exists():
+        return ["current-state overlay skipped: no initial_states.csv in work dir"]
+    init = _pd.read_csv(init_path)
+    if init.empty:
+        return ["current-state overlay skipped: initial_states.csv is empty"]
+
+    free_map = {ln.upper(): max(0, int(h)) for ln, h in cs.line_free_h.items()}
+    sku_map = {r["line"].upper(): r["item"] for r in cs.running}
+    # hours since the last CIP -> the first CIP is due MaxHoursBetweenCIP later
+    from helpers.cip_import import read_cip_info as _rci
+    carry_map: dict[str, int] = {}
+    for line, info in _rci(cip_path).by_line.items():
+        if info.previous_cip is not None:
+            hrs = (hz.anchor - info.previous_cip.to_pydatetime()).total_seconds() / 3600.0
+            if hrs > 0:
+                carry_map[line.upper()] = int(hrs)
+
+    changed = 0
+    for idx, row in init.iterrows():
+        ln = str(row.get("line_name", "")).strip().upper()
+        if ln in free_map and free_map[ln] > 0:
+            init.at[idx, "available_from_hour"] = free_map[ln]
+            changed += 1
+        if ln in sku_map and sku_map[ln]:
+            init.at[idx, "initial_sku"] = sku_map[ln]
+        if ln in carry_map and "carryover_run_hours_since_last_cip_at_t0" in init.columns:
+            init.at[idx, "carryover_run_hours_since_last_cip_at_t0"] = carry_map[ln]
+
+    init.to_csv(init_path, index=False)
+    notes.append(
+        f"current state overlaid: {changed} line(s) gated by a running/queued MO, "
+        f"{len(sku_map)} initial SKU(s), {len(carry_map)} CIP carryover(s)")
+    return notes
+
+
 def normalize_overrides(overrides: dict[str, Any] | None) -> dict[str, Any]:
     """Keep only known weight keys with a real value; coerce to int.
 
@@ -531,6 +612,11 @@ def run_scenario(
     """
     work = (Path(data_dir) / "_scenario_work" / scenario["id"]).resolve()
     _prepare_work_dir(Path(data_dir).resolve(), work)
+
+    # Inject the current plant state: per-line free-from hour + running SKU so
+    # the solver can't schedule over a locked running MO. Best-effort; if the
+    # feeds are unavailable the solver falls back to the existing initial_states.
+    _overlay_current_state(work, data_dir)
 
     scheduler = (legacy_dir() / "code" / "phase2_scheduler.py").resolve()
     toml = work / "flowstate.toml"
