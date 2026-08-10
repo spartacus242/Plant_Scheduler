@@ -41,13 +41,48 @@ The user wants to **stop starting from the old fixture**. Build the calendar fro
    - CIP: last-performed + next-scheduled from cip_info; future unscheduled CIPs spaced at
      MaxHoursBetweenCIP (120/144, per-line authoritative) through weeks 2-3.
    Suite **55/55** green. Browser-verified: expander renders, replace-button works.
-3. ✅ **Solver fills remaining demand from the demand plan, starting after each line's locked running MO.**
-   `scenario_runner._overlay_current_state()` (new) patches the solver's work-dir `initial_states.csv`
-   with `available_from_hour` (from `current_state.line_free_h`) and `initial_sku` (the running SKU)
-   before every solve. **12 of 14 lines** now have a nonzero available_from. The solver is blocked
-   from scheduling anything on a line before that hour; running MOs are effectively locked. Verified:
-   the overlay writes correct hours (e.g. P09=83h, P10=231h, P22=210h) and correct SKUs into the
-   work dir. Best-effort: if the manprg feeds are unavailable, the solver falls back cleanly.
+3. ✅ **Solver fills remaining demand starting after each line's locked running MO.**
+   `scenario_runner._overlay_current_state()` patches the solver's work-dir
+   `initial_states.csv` before every solve with `available_from_hour` (from
+   `current_state.line_free_h`), `initial_sku` (the SKU actually running, so
+   changeovers are costed against reality rather than `CLEAN`) and
+   `carryover_run_hours_since_last_cip_at_t0`. **12 of 14 lines** get a nonzero
+   available_from (P09=83h, P10=231h, P22=210h…).
+
+   ⚠️ **Three defects were found and fixed while *actually verifying* this
+   against solver output — writing the file is not the same as the solver
+   obeying it.** Commits `3213599`, `87d322a`.
+   1. **The overlay was a silent no-op.** It imported `load_lines` from
+      `helpers.lines_model` (it lives in `helpers.calendar_io`) inside a
+      `try: … except ImportError: return`, so it returned before doing anything
+      and the solver kept planning from the seeded fixture. The overlay now
+      imports at the top level and **always returns a note** that is prefixed to
+      the scenario log (`[current state] current state overlaid: 12 line(s)
+      gated…`), so a future no-op is visible instead of silent.
+   2. **The solver ignored `available_from` at relax level 3.** The gate lived
+      *inside* `if (phase in ("sanity3","full")) and (not ignore_co):` in
+      `model_builder.py`, so escalating the ladder to level 3 (`ignore_co`)
+      discarded it. Measured before the fix: **12 of 12 gated lines started
+      before their gate** (P10 started at hour 0 against a 231h gate — i.e. the
+      solver planned straight over the running MO). A line's free hour is a
+      physical fact, not a changeover preference, so it is now a hard
+      constraint applied unconditionally at every relax level.
+      After: **0 real violations** (the single remaining one is a trial pinned
+      to an explicit start hour, which is deliberately exempt) and production
+      blocks went *up*, 37 → 47.
+   3. **The overlay made two-phase solves INFEASIBLE at every relax level.**
+      Real `PreviousCIP` values gave carryovers up to 185h against a 120h
+      `MaxHoursBetweenCIP` — "a CIP was already overdue before hour 0", which
+      the CIP constraints cannot satisfy. Carryover is now clamped to
+      `MaxHoursBetweenCIP - 1` (the same trick `phase2_scheduler` already used
+      for week-1 states). Two-phase went **INFEASIBLE → ok, 155 blocks / 128
+      production**.
+
+   Repeatable checks: `scripts/check_solver_current_state.py` (runs a real
+   scenario, asserts no line starts before its gate) and
+   `scripts/diag_available_from.py` (per-`line_id` gate audit of a work dir).
+   Suite **60/60** green.
+
 4. ✅ **Demand source going forward: `demand_plan_summary.csv`.**
    `code/helpers/demand_summary_import.py` (new) reads Week/Product/kg_tons (UTF-8 BOM, comma),
    maps ISO weeks to anchor–relative week_index via `date.fromisocalendar()`, and emits the
@@ -71,6 +106,39 @@ _(added 2026-08-07 by the WW32 cron agent; refresh each run)_
 | `changeovers.csv` | 44,310 rows | A dense 211×211 matrix stored as a long CSV — ~1.4 MB parsed on every page load. |
 | `capabilities_rates.csv` | 2,954 rows | Two rate columns (`nominal_rate_kgph`, `calc_rate_kgph`) with no documented precedence; code silently prefers `calc_`. |
 | PDFs (`Week 32 2026 production schedule.pdf`) | The planner's real artifact | Parsed heuristically; no checksum/provenance on what was extracted. |
+
+### Refresh — 2026-08-10 run (what this week's real data actually showed)
+Numbers below are measured off the live exports, not estimated.
+
+| Finding | Evidence | Why it matters |
+|---|---|---|
+| **`manprg` carries stale "started" MOs** | P12 has **5** MOs with `Qty made > 0` besides the real current one (29842/29843/29846/29847/29868, superseded by 29844); P14 has 1 | "latest start with made>0" is not sufficient on its own. `current_state` now keeps only the latest and warns about the rest — but the *export itself* has no "closed" flag, so the ambiguity is unresolvable from the file alone. **Ask the plant if VIF can emit an MO status column** (open/closed/suspended); it removes a whole class of guessing. |
+| **`PreviousCIP` can be older than the line's own limit** | carryover up to **185 h** against `MaxHoursBetweenCIP = 120` | Fed straight into the solver this is "a CIP was overdue before hour 0" → **INFEASIBLE at every relax level**. Any field that feeds a solver bound needs a documented clamp. 3 of 14 lines have `PreviousCIP = NULL` entirely — that is *unknown*, not *just cleaned*, and currently silently becomes "clean at the anchor". |
+| **`ScheduledCIP` can be in the past** | P15 `ScheduledCIP = 2026-08-05 23:00` with `PreviousCIP = 2026-08-06 17:03` — the "scheduled" CIP predates the last performed one | The column is not maintained after the CIP happens. Treat `ScheduledCIP < PreviousCIP` as stale and ignore it, and surface it as a data-quality warning. |
+| **`initial_states.csv` is now a derived file, not an input** | the overlay rewrites `available_from_hour`, `initial_sku`, `carryover_…` in the work dir on every solve | The checked-in `data/reference/initial_states.csv` is a *fallback fixture*. It should say so in a header comment, or be renamed `initial_states.fallback.csv`, so nobody hand-edits it expecting an effect. |
+| **`available_from_hour` had no test and no enforcement** | loaded in `data_loader` (line 258), used in *one* conditional branch of `model_builder`, referenced in `diagnostics` — and violated 12/12 times | Any column that crosses the app→solver boundary needs a round-trip assertion. See the tool idea below. |
+
+### New tool ideas from this run
+- **A solver *contract test* ("does the solver obey its inputs?").** The single
+  highest-value thing found this week. For each input column that is supposed to
+  constrain the solve (`available_from_hour`, `line_down` windows, `locked`
+  blocks, due windows, `MaxHoursBetweenCIP`), run one small scenario and assert
+  the output honours it. Two of these would have caught both solver defects
+  above instantly. `scripts/check_solver_current_state.py` is the first one;
+  generalise it into `tests/test_solver_contracts.py` (slow-marked).
+- **Ban silent `except ImportError: return` in data-path code.** The no-op
+  overlay shipped because a wrong import path was swallowed. A one-line grep in
+  CI (`except (ImportError|Exception):\s*\n\s*return\b`) plus the "always return
+  a note" convention makes this class of bug self-reporting.
+- **A `data-quality` panel** that lists exactly the anomalies above (stale
+  ScheduledCIP, NULL PreviousCIP, superseded started MOs, carryover past the
+  limit) with a per-row "what Flowstate assumed instead". The planner then
+  corrects the source system rather than the schedule.
+- **Clamp registry.** Every place the code silently clamps a real-world value
+  into a solver-legal range (`min(carryover, limit-1)`, `max(start, anchor)`,
+  `qmin=0` for unproducible orders) should record the clamp in the run report.
+  Today these are invisible, and an invisible clamp is how a schedule quietly
+  stops matching the plant.
 
 ### Cleanliness fixes worth doing (cheap → valuable)
 1. **One `LineId` vocabulary.** `LMH-P09` (manprg) vs `P09` (cip_info, lines.csv) vs `line_id` ints in `calendar_blocks.csv` (and `int(line[1:]) - 9` arithmetic hard-coded in `calendar.py`). One `helpers/lines_model.normalize_line()` at every import boundary, and drop the arithmetic.
