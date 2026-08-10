@@ -94,6 +94,128 @@ The user wants to **stop starting from the old fixture**. Build the calendar fro
 ## Open solver concern (investigate next week)
 Single-phase full-horizon solves are slow/weak at the default 60s time limit (skill pitfall 9: needs 300–600s). 51 orders short of qmin at 300s on current data. Revisit time-limit defaults and whether the UI should warn/raise the limit when cross-week is on.
 
+## Research findings
+_(Added 2026-08-11 — all four NEXT TASK items complete; research phase per handoff plan.)_
+
+### a. OR-Tools CP-SAT best practices
+
+**Warm-start / hinting** — the single highest-impact change available. CP-SAT's
+`solver.AddHint(var, value)` seeds the solver with an initial solution, pruning
+the search dramatically. The manprg queued MOs are a perfect hint source: each
+ordered (`line, sku, start_hour, hours`) triple can be fed as a hint for `present`,
+`seg_a_start`, and `seg_a_run`. If the queued schedule is feasible (it usually is),
+CP-SAT may find a solution in seconds instead of minutes. The CP-SAT Primer
+(d-krupke.github.io/cpsat-primer) has a full chapter on this.
+
+**Symmetry breaking.** Flowstate has structural symmetry: multiple lines can run
+the same SKU at the same rate, and `mlpo` (max lines per order) defaults to 2.
+The solver wastes time exploring permutations. A simple ordering constraint
+(e.g. `present[(l, o)]` can only be true for the *lowest-index* capable line if
+the order is single-line) would eliminate this branch. CP-SAT's built-in
+`AddAllDifferent` or lexicographic ordering on the `present` Booleans per order
+is the standard pattern.
+
+**Time-limit tuning.** The primer emphasizes that production scheduling with CIP
+intervals and changeovers is firmly in the "minutes to hours" solve class, not
+seconds. 60s is inadequate for the full cross-week model (73k vars, 253k constraints).
+The UI should raise the default to **300s** when cross-week is on, and the
+Generate page should show an explicit **time-limit warning** when it's <120s.
+
+**Multi-objective patterns.** The current "lexicographic" approach (maximize
+production, then minimize changeovers/makespan) is the standard mult-objective
+CP pattern. The primer warns that tying too many terms into one objective with
+small weights leads to solver thrashing — the current separation (production
+×1,000 dominates, tie-breakers are secondary) follows best practice.
+
+**Decomposition.** For problems this large, the primer recommends decomposing:
+solve week 0 with weeks 1-2 abstract (bucket-level capacity), then repeat. The
+current two-phase path (Week-0 168h → Week-1 336h) is already a decomposition;
+the single-phase cross-week path undoes it. Consider keeping the decomposition
+even in cross-week mode: Week-0 solve locks the schedule, then Week-1 can pull
+orders forward into Week-0's tail if beneficial.
+
+### b. Constraint conflicts in Flowstate's solver
+
+**CIP deadline vs available_from.** The CIP max-interval deadline
+(`c1s <= avail_from + remaining`, line 783) is a hard food-safety constraint
+that never relaxes. When `available_from` is high (e.g. P10 at 231h because it
+has a long blocked running MO) and `remaining = interval - carry` is tight
+(≤96h), CIP must start before ~327h — but if production demands fill the line
+earlier, the model has no CIP placement window and becomes INFEASIBLE. The
+workaround today is that `ignore_co` (relax level 3) skips the changeover block
+but NOT the CIP block — the CIP deadline still bites. **Fix needed:** when the
+CIP deadline is impossibly tight, project an additional CIP before avail_from
+and pull it forward.
+
+**Running MO not a NoOverlap interval.** The `available_from` floor (line 329)
+correctly blocks scheduling before the running MO ends, but the running MO
+itself is not an interval in `line_intervals` — no overlap-prevention happens
+between the running MO and the CIP deadline. If `available_from` is 231h and
+the first CIP deadline is 327h, the solver sees 96h of clear line — but doesn't
+model the blocked time at all. **Fix:** add a hard downtime interval for the
+running MO to `line_intervals` at model-build time.
+
+**Carryover runs hot.** `carryover_run_hours_since_last_cip_at_t0` in
+`initial_states.csv` (e.g. P16=103h against 144h max → CIP due at hour 41)
+was verified as NOT the current INFEASIBLE cause (zeroing it didn't help), but
+it interacts with the `remaining` CIP deadline computation. After a re-anchor,
+stale carryover hours can silently push CIP deadlines into the past.
+
+**Changeover matrix is dense.** 211×211 SKUs, 44,310 rows. The solver enumerates
+`succ[(l, i, j)]` Booleans where `i,j` are every order pair on each capable line.
+With 100 orders and 12 capable lines, that's ~60k Boolean variables for successors
+alone. The CP-SAT Primer recommends grouping SKUs into format families and only
+penalizing *between-family* transitions, cutting the matrix from 44k rows to
+~200.
+
+**Week grid coupling.** `WEEK0_END = 167` and `WEEK1_START = 168` are hard-coded
+to a 7-day week from the anchor. The rolling horizon (item 1) shifts the anchor
+mid-week but `WEEK0_END` doesn't move — "week 0" becomes a 3-day fragment.
+Cross-week mode (which dissolves the week wall) sidesteps this for the solver,
+but the scoring/validation pipeline may not.
+
+### c. User workflow simplification
+
+**The user's mental model is 3 steps, not 6.** The current Home page lists:
+Import AZAP → Build draft → Refine calendar → Check stock → Generate scenarios
+→ Promote version. The user's stated workflow: "start from known good position
+→ let the solver fill the rest → review." Consolidate:
+
+1. **Import demand** (AZAP or demand_plan_summary)
+2. **Build current state** (one click: manprg + cip_info → locked calendar)
+3. **Solve** (one scenario, one click, cross-week on by default, 300s budget)
+
+The existing "Generate Scenarios" page conflates the *draft builder* (naive
+demand-plan → calendar, no solver) with the *scenario solver* (A/B/C/D + custom
+weights). These are two separate things used by different people at different
+times — split them into "Build rough draft" and "Optimize" tabs.
+
+**The downtime expander is confusing.** "STEP 1 - Set scheduled downtime per
+side first" appears on the calendar page above the Gantt, but the user rarely
+sets downtime before building the current state — downtime is a refinement step
+AFTER the solver produces a schedule. Move it below the Gantt or to a "Refine"
+tab.
+
+**Cross-week should be ON by default.** The user's intent is "optimize everything
+from the next running MO into the next 3 weeks" — that's inherently cross-week.
+The toggle confuses rather than helps. Make cross-week the default and let the
+user toggle it OFF for a hard-week comparison.
+
+**Too many scenarios.** A/B/C/D × cross-week × cip-flex × custom weights =
+decision fatigue. Most users will pick one scenario (balanced or throughput),
+run it, and nudge the result. Offer: "Quick optimize" (balanced, cross-week on,
+300s) as the primary action, with "Advanced" expander for the knobs.
+
+**"Roll calendar to today" should be automatic.** The user should never need to
+click a button to see today's state. If the anchor is stale, auto-roll on page
+load with a one-line toast ("Calendar rolled to today — X blocks shifted").
+The current banner + button is one click too many.
+
+**The "Hide blocks that already finished" checkbox is silently destructive.**
+Hidden blocks are re-merged on save — the user doesn't see the re-merge in the
+Gantt and may think data was deleted. Replace with a permanent "Past" shaded
+region on the Gantt — blocks in the past are visible but grayed, never hidden.
+
 ## Raw input analysis & tool ideas
 _(added 2026-08-07 by the WW32 cron agent; refresh each run)_
 
