@@ -214,7 +214,14 @@ def _estimated_end(row: dict, now: datetime) -> datetime:
 
 def project_cips(line: str, info, hz: Horizon, dur: float,
                  interval: float) -> list[tuple[datetime, str]]:
-    """Scheduled CIP + CIPs spaced at MaxHoursBetweenCIP across the horizon."""
+    """Scheduled CIP + CIPs spaced at MaxHoursBetweenCIP across the horizon.
+
+    `ScheduledCIP` is not maintained after the CIP happens, so it can sit in the
+    past or even before `PreviousCIP` (seen on P15: scheduled 08-05 23:00 vs
+    previous 08-06 17:03). A stale one is ignored rather than drawn behind the
+    anchor — and it must not seed the projection either, or every later CIP
+    inherits the wrong phase.
+    """
     out: list[tuple[datetime, str]] = []
     last: datetime | None = None
     if info is not None:
@@ -222,9 +229,11 @@ def project_cips(line: str, info, hz: Horizon, dur: float,
             last = pd.Timestamp(info.previous_cip).to_pydatetime()
         if info.scheduled_cip is not None:
             sched = pd.Timestamp(info.scheduled_cip).to_pydatetime()
-            out.append((sched, CIP_SCHEDULED))
-            if last is None or sched > last:
-                last = sched
+            stale = sched < hz.anchor or (last is not None and sched < last)
+            if not stale:
+                out.append((sched, CIP_SCHEDULED))
+                if last is None or sched > last:
+                    last = sched
     if last is None:
         last = hz.anchor
     if interval <= 0:
@@ -331,6 +340,13 @@ def build_current_state(
         lid = line_id_for(line, lines)
         info = cips.by_line.get(line)
         interval = cip_interval_for(line, cips, cfg)
+        if info is not None and info.scheduled_cip is not None:
+            sched = pd.Timestamp(info.scheduled_cip).to_pydatetime()
+            if sched < hz.anchor or (info.previous_cip is not None
+                                     and sched < pd.Timestamp(info.previous_cip)):
+                state.warnings.append(
+                    f"{line}: ScheduledCIP {sched:%Y-%m-%d %H:%M} is stale "
+                    "(before the anchor or before PreviousCIP) — ignored")
         for when, kind in project_cips(line, info, hz, dur, interval):
             end = when + timedelta(hours=dur)
             note = (info.notes if info and info.notes
