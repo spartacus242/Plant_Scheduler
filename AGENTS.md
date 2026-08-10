@@ -13,7 +13,7 @@ Flowstate is effectively a **single runtime service**: the Streamlit app (`code/
 ### Repository layout (current)
 - `code/app.py` — Streamlit entry (8 nav groups, 10 pages).
 - `code/pages/` — home (Command Center), data, scorecard, stock_check, calendar, compare, generate, lines, settings.
-- `code/helpers/` — config, horizon, calendar_io, scorecard_engine, scenario_runner, current_state, data_health (freshness/health engine), process_flow (pipeline model), importers (azap, demand summary, PDF, manual, manprg, cip), stock-check API.
+- `code/helpers/` — config, horizon, calendar_io, scorecard_engine, scenario_runner, current_state, data_health (freshness/health engine), process_flow (pipeline model), importers (demand summary, PDF, manual, manprg, cip), stock-check API.
 - `code/solver/` — the live CP-SAT solver (moved out of `Flowstate-legacy/` 2026-08-10). Flat modules: `phase2_scheduler.py` (CLI), `model_builder.py`, `data_loader.py`, `diagnostics.py`, `validate_schedule.py`, `solver_progress.py`.
 - `code/components/gantt/` — React/TS Gantt (prebuilt `dist/` committed; no Node build needed to run).
 - `code/stockcheck/` — VIF BOM explosion + component coverage engine.

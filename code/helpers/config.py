@@ -28,7 +28,6 @@ def datasources_config(cfg: dict | None = None) -> dict[str, Any]:
     ds = dict(cfg.get("datasources", {}))
     defaults = {
         "vif_folder": r"\\usnpa-appfs\DATA\vif-export\auto editions",
-        "azap_csv": "",                       # path to Demand Plan Raw.csv
         "manprg_files": "",                   # two paths, ';'-separated
         "schedule_pdf_folder": "",
         "cip_info_csv": "",

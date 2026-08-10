@@ -230,6 +230,9 @@ Existing suite must stay green: run `PYTHONPATH= .venv/Scripts/python.exe -m pyt
 4. **Version cleanup** — delete `azap_baseline` + `scenario_d_balanced`
    (Aug-3 seed versions)? They are the only history; deleting frees 2 of 5
    slots. Recommend keep until first real week, then archive.
+   *(2026-08-10: demand source is now summary-only — `helpers/azap_import.py`
+   and `azap_raw_sample.*` were deleted; `demand_plan_summary.csv` is the sole
+   demand import and regenerated `demand_plan.csv`.)*
 5. **`data/versions/naive_demand_plan/`** is untracked on disk — commit it as
    the strawman version or leave untracked?
 6. **Freshness thresholds** — are the defaults (§3.1 table) right for Carsten's

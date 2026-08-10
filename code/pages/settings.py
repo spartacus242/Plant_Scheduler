@@ -30,8 +30,6 @@ ds = datasources_config(cfg)
 
 vif = st.text_input("VIF export folder (ediact/jestkexp/azapart/rmpkitems)",
                     value=ds["vif_folder"])
-azap = st.text_input("AZAP raw demand CSV (Demand Plan Raw.csv)",
-                     value=ds["azap_csv"])
 manprg = st.text_input("manprg report files (two paths, ';'-separated)",
                        value=ds["manprg_files"],
                        help="e.g. C:\\...\\manprg.txt;C:\\...\\manprg2.txt")
@@ -71,7 +69,6 @@ if st.button("Save data sources", type="primary"):
     txt = tp.read_text(encoding="utf-8") if tp.exists() else ""
     txt = _set_toml_section(txt, "datasources", {
         "vif_folder": vif,
-        "azap_csv": azap,
         "manprg_files": manprg,
         "schedule_pdf_folder": pdf,
         "cip_info_csv": cip,

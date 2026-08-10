@@ -46,83 +46,17 @@ def backup(path: Path) -> Path:
 
 
 st.divider()
-st.subheader("Import the raw corporate AZAP (CSV)")
+st.subheader("Import the demand plan (demand_plan_summary.csv)")
 st.caption(
-    "The corporate 'Demand Plan Raw' export (pdp export AZAP) is the source of "
-    "truth for demand. Importing it rebuilds `data/reference/demand_plan.csv` "
-    "for a 3-week rolling window and re-anchors the planning calendar."
+    "The demand source of truth is the planner's summary file: **Week, Product, "
+    "kg_tons** — no machine column, no Hours field. Importing it rebuilds "
+    "`data/reference/demand_plan.csv` (the canonical demand the scorecard, "
+    "calendar and solver all read) and re-anchors the planning calendar to the "
+    "Monday of the file's earliest week."
 )
 
-with st.expander("Import raw AZAP (CSV or .xlsx)", expanded=False):
-    from helpers.azap_import import aggregate, build_demand_plan, read_raw, iso_week
-    from helpers.timefmt import week_label
-
-    azap_up = st.file_uploader(
-        "Demand Plan Raw (CSV or .xlsx)", type=["csv", "xlsx"],
-        key="azap_raw_upload")
-    if azap_up is not None:
-        import io as _io
-        try:
-            raw_df = read_raw(_io.BytesIO(azap_up.getvalue()))
-            agg, warns, dropped_machine, _ = aggregate(raw_df)
-            demand, anchor, dropped_window, weeks = build_demand_plan(agg)
-        except Exception as exc:
-            st.error(f"Not a readable AZAP export: {type(exc).__name__}: {exc}")
-            st.stop()
-
-        iso = [iso_week(w) for w in weeks]
-        st.success(
-            f"Parsed **{len(raw_df):,}** rows → kept P09–P22, anchored to "
-            f"**{anchor}** (WW{iso[0]:02d}), keeping weeks "
-            f"**{', '.join(f'WW{w:02d}' for w in iso)}** — **{len(demand)}** "
-            f"orders, **{demand['qty_target'].sum():,.0f} kg** total. "
-            f"Dropped {dropped_machine:,} non-plant rows and "
-            f"{dropped_window:,} beyond the 3-week window.")
-        if warns:
-            st.warning("Data warnings: " + "; ".join(warns))
-        st.warning(
-            "Re-anchoring moves `planning_start_date` to "
-            f"**{anchor} 00:00:00**. Saved schedules/scorecards under the old "
-            "anchor become stale. The current `demand_plan.csv` will be "
-            "backed up before overwrite.")
-        st.dataframe(demand.head(10), use_container_width=True, hide_index=True)
-
-        if st.button("Write demand_plan.csv + re-anchor", key="azap_commit",
-                     type="primary"):
-            from helpers.azap_import import import_azap
-            ref = dd / "reference"
-            old = ref / "demand_plan.csv"
-            if old.exists():
-                b = backup(old)
-                st.caption(f"Backed up old demand plan to `{b.name}`")
-
-            def _set_anchor(s: str) -> None:
-                from helpers.paths import toml_path
-                tp = toml_path()
-                txt = tp.read_text(encoding="utf-8")
-                import re as _re
-                txt2 = _re.sub(r'planning_start_date\s*=\s*"[^"]*"',
-                               f'planning_start_date = "{s}"', txt)
-                tp.write_text(txt2, encoding="utf-8")
-
-            res = import_azap(_io.BytesIO(azap_up.getvalue()), ref,
-                              update_anchor=_set_anchor)
-            st.success(
-                f"Wrote {res.rows_kept} orders to demand_plan.csv "
-                f"(weeks {', '.join(f'WW{w:02d}' for w in res.iso_weeks)}), "
-                f"anchor {res.anchor}. Provenance in demand_plan.source.json.")
-            st.rerun()
-
-st.divider()
-st.subheader("Import a cleaned demand plan summary (CSV)")
-st.caption(
-    "The planner's cleaner demand file: **Week, Product, kg_tons** — no machine "
-    "column, no Hours field. Ideal for the solver. Imports directly to "
-    "`demand_plan.csv` and writes provenance to `demand_plan.source.json`.")
-
-with st.expander("Import demand_plan_summary.csv", expanded=False):
+with st.expander("Import demand_plan_summary.csv", expanded=True):
     from helpers.demand_summary_import import import_summary as _imps
-    from helpers.timefmt import planning_anchor as _panchor
     sum_up = st.file_uploader("demand_plan_summary.csv", type=["csv"],
                               key="summary_csv_upload",
                               help="Columns: Week (ISO), Product (SKU), kg_tons")
@@ -134,7 +68,7 @@ with st.expander("Import demand_plan_summary.csv", expanded=False):
             with _tf.NamedTemporaryFile(delete=False, suffix=".csv") as _t:
                 _t.write(_payload)
                 _tmp = _t.name
-            dem, meta = _imps(_tmp, anchor=_panchor())
+            dem, meta = _imps(_tmp)
         except Exception as exc:
             st.error(f"Not a readable summary: {type(exc).__name__}: {exc}")
         else:
@@ -144,20 +78,48 @@ with st.expander("Import demand_plan_summary.csv", expanded=False):
             if meta.warnings:
                 for w in meta.warnings:
                     st.warning(w)
-            if st.button("Write to demand_plan.csv", key="write_summary",
+            if meta.anchor is not None:
+                st.warning(
+                    "Re-anchoring moves `planning_start_date` to "
+                    f"**{meta.anchor.strftime('%Y-%m-%d %H:%M:%S')}** "
+                    f"(Monday of ISO week {meta.anchor_iso_week}). Saved "
+                    "schedules/scorecards under the old anchor become stale. "
+                    "The current `demand_plan.csv` will be backed up before overwrite."
+                )
+            if st.button("Write to demand_plan.csv + re-anchor", key="write_summary",
                          type="primary", disabled=not len(dem)):
                 ref_dir = reference_dir(dd)
                 dem_path = ref_dir / "demand_plan.csv"
-                dem.to_csv(dem_path, index=False)
+                if dem_path.exists():
+                    b = backup(dem_path)
+                    st.caption(f"Backed up old demand plan to `{b.name}`")
+
+                def _set_anchor(s: str) -> None:
+                    from helpers.paths import toml_path
+                    tp = toml_path()
+                    txt = tp.read_text(encoding="utf-8")
+                    import re as _re
+                    txt2 = _re.sub(r'planning_start_date\s*=\s*"[^"]*"',
+                                   f'planning_start_date = "{s}"', txt)
+                    tp.write_text(txt2, encoding="utf-8")
+
+                dem2, meta2 = _imps(_tmp, update_anchor=_set_anchor)
+                dem2.to_csv(dem_path, index=False)
                 import json as _json
                 (ref_dir / "demand_plan.source.json").write_text(
-                    _json.dumps({"source": "demand_plan_summary.csv",
-                                 "imported": pd.Timestamp.now().isoformat(),
-                                 "rows": meta.rows, "weeks": meta.weeks,
-                                 "skus": len(meta.skus)}, indent=2),
+                    _json.dumps({
+                        "source": "demand_plan_summary.csv",
+                        "imported": pd.Timestamp.now().isoformat(),
+                        "rows": meta2.rows,
+                        "weeks": [int(w) for w in meta2.weeks],
+                        "skus": len(meta2.skus),
+                        "anchor": meta2.anchor.strftime("%Y-%m-%d %H:%M:%S") if meta2.anchor else None,
+                        "anchor_iso_week": meta2.anchor_iso_week,
+                    }, indent=2),
                     encoding="utf-8")
-                st.success(f"Wrote {meta.rows} orders to demand_plan.csv "
-                           f"(weeks {meta.weeks}).")
+                st.success(f"Wrote {meta2.rows} orders to demand_plan.csv "
+                           f"(weeks {[int(w) for w in meta2.weeks]}), "
+                           f"anchor {meta2.anchor.strftime('%Y-%m-%d') if meta2.anchor else '—'}.")
                 st.rerun()
 
 st.divider()

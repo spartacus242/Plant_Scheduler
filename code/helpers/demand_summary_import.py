@@ -12,17 +12,12 @@
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Sequence
+from typing import Any
 
 import pandas as pd
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from helpers.horizon import resolve as resolve_horizon
-from helpers.config import load_toml
 
 
 @dataclass
@@ -31,6 +26,8 @@ class DemandSummaryResult:
     weeks: list[int]
     skus: list[str]
     warnings: list[str]
+    anchor: datetime | None = None   # Monday of the earliest ISO week in the file
+    anchor_iso_week: int | None = None
 
 
 def import_summary(
@@ -38,6 +35,7 @@ def import_summary(
     *,
     anchor: datetime | None = None,
     cfg: dict | None = None,
+    update_anchor: Any = None,
 ) -> tuple[pd.DataFrame, DemandSummaryResult]:
     """Read demand_plan_summary.csv and emit a demand_plan DataFrame.
 
@@ -45,24 +43,22 @@ def import_summary(
     (order_id, sku, week_index, qty_target, lower_pct, upper_pct,
      due_start_hour, due_end_hour, priority).
 
-    Week → hour mapping: ISO weeks are always Monday-to-Sunday. We compute the
-    Monday of each ISO week and convert it to hours from the planning anchor.
-    If the anchor is mid-week (e.g. Friday), the week_index runs negative for
-    weeks that start before the anchor — that's correct; the solver can handle
-    negative due_start_hour (it means "starts before the horizon, must run ASAP").
+    Anchor: by default the summary file is SELF-ANCHORING — the Monday of its
+    earliest ISO week becomes hour 0 (week_index 0 = that week), so the demand
+    grid always lines up with the file, regardless of flowstate.toml. Pass an
+    explicit `anchor` to override (used by tests / callers that want a
+    specific base). `update_anchor` is an optional callable(anchor_str) invoked
+    after a successful parse so the caller can persist planning_start_date —
+    the same re-anchor contract the old AZAP importer had.
 
-    If `anchor` is None, it is resolved from flowstate.toml.
+    Week → hour mapping: ISO weeks are always Monday-to-Sunday. We compute the
+    Monday of each ISO week and convert it to hours from the anchor.
     """
     path = Path(path)
     src = path if path.suffix == ".csv" else path
     raw = pd.read_csv(src, encoding="utf-8-sig", dtype=str)
     raw.columns = [c.strip().lower() for c in raw.columns]
     raw = raw.rename(columns={"product": "sku"})
-
-    if anchor is None:
-        cfg = cfg if cfg is not None else load_toml()
-        hz = resolve_horizon(cfg)
-        anchor = hz.anchor
 
     warnings: list[str] = []
 
@@ -93,7 +89,7 @@ def import_summary(
     # ISO week → Monday datetime.
     # Python's date.fromisocalendar(year, week, 1) returns the Monday.
     def _iso_monday(iso_week: int) -> datetime:
-        anchor_year = anchor.year
+        anchor_year = (anchor or datetime.now()).year
         for year in (anchor_year, anchor_year + 1):
             try:
                 import datetime as _dt_mod
@@ -111,6 +107,17 @@ def import_summary(
 
     raw["week_start"] = raw["week"].map(week_starts)
     raw = raw.dropna(subset=["week_start"])
+
+    if raw.empty:
+        raise ValueError("demand_plan_summary.csv has no usable rows after cleaning.")
+
+    # Self-anchor: Monday of the earliest ISO week in the file.
+    if anchor is None:
+        earliest = min(raw["week_start"])
+        anchor = earliest
+        result_anchor = earliest
+    else:
+        result_anchor = anchor
 
     # week_index = whole weeks between the ISO Monday of that week and
     # the anchor's ISO Monday, so week 0 = the ISO week containing the anchor.
@@ -143,5 +150,9 @@ def import_summary(
         weeks=sorted(out["week_index"].unique()),
         skus=sorted(out["sku"].unique()),
         warnings=warnings,
+        anchor=result_anchor,
+        anchor_iso_week=result_anchor.isocalendar()[1] if result_anchor else None,
     )
+    if update_anchor is not None and result.anchor is not None:
+        update_anchor(result.anchor.strftime("%Y-%m-%d 00:00:00"))
     return out, result
