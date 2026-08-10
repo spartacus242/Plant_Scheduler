@@ -89,6 +89,64 @@ if _horizon.mode == "today" and _horizon.stale:
         st.success("Calendar rolled to today. Reloading…")
         st.rerun()
 
+# --- Rebuild the calendar from PLANT GROUND TRUTH -------------------------
+# Handoff WW32 item 2. Instead of carrying the old seeded fixture forward, the
+# initial state can be derived from what the plant is actually doing:
+# manprg (running MO locked to its estimated end, queued MOs placed in order,
+# completed MOs dropped) + cip_info (scheduled CIP drawn, further CIPs spaced
+# at the line's MaxHoursBetweenCIP). The result is a feasible, UNOPTIMISED
+# starting point — item 3 then lets the solver fill demand after it.
+with st.expander("🏭 Rebuild calendar from current plant state (manprg + cip_info)"):
+    from datetime import timedelta as _td
+
+    from helpers.config import datasources_config as _ds_cfg
+    from helpers.current_state import build_current_state as _build_cs
+
+    _ds0 = _ds_cfg(cfg)
+    _mp_paths0 = [p.strip() for p in str(_ds0.get("manprg_files", "")).split(";")
+                  if p.strip()] or [str(dd / "reference" / "manprg.txt"),
+                                    str(dd / "reference" / "manprg2.txt")]
+    _cip_path0 = str(_ds0.get("cip_info_csv", "")).strip() or \
+        str(dd / "reference" / "cip_info.csv")
+    try:
+        _cs = _build_cs(_horizon, manprg_paths=_mp_paths0, cip_path=_cip_path0,
+                        lines=load_lines(dd / "lines.csv"), cfg=cfg)
+    except Exception as _exc:  # noqa: BLE001
+        _cs = None
+        st.error(f"Could not read the live feeds: {_exc}")
+    if _cs is not None:
+        _c = _cs.counts
+        st.caption(
+            f"Ground truth: **{_c['running']}** running MO(s) (locked), "
+            f"**{_c['queued']}** queued, **{_c['completed_dropped']}** completed "
+            f"(dropped), **{_c['cip']}** CIP block(s) → {_c['blocks']} blocks.")
+        for _w in _cs.warnings[:6]:
+            st.caption(f"⚠️ {_w}")
+        if len(_cs.blocks):
+            _prev = _cs.blocks.copy()
+            _prev["start"] = _prev["start_h"].map(
+                lambda h: (_horizon.anchor + _td(hours=float(h))).strftime("%a %m-%d %H:%M"))
+            _prev["end"] = _prev["end_h"].map(
+                lambda h: (_horizon.anchor + _td(hours=float(h))).strftime("%a %m-%d %H:%M"))
+            st.dataframe(
+                _prev[["line_name", "block_type", "label", "order_id", "start",
+                       "end", "locked", "attrs"]],
+                use_container_width=True, hide_index=True, height=280)
+        st.caption("Replacing backs up the current calendar to `data/_backups/` first.")
+        if st.button("Replace calendar with current plant state",
+                     key="cal_from_plant_state", type="primary",
+                     disabled=not len(_cs.blocks)):
+            from datetime import datetime as _dt2
+            _bdir2 = dd / "_backups"
+            _bdir2.mkdir(parents=True, exist_ok=True)
+            (_bdir2 / f"calendar_blocks.{_dt2.now():%Y%m%d-%H%M%S}.csv").write_bytes(
+                cal_path.read_bytes())
+            save_calendar(_cs.blocks, cal_path)
+            st.session_state.pop("cal_baseline_score", None)
+            st.success(f"Calendar rebuilt from plant state ({_c['blocks']} blocks). "
+                       "Reloading…")
+            st.rerun()
+
 # --- Hide what already happened ------------------------------------------
 # "Nothing in the past is shown." Hidden rows are held aside and merged back
 # in on save so hiding never destroys history.

@@ -44,6 +44,10 @@ class ManprgResult:
     by_mo: dict[str, LineProgress] = field(default_factory=dict)    # mo -> progress
     rows: int = 0
     warnings: list[str] = field(default_factory=list)
+    # Raw merged rows (normalised columns, see COLS + start_dt). Needed by
+    # helpers/current_state.py to rebuild the calendar from ground truth;
+    # the aggregates above are lossy (one row per line / per MO only).
+    frame: pd.DataFrame | None = None
 
 
 def _read_one(path: str | Path) -> pd.DataFrame:
@@ -81,6 +85,7 @@ def read_manprg(paths: list[str | Path]) -> ManprgResult:
     df = pd.concat(frames, ignore_index=True)
     df = df.drop_duplicates(subset=["mo", "line"], keep="last")
     res.rows = len(df)
+    res.frame = df.reset_index(drop=True)
 
     def _progress(r) -> LineProgress:
         fct = r["fct_cas"] if pd.notna(r["fct_cas"]) else 0.0
