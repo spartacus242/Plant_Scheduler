@@ -98,6 +98,7 @@ class Files:
         self.downtime = str(data_dir / "downtimes.csv")
         self.last_run = str(data_dir / "line_sku_last_run.csv")
         self.trials = str(data_dir / "trials.csv")
+        self.current_mo = str(data_dir / "current_mo.csv")
         self.line_rates = str(data_dir / "line_rates.csv")
         self.line_cip_hrs = str(data_dir / "line_cip_hrs.csv")
         self.sku_info = str(data_dir / "sku_info.csv")
@@ -277,11 +278,64 @@ class Data:
         # Demand
         dem = pd.read_csv(self.F.dem)
         self.orders = self._parse_demand(dem)
+        # Current-state MOs (optional — running/queued manprg MOs, locked to
+        # their line, tonnage adjustable: qty_min is the MO remaining kg but
+        # relax_demand may trim it; see model_builder).
+        if os.path.exists(self.F.current_mo):
+            cmo = pd.read_csv(self.F.current_mo)
+            if not cmo.empty:
+                self.orders.extend(self._parse_current_mo(cmo))
         # Trials (optional — pinned-line, fixed-time production blocks)
         if os.path.exists(self.F.trials):
             tri = pd.read_csv(self.F.trials)
             if not tri.empty:
                 self.orders.extend(self._parse_trials(tri))
+
+    def _parse_current_mo(self, cmo: pd.DataFrame) -> List[dict]:
+        """Parse current_mo.csv into locked-line order dicts.
+
+        Schema: mo,line_name,sku,remaining_kg,due_start_h,due_end_h,locked_line,source
+        `locked_line` = 1 means the MO may only run on its manprg line (it is
+        already in VIF and cannot be shifted). Tonnage is the *remaining* kg
+        (fct − made); the solver may trim it under relax_demand but the
+        objective rewards meeting it, and mo_changes.csv records the delta.
+        """
+        name_to_id = {v: k for k, v in self.line_names.items()}
+        out: List[dict] = []
+        for row_i, r in cmo.iterrows():
+            line_name = str(r.get("line_name", "")).strip().upper()
+            sku = str(r.get("sku", "")).strip()
+            mo = str(r.get("mo", "")).strip()
+            if not line_name or not sku or not mo:
+                raise ValueError(
+                    f"current_mo.csv row {row_i}: mo, line_name and sku are required")
+            line_id = name_to_id.get(line_name)
+            if line_id is None:
+                raise ValueError(
+                    f"current_mo.csv row {row_i}: line_name '{line_name}' "
+                    "not found in capabilities_rates.csv")
+            remaining = float_or_default(r.get("remaining_kg"), 0.0)
+            if remaining <= 0:
+                continue  # fully produced MO — nothing left to schedule
+            due_start = num_or_default(r.get("due_start_h"), 0)
+            due_end = num_or_default(r.get("due_end_h"), 336 - 1)
+            locked = int(num_or_default(r.get("locked_line"), 1)) == 1
+            out.append(
+                dict(
+                    order_id=f"{mo}|CUR",
+                    sku=sku,
+                    due_start=due_start,
+                    due_end=due_end,
+                    qty_min=int(round(remaining)),
+                    qty_max=int(round(remaining)),
+                    priority=0,  # current MOs outrank new demand
+                    is_current_mo=True,
+                    mo_id=mo,
+                    locked_line=line_id if locked else None,
+                    source=str(r.get("source", "manprg")),
+                )
+            )
+        return out
 
     def _parse_demand(self, dem: pd.DataFrame) -> List[dict]:
         out = []

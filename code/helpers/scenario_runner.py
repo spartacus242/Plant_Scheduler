@@ -270,6 +270,25 @@ SCENARIOS = [
         "objective_formula": _FORMULA_BALANCED,
         "knobs": _KNOBS_BALANCED,
     },
+    {
+        "id": "E",
+        "name": "Scenario E — Current state + demand",
+        "objective": "balanced",
+        # Single-phase (full 336h in one model). The two-phase driver splits
+        # week 0 (168h) from week 1, which structurally cannot place current
+        # MOs whose remaining work spans the whole horizon. Single-phase
+        # keeps them on their locked line and lets mo_changes.csv record the
+        # split/trim/reorder for VIF write-back.
+        "two_phase": False,
+        "intent": (
+            "Re-optimize the current plant state: manprg running/queued MOs "
+            "are locked to their line (committed work), tonnage adjustable; "
+            "new demand meshes into the tail. mo_changes.csv records every "
+            "change for VIF write-back."
+        ),
+        "objective_formula": _FORMULA_BALANCED,
+        "knobs": _KNOBS_BALANCED,
+    },
 ]
 
 # Formula / knob table per objective mode — used to re-describe a custom
@@ -450,6 +469,21 @@ def _overlay_current_state(work: Path, data_dir: Path) -> list[str]:
         return ["current-state overlay skipped: initial_states.csv is empty"]
 
     free_map = {ln.upper(): max(0, int(h)) for ln, h in cs.line_free_h.items()}
+    # When current_mo.csv is produced, the queued MOs become solver orders and
+    # the availability gate must be only the RUNNING MO's end — otherwise the
+    # gate double-counts the queued work and blocks the very MOs the solver
+    # should place. Use line_running_free_h (falls back to line_free_h).
+    running_free_map = {
+        ln.upper(): max(0, int(h)) for ln, h in cs.line_running_free_h.items()
+    }
+    _use_cmo = str(
+        cfg.get("scheduler", {}).get("use_current_mo", "")).strip().lower()
+    if _use_cmo in ("1", "true", "yes"):
+        use_running_gate = True
+    elif _use_cmo in ("0", "false", "no"):
+        use_running_gate = False
+    else:
+        use_running_gate = bool(running_free_map)  # default: running-only gate
     sku_map = {r["line"].upper(): r["item"] for r in cs.running}
     # hours since the last CIP -> the first CIP is due MaxHoursBetweenCIP later
     from helpers.cip_import import read_cip_info as _rci
@@ -468,10 +502,11 @@ def _overlay_current_state(work: Path, data_dir: Path) -> list[str]:
                 carry_map[line.upper()] = int(min(hrs, max(0, limit - 1)))
 
     changed = 0
+    gate_map = running_free_map if use_running_gate else free_map
     for idx, row in init.iterrows():
         ln = str(row.get("line_name", "")).strip().upper()
-        if ln in free_map and free_map[ln] > 0:
-            init.at[idx, "available_from_hour"] = free_map[ln]
+        if ln in gate_map and gate_map[ln] > 0:
+            init.at[idx, "available_from_hour"] = gate_map[ln]
             changed += 1
         if ln in sku_map and sku_map[ln]:
             init.at[idx, "initial_sku"] = sku_map[ln]
@@ -479,10 +514,52 @@ def _overlay_current_state(work: Path, data_dir: Path) -> list[str]:
             init.at[idx, "carryover_run_hours_since_last_cip_at_t0"] = carry_map[ln]
 
     init.to_csv(init_path, index=False)
+    gate_note = "running-MO end" if use_running_gate else "running+queued end"
     notes.append(
-        f"current state overlaid: {changed} line(s) gated by a running/queued MO, "
+        f"current state overlaid: {changed} line(s) gated by {gate_note}, "
         f"{len(sku_map)} initial SKU(s), {len(carry_map)} CIP carryover(s)")
+
+    # ── current_mo.csv: running + queued MOs as solver input ─────────────
+    # Each row is an MO locked to its manprg line; the solver may split /
+    # reorder / trim it, and mo_changes.csv records the delta for VIF.
+    # Only written when use_current_mo is enabled (scenario E).
+    if not use_running_gate:
+        return notes
+    cmo_rows = []
+    for r in cs.running:
+        left_cas = float(r.get("left_cas", 0) or 0)
+        fct_cas = float(r.get("fct_cas", 0) or 0)
+        qty_kg = float(r.get("qty_kg", 0) or 0)
+        remaining = round(qty_kg * (left_cas / fct_cas), 3) \
+            if fct_cas > 0 else qty_kg
+        cmo_rows.append({
+            "mo": r["mo"], "line_name": str(r["line"]).upper(),
+            "sku": r["item"], "remaining_kg": remaining,
+            "due_start_h": 0, "due_end_h": 335,
+            "locked_line": 1, "source": "manprg",
+        })
+    for r in cs.queued:
+        remaining = round(float(r.get("qty_kg", 0) or 0), 3)
+        start_h = max(0, int(_hours_h(r.get("placed_start"), hz.anchor)))
+        end_h = max(start_h + 1, int(_hours_h(r.get("placed_end"), hz.anchor)))
+        cmo_rows.append({
+            "mo": r["mo"], "line_name": str(r["line"]).upper(),
+            "sku": r["item"], "remaining_kg": remaining,
+            "due_start_h": start_h, "due_end_h": end_h,
+            "locked_line": 1, "source": "manprg",
+        })
+    if cmo_rows:
+        _pd.DataFrame(cmo_rows).to_csv(Path(work) / "current_mo.csv", index=False)
+        notes.append(
+            f"current_mo.csv: {len(cmo_rows)} MO(s) locked to their manprg line")
     return notes
+
+
+def _hours_h(when, anchor) -> float:
+    """Hours from the horizon anchor to `when` (datetime/pandas Timestamp)."""
+    import pandas as _pd
+    ts = _pd.Timestamp(when).to_pydatetime()
+    return (ts - anchor).total_seconds() / 3600.0
 
 
 def normalize_overrides(overrides: dict[str, Any] | None) -> dict[str, Any]:

@@ -226,6 +226,21 @@ def build_model(
                     model.Add(run_h[key] == 0)
                 continue  # skip normal capability / run-bound logic
 
+            # Current-state MOs locked to their manprg line (already in VIF):
+            # the solver may not shift them, but may split/reorder/trim them.
+            # Presence is REQUIRED at every relax level — committed work must
+            # appear; only the tonnage is adjustable. The auto-relax ladder
+            # skips levels 1-2 (changeovers + relaxed demand drop MOs) and
+            # jumps straight to level 3 (ignore_co) which is fast and keeps
+            # every MO on its locked line.
+            if o.get("is_current_mo"):
+                if o.get("locked_line") is not None and l == o["locked_line"]:
+                    model.Add(present[key] == 1)
+                else:
+                    model.Add(present[key] == 0)
+                    model.Add(run_h[key] == 0)
+                continue
+
             # Capability / run bounds
             r = data.rate.get((l, o["sku"]))
             cap = data.capable.get((l, o["sku"]))
@@ -234,12 +249,20 @@ def build_model(
                 model.Add(run_h[key] == 0)
             else:
                 qmin = int(o["qty_min"])
-                min_run_from_pct = (
-                    math.ceil(P.min_run_pct_of_qty * qmin / r) if r > 0 else 0
-                )
-                min_run = min(
-                    max_len, max(1, P.min_run_hours, min_run_from_pct)
-                )
+                # Current-state MOs have adjustable tonnage (may be trimmed
+                # toward demand); a min-run derived from the FULL remaining
+                # kg (e.g. 171h for a 184t MO) would make the MO unpresentable
+                # inside a gated/CIP'd window and the solver skips it. For
+                # those, the floor is just the global min_run_hours.
+                if o.get("is_current_mo"):
+                    min_run = min(max_len, max(1, P.min_run_hours))
+                else:
+                    min_run_from_pct = (
+                        math.ceil(P.min_run_pct_of_qty * qmin / r) if r > 0 else 0
+                    )
+                    min_run = min(
+                        max_len, max(1, P.min_run_hours, min_run_from_pct)
+                    )
                 model.Add(run_h[key] >= min_run).OnlyEnforceIf(present[key])
                 model.Add(run_h[key] == 0).OnlyEnforceIf(present[key].Not())
                 # Per-segment minimums (avoid wasteful short stubs)
@@ -1136,7 +1159,16 @@ def build_model(
     week_pen = week_dev_total * W_week if week_dev else 0
 
     if maximize_production:
-        prod_sum = sum(produced[o_idx] for o_idx in range(len(orders)))
+        # Current-state MOs are already-committed work (in VIF, on a locked
+        # line). They must win over brand-new demand when capacity is tight:
+        # weight their production much higher than demand orders so the
+        # solver places them first and trims demand instead. (10x — an MO
+        # kg is worth ten demand kg, so dropping an MO is only worthwhile
+        # when it frees enormous demand capacity.)
+        prod_sum = sum(
+            produced[o_idx] * (10 if orders[o_idx].get("is_current_mo") else 1)
+            for o_idx in range(len(orders))
+        )
         # Production is the primary objective.  Secondary terms from the
         # user's selected objective mode act as tiebreakers so the solver
         # honours changeover / idle / CIP preferences when production is

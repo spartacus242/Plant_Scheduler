@@ -13,6 +13,10 @@ min_run_hours = 4
 max_lines_per_order = 2
 validate = true
 use_sku_rates = true
+# Scenario E: current-state MOs (manprg running + queued) become solver
+# orders locked to their line; the availability gate is the running MO's end
+# and mo_changes.csv records every split/trim/reorder for VIF write-back.
+use_current_mo = true
 
 [cip]
 interval_h = 120

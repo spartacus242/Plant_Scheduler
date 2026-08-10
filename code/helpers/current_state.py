@@ -62,6 +62,9 @@ class CurrentState:
     completed: list[dict] = field(default_factory=list)
     cips: list[dict] = field(default_factory=list)
     line_free_h: dict[str, float] = field(default_factory=dict)
+    # End of the RUNNING MO only (queued MOs are solver orders when
+    # current_mo.csv is produced; the gate must not double-count them).
+    line_running_free_h: dict[str, float] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -318,6 +321,13 @@ def build_current_state(
             state.running.append({**r, "est_end": end,
                                   "shown_start": shown_start.to_pydatetime()})
             cursor = max(cursor, pd.Timestamp(end))
+            # Running-only free hour (queued MOs are solver orders now)
+            state.line_running_free_h[line] = round(
+                _hours(max(pd.Timestamp(end), pd.Timestamp(n)), hz.anchor), 3)
+        if not running:
+            state.line_running_free_h[line] = round(
+                _hours(max(pd.Timestamp(n), pd.Timestamp(hz.anchor)),
+                       hz.anchor), 3)
 
         # 2. queued MOs — sequential, no overlap, keep manprg's intended order
         for r in line_rows:

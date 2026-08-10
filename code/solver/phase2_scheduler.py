@@ -189,7 +189,15 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-_ARGS = _parse_args()
+_ARGS = _parse_args() if __name__ == "__main__" else argparse.Namespace(
+    data_dir=None, phase="full", time_limit=None, relax_demand=False,
+    relax_due=False, auto_relax=True, no_auto_relax=False,
+    ignore_changeovers=False, diagnose=False, max_lines_per_order=None,
+    min_run_hours=None, no_week1_in_week0=False, initial_states=None,
+    two_phase=False,
+    objective="balanced", validate=False, rolling=False, cross_week=False,
+    cip_flex=False, config=None,
+)
 
 # --- Config file loading (Phase 2.2) ---
 def _load_config(config_path: Path | None, data_dir: Path) -> dict:
@@ -243,6 +251,34 @@ CIP_FLEX = bool(_ARGS.cip_flex or _CFG_SCHED.get("cip_flex", False))
 # When cross-week is OFF, TWO_PHASE is exactly what it was before.
 if CROSS_WEEK and TWO_PHASE:
     TWO_PHASE = False
+
+# Current-state MOs (scenario E): running/queued manprg MOs are solver orders
+# locked to their line. When active, the auto-relax ladder skips levels 1-2:
+# those keep changeovers but relax demand, so the solver finds a fast
+# FEASIBLE that drops the committed MOs. Jumping hard(0) -> level 3
+# (ignore_co) keeps the model small and the MOs present (presence is forced
+# at level 0; at level 3 demand + due relax but the MO stays locked-line).
+USE_CURRENT_MO = bool(_CFG_SCHED.get("use_current_mo", False))
+_RELAX_SKIP = {0: 3} if USE_CURRENT_MO else {}
+
+
+def _ladder_levels(base_lvl: int, max_lvl: int) -> list[int]:
+    """Relax levels to try in order, with current-MO skip applied."""
+    if not _RELAX_SKIP:
+        return list(range(base_lvl, max_lvl + 1))
+    levels: list[int] = []
+    lvl = base_lvl
+    while lvl <= max_lvl:
+        levels.append(lvl)
+        nxt = _RELAX_SKIP.get(lvl)
+        if nxt is not None and nxt > lvl:
+            lvl = nxt
+        else:
+            lvl += 1
+    return levels
+
+
+if CROSS_WEEK and TWO_PHASE:
     _CROSS_WEEK_FORCED_SINGLE = True
 else:
     _CROSS_WEEK_FORCED_SINGLE = False
@@ -852,7 +888,96 @@ def write_solution(
         for ln in idle_kpi_lines:
             log(ln)
     pd.DataFrame(bounds_rows).to_csv(data_dir / "produced_vs_bounds.csv", index=False)
+    write_mo_changes(data_dir, data, schedule_rows, bounds_rows)
     return schedule_rows, bounds_rows
+
+
+def write_mo_changes(
+    data_dir: Path,
+    data: Data,
+    schedule_rows: List[Dict[str, Any]],
+    bounds_rows: List[Dict[str, Any]],
+) -> None:
+    """Write mo_changes.csv comparing planned current-MO production vs manprg.
+
+    Only current-state MOs (is_current_mo orders) are compared. For each MO
+    we report the original remaining kg (qty_min), the solver's planned
+    produced kg, the planned window (earliest start / latest end across its
+    schedule blocks), the number of split blocks, and a reason:
+      tonnage_trim   produced < orig
+      tonnage_fill   produced > orig   (should not happen with qty_max=orig)
+      split          more than one production block
+      reordered      planned start moved from the manprg start_h
+      unmoved        produced == orig and single block
+    The file is the VIF write-back record (CSV download in the UI).
+    """
+    from collections import defaultdict
+
+    # produced per order id (mo|CUR) from bounds_rows
+    produced_by_order: dict[str, int] = {}
+    for b in bounds_rows:
+        if str(b.get("order_id", "")).endswith("|CUR"):
+            produced_by_order[str(b["order_id"])] = int(b.get("produced", 0))
+
+    # schedule blocks per order id
+    blocks_by_order: dict[str, list[dict]] = defaultdict(list)
+    for row in schedule_rows:
+        oid = str(row.get("order_id", ""))
+        if oid.endswith("|CUR"):
+            blocks_by_order[oid].append(row)
+
+    rows: list[dict] = []
+    for o in data.orders:
+        if not o.get("is_current_mo"):
+            continue
+        oid = o["order_id"]
+        orig_kg = int(o["qty_min"])
+        new_kg = produced_by_order.get(oid, 0)
+        blocks = sorted(
+            blocks_by_order.get(oid, []), key=lambda r: r["start_hour"])
+        if blocks:
+            first_start = min(b["start_hour"] for b in blocks)
+            last_end = max(b["end_hour"] for b in blocks)
+            start_h = int(first_start)
+            end_h = int(last_end)
+            split_count = len(blocks)
+        else:
+            start_h, end_h, split_count = 0, 0, 0
+
+        reasons: list[str] = []
+        if new_kg < orig_kg:
+            reasons.append("tonnage_trim")
+        elif new_kg > orig_kg:
+            reasons.append("tonnage_fill")
+        if split_count > 1:
+            reasons.append("split")
+        if blocks and int(o["due_start"]) != start_h:
+            reasons.append("reordered")
+        if not reasons:
+            reasons.append("unmoved")
+        rows.append({
+            "mo": str(o.get("mo_id", "")),
+            "line_name": data.line_names.get(o.get("locked_line"), ""),
+            "sku": o["sku"],
+            "source": o.get("source", "manprg"),
+            "orig_qty_kg": orig_kg,
+            "new_qty_kg": new_kg,
+            "delta_kg": new_kg - orig_kg,
+            "orig_start_h": int(o["due_start"]),
+            "new_start_h": start_h,
+            "new_end_h": end_h,
+            "split_count": split_count,
+            "reason": "+".join(reasons),
+        })
+    if rows:
+        pd.DataFrame(rows).to_csv(data_dir / "mo_changes.csv", index=False)
+    else:
+        # still write an empty file so callers can check existence/header
+        pd.DataFrame(
+            columns=["mo", "line_name", "sku", "source", "orig_qty_kg",
+                     "new_qty_kg", "delta_kg", "orig_start_h", "new_start_h",
+                     "new_end_h", "split_count", "reason"]
+        ).to_csv(data_dir / "mo_changes.csv", index=False)
 
 
 def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
@@ -897,7 +1022,14 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
     )
     data0 = Data(P0, F)
     data0.load()
-    orders_week0 = [o for o in data0.orders if int(o["due_end"]) <= WEEK0_END]
+    # Week-0 split: demand orders due in week 0, PLUS current-state MOs
+    # (running/queued — they are committed work regardless of their nominal
+    # due window; the solver places what fits in week 0 and the remainder
+    # carries into week 1 via the MO's presence in both phases).
+    orders_week0 = [
+        o for o in data0.orders
+        if int(o["due_end"]) <= WEEK0_END or o.get("is_current_mo")
+    ]
     data0.orders = orders_week0
 
     n_skus = len({o["sku"] for o in data0.orders})
@@ -936,7 +1068,7 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
     solver0 = None
     status0 = None
     vars0 = None
-    for lvl in range(base_lvl, max_lvl + 1):
+    for lvl in _ladder_levels(base_lvl, max_lvl):
         flags = RELAX_LADDER[lvl]
         if lvl > base_lvl:
             log(f"[auto-relax] Week-0 escalating to level {lvl} ({RELAX_LABELS[lvl]})")
@@ -1078,7 +1210,7 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
     solver1 = None
     status1 = None
     vars1 = None
-    for lvl in range(base_lvl, max_lvl + 1):
+    for lvl in _ladder_levels(base_lvl, max_lvl):
         flags = RELAX_LADDER[lvl]
         if lvl > base_lvl:
             log(f"[auto-relax] Week-1 escalating to level {lvl} ({RELAX_LABELS[lvl]})")
@@ -1155,6 +1287,8 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
     pd.DataFrame(combined_bounds).to_csv(data_dir / "produced_vs_bounds.csv", index=False)
     if combined_cips:
         pd.DataFrame(combined_cips).to_csv(data_dir / "cip_windows.csv", index=False)
+    # MO change table (current-state MOs vs planned) for VIF write-back
+    write_mo_changes(data_dir, data1, combined_schedule, combined_bounds)
 
     # Final InitialStates for rolling (available_from=0 for next week)
     write_week1_initial_states(
@@ -1351,7 +1485,7 @@ def main() -> None:
                 solver = None
                 status = None
                 vars_dict = None
-                for lvl in range(base_lvl, max_lvl + 1):
+                for lvl in _ladder_levels(base_lvl, max_lvl):
                     flags = RELAX_LADDER[lvl]
                     if lvl > base_lvl:
                         log(f"[auto-relax] escalating to level {lvl} ({RELAX_LABELS[lvl]})")
