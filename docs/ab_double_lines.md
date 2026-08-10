@@ -10,7 +10,8 @@
 - Either side can be down independently. With exactly **one side down the line
   runs at exactly half rate**; with both sides down it produces nothing.
   A double line running one-sided is effectively a single Volpak-speed line.
-- Confirmed in the source data: P17 `nominal_rate_kgph=2246`, `calc_rate_kgph=1080`;
+- Confirmed in the source data: P17 `calc_rate_kgph=1080` vs P09 `calc_rate_kgph=540`
+  (exactly 2x; the old `nominal_rate_kgph` column was dropped 2026-08-10).
   P09 `nominal=1123`, `calc=540`. Exactly 2x. So **per-side rate = line rate / 2**.
 
 ## Data model decision
@@ -49,7 +50,8 @@ Rewritten files (each backed up to `data/_backups/<stem>.<timestamp>.csv`):
 
 - `lines.csv` - P17..P22 expanded into A/B rows + the new columns.
 - `reference/capabilities_rates.csv` - each double-line row duplicated into A and
-  B rows with `nominal_rate_kgph` and `calc_rate_kgph` **halved**.
+  B rows with `calc_rate_kgph` **halved** (the `nominal_rate_kgph` column was
+  dropped 2026-08-10).
 - `reference/line_cip_hrs.csv`, `reference/initial_states.csv`,
   `reference/downtimes.csv` - duplicated per side.
 

@@ -20,10 +20,6 @@ def repo_root() -> Path:
     return _REPO_ROOT
 
 
-def legacy_dir() -> Path:
-    return _REPO_ROOT / "Flowstate-legacy"
-
-
 def solver_dir() -> Path:
     """Home of the live CP-SAT solver (moved out of Flowstate-legacy 2026-08-10)."""
     return _CODE_DIR / "solver"

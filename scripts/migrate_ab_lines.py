@@ -9,7 +9,7 @@ What it rewrites (each file is backed up to data/_backups/<stem>.<ts>.csv):
   lines.csv                        P17 -> P17A + P17B rows, plus the new
                                    line_group / side / is_double columns.
   reference/capabilities_rates.csv each P17-P22 row -> A and B rows with
-                                   nominal_rate_kgph and calc_rate_kgph HALVED.
+                                   calc_rate_kgph HALVED (nominal column dropped).
   reference/line_cip_hrs.csv       duplicated per side (same max_cip_hrs).
   reference/initial_states.csv     duplicated per side (same state).
   reference/downtimes.csv          a whole-line downtime becomes one row per
@@ -47,7 +47,7 @@ from helpers.lines_model import (  # noqa: E402
     sides_of,
 )
 
-RATE_COLUMNS = ("nominal_rate_kgph", "calc_rate_kgph")
+RATE_COLUMNS = ("calc_rate_kgph",)  # nominal_rate_kgph dropped 2026-08-10
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +166,6 @@ def migrate_caps(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     if not before.empty:
         r = before.iloc[0]
         sample = (f"  e.g. {r['line_name']} sku {r['sku']}: "
-                  f"nominal {r.get('nominal_rate_kgph')} -> {_halve(str(r.get('nominal_rate_kgph')))}, "
                   f"calc {r.get('calc_rate_kgph')} -> {_halve(str(r.get('calc_rate_kgph')))}")
     out, made = _expand_rows(df, halve_rates=True)
     notes = [f"  {len(before)} double-line rows -> {made} per-side rows (rates halved)"]
