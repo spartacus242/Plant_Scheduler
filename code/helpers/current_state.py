@@ -374,6 +374,24 @@ def build_current_state(
     if len(df):
         # keep only what intersects the horizon; the past is already history
         df = df[(df["end_h"] > 0.0) & (df["start_h"] < hz.end_h)].copy()
+
+    # ── CIP/production merge: split production around CIP windows ─────────
+    # Production and CIP blocks were collected independently above; the CIP
+    # projection must not overlap real MOs. CIPs win (never split); a
+    # production MO spanning a CIP is split into before/after pieces. A CIP
+    # that would swallow an MO whole is dropped with a warning instead.
+    if len(df):
+        merged: list[dict] = []
+        for line in sorted(set(df["line_name"])):
+            line_df = df[df["line_name"] == line]
+            prods = [dict(r) for _, r in line_df[line_df["block_type"] == "production"].iterrows()]
+            cips = [dict(r) for _, r in line_df[line_df["block_type"] == "cip"].iterrows()]
+            clipped, kept_cips = _clip_prod_around_cips(
+                prods, cips, warnings=state.warnings, line=line)
+            merged.extend(clipped)
+            merged.extend(kept_cips)
+        df = pd.DataFrame(merged, columns=CALENDAR_COLUMNS) if merged else \
+            pd.DataFrame(columns=CALENDAR_COLUMNS)
         df = df.sort_values(["line_name", "start_h"]).reset_index(drop=True)
     state.blocks = df
     return state
@@ -397,3 +415,69 @@ def _block(r: dict, line: str, lid: int, start, end, kind: str,
         "locked": locked,
         "attrs": f"current_state:{kind};pct={r['completion_pct']}",
     }
+
+
+def _clip_prod_around_cips(
+    blocks: list[dict],
+    cip_blocks: list[dict],
+    *,
+    warnings: list[str],
+    line: str,
+) -> tuple[list[dict], list[dict]]:
+    """Split production blocks around CIP windows so nothing overlaps.
+
+    CIP windows are non-negotiable (never split, never moved here); a
+    production block that spans a CIP is split into before/after pieces.
+    If a CIP window swallows a production block entirely, the production
+    MO is kept (it is real work from manprg) and the CIP window is dropped
+    with a warning — production can move a CIP at the required frequency,
+    but it cannot delete an in-flight/queued MO.
+
+    Returns (clipped_production_blocks, kept_cip_blocks).
+    """
+    if not cip_blocks:
+        return blocks, list(cip_blocks)
+    cips = sorted(
+        (dict(c) for c in cip_blocks),
+        key=lambda c: (float(c["start_h"]), float(c["end_h"])),
+    )
+    dropped_cip_ids = set()
+    out: list[dict] = []
+    for b in blocks:
+        s, e = float(b["start_h"]), float(b["end_h"])
+        cursor = s
+        placed_any = False
+        for c in cips:
+            cs_, ce_ = float(c["start_h"]), float(c["end_h"])
+            if ce_ <= cursor or cs_ >= e:
+                continue  # CIP before/after this production piece
+            if cs_ <= cursor and ce_ >= e:
+                # CIP swallows the whole remaining production
+                warnings.append(
+                    f"{line}: CIP {c.get('label', 'CIP')} "
+                    f"({cs_:.0f}h–{ce_:.0f}h) covers MO {b.get('order_id')} "
+                    "— keeping the MO, dropping the CIP window")
+                dropped_cip_ids.add(c.get("block_id"))
+                out.append(dict(b))  # MO survives whole; CIP dropped
+                placed_any = True
+                cursor = e
+                break
+            if cs_ > cursor:
+                piece = dict(b)
+                piece["start_h"] = round(cursor, 3)
+                piece["end_h"] = round(cs_, 3)
+                piece["attrs"] = (b.get("attrs", "") + ";split").strip(";")
+                out.append(piece)
+                placed_any = True
+            cursor = max(cursor, ce_)
+            if cursor >= e:
+                break
+        if cursor < e:
+            piece = dict(b)
+            piece["start_h"] = round(cursor, 3)
+            piece["end_h"] = round(e, 3)
+            piece["attrs"] = (b.get("attrs", "") + ";split").strip(";") \
+                if placed_any else b.get("attrs", "")
+            out.append(piece)
+    kept = [c for c in cips if c.get("block_id") not in dropped_cip_ids]
+    return out, kept

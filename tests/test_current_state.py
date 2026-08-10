@@ -212,3 +212,98 @@ def test_real_manprg_and_cip_files_build_a_state():
         g = grp.sort_values("start_h")
         for a, b in zip(g.itertuples(), list(g.itertuples())[1:]):
             assert b.start_h >= a.end_h - 1e-6, f"{line}: overlap {a.order_id}/{b.order_id}"
+
+
+# --------------------------------------------------- CIP/production split
+
+def _cip_block(line: str = "P09", start_h: float = 50.0, end_h: float = 56.0) -> dict:
+    return {
+        "block_id": f"cip_{line}_{start_h}", "block_type": "cip",
+        "line_id": 0, "line_name": line, "start_h": start_h, "end_h": end_h,
+        "label": "CIP (projected)", "order_id": "", "sku": "",
+        "sku_description": "", "qty_kg": 0.0, "locked": False,
+        "attrs": "current_state:cip_projected",
+    }
+
+
+def _prod_block(mo: str = "A", start_h: float = 0.0, end_h: float = 100.0) -> dict:
+    return {
+        "block_id": f"mo_{mo}", "block_type": "production",
+        "line_id": 0, "line_name": "P09", "start_h": start_h, "end_h": end_h,
+        "label": mo, "order_id": mo, "sku": "280581",
+        "sku_description": "", "qty_kg": 5000.0, "locked": False,
+        "attrs": "current_state:queued",
+    }
+
+
+def test_cip_in_middle_splits_production_into_two():
+    from helpers.current_state import _clip_prod_around_cips
+    out, kept = _clip_prod_around_cips(
+        [_prod_block()], [_cip_block(start_h=40.0, end_h=50.0)],
+        warnings=[], line="P09")
+    assert len(out) == 2
+    assert out[0]["end_h"] == 40.0 and out[1]["start_h"] == 50.0
+    assert all("split" in b["attrs"] for b in out)
+    assert len(kept) == 1, "CIP is never dropped when it merely splits"
+
+
+def test_cip_after_production_leaves_production_whole():
+    from helpers.current_state import _clip_prod_around_cips
+    out, kept = _clip_prod_around_cips(
+        [_prod_block(end_h=30.0)], [_cip_block(start_h=40.0, end_h=50.0)],
+        warnings=[], line="P09")
+    assert len(out) == 1 and out[0]["end_h"] == 30.0
+    assert "split" not in out[0]["attrs"]
+    assert len(kept) == 1
+
+
+def test_cip_swallowing_mo_keeps_mo_and_drops_cip():
+    from helpers.current_state import _clip_prod_around_cips
+    warnings: list[str] = []
+    out, kept = _clip_prod_around_cips(
+        [_prod_block(start_h=10.0, end_h=20.0)],
+        [_cip_block(start_h=5.0, end_h=25.0)],
+        warnings=warnings, line="P09")
+    assert len(out) == 1 and out[0]["start_h"] == 10.0 and out[0]["end_h"] == 20.0
+    assert len(kept) == 0, "CIP that swallows an MO is dropped"
+    assert any("covers MO" in w for w in warnings)
+
+
+def test_multiple_cips_split_into_three_pieces():
+    from helpers.current_state import _clip_prod_around_cips
+    cips = [_cip_block(start_h=20.0, end_h=26.0, line="P09"),
+            _cip_block(start_h=50.0, end_h=56.0, line="P09")]
+    out, kept = _clip_prod_around_cips(
+        [_prod_block(start_h=0.0, end_h=100.0)], cips, warnings=[], line="P09")
+    assert len(out) == 3
+    assert [(b["start_h"], b["end_h"]) for b in out] == \
+        [(0.0, 20.0), (26.0, 50.0), (56.0, 100.0)]
+    assert len(kept) == 2
+
+
+def test_no_cip_passthrough_is_unchanged():
+    from helpers.current_state import _clip_prod_around_cips
+    out, kept = _clip_prod_around_cips(
+        [_prod_block(start_h=0.0, end_h=30.0)], [], warnings=[], line="P09")
+    assert len(out) == 1 and out[0]["end_h"] == 30.0
+    assert kept == []
+
+
+def test_full_state_build_has_no_cip_production_overlap():
+    """End-to-end: a queued MO plus a scheduled CIP must not overlap."""
+    cips = CipInfoResult(by_line={"P09": CipInfo(
+        line="P09", previous_cip=None, max_hours_between=120,
+        scheduled_cip=pd.Timestamp(NOW) + timedelta(hours=30), notes="")})
+    # queued MO spanning the scheduled CIP (starts at now, 60h long)
+    st = _state([
+        {"mo": "Q1", "made_cas": "", "hours": 60.0,
+         "start_dt": pd.Timestamp(NOW)},
+    ], cips=cips)
+    prod = st.blocks[st.blocks["block_type"] == "production"]
+    cip = st.blocks[st.blocks["block_type"] == "cip"]
+    for _, p in prod.iterrows():
+        for _, c in cip.iterrows():
+            assert not (p["start_h"] < c["end_h"] and c["start_h"] < p["end_h"]), \
+                f"CIP/production overlap: {p['order_id']} {p['start_h']}-{p['end_h']} vs {c['start_h']}-{c['end_h']}"
+    # the MO was split: 2 pieces around the CIP
+    assert len(prod) == 2, f"expected split, got {len(prod)} pieces"
