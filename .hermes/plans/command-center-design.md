@@ -376,8 +376,10 @@ browser-visible; verify with real CLI runs)
    state (UNDER by design + changeover gaps ignored under `ignore_co`),
    pre-documented in handoff-ww32; not a regression of this branch.
 
-### 8.9 When is `Flowstate-legacy/` deletable?
-After 8.8 passes and the user confirms the moved solver on a real run:
-`git rm -r Flowstate-legacy/` (history preserves it), update AGENTS.md and
-Home About text. `data/stockcheck/dev_vif` and `dev_receiving_schedule.xlsm`
-are NOT part of legacy (they're new-app fixtures) — keep.
+### 8.9 Flowstate-legacy deletion — DONE 2026-08-10
+
+`git rm -r Flowstate-legacy/` executed after the moved solver passed every
+verification in 8.8 and the user confirmed on 2026-08-10. Nothing in the live
+code, scripts, or tests referenced it (only docstrings). The old `data/seed/`
+fixtures (schedule_phase2.csv + cip_windows.csv) were preserved in the main
+tree for the scorecard first-run import. History remains in git.

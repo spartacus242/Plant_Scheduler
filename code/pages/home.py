@@ -159,7 +159,7 @@ The line schedule (`data/calendar_blocks.csv`) is the plant's own, built by the 
 
 CIP stays critical. One planner enters production, maintenance, trials, contractor work, and line-downs.
 
-The optimizer lives in `code/solver/` (CP-SAT). The old solver-first app was
-removed 2026-08-10 — history is in git.
+The optimizer lives in `code/solver/` (CP-SAT). The old solver-first app
+(`Flowstate-legacy/`) was removed 2026-08-10 — history is in git.
 """
     )

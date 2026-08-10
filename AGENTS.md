@@ -8,7 +8,7 @@ Streamlit-based manufacturing schedule optimization / decision-support tool. See
 Flowstate is effectively a **single runtime service**: the Streamlit app (`code/app.py`, default port `8501`). There is no database or external API — all state lives in flat CSV/JSON files under `data/`.
 
 - **Phase 0 (Scorecard)**, **Phase 1 (Plant Calendar / Digital Twin)**, and **Stock Check** run entirely inside that one Streamlit process.
-- **Phase 2 (Generate Scenarios)** spawns the Google OR-Tools CP-SAT solver as an on-demand subprocess via `code/solver/phase2_scheduler.py` (using the same Python interpreter). The solver reads its inputs from a scratch work dir under `data/_scenario_work/` that is rebuilt from `data/reference/` on every run — it must NOT depend on `Flowstate-legacy/`.
+- **Phase 2 (Generate Scenarios)** spawns the Google OR-Tools CP-SAT solver as an on-demand subprocess via `code/solver/phase2_scheduler.py` (using the same Python interpreter). The solver reads its inputs from a scratch work dir under `data/_scenario_work/` that is rebuilt from `data/reference/` on every run.
 
 ### Repository layout (current)
 - `code/app.py` — Streamlit entry (8 nav groups, 10 pages).
@@ -19,7 +19,6 @@ Flowstate is effectively a **single runtime service**: the Streamlit app (`code/
 - `code/stockcheck/` — VIF BOM explosion + component coverage engine.
 - `data/reference/` — the 10 input CSVs + live feeds (manprg, cip_info) + demand samples.
 - `data/seed/` — bundled developer seed fixtures (schedule_phase2.csv + cip_windows.csv) used by the scorecard page's first-run import.
-- `Flowstate-legacy/` — **deprecated archive only**; nothing in `code/` may import from it. Scheduled for deletion once the moved solver is confirmed on a real run.
 - `tests/` — pytest suite (see Testing below).
 
 ### Running
