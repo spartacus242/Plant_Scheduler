@@ -41,8 +41,20 @@ The user wants to **stop starting from the old fixture**. Build the calendar fro
    - CIP: last-performed + next-scheduled from cip_info; future unscheduled CIPs spaced at
      MaxHoursBetweenCIP (120/144, per-line authoritative) through weeks 2-3.
    Suite **55/55** green. Browser-verified: expander renders, replace-button works.
-3. ⬜ **This is the initial state** — a feasible (unoptimized) schedule. Then the solver fills remaining demand from the demand plan, starting after each line's locked running MO.
-4. ⬜ **Demand source going forward:** `demand_plan_summary.csv` (Week, Product, kg_tons; weeks 33/34/35; NO machine col). **Not yet present in `data/reference/`** — importer can't be reconciled until the file is supplied or a mapper raw→summary is written.
+3. ✅ **Solver fills remaining demand from the demand plan, starting after each line's locked running MO.**
+   `scenario_runner._overlay_current_state()` (new) patches the solver's work-dir `initial_states.csv`
+   with `available_from_hour` (from `current_state.line_free_h`) and `initial_sku` (the running SKU)
+   before every solve. **12 of 14 lines** now have a nonzero available_from. The solver is blocked
+   from scheduling anything on a line before that hour; running MOs are effectively locked. Verified:
+   the overlay writes correct hours (e.g. P09=83h, P10=231h, P22=210h) and correct SKUs into the
+   work dir. Best-effort: if the manprg feeds are unavailable, the solver falls back cleanly.
+4. ✅ **Demand source going forward: `demand_plan_summary.csv`.**
+   `code/helpers/demand_summary_import.py` (new) reads Week/Product/kg_tons (UTF-8 BOM, comma),
+   maps ISO weeks to anchor–relative week_index via `date.fromisocalendar()`, and emits the
+   canonical `demand_plan.csv` schema. **101 orders, 63 SKUs, 3 weeks** (W0/W1/W2 = WW33/34/35),
+   5,293 total tons. Wired into the Data Files page as "Import a cleaned demand plan summary (CSV)"
+   — preview, write to `demand_plan.csv`, provenance saved. The file `data/reference/demand_plan_summary.csv`
+   is in the repo. Suite **59/59** green.
 
 ## Open solver concern (investigate next week)
 Single-phase full-horizon solves are slow/weak at the default 60s time limit (skill pitfall 9: needs 300–600s). 51 orders short of qmin at 300s on current data. Revisit time-limit defaults and whether the UI should warn/raise the limit when cross-week is on.
