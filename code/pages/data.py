@@ -35,15 +35,23 @@ st.divider()
 st.subheader("All input files")
 
 
-# ── Line/SKU capability check (manprg is ground truth) ────────────────────
-# If manprg shows an SKU on a line the capabilities table doesn't allow, the
-# table is out of date — flag it and offer a one-click fix (user decision B).
+# ── Line/SKU capability check (manprg + demand plan vs capabilities) ─────
+# Two rules:
+#   * manprg is ground truth: if manprg shows an SKU on a line the table
+#     doesn't allow, the table is out of date (user decision B).
+#   * demand SKUs with NO capable line anywhere silently drop their demand —
+#     flag them too; the one-click fix uses plant evidence (historical PDF
+#     schedules) to assign a proven line when available.
 try:
     from helpers.capability_check import (
         check_capabilities,
+        check_demand_capabilities,
+        fix_demand_rows,
         fix_rows_for,
         load_capabilities,
         load_manprg_mos,
+        load_plan_evidence,
+        merge_fixes,
     )
     _caps_df = load_capabilities(dd / "reference" / "capabilities_rates.csv")
     _cfg_local = load_toml()
@@ -53,29 +61,60 @@ try:
                                    str(dd / "reference" / "manprg2.txt")]
     _mos = load_manprg_mos(_mp_paths)
     _cap_res = check_capabilities(_caps_df, _mos)
-    if _cap_res.count:
+    _dem_df = None
+    _dem_path = dd / "reference" / "demand_plan.csv"
+    if _dem_path.exists():
+        _dem_df = pd.read_csv(_dem_path, dtype={"sku": str})
+        _dem_res = check_demand_capabilities(_caps_df, _dem_df)
+    else:
+        _dem_res = None
+    _all_conflicts = list(_cap_res.conflicts)
+    if _dem_res is not None:
+        _all_conflicts += _dem_res.conflicts
+    _fixable_kinds = {"SKU_MISSING", "LINE_NOT_CAPABLE", "DEMAND_NO_CAPABLE_LINE"}
+    if _all_conflicts:
         st.warning(
-            f"⚠️ **{_cap_res.count} Line/SKU capability conflict(s)** — manprg shows "
-            "these SKUs running on lines the capabilities table does not allow. "
-            "The plant physically ran them, so the table is out of date."
+            f"⚠️ **{len(_all_conflicts)} Line/SKU capability issue(s)** — "
+            "manprg SKU/line pairs the table does not allow, and demand SKUs "
+            "with no capable line at all. The plant physically ran them / "
+            "needs them scheduled, so the table is out of date."
         )
-        st.dataframe(_cap_res.as_frame(), use_container_width=True, hide_index=True)
-        _fix = st.button("Add these manprg-proven SKU/line pairs to capabilities",
-                         type="primary")
+        st.dataframe(pd.DataFrame(
+            [{"sku": c.sku, "line_name": c.line_name, "kind": c.kind,
+              "mo": c.mo, "detail": c.detail} for c in _all_conflicts]),
+            use_container_width=True, hide_index=True)
+        _fix = st.button(
+            "Add these proven SKU/line pairs to capabilities (one-click fix)",
+            type="primary")
         if _fix:
-            # default rate for NEW rows (SKU_MISSING): average rate of all
-            # SKUs on each proven line (user decision) — existing rows keep
-            # their rate and just flip capable=1.
+            # default rate for NEW rows: average rate of all SKUs on each
+            # proven line (user decision) — existing rows keep their rate and
+            # just flip capable=1. Lines come from the changed rows themselves
+            # (manprg lines AND demand-evidence lines like P16).
+            _changed = fix_rows_for(_caps_df,
+                                    [c for c in _cap_res.conflicts
+                                     if c.kind in ("SKU_MISSING",
+                                                   "LINE_NOT_CAPABLE")],
+                                    default_rate=0.0)
+            _unfixable: list[str] = []
+            if _dem_res is not None and _dem_res.conflicts:
+                _evidence = load_plan_evidence(
+                    dd / "reference" / "sku_plan_evidence.csv")
+                _dem_changed, _unfixable = fix_demand_rows(
+                    _caps_df, _dem_res.conflicts,
+                    evidence=_evidence, default_rate=0.0)
+                _changed = pd.concat([_changed, _dem_changed],
+                                     ignore_index=True)
             _default_by_line = {
                 ln: float(_caps_df.loc[
                     (_caps_df["line_name"] == ln)
                     & (pd.to_numeric(_caps_df.get("capable", 0),
                                      errors="coerce").fillna(0) == 1),
                     "calc_rate_kgph"].mean() or 0.0)
-                for ln in sorted({c.line_name for c in _cap_res.conflicts})
+                for ln in sorted({str(r["line_name"]) for _, r in
+                                  _changed.iterrows()
+                                  if int(r["capable"]) == 1})
             }
-            _changed = fix_rows_for(_caps_df, _cap_res.conflicts,
-                                    default_rate=0.0)
             # apply the per-line average default where fix_rows_for left 0
             _zero_rate = (_changed["capable"].astype(int) == 1) \
                 & (_changed["calc_rate_kgph"].astype(float) == 0.0)
@@ -85,42 +124,24 @@ try:
                     for ln in _changed.loc[_zero_rate, "line_name"]]
             # Merge: flip capable / set rate on the existing rows, append new
             # (sku, line) pairs that were missing entirely.
-            _out = _caps_df.copy()
-            _out = _out.set_index(["sku", "line_name"])
-            for _, r in _changed.iterrows():
-                sku_l = (r["sku"], r["line_name"])
-                if sku_l in _out.index:
-                    _out.loc[sku_l, "capable"] = int(r["capable"])
-                    _out.loc[sku_l, "calc_rate_kgph"] = float(r["calc_rate_kgph"])
-                else:
-                    _new_row = {c: float("nan") for c in _out.columns}
-                    if "line_id" in _new_row:
-                        _lid_map = _caps_df.drop_duplicates("line_name") \
-                            .set_index("line_name")["line_id"]
-                        _new_row["line_id"] = int(
-                            _lid_map.get(r["line_name"], 99))
-                    _new_row["capable"] = int(r["capable"])
-                    _new_row["calc_rate_kgph"] = float(r["calc_rate_kgph"])
-                    _out.loc[sku_l] = _new_row
-            _out = _out.reset_index()
-            if "line_id" in _caps_df.columns:
-                _lid_map = _caps_df.drop_duplicates("line_name") \
-                    .set_index("line_name")["line_id"]
-                _out["line_id"] = _out["line_name"].map(_lid_map).fillna(99).astype(int)
-                _out = _out[["line_id", "sku", "line_name", "capable",
-                             "calc_rate_kgph"]]
+            _out = merge_fixes(_caps_df, _changed)
             _bdir = dd / "_backups"
             _bdir.mkdir(parents=True, exist_ok=True)
             _dst = _bdir / f"capabilities_rates.{datetime.now():%Y%m%d-%H%M%S}.csv"
             _dst.write_bytes((dd / "reference" / "capabilities_rates.csv").read_bytes())
             _out.to_csv(dd / "reference" / "capabilities_rates.csv", index=False)
-            st.success(
-                f"Updated capabilities_rates.csv ({len(_changed)} rows changed). "
-                "Backup saved. Reloading…")
+            _msg = (f"Updated capabilities_rates.csv ({len(_changed)} rows changed). "
+                    "Backup saved. Reloading…")
+            if _unfixable:
+                _msg = (f"⚠️ {_msg}  Could NOT auto-fix demand SKU(s) "
+                        f"{', '.join(_unfixable)} — no plant evidence of a "
+                        "capable line (not in manprg or any historical "
+                        "schedule). Verify the SKU or add lines manually.")
+            st.success(_msg)
             st.rerun()
     else:
         st.caption("✅ Line/SKU capability check: manprg SKU/line pairs all match "
-                   "the capabilities table.")
+                   "the capabilities table, and every demand SKU has a capable line.")
 except Exception as _cap_exc:  # noqa: BLE001
     st.caption(f"Capability check unavailable: {_cap_exc}")
 

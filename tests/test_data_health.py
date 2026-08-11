@@ -58,6 +58,11 @@ def _min_catalog(dd: Path) -> None:
     ]:
         import pandas as pd
         df = pd.DataFrame([{c: (i if c in ("line_id", "start_h", "end_h", "start_hour", "end_hour", "qty_target", "week_index", "max_cip_hrs", "available_from_hour") else f"{c}{i}") for i, c in enumerate(cols)} for i in range(rows)])
+        # a healthy catalog: every SKU capable (the demand capability check
+        # flags SKUs with no capable line — the fixture must not trip it)
+        if spec_key == "capabilities_rates":
+            df["capable"] = 1
+            df["calc_rate_kgph"] = 540.0
         path = dd / "calendar_blocks.csv" if spec_key == "calendar_blocks" else (
             dd / "lines.csv" if spec_key == "lines" else dd / "reference" / f"{spec_key}.csv")
         df.to_csv(path, index=False)

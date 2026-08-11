@@ -404,11 +404,11 @@ def _version_slots(dd: Path, cfg: dict) -> list[HealthStatus]:
 
 
 def _capability_semantics(dd: Path, cfg: dict) -> list[HealthStatus]:
-    """manprg SKU/line pairs vs capabilities_rates.csv.
+    """manprg SKU/line pairs + demand SKU coverage vs capabilities table.
 
     manprg is ground truth: if the plant ran an SKU on a line, the
-    capabilities table must allow it. Conflicts mean the table is out of
-    date and the solver would refuse (or silently skip) those MOs.
+    capabilities table must allow it. Demand SKUs with NO capable line
+    anywhere silently drop their demand — also flag those.
     """
     caps_path = dd / "reference" / "capabilities_rates.csv"
     if not caps_path.exists():
@@ -416,6 +416,7 @@ def _capability_semantics(dd: Path, cfg: dict) -> list[HealthStatus]:
     try:
         from helpers.capability_check import (
             check_capabilities,
+            check_demand_capabilities,
             load_capabilities,
             load_manprg_mos,
         )
@@ -425,22 +426,29 @@ def _capability_semantics(dd: Path, cfg: dict) -> list[HealthStatus]:
                         str(dd / "reference" / "manprg.txt"),
                         str(dd / "reference" / "manprg2.txt")]
         mos = load_manprg_mos(mp_paths)
-        res = check_capabilities(load_capabilities(caps_path), mos)
-        if res.count == 0:
+        caps = load_capabilities(caps_path)
+        res = check_capabilities(caps, mos)
+        dem_path = dd / "reference" / "demand_plan.csv"
+        dem_res = None
+        if dem_path.exists():
+            dem_res = check_demand_capabilities(
+                caps, pd.read_csv(dem_path, dtype={"sku": str}))
+        total = res.count + (dem_res.count if dem_res else 0)
+        if total == 0:
             return [HealthStatus(
                 key="capability_check", name="Line/SKU capability check",
                 state=OK, detail=f"{len(mos)} manprg MO(s) all match the "
-                "capabilities table.",
+                "capabilities table; every demand SKU has a capable line.",
                 source="semantic")]
-        detail = "; ".join(
-            f"{c.sku}@{c.line_name}" for c in res.conflicts[:6])
-        more = f" (+{res.count - 6} more)" if res.count > 6 else ""
+        parts = [f"{c.sku}@{c.line_name}" for c in res.conflicts[:6]]
+        if dem_res:
+            parts += [f"{c.sku} (no line)" for c in dem_res.conflicts[:4]]
+        more = f" (+{total - len(parts)} more)" if total > len(parts) else ""
         return [HealthStatus(
             key="capability_check", name="Line/SKU capability check",
-            state=STALE, detail=f"{res.count} manprg SKU/line pair(s) not in "
-            f"capabilities: {detail}{more}",
-            actions=("Data Files → 'Add these manprg-proven SKU/line pairs to "
-                     "capabilities'",),
+            state=STALE, detail=f"{total} capability issue(s): {', '.join(parts)}{more}",
+            actions=("Data Files → 'Add these proven SKU/line pairs to "
+                     "capabilities (one-click fix)'",),
             source="semantic")]
     except Exception:  # pragma: no cover
         return []

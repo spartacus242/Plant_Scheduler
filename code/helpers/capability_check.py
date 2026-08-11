@@ -127,6 +127,48 @@ def check_capabilities(
     return res
 
 
+def check_demand_capabilities(
+    capabilities: pd.DataFrame,
+    demand_plan: pd.DataFrame,
+) -> CapabilityCheckResult:
+    """Flag demand-plan SKUs with NO capable line in the table.
+
+    The solver can only schedule an order on a line where the SKU is
+    capable=1 with a rate > 0. An SKU absent from the table (or present with
+    capable=0 everywhere) silently drops its demand — the planner should see
+    it and fix the table (one-click append with average rate).
+    """
+    res = CapabilityCheckResult()
+    # capable lookup: sku -> set of capable line names (rate > 0 required)
+    capable_by_sku: dict[str, set[str]] = {}
+    for _, r in capabilities.iterrows():
+        sku = str(r["sku"]).strip()
+        line = str(r["line_name"]).strip().upper()
+        try:
+            capable_val = int(r.get("capable", 0) or 0)
+            rate = float(r.get("calc_rate_kgph") or 0) or 0.0
+        except (TypeError, ValueError):
+            capable_val, rate = 0, 0.0
+        if capable_val == 1 and rate > 0:
+            capable_by_sku.setdefault(sku, set()).add(line)
+
+    seen: set[str] = set()
+    for _, r in demand_plan.iterrows():
+        sku = str(r.get("sku", "")).strip()
+        if not sku or sku in seen:
+            continue
+        seen.add(sku)
+        lines = capable_by_sku.get(sku, set())
+        if not lines:
+            qty = pd.to_numeric(r.get("qty_target"), errors="coerce")
+            res.conflicts.append(CapabilityConflict(
+                sku=sku, line_name="—", mo="", kind="DEMAND_NO_CAPABLE_LINE",
+                detail=(f"{qty:,.0f} kg of demand unschedulable"
+                        if pd.notna(qty) else
+                        "no capable line / rate in capabilities_rates.csv")))
+    return res
+
+
 def fix_rows_for(
     capabilities: pd.DataFrame,
     conflicts: Iterable[CapabilityConflict],
@@ -197,3 +239,112 @@ def average_rate_for_line(
                       & (capabilities["capable"] == 1)]
     rates = pd.to_numeric(df["calc_rate_kgph"], errors="coerce").dropna()
     return float(rates.mean()) if len(rates) else 0.0
+
+
+def load_plan_evidence(path: str | Path) -> dict[str, set[str]]:
+    """Read sku_plan_evidence.csv -> {sku: set(line_name_upper)}.
+
+    The evidence file records every production block in the historical VIF
+    PDF schedules: if a demand SKU is missing from capabilities_rates.csv but
+    the plant planned it on a line in a real schedule, that line is the proven
+    capability (same rule as manprg — the plant ran it there). Missing file
+    returns {} (demand SKUs stay flag-only).
+    """
+    p = Path(path)
+    if not p.exists():
+        return {}
+    df = pd.read_csv(p, dtype={"sku": str})
+    out: dict[str, set[str]] = {}
+    for _, r in df.iterrows():
+        sku = str(r.get("sku", "")).strip()
+        line = str(r.get("line_name", "")).strip().upper()
+        if sku and line:
+            out.setdefault(sku, set()).add(line)
+    return out
+
+
+def fix_demand_rows(
+    capabilities: pd.DataFrame,
+    conflicts: Iterable[CapabilityConflict],
+    *,
+    evidence: dict[str, set[str]],
+    default_rate: float,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Rows that resolve DEMAND_NO_CAPABLE_LINE conflicts (evidence-backed).
+
+    For each flagged SKU with plant evidence, append a full line block with
+    capable=1 on the evidence lines (rate=default_rate) and 0 elsewhere —
+    mirroring SKU_MISSING but with lines from historical schedules instead of
+    manprg. SKUs with NO evidence cannot be auto-fixed: inventing a line would
+    violate the capability rule, so they stay flagged and are returned in
+    `unfixable` for the caller to report.
+
+    Returns (changed_rows, unfixable_skus). Caller merges changed rows into
+    the full table.
+    """
+    from collections import defaultdict
+
+    out_rows: list[dict] = []
+    unfixable: list[str] = []
+    table_lines = set(capabilities["line_name"].unique())
+    proven: dict[str, set[str]] = defaultdict(set)
+    for c in conflicts:
+        if c.kind != "DEMAND_NO_CAPABLE_LINE":
+            continue
+        proven[c.sku] |= evidence.get(c.sku, set())
+
+    for sku, lines_ok in proven.items():
+        if not lines_ok:
+            unfixable.append(sku)
+            continue
+        all_lines = sorted(table_lines | lines_ok)
+        for ln in all_lines:
+            capable = 1 if ln in lines_ok else 0
+            out_rows.append({
+                "sku": sku, "line_name": ln, "capable": capable,
+                "calc_rate_kgph": default_rate if capable else 0,
+            })
+    if not out_rows:
+        return (pd.DataFrame(
+            columns=["sku", "line_name", "capable", "calc_rate_kgph"]),
+            unfixable)
+    return pd.DataFrame(out_rows), unfixable
+
+
+def merge_fixes(
+    capabilities: pd.DataFrame,
+    changed: pd.DataFrame,
+) -> pd.DataFrame:
+    """Merge changed rows into the capabilities table.
+
+    Existing (sku, line_name) rows are updated in place (capable + rate);
+    missing pairs are appended. line_id is derived from line_name when the
+    table has it (default 99 = unknown). Returns the full updated table.
+    """
+    out = capabilities.copy()
+    cols = list(out.columns)
+    has_lid = "line_id" in cols
+    if has_lid:
+        lid_map = (out.drop_duplicates("line_name")
+                   .set_index("line_name")["line_id"])
+    for _, r in changed.iterrows():
+        sku = str(r["sku"]).strip()
+        line = str(r["line_name"]).strip().upper()
+        mask = (out["sku"].astype(str).str.strip() == sku) & \
+               (out["line_name"].astype(str).str.strip().str.upper() == line)
+        if mask.any():
+            out.loc[mask, "capable"] = int(r["capable"])
+            if "calc_rate_kgph" in out.columns:
+                out.loc[mask, "calc_rate_kgph"] = float(r["calc_rate_kgph"])
+            continue
+        row = {c: float("nan") for c in cols}
+        row["sku"] = sku
+        row["line_name"] = line
+        row["capable"] = int(r["capable"])
+        if "calc_rate_kgph" in row:
+            row["calc_rate_kgph"] = float(r.get("calc_rate_kgph", 0) or 0)
+        if has_lid:
+            row["line_id"] = int(lid_map.get(line, 99))
+        out = pd.concat([out, pd.DataFrame([row], columns=cols)],
+                        ignore_index=True)
+    return out
