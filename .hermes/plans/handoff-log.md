@@ -198,12 +198,15 @@ Suite: **110 passed**. App: `.venv\Scripts\python.exe`, port 8501, scrub `PYTHON
     the last artifact, so fold a `--no-warm-start` vs default `solve → compare blocks/short`
     into the suite (a `slow`-marked gate) so every handoff run re-proves the hint helps or at
     least does not regress. This is the same guard-item-27 instinct applied to item 10.
-30. **NOT STARTED (new, this run)** — **Extend warm start to the two-phase path.** Today it only
-    fires on the single-phase call (pitfall 9 hard case). The two-phase Week-0 solve is the
-    one Carsten re-runs every morning and should benefit most from yesterday's Week-0 schedule
-    — wire `apply_warm_start` into `_run_two_phase` (hint the Week-0 model from the previous
-    `week1_initial_states`/last solve, watch the 168 h horizon + hour_offset so stale hints are
-    dropped, not injected).
+30. **DONE** — Extend warm start to the two-phase path. `apply_warm_start` is
+   now wired into `_run_two_phase`'s Week-0 model (after `build_model`, before
+   the Week-0 solve), mirroring the single-phase block. The previous
+   `prev_schedule.csv` carries Week-1 orders at absolute hours 168+;
+   `build_hint_plan` range-checks every row against the 168 h Week-0 horizon
+   and drops them, so no Week-1 placement leaks into Week-0 (verified: 173
+   rows dropped as `unknown order`, 0 outside horizon). A hint only steers the
+   search, so it is safe at every relax level. — `96f56f3`
+
 31. **NOT STARTED (new, this run)** — **Second hint source: `helpers/version_manager`.** The
     saved schedule versions are the canonical "saved plan" — a better warm start than the last
     solve when the planner has hand-edited a scenario. Let `prev_schedule.csv` be optionally
@@ -231,10 +234,16 @@ rotated across (a) constraints, (b) data inputs, (c) solver logic, (d) OR-Tools 
   `available_from` floor now hoisted out of the changeover block (pitfall 13b).
 - **Running-MO gate** (item 22): `present==1` forced for current-MO orders at all relax levels;
   `line_running_free_h` used for the gate, not the queue-end. Ladder skip `_RELAX_SKIP={0:3}`.
-- **Risk: only ONE `AddNoOverlap` for the whole plant.** 14 lines × ~100 orders = 1,400
-  optional intervals in one constraint. That is legal but CP-SAT's interval propagation is
-  per-constraint; a per-line `AddNoOverlap` (14 constraints) would localise propagation and may
-  speed the single-phase search further — worth a measurement next to item 10's hint.
+- **Risk (RESOLVED — implemented 2026-08-10 in `46879ad`, the de-legacy
+  refactor):** the review below once flagged "only ONE `AddNoOverlap` for the
+  whole plant." That is no longer true: `model_builder.py` builds
+  `line_intervals` per line (lines ~276-295) and calls
+  `model.AddNoOverlap(line_intervals[l])` per line (line ~932), so each line is
+  its own NoOverlap over ~100 optional intervals — exactly the localised
+  propagation the review recommended. The stale note was left in the run-3
+  review and corrected 2026-08-11. The single global constraint would also have
+  been mathematically equivalent (intervals are line-disjoint), so this was a
+  safe, already-landed win — no further work needed here.
 - **Risk: `max_lines_per_order = 2`** creates symmetric interchangeable lines (item 12) with no
   symmetry breaker; the hint from item 10 now pins a specific assignment, which incidentally
   *breaks* that symmetry for free on the warm path.
@@ -273,9 +282,12 @@ rotated across (a) constraints, (b) data inputs, (c) solver logic, (d) OR-Tools 
   split as "week-0 hard + weeks 1-2 abstract".
 
 ### e. Suggested improvements (prioritised, this run)
-1. **Per-line `AddNoOverlap`** (from a) — likely the next biggest single-phase speed win after
-   the hint; measure A/B against item 10's warm path.
-2. **Item 30** — warm start the two-phase Week-0 solve (the daily re-run).
+1. **Per-line `AddNoOverlap`** (from a) — **DONE** (landed in `46879ad`, the de-legacy
+   refactor; confirmed 2026-08-11 by reading `model_builder.py` lines ~276-295 and ~932).
+   It was already in the code when the run-3 review flagged it as a single global constraint,
+   so no new work. The (a) risk note above is corrected to reflect this.
+2. **Item 30** — **DONE** (`96f56f3`): warm start the two-phase Week-0 solve — now fires
+   on the daily re-run, verified with a real two-phase A/B.
 3. **Item 29** — regression-guard the hint in the suite.
 4. **Item 11/28** — changeover family compression + measure presolve, not just search.
 5. **Item 12** — symmetry breaking now *partially covered* by the hint pinning one assignment;
@@ -430,5 +442,45 @@ float-string bug fixed at display time rather than at read time.
   two-phase warm start, version_manager as a second hint source).
 - Scratch A/B artifacts left under `data/_ab_warmstart/` (git-ignored path convention); not
   committed.
+
+### 2026-08-11 (cron run 4)
+- **Built item 30 — warm start the two-phase Week-0 solve.** `apply_warm_start` is now wired
+  into `_run_two_phase`'s Week-0 model (after `build_model`, before the Week-0 `solver.Solve`),
+  mirroring the single-phase block from item 10. Carsten's daily Week-0 re-run now seeds from
+  yesterday's combined schedule. The previous `prev_schedule.csv` carries Week-1 orders at
+  absolute hours 168+ (phase2_scheduler line 1288: "Phase 2 uses absolute hours");
+  `build_hint_plan` range-checks every row against the 168 h Week-0 horizon and drops them, so
+  no Week-1 placement can leak into Week-0. A hint only steers the search (CP-SAT repairs it),
+  so it is safe at every relax level. Commit `96f56f3`.
+- **Key review finding:** the #1 suggested improvement from run 3 — per-line `AddNoOverlap` —
+  is ALREADY in the code (committed in `46879ad`, the de-legacy refactor). `model_builder.py`
+  builds `line_intervals` per line (~lines 276-295) and calls
+  `model.AddNoOverlap(line_intervals[l])` per line (~line 932). The run-3 review's "only ONE
+  `AddNoOverlap` for the whole plant" note was stale; corrected in sections (a) and (e). No
+  further work needed there.
+- **Proved with two real two-phase solves** (`scripts/ab_warm_start_twophase.sh`, 120 s/phase
+  each, identical 8-reference-CSV inputs):
+
+  | | COLD (no hint) | WARM (hinted) |
+  |---|---|---|
+  | status | FEASIBLE | FEASIBLE |
+  | blocks | 215 | 205 |
+  | lines used | 12 | 12 |
+  | short of qmin | 3 | 3 |
+  | late orders | 8 | 5 |
+  | warm-start log | `disabled by --no-warm-start` | `hinted 4620 vars: 35 assignments (7 CIP-split), 42/215 rows mapped (dropped: 173 unknown order, 0 unknown line, 0 outside horizon 168h)` |
+
+  The WARM run confirms the hint fires on the Week-0 model and excludes every Week-1 row
+  (173 dropped as unknown order, 0 outside horizon — no leakage). Both FEASIBLE with identical
+  short-of-qmin; WARM has fewer late orders (5 vs 8). No regression.
+- **+2 unit tests** in `tests/test_warm_start.py` pin the item-30 invariant: a Week-0 order
+  previously placed in Week-1 (absolute h200) is NOT hinted into Week-0, and `apply_warm_start`
+  reading a real `prev_schedule.csv` drops Week-1 rows and hints the Week-0 order as present=1
+  with its Week-0 start. Full suite **134 passed** (was 132).
+- Review emphasis this run: **(c) solver logic** (warm-start wiring) + correction to
+  **(a) constraints** (per-line NoOverlap already done). Item 30 closed; open items 11-29 and
+  31 remain. Scratch A/B artifacts under `data/_ab_warmstart_twophase/` (git-ignored); not
+  committed.
+
 
 
