@@ -416,6 +416,39 @@ def _prepare_work_dir(data_dir: Path, work: Path) -> None:
         )
 
 
+def _audit_work_downtimes(work: Path) -> list[str]:
+    """Report downtime windows that went stale when the horizon grew.
+
+    Reads the work-dir downtimes.csv and flowstate.toml (both already staged)
+    so the audit sees exactly what the solver will see. Returns note strings
+    that the caller prepends to the run log -- always a list, never silent.
+    """
+    from helpers.downtime_horizon import audit_downtime_horizon
+
+    import pandas as pd
+
+    dt_path = work / "downtimes.csv"
+    if not dt_path.exists():
+        return []
+    horizon = 0.0
+    toml_path = work / "flowstate.toml"
+    if toml_path.exists():
+        try:
+            import tomllib
+
+            cfg = tomllib.loads(toml_path.read_text(encoding="utf-8"))
+            sch = cfg.get("scheduler", {}) or {}
+            horizon = float(sch.get("horizon_hours")
+                            or (float(sch.get("horizon_weeks", 0) or 0) * 168.0))
+        except Exception:  # noqa: BLE001
+            horizon = 0.0
+    if horizon <= 0:
+        return []
+    rows = pd.read_csv(dt_path, encoding="utf-8-sig", dtype=str,
+                       keep_default_na=False).to_dict("records")
+    return audit_downtime_horizon(rows, horizon)
+
+
 def _overlay_current_state(work: Path, data_dir: Path) -> list[str]:
     """Patch the work-dir initial_states.csv with the real plant state.
 
@@ -687,6 +720,14 @@ def run_scenario(
         _cs_notes = _overlay_current_state(work, data_dir)
     except Exception as _exc:  # noqa: BLE001
         _cs_notes = [f"current-state overlay FAILED: {_exc}"]
+
+    # Downtime windows are stored as hour offsets, so they go stale whenever the
+    # horizon grows: a "0-336h" row written under a 2-week horizon silently frees
+    # the line for hours 336-504 of a 3-week plan. Detect and report; never rewrite.
+    try:
+        _cs_notes.extend(_audit_work_downtimes(work))
+    except Exception as _exc:  # noqa: BLE001
+        _cs_notes.append(f"downtime horizon audit FAILED: {_exc}")
 
     scheduler = (Path(data_dir).resolve().parent / "code" / "solver" / "phase2_scheduler.py").resolve()
     toml = work / "flowstate.toml"
