@@ -121,10 +121,25 @@ Suite: **134 fast + 8 slow** (the 8 `slow`-marked tests are a real-solve regress
     Suite **132 passed** (was 124); `tests/test_warm_start.py` adds 8 tests on the pure
     mapping, covering every drop path that keeps a hint inside the variable domains.
 
-11. **NOT STARTED** — Changeover-matrix compression. `changeovers.csv` is 44,310 rows / 1.39 MB,
-    a dense 211×211 matrix stored long. Group SKUs into format families and penalise only
-    between-family transitions; cache as parquet keyed by mtime. The Generate page re-parses
-    the whole file into a dict on every page load, on top of the solver's own load.
+11. **DONE** — Changeover-matrix compression (the safe half) + family-grouping
+    capability (measured, recommended against). `changeovers.csv` is 44,310 rows /
+    1.39 MB. The **parse is now cached**: new `code/solver/changeover_cache.py`
+    parses the matrix once, persists a parquet keyed by the source `mtime_ns`
+    (fresh export transparently bypasses a stale cache), and memoises the three
+    dicts in-process. `data_loader.load()` switched to `load_changeover_dicts`
+    (byte-for-byte identical output — proven by `tests/test_changeover_cache.py`),
+    and the Generate + Calendar pages switched to `load_changeover_setup_nested`
+    (identical `{from:{to:setup}}` shape). Measured parse cost ~630 ms → few ms on
+    cache hit; eliminates the per-solve + per-page-render re-parse.
+    The **family-grouping** half (`build_sku_families` + `compress_machine_changes`)
+    is built, tested, and **measured via `scripts/measure_changeover.py`**: it is a
+    NO-OP on this dataset — model size is identical with/without it
+    (73,671 vars / 259,035 constraints, delta 0) and there are **0 within-family
+    eligible adjacent pairs** in the schedulable set, so it changes neither presolve
+    nor the objective. Recommendation: do NOT enable family compression (it would be
+    a silent behaviour change for zero benefit). The real perf lever for the
+    changeover cost is item 12 (symmetry breaking) / decomposition, not the matrix.
+    Commit (this run).
 12. **NOT STARTED** — Symmetry breaking on `present` across interchangeable capable lines.
 13. **NOT STARTED** — CIP-deadline vs `available_from` conflict: when
     `avail_from + (interval − carry)` leaves no legal CIP window, project an extra CIP
@@ -222,6 +237,18 @@ Suite: **134 fast + 8 slow** (the 8 `slow`-marked tests are a real-solve regress
     warm) that asserts the Week-0 hint fires and drops Week-1 rows (the item-30 invariant)
     and does not regress on the Week-0 blocks/short metrics. Reuses the harness from
     `tests/test_solver_fresh_solve.py`.
+
+33. **NOT STARTED (new, this run)** — **Decision: do NOT implement family-compression
+    as a solver mode.** Measured this run (item 11 / `scripts/measure_changeover.py`):
+    family grouping leaves model size identical (73,671 vars / 259,035 constraints,
+    delta 0) and there are **0 within-family eligible adjacent pairs** in the
+    schedulable set, so it changes neither presolve nor the objective. It would be a
+    silent behaviour change for zero benefit. The genuine changeover-cost model-size
+    lever is **item 12 (symmetry breaking on `present` across interchangeable capable
+    lines)** and, longer-term, restoring the two-phase "week-0 hard + weeks 1-2
+    abstract" decomposition (Open solver concern). The changeover *parse* cost is
+    already solved by the cache in item 11. Close this item once the user confirms the
+    non-pursuit, or repurpose it if a future dataset shows non-trivial within-family pairs.
 
 ---
 
@@ -391,6 +418,15 @@ float-string bug fixed at display time rather than at read time.
 - **"Start simple, add constraints incrementally"** is the standard advice and is what the
   relax ladder already implements. The gap here is *diagnosis*, not mechanism — see the
   standing `status_at_level_0` concern and item 22.
+- **2026-08-11 — changeover matrix is a lookup table, not a model-size driver.** Building
+  the model family OFF vs ON (`scripts/measure_changeover.py`) gives **identical** size
+  (73,671 vars / 259,035 constraints, Δ0) and **0 within-family eligible adjacent pairs** in
+  the schedulable set. The model creates one cost term per *adjacent (line, order_i,
+  order_j) pair*, so its size scales with the O(n²) successor/ordering structure, not the
+  44,310-row CSV. Family compression therefore cannot help presolve (settles item 28's
+  premise) and would be a silent behaviour change for zero benefit. The cache in item 11 is
+  the real, safe win; the genuine changeover-cost lever is item 12 (symmetry breaking) /
+  restoring two-phase decomposition.
 
 ---
 
@@ -520,6 +556,42 @@ float-string bug fixed at display time rather than at read time.
     the vacuous-artifact gap flagged in item 9.
   - **New item 32** appended (extend the real-solve gate to the two-phase Week-0 warm-start
     path, item 30).
+
+### 2026-08-11 (cron run 6)
+- **Built item 11 — changeover-matrix parse cache + measured family compression.**
+  New `code/solver/changeover_cache.py`: `load_changeover_dicts` (→ `(setup,
+  machine_changes, changeover_type)`, identical shape to the old inline build),
+  `load_changeover_setup_nested` (`{from:{to:setup}}` for the Gantt/Generate page),
+  plus `build_sku_families` + `compress_machine_changes`. The parquet cache is keyed
+  by the source `mtime_ns` (a fresh export bypasses a stale cache), with in-process
+  memoisation. Wired into `data_loader.load()` (replaces the 44,310-row iterrows
+  loop) and into `code/pages/generate.py` + `code/pages/calendar.py` (replace the
+  per-render CSV re-parse). `data_loader` now also derives `Data.sku_family` from
+  `sku_info.csv`.
+- **Measured the family-compression premise with `scripts/measure_changeover.py`**
+  (builds the model family OFF vs ON for a staged work dir): model size is
+  **identical** — 73,671 vars / 259,035 constraints, delta 0 — and there are **0
+  within-family eligible adjacent pairs** in the schedulable set. So family grouping
+  changes neither presolve nor the objective; enabling it would be a silent behaviour
+  change for zero benefit. This also settles item 28's "presolve scales with the
+  matrix" hypothesis: the model builds one cost term per *adjacent pair*, not per
+  matrix entry, so the 44,310-row table is not the presolve cost — the O(n²)
+  successor/ordering structure is. New item 33 records the non-pursuit decision;
+  the real lever is item 12 (symmetry breaking) / decomposition.
+- **Verification (real, not assumed):** `tests/test_changeover_cache.py` — 6 tests
+  (dict equivalence vs a direct legacy parse, nested-dict equivalence, in-process
+  memoisation, parquet cache write/reuse, family compression semantics, and a
+  `Data.load()` behaviour-preservation regression). Full fast suite **140 passed**
+  (was 134; 8 `slow` deselected) — the `data_loader` rewire is exercised by the whole
+  solver contract suite. `py_compile` clean on all edited files.
+- **Review emphasis this run: (b) data inputs / (c) solver logic / (d) OR-Tools
+  research**, focused on the changeover matrix. Key finding: the matrix is a *lookup
+  table*, not a model-size driver — the cache is the genuine win; family compression
+  is a no-op here. UI change is contract-equivalent (identical dict shape) and
+  compile-clean; a browser pass on Generate/Calendar is recommended for the user.
+- Commits this run on `feature/handoff`: code + tests + `scripts/measure_changeover.py`
+  + this log update. (Left untracked/modified `data/calendar_blocks.csv` and
+  `data/versions/*` from a prior run untouched — not part of this item.)
 
 
 

@@ -10,6 +10,11 @@ from typing import List
 
 import pandas as pd
 
+try:
+    from changeover_cache import load_changeover_dicts, build_sku_families
+except ImportError:  # when imported as solver.data_loader
+    from solver.changeover_cache import load_changeover_dicts, build_sku_families
+
 BASE_DIR = Path(__file__).resolve().parent
 
 
@@ -117,6 +122,8 @@ class Data:
         self.changeover_type = {}   # (from_sku, to_sku) -> "1-0-1-1" string
         self.cip_interval_map = {}  # line_id -> max_cip_hrs (per-line CIP interval)
         self.sku_desc: dict[str, str] = {}  # sku -> ediact_sku_description
+        self.sku_family: dict = {}  # sku -> family id (changeover grouping)
+        self.sku_info_df = None  # raw sku_info DataFrame (for family grouping)
         self.init_map = {}
         self.downtimes = []
         self.orders = []
@@ -143,8 +150,10 @@ class Data:
         if os.path.exists(self.F.sku_info):
             si = pd.read_csv(self.F.sku_info)
             si["sku"] = si["sku"].astype(str)
+            self.sku_info_df = si
             for _, r in si.iterrows():
                 self.sku_desc[str(r["sku"])] = str(r.get("ediact_sku_description", ""))
+            self.sku_family = build_sku_families(si)
 
         # ── Line rates (monthly, overrides SKU-specific rates per line) ──
         # Skipped when use_sku_rates is True so the per-SKU rates from
@@ -181,51 +190,15 @@ class Data:
                 self.cip_interval_map[int(r["line_id"])] = int(r["max_cip_hrs"])
 
         # ── Changeovers ──────────────────────────────────────────────────
-        chg = pd.read_csv(self.F.chg)
-        chg["from_sku"] = chg["from_sku"].astype(str)
-        chg["to_sku"] = chg["to_sku"].astype(str)
-        chg["setup_hours"] = pd.to_numeric(chg["setup_hours"], errors="coerce").fillna(0.0)
-        chg["setup_rounded"] = chg["setup_hours"].apply(round_half_up)
-        # Machine-level changeover columns (backward-compat: default to 1 if missing)
-        has_machine_cols = all(
-            c in chg.columns for c in ("ttp_change", "ffs_change", "topload_change", "casepacker_change")
-        )
-        if has_machine_cols:
-            for col in ("ttp_change", "ffs_change", "topload_change", "casepacker_change"):
-                chg[col] = pd.to_numeric(chg[col], errors="coerce").fillna(1).astype(int)
-        # New columns: conv_to_org_change, cinn_to_non, added_flavors
-        has_new_co_cols = all(
-            c in chg.columns for c in ("conv_to_org_change", "cinn_to_non", "added_flavors")
-        )
-        if has_new_co_cols:
-            for col in ("conv_to_org_change", "cinn_to_non"):
-                chg[col] = pd.to_numeric(chg[col], errors="coerce").fillna(0).astype(int)
-            chg["added_flavors"] = pd.to_numeric(chg["added_flavors"], errors="coerce").fillna(0).astype(int)
-        for _, r in chg.iterrows():
-            pair = (str(r["from_sku"]), str(r["to_sku"]))
-            self.setup[pair] = int(r["setup_rounded"])
-            if has_machine_cols:
-                mc = {
-                    "ttp": int(r["ttp_change"]),
-                    "ffs": int(r["ffs_change"]),
-                    "topload": int(r["topload_change"]),
-                    "casepacker": int(r["casepacker_change"]),
-                }
-            else:
-                full = 1 if int(r["setup_rounded"]) > 0 else 0
-                mc = {"ttp": full, "ffs": full, "topload": full, "casepacker": full}
-            if has_new_co_cols:
-                mc["conv_to_org"] = int(r["conv_to_org_change"])
-                mc["cinn_to_non"] = int(r["cinn_to_non"])
-                mc["added_flavors"] = int(r["added_flavors"])
-            else:
-                mc["conv_to_org"] = 0
-                mc["cinn_to_non"] = 0
-                mc["added_flavors"] = 0
-            self.machine_changes[pair] = mc
-            self.changeover_type[pair] = (
-                f"{mc['ttp']}-{mc['ffs']}-{mc['topload']}-{mc['casepacker']}"
-            )
+        # Delegated to the cached loader (code/solver/changeover_cache.py):
+        # parses the 44,310-row matrix once, persists a parquet keyed by the
+        # source mtime, and memoises the three dicts in-process. Outputs are
+        # byte-for-byte equivalent to the previous inline build.
+        (
+            self.setup,
+            self.machine_changes,
+            self.changeover_type,
+        ) = load_changeover_dicts(self.F.chg)
         # Initial states
         init = pd.read_csv(self.F.init)
         for c, d in {

@@ -33,6 +33,7 @@ from helpers.scenario_runner import (
 from helpers.scorecard_engine import delta_narrative, score_calendar
 from helpers.scorecard_ui import render_scorecard
 from helpers.version_manager import list_versions, upsert_version
+from solver.changeover_cache import load_changeover_setup_nested
 
 st.header("Generate Scenarios")
 st.caption(
@@ -68,9 +69,7 @@ caps = expand_caps_with_groups(caps)
 changeovers: dict = {}
 _co_p = _ref_dir(dd) / "changeovers.csv"
 if _co_p.exists():
-    for _, r in _pd.read_csv(_co_p).iterrows():
-        changeovers.setdefault(str(r["from_sku"]), {})[str(r["to_sku"])] = float(
-            r.get("setup_hours") or 0)
+    changeovers = load_changeover_setup_nested(_co_p)
 
 demand_targets: list = []
 _dem_p = _ref_dir(dd) / "demand_plan.csv"

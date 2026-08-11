@@ -25,6 +25,7 @@ from helpers.config import load_toml
 from helpers.downtime_ui import downtime_map_for_calendar, render_side_downtime_editor
 from helpers.lines_model import expand_caps_with_groups, is_double, side_of, sides_of
 from helpers.paths import data_dir, reference_dir
+from solver.changeover_cache import load_changeover_setup_nested
 from helpers.scorecard_engine import ScorecardResult, delta_narrative, score_calendar
 from helpers.scorecard_ui import render_delta_strip, render_scorecard
 from helpers.version_manager import list_versions, save_version
@@ -214,9 +215,7 @@ if _one_sided:
 changeovers: dict = {}
 co_path = reference_dir(dd) / "changeovers.csv"
 if co_path.exists():
-    codf = pd.read_csv(co_path)
-    for _, r in codf.iterrows():
-        changeovers.setdefault(str(r["from_sku"]), {})[str(r["to_sku"])] = float(r.get("setup_hours") or 0)
+    changeovers = load_changeover_setup_nested(co_path)
 
 demand_targets = []
 dem_path = reference_dir(dd) / "demand_plan.csv"
