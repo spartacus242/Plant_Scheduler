@@ -35,6 +35,96 @@ st.divider()
 st.subheader("All input files")
 
 
+# ── Line/SKU capability check (manprg is ground truth) ────────────────────
+# If manprg shows an SKU on a line the capabilities table doesn't allow, the
+# table is out of date — flag it and offer a one-click fix (user decision B).
+try:
+    from helpers.capability_check import (
+        check_capabilities,
+        fix_rows_for,
+        load_capabilities,
+        load_manprg_mos,
+    )
+    _caps_df = load_capabilities(dd / "reference" / "capabilities_rates.csv")
+    _cfg_local = load_toml()
+    _ds_cfg = _cfg_local.get("datasources", {})
+    _mp_paths = [p.strip() for p in str(_ds_cfg.get("manprg_files", "")).split(";")
+                 if p.strip()] or [str(dd / "reference" / "manprg.txt"),
+                                   str(dd / "reference" / "manprg2.txt")]
+    _mos = load_manprg_mos(_mp_paths)
+    _cap_res = check_capabilities(_caps_df, _mos)
+    if _cap_res.count:
+        st.warning(
+            f"⚠️ **{_cap_res.count} Line/SKU capability conflict(s)** — manprg shows "
+            "these SKUs running on lines the capabilities table does not allow. "
+            "The plant physically ran them, so the table is out of date."
+        )
+        st.dataframe(_cap_res.as_frame(), use_container_width=True, hide_index=True)
+        _fix = st.button("Add these manprg-proven SKU/line pairs to capabilities",
+                         type="primary")
+        if _fix:
+            # default rate for NEW rows (SKU_MISSING): average rate of all
+            # SKUs on each proven line (user decision) — existing rows keep
+            # their rate and just flip capable=1.
+            _default_by_line = {
+                ln: float(_caps_df.loc[
+                    (_caps_df["line_name"] == ln)
+                    & (pd.to_numeric(_caps_df.get("capable", 0),
+                                     errors="coerce").fillna(0) == 1),
+                    "calc_rate_kgph"].mean() or 0.0)
+                for ln in sorted({c.line_name for c in _cap_res.conflicts})
+            }
+            _changed = fix_rows_for(_caps_df, _cap_res.conflicts,
+                                    default_rate=0.0)
+            # apply the per-line average default where fix_rows_for left 0
+            _zero_rate = (_changed["capable"].astype(int) == 1) \
+                & (_changed["calc_rate_kgph"].astype(float) == 0.0)
+            if _zero_rate.any():
+                _changed.loc[_zero_rate, "calc_rate_kgph"] = [
+                    _default_by_line.get(ln, 0.0)
+                    for ln in _changed.loc[_zero_rate, "line_name"]]
+            # Merge: flip capable / set rate on the existing rows, append new
+            # (sku, line) pairs that were missing entirely.
+            _out = _caps_df.copy()
+            _out = _out.set_index(["sku", "line_name"])
+            for _, r in _changed.iterrows():
+                sku_l = (r["sku"], r["line_name"])
+                if sku_l in _out.index:
+                    _out.loc[sku_l, "capable"] = int(r["capable"])
+                    _out.loc[sku_l, "calc_rate_kgph"] = float(r["calc_rate_kgph"])
+                else:
+                    _new_row = {c: float("nan") for c in _out.columns}
+                    if "line_id" in _new_row:
+                        _lid_map = _caps_df.drop_duplicates("line_name") \
+                            .set_index("line_name")["line_id"]
+                        _new_row["line_id"] = int(
+                            _lid_map.get(r["line_name"], 99))
+                    _new_row["capable"] = int(r["capable"])
+                    _new_row["calc_rate_kgph"] = float(r["calc_rate_kgph"])
+                    _out.loc[sku_l] = _new_row
+            _out = _out.reset_index()
+            if "line_id" in _caps_df.columns:
+                _lid_map = _caps_df.drop_duplicates("line_name") \
+                    .set_index("line_name")["line_id"]
+                _out["line_id"] = _out["line_name"].map(_lid_map).fillna(99).astype(int)
+                _out = _out[["line_id", "sku", "line_name", "capable",
+                             "calc_rate_kgph"]]
+            _bdir = dd / "_backups"
+            _bdir.mkdir(parents=True, exist_ok=True)
+            _dst = _bdir / f"capabilities_rates.{datetime.now():%Y%m%d-%H%M%S}.csv"
+            _dst.write_bytes((dd / "reference" / "capabilities_rates.csv").read_bytes())
+            _out.to_csv(dd / "reference" / "capabilities_rates.csv", index=False)
+            st.success(
+                f"Updated capabilities_rates.csv ({len(_changed)} rows changed). "
+                "Backup saved. Reloading…")
+            st.rerun()
+    else:
+        st.caption("✅ Line/SKU capability check: manprg SKU/line pairs all match "
+                   "the capabilities table.")
+except Exception as _cap_exc:  # noqa: BLE001
+    st.caption(f"Capability check unavailable: {_cap_exc}")
+
+
 def backup(path: Path) -> Path:
     """Copy path into data/_backups/<stem>.<timestamp>.csv. Returns the backup path."""
     bdir = dd / "_backups"

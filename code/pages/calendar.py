@@ -341,6 +341,52 @@ if _active:
           "Cases left": int(r["left"])} for r in _nr],
         use_container_width=True, hide_index=True)
 
+# ── Auto-populate holding from the latest scenario solve ─────────────────
+# After a scenario (esp. E) produces a schedule, demand orders left under
+# qmin / at zero qty belong in the holding area for manual placement. We
+# read the newest scenario work-dir's produced_vs_bounds.csv once per session
+# and merge those blocks into cal_holding (skipping ones already there).
+if "cal_holding_from_solve" not in st.session_state:
+    _held: list[dict] = []
+    _scen_root = dd / "_scenario_work"
+    if _scen_root.exists():
+        _cands = sorted(
+            [p for p in _scen_root.iterdir()
+             if (p / "produced_vs_bounds.csv").exists()],
+            key=lambda p: (p / "produced_vs_bounds.csv").stat().st_mtime,
+            reverse=True,
+        )
+        if _cands:
+            try:
+                from helpers.holding_builder import (
+                    average_rate_per_sku,
+                    build_holding,
+                    load_capabilities,
+                    load_demand,
+                    load_produced,
+                )
+                _latest = _cands[0]
+                _dem = load_demand(dd / "reference" / "demand_plan.csv")
+                _prod = load_produced(_latest / "produced_vs_bounds.csv")
+                _rates = average_rate_per_sku(
+                    load_capabilities(dd / "reference" / "capabilities_rates.csv"))
+                _blocks = build_holding(_dem, _prod, rates=_rates)
+                _held = [b.to_payload() for b in _blocks]
+            except Exception as _e:  # noqa: BLE001
+                st.caption(f"Holding auto-populate skipped: {_e}")
+    st.session_state["cal_holding_from_solve"] = _held
+
+_existing_ids = {b.get("id") for b in st.session_state.get("cal_holding", [])}
+for _hb in st.session_state.get("cal_holding_from_solve", []):
+    if _hb.get("id") not in _existing_ids:
+        st.session_state.setdefault("cal_holding", []).append(_hb)
+        _existing_ids.add(_hb.get("id"))
+_auto_held = len(st.session_state.get("cal_holding_from_solve", []))
+if _auto_held:
+    st.caption(
+        f"💡 {_auto_held} under-target demand order(s) auto-placed in holding "
+        "(from the latest scenario solve). Drag them onto a line or ignore.")
+
 state = gantt_calendar(
     schedule=schedule,
     cip_windows=windows,
@@ -379,7 +425,6 @@ if n_holding:
 st.divider()
 st.subheader("Live scorecard (same engine as Phase 0)")
 live = score_calendar(working, week_label="what-if", data_dir=dd)
-
 baseline_dict = st.session_state.get("cal_baseline_score") or {}
 if baseline_dict:
     baseline = ScorecardResult.from_dict(baseline_dict)

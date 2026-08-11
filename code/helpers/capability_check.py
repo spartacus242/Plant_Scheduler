@@ -51,9 +51,16 @@ class CapabilityCheckResult:
 
 
 def load_capabilities(path: str | Path) -> pd.DataFrame:
-    """Read capabilities_rates.csv with sku/line_name kept as strings."""
+    """Read capabilities_rates.csv with sku/line_name kept as strings.
+
+    Tolerates a missing line_name column (older fixtures / tests): derive it
+    from line_id (0 -> P09, 1 -> P10, ...).
+    """
     df = pd.read_csv(path, dtype={"sku": str})
     df["sku"] = df["sku"].astype(str).str.strip()
+    if "line_name" not in df.columns:
+        df["line_name"] = df["line_id"].apply(
+            lambda i: f"P{9 + int(i):02d}")
     df["line_name"] = df["line_name"].astype(str).str.strip().str.upper()
     return df
 
@@ -92,7 +99,11 @@ def check_capabilities(
         sku = str(r["sku"]).strip()
         line = str(r["line_name"]).strip().upper()
         known_skus.add(sku)
-        if int(r.get("capable", 0) or 0) == 1:
+        try:
+            capable_val = int(r.get("capable", 0) or 0)
+        except (TypeError, ValueError):
+            capable_val = 0
+        if capable_val == 1:
             capable_by_sku.setdefault(sku, set()).add(line)
 
     seen: set[tuple[str, str, str]] = set()

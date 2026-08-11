@@ -16,6 +16,23 @@ export function computeAdherence(
     schedByOrder[b.order_id] = (schedByOrder[b.order_id] ?? 0) + rate * b.run_hours;
   }
 
+  // Mean capable-line rate per SKU (only capable lines with rate > 0)
+  const avgRateBySku: Record<string, { sum: number; n: number }> = {};
+  for (const lineName of Object.keys(caps)) {
+    for (const [sku, rate] of Object.entries(caps[lineName])) {
+      if (rate > 0) {
+        const arr = avgRateBySku[sku] ?? { sum: 0, n: 0 };
+        arr.sum += rate;
+        arr.n += 1;
+        avgRateBySku[sku] = arr;
+      }
+    }
+  }
+  const avgRate = (sku: string): number => {
+    const arr = avgRateBySku[sku];
+    return arr && arr.n > 0 ? arr.sum / arr.n : 0;
+  };
+
   const rows: AdherenceRow[] = demand.map((d) => {
     const sq = schedByOrder[d.order_id] ?? 0;
     // Show actual % of target (no cap at 100)
@@ -32,6 +49,7 @@ export function computeAdherence(
       scheduled_qty: Math.round(sq),
       pct_adherence: Math.round(pct * 10) / 10,
       status,
+      avg_rate_kgph: avgRate(d.sku),
     };
   });
 

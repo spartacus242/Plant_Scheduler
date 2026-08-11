@@ -24,6 +24,7 @@ export interface ScheduleBlock {
   locked?: boolean;
   completion_pct?: number;
   cases_left?: number;
+  qty_kg?: number;
 }
 
 export interface DemandTarget {
@@ -78,6 +79,8 @@ export interface AdherenceRow {
   scheduled_qty: number;
   pct_adherence: number;
   status: "MET" | "UNDER" | "OVER";
+  /** Mean capable-line rate for this SKU (kg/h) — used by the "+" holding button. */
+  avg_rate_kgph: number;
 }
 
 export interface KpiData {

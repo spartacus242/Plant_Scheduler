@@ -403,6 +403,49 @@ def _version_slots(dd: Path, cfg: dict) -> list[HealthStatus]:
     return []
 
 
+def _capability_semantics(dd: Path, cfg: dict) -> list[HealthStatus]:
+    """manprg SKU/line pairs vs capabilities_rates.csv.
+
+    manprg is ground truth: if the plant ran an SKU on a line, the
+    capabilities table must allow it. Conflicts mean the table is out of
+    date and the solver would refuse (or silently skip) those MOs.
+    """
+    caps_path = dd / "reference" / "capabilities_rates.csv"
+    if not caps_path.exists():
+        return []
+    try:
+        from helpers.capability_check import (
+            check_capabilities,
+            load_capabilities,
+            load_manprg_mos,
+        )
+        ds = cfg.get("datasources", {})
+        mp_paths = [p.strip() for p in str(ds.get("manprg_files", "")).split(";")
+                    if p.strip()] or [
+                        str(dd / "reference" / "manprg.txt"),
+                        str(dd / "reference" / "manprg2.txt")]
+        mos = load_manprg_mos(mp_paths)
+        res = check_capabilities(load_capabilities(caps_path), mos)
+        if res.count == 0:
+            return [HealthStatus(
+                key="capability_check", name="Line/SKU capability check",
+                state=OK, detail=f"{len(mos)} manprg MO(s) all match the "
+                "capabilities table.",
+                source="semantic")]
+        detail = "; ".join(
+            f"{c.sku}@{c.line_name}" for c in res.conflicts[:6])
+        more = f" (+{res.count - 6} more)" if res.count > 6 else ""
+        return [HealthStatus(
+            key="capability_check", name="Line/SKU capability check",
+            state=STALE, detail=f"{res.count} manprg SKU/line pair(s) not in "
+            f"capabilities: {detail}{more}",
+            actions=("Data Files → 'Add these manprg-proven SKU/line pairs to "
+                     "capabilities'",),
+            source="semantic")]
+    except Exception:  # pragma: no cover
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -421,6 +464,7 @@ def assess(data_dir: Path | None = None, cfg: dict | None = None) -> list[Health
     results.extend(_rate_mode_semantics(dd, cfg))
     results.extend(_scorecard_semantics(dd, cfg))
     results.extend(_version_slots(dd, cfg))
+    results.extend(_capability_semantics(dd, cfg))
     return results
 
 

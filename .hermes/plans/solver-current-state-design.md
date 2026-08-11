@@ -178,6 +178,23 @@ for that SKU:
   one 24h block; Carsten can add more via the + button again.
 - Block qty = block_hours × avg_rate_kgph, `line: null`, dropped into holding.
 
+## 6c. Solver findings from the build (2026-08-10)
+
+- **Two-phase cannot place multi-week current MOs.** The week-0 phase has a
+  168h horizon; running/queued MOs whose remaining work spans the whole
+  horizon don't fit and the phase fails. Scenario E therefore forces
+  **single-phase** (full 336h in one model). Verified: 36/41 MOs scheduled,
+  85% committed tonnage kept, 0 CIP overlaps, relax 3.
+- **Presence must be hard at every relax level** for current MOs — otherwise
+  the level-1 FEASIBLE (relaxed demand + changeovers) drops the committed
+  MOs. The auto-relax ladder therefore **skips levels 1-2** when
+  `use_current_mo=true` (hard → level 3/ignore_co), keeping the model small.
+- **min_run must be floored** for current MOs (the 50%-of-qty pct floor made
+  a 184t MO need a 171h minimum run and the solver skipped it).
+- **The gate must be running-MO-end only** (`line_running_free_h`) when
+  current MOs are active — the old running+queued gate double-counted queued
+  work as both a gate AND a solver order.
+
 ## 7. Verification (per flowstate-app-qa skill)
 
 1. pytest suite green (existing 77 + new tests).

@@ -481,12 +481,15 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
 
       <div style={{ marginTop: 8 }}>
         <strong style={{ fontSize: 13, display: "block", marginBottom: 4 }}>
-          SKU Adherence (live) — click a row to highlight on chart
+          SKU Adherence (live) — click a row to highlight on chart · "+" adds the missing tonnage to holding
         </strong>
         <AdherenceTable
           rows={adherenceRows}
           highlightSku={highlightSku}
           onSkuClick={setHighlightSku}
+          onAddToHolding={(row, missingKg, runHours) => {
+            actions.addToHolding(row.order_id, row.sku, Math.max(0.5, runHours), missingKg);
+          }}
         />
       </div>
 

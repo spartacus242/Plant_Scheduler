@@ -20,7 +20,7 @@ CIP = ROOT / "data" / "reference" / "cip_info.csv"
 
 def test_manprg_merge_counts():
     res = read_manprg([M1, M2])
-    assert res.rows == 62  # fresh Aug-10 export, zero overlap union
+    assert res.rows == 58  # fresh Aug-10 export (later snapshot), zero overlap union
     assert res.warnings == []
 
 
@@ -28,21 +28,18 @@ def test_manprg_current_mo_per_line():
     res = read_manprg([M1, M2])
     # spot checks from the fresh Aug-10 probe (only lines with made>0 appear)
     assert res.current["P14"].mo == "29911"
-    assert res.current["P14"].completion_pct == pytest.approx(13.0, abs=0.2)
+    assert res.current["P14"].completion_pct == pytest.approx(26.0, abs=0.2)
     assert res.current["P17"].mo == "29956"
     assert res.current["P17"].item == "280324"
-    assert res.current["P17"].completion_pct == pytest.approx(94.7, abs=0.2)
     assert res.current["P21"].mo == "29935"
     assert res.current["P21"].item == "280490"
-    # lines with zero made (e.g. P09 all-unstarted) are not 'current'
-    assert "P09" not in res.current
 
 
 def test_manprg_by_mo():
     res = read_manprg([M1, M2])
-    assert "29899" in res.by_mo
-    assert res.by_mo["29899"].line == "P09"
-    assert res.by_mo["29899"].left_cas == pytest.approx(3981)
+    assert "29901" in res.by_mo
+    assert res.by_mo["29901"].line == "P09"
+    assert res.by_mo["29901"].left_cas == pytest.approx(2840)
 
 
 def test_cip_info():

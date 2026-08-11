@@ -263,6 +263,43 @@ def test_scorecard_semantics_stale(tmp_path):
     assert hit is not None and hit.state == STALE
 
 
+def test_capability_check_ok_when_manprg_matches(tmp_path):
+    dd = _empty_data_dir(tmp_path)
+    _min_catalog(dd)
+    # manprg has no production MOs (only CIP/TRIALS) -> no conflicts
+    _touch(dd / "reference" / "manprg.txt", 0.1)
+    _touch(dd / "reference" / "manprg2.txt", 0.1)
+    health = dh.assess(dd, _cfg())
+    hit = next((h for h in health if h.key == "capability_check"), None)
+    assert hit is not None and hit.state == OK
+
+
+def test_capability_check_stale_on_conflict(tmp_path):
+    import pandas as pd
+    dd = _empty_data_dir(tmp_path)
+    _min_catalog(dd)
+    # capabilities has sku 280581 capable only on line P09
+    pd.DataFrame([
+        {"line_id": 0, "sku": "280581", "line_name": "P09", "capable": 1, "calc_rate_kgph": 540.0},
+        {"line_id": 1, "sku": "280581", "line_name": "P10", "capable": 0, "calc_rate_kgph": 540.0},
+    ]).to_csv(dd / "reference" / "capabilities_rates.csv", index=False)
+    _touch(dd / "reference" / "capabilities_rates.csv", 0.1)
+    # manprg says P10 runs 280581 (a conflict)
+    (dd / "reference" / "manprg.txt").write_text(
+        "Start date;Start time;Line;MO No.;Item;Designation;Pal;Type;Hours;Fct qty (Cas);Qty made (Cas);Fct qty [Kg];;Qty made [Kg];;Left (Cas)\n"
+        "08/10/2026;03:49;LMH-P10;29901;280581;X;;;20.06;3800;;15048.000;Kg;;Kg;3800\n",
+        encoding="utf-8")
+    _touch(dd / "reference" / "manprg.txt", 0.1)
+    (dd / "reference" / "manprg2.txt").write_text(
+        "Start date;Start time;Line;MO No.;Item;Designation;Pal;Type;Hours;Fct qty (Cas);Qty made (Cas);Fct qty [Kg];;Qty made [Kg];;Left (Cas)\n",
+        encoding="utf-8")
+    _touch(dd / "reference" / "manprg2.txt", 0.1)
+    health = dh.assess(dd, _cfg())
+    hit = next((h for h in health if h.key == "capability_check"), None)
+    assert hit is not None and hit.state == STALE
+    assert "280581@P10" in hit.detail
+
+
 def test_version_slots_full(tmp_path):
     dd = _empty_data_dir(tmp_path)
     _min_catalog(dd)

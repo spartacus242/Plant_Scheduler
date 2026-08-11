@@ -18,6 +18,7 @@ export interface ScheduleStateActions {
   splitBlock: (id: string, splitHour: number) => void;
   removeToHolding: (id: string) => void;
   restoreFromHolding: (id: string, lineName: string, lineId: number, startHour: number, duration: number) => void;
+  addToHolding: (orderId: string, sku: string, runHours: number, qtyKg?: number) => void;
   addCip: (lineName: string, lineId: number, startHour: number, duration: number) => void;
   addTrial: (lineName: string, lineId: number, sku: string, startHour: number, duration: number) => void;
   addWindowBlock: (
@@ -187,6 +188,26 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
     setLastAction(`Restored ${found.order_id} to ${lineName}`);
   }, [pushUndo, holdingArea]);
 
+  const addToHolding = useCallback((orderId: string, sku: string, runHours: number, qtyKg?: number) => {
+    pushUndo();
+    const b: ScheduleBlock = {
+      id: `hold_${orderId}`,
+      line_id: 0,
+      line_name: "",
+      order_id: orderId,
+      sku,
+      start_hour: 0,
+      end_hour: runHours,
+      run_hours: runHours,
+      is_trial: false,
+      block_type: "sku",
+      label: `${orderId} (${runHours.toFixed(1)}h)`,
+      qty_kg: qtyKg ?? 0,
+    };
+    setHoldingArea((prev) => [...prev, b]);
+    setLastAction(`Added ${orderId} to holding (${runHours.toFixed(1)}h)`);
+  }, [pushUndo]);
+
   const addCip = useCallback((lineName: string, lineId: number, startHour: number, duration: number) => {
     pushUndo();
     const b: ScheduleBlock = {
@@ -258,7 +279,7 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
   const data: ScheduleStateData = { schedule, cipWindows, holdingArea, lastAction };
   const actions: ScheduleStateActions = {
     updateBlock, moveBlock, resizeBlock, splitBlock,
-    removeToHolding, restoreFromHolding, addCip, addTrial, addWindowBlock,
+    removeToHolding, restoreFromHolding, addToHolding, addCip, addTrial, addWindowBlock,
     reportAction,
     undo, redo,
     canUndo: undoStack.current.length > 0,

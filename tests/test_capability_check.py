@@ -77,19 +77,30 @@ def test_manprg_line_prefix_is_stripped():
 
 
 def test_real_manprg_reports_four_known_conflicts():
+    """Live-manprg regression: the 4 known conflicts were resolved by the
+    one-click capability fix (2026-08-10, browser-verified). The real-data
+    check must now pass clean — a conflict here means the table regressed."""
     ref = ROOT / "data" / "reference"
     if not (ref / "manprg.txt").exists():
         pytest.skip("no real manprg export")
     caps = load_capabilities(ref / "capabilities_rates.csv")
     mos = load_manprg_mos([ref / "manprg.txt", ref / "manprg2.txt"])
     res = check_capabilities(caps, mos)
-    kinds = sorted(c.kind for c in res.conflicts)
-    assert kinds == ["LINE_NOT_CAPABLE"] * 4
-    pairs = sorted((c.sku, c.line_name) for c in res.conflicts)
-    assert ("251200", "P22") in pairs
-    assert ("280612", "P12") in pairs
-    assert ("280611", "P12") in pairs
-    assert ("280614", "P12") in pairs
+    assert res.count == 0, f"expected clean after fix, got: {res.conflicts}"
+
+
+def test_real_manprg_pairs_are_capable_after_fix():
+    """The specific pairs the fix flipped must be capable=1 in the table."""
+    ref = ROOT / "data" / "reference"
+    if not (ref / "manprg.txt").exists():
+        pytest.skip("no real manprg export")
+    caps = load_capabilities(ref / "capabilities_rates.csv")
+    for sku, line in [("251200", "P22"), ("280612", "P12"),
+                      ("280611", "P12"), ("280614", "P12")]:
+        row = caps[(caps["sku"] == sku) & (caps["line_name"] == line)]
+        assert not row.empty, f"{sku}@{line} missing"
+        assert int(row.iloc[0]["capable"]) == 1, f"{sku}@{line} not capable"
+        assert float(row.iloc[0]["calc_rate_kgph"]) > 0, f"{sku}@{line} rate 0"
 
 
 def test_fix_rows_adds_full_line_block_for_missing_sku():
