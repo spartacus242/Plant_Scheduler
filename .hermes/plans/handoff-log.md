@@ -7,7 +7,7 @@ and ~80 of the tests, so branching off `main` produces an app that cannot import
 Plant Calendar. Never re-base this branch onto `main` without re-checking that.
 
 Consolidated 2026-08-10 from `.hermes/plans/handoff-ww32.md` (all still-open items folded in).
-Suite: **110 passed**. App: `.venv\Scripts\python.exe`, port 8501, scrub `PYTHONPATH` first.
+Suite: **134 fast + 8 slow** (the 8 `slow`-marked tests are a real-solve regression gate, run with `pytest -m slow`; the default `pytest -q` excludes them). App: `.venv\Scripts\python.exe`, port 8501, scrub `PYTHONPATH` first.
 
 ---
 
@@ -181,11 +181,13 @@ Suite: **110 passed**. App: `.venv\Scripts\python.exe`, port 8501, scrub `PYTHON
     diagnostic analyses weeks 0–1 and silently ignores 38 of 101 orders. Any "why is this
     infeasible" answer it gives for a week-2 order is wrong by omission. Same literal family
     as items 21/23 — fix together.
-27. **NOT STARTED (new, this run)** — **Run the contract suite against a FRESH solve, not
-    just the last artifact.** Item 9's tests read whatever work dir solved most recently, so
-    a stale dir can make them pass vacuously. Add a `slow`-marked variant that invokes
-    `run_scenario` itself (~240 s) and have this cron job execute it once per run, so every
-    handoff run ends with a green real-solve gate rather than an artifact gate.
+27. **DONE** — Fresh-solve contract gate (`tests/test_solver_fresh_solve.py`,
+    `slow`-marked). Item 9's tests only asserted INPUT→OUTPUT contracts against whatever
+    work dir solved last, so a stale dir let them pass vacuously. This gate performs a
+    real 150 s single-phase solve from the reference inputs and re-runs C1–C6 +
+    C7-staleness on the **fresh** artifact. All 6 checks PASS against a live solve,
+    confirming the item 8 (504 h horizon) and item 24 (downtime) fixes still hold on an
+    artifact-free run. — `a41d635`
 28. **NOT STARTED (new, this run)** — **Presolve cost of the changeover matrix.** Item 11
     frames `changeovers.csv` (44,310 rows) as a load-time problem; the CP-SAT literature
     (and practitioner reports) put the bigger cost in **presolve, which scales with model
@@ -193,11 +195,13 @@ Suite: **110 passed**. App: `.venv\Scripts\python.exe`, port 8501, scrub `PYTHON
     family compression — if presolve is a large share of a 240 s budget, item 11 buys solve
     quality, not just page-load speed.
 
-29. **NOT STARTED (new, this run, from item 10 review)** — **Prove the warm start with a
-    contract/regression test, not just an ad-hoc A/B.** `tests/test_solver_contracts.py` reads
-    the last artifact, so fold a `--no-warm-start` vs default `solve → compare blocks/short`
-    into the suite (a `slow`-marked gate) so every handoff run re-proves the hint helps or at
-    least does not regress. This is the same guard-item-27 instinct applied to item 10.
+29. **DONE** — Warm-start regression guard (`tests/test_solver_fresh_solve.py`,
+    `slow`-marked). Runs a cold solve (`--no-warm-start`) then a warm solve seeded with the
+    cold `schedule_phase2.csv` as `prev_schedule.csv`; asserts the hint is actually applied
+    (grep `solver_error.txt` for `[warm-start] hinted … assignments`, NOT `disabled`/`FAILED`)
+    and that warm does not regress on blocks-placed or orders-short-of-qmin vs cold. Both
+    FEASIBLE; warm non-regressed. Folds the item 10 / item 30 ad-hoc A/B proof into the
+    suite. Verified: `pytest -m slow` → **8 passed in 309.73 s**. — `a41d635`
 30. **DONE** — Extend warm start to the two-phase path. `apply_warm_start` is
    now wired into `_run_two_phase`'s Week-0 model (after `build_model`, before
    the Week-0 solve), mirroring the single-phase block. The previous
@@ -211,6 +215,13 @@ Suite: **110 passed**. App: `.venv\Scripts\python.exe`, port 8501, scrub `PYTHON
     saved schedule versions are the canonical "saved plan" — a better warm start than the last
     solve when the planner has hand-edited a scenario. Let `prev_schedule.csv` be optionally
     sourced from a chosen saved version, not only the previous work-dir run.
+32. **NOT STARTED (new, this run)** — **Extend the real-solve regression gate to the
+    two-phase Week-0 warm-start path (item 30).** Items 27/29 only exercise the
+    single-phase warm-start path; the two-phase Week-0 hint (item 30) is still only proven
+    by `scripts/ab_warm_start_twophase.sh`. Add a `slow`-marked two-phase solve (cold vs
+    warm) that asserts the Week-0 hint fires and drops Week-1 rows (the item-30 invariant)
+    and does not regress on the Week-0 blocks/short metrics. Reuses the harness from
+    `tests/test_solver_fresh_solve.py`.
 
 ---
 
@@ -481,6 +492,34 @@ float-string bug fixed at display time rather than at read time.
   **(a) constraints** (per-line NoOverlap already done). Item 30 closed; open items 11-29 and
   31 remain. Scratch A/B artifacts under `data/_ab_warmstart_twophase/` (git-ignored); not
   committed.
+
+  ### 2026-08-11 (cron run 5)
+  - **Built items 27 & 29 together as one cohesive real-solve regression gate**
+    (`tests/test_solver_fresh_solve.py`, 8 `slow`-marked tests; `pytest.ini` registers the
+    `slow` marker and sets `addopts = -m "not slow"` so the default `pytest -q` stays fast —
+    134 passed — while the cron gate runs `pytest -m slow`). Commit `a41d635`.
+    - **Item 27 (fresh-solve contract gate).** `test_solver_contracts.py` (item 9) only
+      asserted INPUT→OUTPUT contracts against *whatever work dir solved last*, so a stale dir
+      made them pass vacuously. The new gate performs a real 150 s single-phase solve from the
+      reference inputs and re-runs C1 availability-gate, C2 downtime, C3 no-overlap, C4 horizon,
+      C6 CIP-spacing and C7 reference-downtime-staleness on the **fresh** artifact. All 6 checks
+      PASS against a live solve — confirms item 8 (504 h horizon) and item 24 (downtime) still
+      hold on an artifact-free run.
+    - **Item 29 (warm-start regression guard).** Runs a cold solve (`--no-warm-start`), then a
+      warm solve seeded with the cold `schedule_phase2.csv` as `prev_schedule.csv`. Asserts the
+      hint is *actually applied* — `solver_error.txt` contains `[warm-start] hinted … assignments`
+      and NOT `disabled by --no-warm-start` / `FAILED` (the #1 regression a refactor could
+      introduce is a silently-disabled hint) — and that warm does not regress on blocks-placed or
+      orders-short-of-qmin vs cold. Both FEASIBLE; warm non-regressed. Folds the item 10 / item 30
+      ad-hoc A/B proof into the suite.
+    - **Verified, not assumed:** `pytest -m slow` → **8 passed in 309.73 s**.
+  - **Review emphasis this run: (c) solver logic.** The warm-start wiring (items 10/30) was
+    previously only proven by ad-hoc A/B shell scripts. It is now re-proven by an in-suite real
+    solve every run, closing the open concern that a future edit could break `apply_warm_start`
+    and pass silently. The fresh-solve gate also gives a green real-solve contract check, fixing
+    the vacuous-artifact gap flagged in item 9.
+  - **New item 32** appended (extend the real-solve gate to the two-phase Week-0 warm-start
+    path, item 30).
 
 
 
