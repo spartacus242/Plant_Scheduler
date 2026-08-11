@@ -1125,11 +1125,17 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         set_available_from_schedule=True,  # line availability from Week-0 end
     )
 
-    # Phase 2: Week-1 on FULL 336h horizon (lines available from Week-0 end)
+    # Phase 2: Week-1 on the FULL horizon (lines available from Week-0 end).
+    # Horizon comes from P (flowstate.toml [scheduler] horizon_hours) rather
+    # than a hard-coded 336: the app moved to a 3-week (504h) rolling horizon
+    # and demand_plan.csv now carries week-2 orders with due windows out to
+    # hour 503. With H pinned at 336 their max run length computes to zero
+    # (model_builder line 77) and a third of the demand is silently
+    # unschedulable.
     F_week1 = Files(data_dir)
     F_week1.init = str(data_dir / "week1_initial_states.csv")
     P1 = Params(
-        horizon_h=336,  # Full 2-week horizon (lines blocked until Week-0 end via available_from)
+        horizon_h=P.horizon_h,
         changeover_penalty=P.changeover_penalty,
         cip_interval_h=P.cip_interval_h,
         cip_duration_h=P.cip_duration_h,
@@ -1335,6 +1341,16 @@ def main() -> None:
     # Apply config overrides from flowstate.toml
     if _CFG_SCHED.get("planning_start_date"):
         P.planning_start_date = _CFG_SCHED["planning_start_date"]
+    # Horizon length. The app's rolling horizon is 3 weeks (504h) but Params
+    # still defaults to 336; without this override every order whose due
+    # window sits past hour 336 gets max_len == 0 in model_builder and can
+    # never be produced. horizon_hours wins; horizon_weeks * 168 is the
+    # fallback so the two keys cannot silently disagree.
+    _hz_h = _CFG_SCHED.get("horizon_hours")
+    if _hz_h is None and _CFG_SCHED.get("horizon_weeks") is not None:
+        _hz_h = int(_CFG_SCHED["horizon_weeks"]) * 168
+    if _hz_h:
+        P.horizon_h = int(_hz_h)
     _cfg_cip = _CFG.get("cip", {})
     if _cfg_cip.get("interval_h") is not None:
         P.cip_interval_h = int(_cfg_cip["interval_h"])
