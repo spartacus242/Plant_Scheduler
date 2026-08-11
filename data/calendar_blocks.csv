@@ -1,94 +1,94 @@
 block_id,block_type,line_id,line_name,start_h,end_h,label,order_id,sku,sku_description,qty_kg,locked,attrs
-naive_3d68cc27bc,production,0,P09,0.0,38.17,280121,280121-W0,280121,,30002.0,False,naive:week0
-naive_e6c1f3492e,production,0,P09,38.17,72.093,280425,280425-W0,280425,,27002.0,False,naive:week0
-naive_71bb68dfdd,production,0,P09,72.093,135.24,280572,280572-W0,280572,,57780.0,False,naive:week0
-naive_64980f8c06,production,0,P09,168.0,187.169,280450,280450-W1,280450,,18000.0,False,naive:week1
-naive_05d0f20d9a,production,0,P09,187.169,233.466,280581,280581-W1,280581,,40000.0,False,naive:week1
-naive_980eaad507,production,0,P09,233.466,252.696,570468,570468-W1,570468,,15500.0,False,naive:week1
-naive_9c2e6fae0a,production,0,P09,336.0,368.787,280572,280572-W2,280572,,30000.0,False,naive:week2
-naive_3af8cfc439,production,0,P09,368.787,418.098,280583,280583-W2,280583,,45120.0,False,naive:week2
-naive_39c60b3a93,production,2,P11,0.0,21.59,280563,280563-W0,280563,,18200.0,False,naive:week0
-naive_27e66cd8f8,production,2,P11,168.0,189.352,280563,280563-W1,280563,,18000.0,False,naive:week1
-naive_89ceedc12e,production,2,P11,336.0,361.179,280566,280566-W2,280566,,20370.0,False,naive:week2
-naive_9d51f6ffc2,production,2,P11,361.179,403.914,280580,280580-W2,280580,,30000.0,False,naive:week2
-naive_9d873b2ec3,production,3,P12,0.0,11.001,280090,280090-W0,280090,,8999.0,False,naive:week0
-naive_64d2099b7e,production,3,P12,11.001,23.964,280376,280376-W0,280376,,11252.0,False,naive:week0
-naive_165c76a208,production,3,P12,23.964,40.833,280377,280377-W0,280377,,13242.0,False,naive:week0
-naive_7a58809f2a,production,3,P12,40.833,59.787,280379,280379-W0,280379,,17741.0,False,naive:week0
-naive_bd14536e74,production,3,P12,59.787,77.203,280380,280380-W0,280380,,15500.0,False,naive:week0
-naive_e19b030798,production,3,P12,77.203,101.764,280426,280426-W0,280426,,14000.0,False,naive:week0
-naive_303831d3a2,production,3,P12,101.764,132.178,280436,280436-W0,280436,,12500.0,False,naive:week0
-naive_4cb6f24f6e,production,3,P12,132.178,154.204,280539,280539-W0,280539,,10000.0,False,naive:week0
-naive_711aa264ca,production,3,P12,168.0,182.908,280375,280375-W1,280375,,12940.0,False,naive:week1
-naive_8a01e957c4,production,3,P12,182.908,198.747,280397,280397-W1,280397,,11800.0,False,naive:week1
-naive_304078a6d2,production,4,P13,168.0,214.019,280605,280605-W1,280605,,24850.0,False,naive:week1
-naive_ff989dd912,production,4,P13,214.019,251.056,280607,280607-W1,280607,,20000.0,False,naive:week1
-naive_37f822b851,production,4,P13,251.056,288.093,280611,280611-W1,280611,,20000.0,False,naive:week1
-naive_900e188a16,production,4,P13,288.093,314.019,280612,280612-W1,280612,,14000.0,False,naive:week1
-naive_920283c509,production,4,P13,336.0,369.333,280610,280610-W2,280610,,18000.0,False,naive:week2
-naive_2f7372ae84,production,4,P13,369.333,406.37,280622,280622-W2,280622,,20000.0,False,naive:week2
-naive_d72a5d5739,production,5,P14,0.0,13.181,280601,280601-W0,280601,,9899.0,False,naive:week0
-naive_4d4cb07e00,production,5,P14,168.0,177.747,120532,120532-W1,120532,,10000.0,False,naive:week1
-naive_5be80f4bea,production,5,P14,177.747,204.292,280345,280345-W1,280345,,18608.0,False,naive:week1
-naive_f621582468,production,5,P14,204.292,233.584,280347,280347-W1,280347,,19919.0,False,naive:week1
-naive_610903e8cd,production,5,P14,233.584,267.179,280478,280478-W1,280478,,30000.0,False,naive:week1
-naive_e2eaf62134,production,5,P14,267.179,279.61,280602,280602-W1,280602,,9000.0,False,naive:week1
-naive_41ff84b024,production,5,P14,336.0,348.703,120450,120450-W2,120450,,10442.0,False,naive:week2
-naive_6cfbaac5df,production,5,P14,348.703,361.585,120532,120532-W2,120532,,13217.0,False,naive:week2
-naive_acdb5b4939,production,6,P15,168.0,205.037,280614,280614-W1,280614,,20000.0,False,naive:week1
-naive_8cce4f4299,production,6,P15,336.0,484.46,280264,280264-W2,280264,,132129.0,False,naive:week2
-naive_a22aeb0759,production,7,P16,336.0,364.01,280348,280348-W2,280348,,21820.0,False,naive:week2
-naive_d443be97c0,production,8,P17,0.0,27.088,280324,280324-W0,280324,,53608.0,False,naive:week0
-naive_f6927e443b,production,8,P17,27.088,136.992,280480,280480-W0,280480,,194199.0,False,naive:week0
-naive_53df2bfd6d,production,8,P17,168.0,183.983,280212,280212-W1,280212,,30000.0,False,naive:week1
-naive_66dcd650ea,production,8,P17,183.983,218.509,280421,280421-W1,280421,,69500.0,False,naive:week1
-naive_de05a4b1ea,production,8,P17,218.509,254.172,280453,280453-W1,280453,,50000.0,False,naive:week1
-naive_f16b5e98b4,production,8,P17,336.0,349.417,280324,280324-W2,280324,,26552.0,False,naive:week2
-naive_33245bfa83,production,8,P17,349.417,367.587,280421,280421-W2,280421,,36577.0,False,naive:week2
-naive_25c9828722,production,8,P17,367.587,382.478,280453,280453-W2,280453,,20877.0,False,naive:week2
-naive_3063f232de,production,8,P17,382.478,498.852,570261,570261-W2,570261,,185034.0,False,naive:week2
-naive_0517b7b3a5,production,9,P18,0.0,17.32,280104,280104-W0,280104,,29999.0,False,naive:week0
-naive_ba530bc9e7,production,9,P18,17.32,65.261,280318,280318-W0,280318,,84998.0,False,naive:week0
-naive_6d7ce8e98e,production,9,P18,65.261,92.952,280490,280490-W0,280490,,53001.0,False,naive:week0
-naive_009e135e76,production,9,P18,92.952,132.588,280591,280591-W0,280591,,69759.0,False,naive:week0
-naive_3945cb2a45,production,9,P18,168.0,224.752,280451,280451-W1,280451,,91200.0,False,naive:week1
-naive_b88faddff2,production,9,P18,224.752,254.428,280490,280490-W1,280490,,56800.0,False,naive:week1
-naive_bb85481545,production,9,P18,254.428,293.348,280591,280591-W1,280591,,68500.0,False,naive:week1
-naive_e5c059e1f2,production,9,P18,293.348,304.446,280592,280592-W1,280592,,18000.0,False,naive:week1
-naive_98f993a7e7,production,9,P18,336.0,352.107,280451,280451-W2,280451,,25884.0,False,naive:week2
-naive_088abf2434,production,9,P18,352.107,372.104,280452,280452-W2,280452,,35515.0,False,naive:week2
-naive_0875588b16,production,9,P18,372.104,390.259,280490,280490-W2,280490,,34748.0,False,naive:week2
-naive_b0522a6b91,production,9,P18,390.259,401.076,280591,280591-W2,280591,,19038.0,False,naive:week2
-naive_55ea1c9024,production,9,P18,401.076,433.557,570223,570223-W2,570223,,47000.0,False,naive:week2
-naive_3e6aee4581,production,10,P19,0.0,16.421,280323,280323-W0,280323,,30001.0,False,naive:week0
-naive_729e9dd3fe,production,10,P19,16.421,103.458,280689,280689-W0,280689,,94000.0,False,naive:week0
-naive_506beeb870,production,10,P19,168.0,224.22,280351,280351-W1,280351,,94000.0,False,naive:week1
-naive_a89b4b3e56,production,10,P19,336.0,429.895,280351,280351-W2,280351,,156993.0,False,naive:week2
-naive_b21663d40b,production,11,P20,0.0,15.431,120448,120448-W0,120448,,31201.0,False,naive:week0
-naive_a61ab6cd2f,production,11,P20,15.431,41.276,251200,251200-W0,251200,,36003.0,False,naive:week0
-naive_64815b4366,production,11,P20,41.276,67.288,280103,280103-W0,280103,,45000.0,False,naive:week0
-naive_c0651673be,production,11,P20,67.288,78.668,280107,280107-W0,280107,,17502.0,False,naive:week0
-naive_17baf4c29b,production,11,P20,78.668,113.149,280264,280264-W0,280264,,53998.0,False,naive:week0
-naive_326d6367f0,production,11,P20,113.149,139.129,280344,280344-W0,280344,,44737.0,False,naive:week0
-naive_207127e2b6,production,11,P20,139.129,161.142,280585,280585-W0,280585,,39997.0,False,naive:week0
-naive_924b7406f3,production,11,P20,168.0,176.419,120436,120436-W1,120436,,14801.0,False,naive:week1
-naive_2b482a8333,production,11,P20,176.419,209.654,120448,120448-W1,120448,,67200.0,False,naive:week1
-naive_57bd9838f7,production,11,P20,209.654,227.639,120463,120463-W1,120463,,30000.0,False,naive:week1
-naive_dbb6e5fa93,production,11,P20,227.639,252.24,280169,280169-W1,280169,,41600.0,False,naive:week1
-naive_09ac260675,production,11,P20,252.24,274.59,280264,280264-W1,280264,,35000.0,False,naive:week1
-naive_4e3389f048,production,11,P20,274.59,323.64,280586,280586-W1,280586,,80000.0,False,naive:week1
-naive_36925db022,production,11,P20,336.0,347.928,120436,120436-W2,120436,,20970.0,False,naive:week2
-naive_6f53bd9d86,production,11,P20,347.928,368.627,120437,120437-W2,120437,,33656.0,False,naive:week2
-naive_fa4c39294a,production,11,P20,368.627,427.206,120448,120448-W2,120448,,118446.0,False,naive:week2
-naive_62005fb28b,production,11,P20,427.206,453.568,241283,241283-W2,241283,,30000.0,False,naive:week2
-naive_9aabf41458,production,11,P20,453.568,460.746,251200,251200-W2,251200,,10000.0,False,naive:week2
-naive_103cf725fc,production,11,P20,460.746,493.256,280107,280107-W2,280107,,50000.0,False,naive:week2
-naive_65147fe240,production,12,P21,0.0,5.621,280213,280213-W0,280213,,8999.0,False,naive:week0
-naive_f4026942fa,production,12,P21,5.621,25.987,280559,280559-W0,280559,,30000.0,False,naive:week0
-naive_894db185b3,production,12,P21,25.987,44.258,280564,280564-W0,280564,,30000.0,False,naive:week0
-naive_eb6b98b83a,production,12,P21,44.258,72.736,280590,280590-W0,280590,,49581.0,False,naive:week0
-naive_c1b534c194,production,12,P21,168.0,304.901,280256,280256-W1,280256,,220000.0,False,naive:week1
-naive_d5c0f6529d,production,12,P21,304.901,318.726,280564,280564-W1,280564,,22700.0,False,naive:week1
-naive_41db86e564,production,12,P21,336.0,369.104,280213,280213-W2,280213,,53000.0,False,naive:week2
-naive_c1ef77de6f,production,12,P21,369.104,484.438,280256,280256-W2,280256,,185341.0,False,naive:week2
-naive_ce8f76116d,production,13,P22,0.0,157.407,280686,280686-W0,280686,,170000.0,False,naive:week0
+pdf_d7fec578a3,production,0,P09,0.017,20.077,570468,29901,570468,2X22X90 VP APL-BAN GGS CAN,15048.0,False,pdf_import
+pdf_bda795e48d,production,0,P09,44.05,72.71,280581,29899,280581,6X10X90 FV VP APECSWP- ASTBZUC,21497.4,False,pdf_import
+cs_3d7b7027fe,cip,0,P09,131.083,137.083,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_423a399b78,cip,0,P09,251.083,257.083,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_233c835335,cip,0,P09,371.083,377.083,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_6a098723a9,cip,0,P09,491.083,497.083,CIP (projected),,,,0.0,False,current_state:cip_projected
+pdf_49f688f624,trial,1,P10,-23.983,0.017,TRIAL,29954,,TRIALS,18407.52,False,pdf_import
+pdf_760e8240d5,production,1,P10,0.017,122.577,280351,29902,280351,1X24X90 KIRK ORG STBSPN- MANPEC,94001.04,False,pdf_import
+cs_641a459a63,cip,1,P10,34.3,40.3,CIP (projected),,,anti-static needs worked on during CIP. WO#569452,0.0,False,current_state:cip_projected
+cs_fe11638e7b,cip,1,P10,178.3,184.3,CIP (projected),,,anti-static needs worked on during CIP. WO#569452,0.0,False,current_state:cip_projected
+cs_7d5783a9a4,cip,1,P10,322.3,328.3,CIP (projected),,,anti-static needs worked on during CIP. WO#569452,0.0,False,current_state:cip_projected
+cs_0ac74e9807,cip,1,P10,466.3,472.3,CIP (projected),,,anti-static needs worked on during CIP. WO#569452,0.0,False,current_state:cip_projected
+cs_884c76909a,cip,2,P11,144.0,150.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_181cc477c5,cip,2,P11,288.0,294.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_4a0d085eb9,cip,2,P11,432.0,438.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+pdf_9c065c3460,trial,3,P12,-23.983,16.017,TRIAL,29908,,TRIALS,30006.72,False,pdf_import
+pdf_e28f97b0a9,production,3,P12,0.017,17.237,280375,29903,280375,6x8x110 GUTZY ORG ARSPBLBBET,12941.28,False,pdf_import
+pdf_9d883af927,production,3,P12,17.233,28.143,280397,29904,280397,6X8X110 GUTZY ORGPRO BANBLUACA,8199.84,False,pdf_import
+pdf_a76f5555ea,production,3,P12,32.967,44.947,280612,29905,280612,9X4X100 SLY STBLEM GGS,9000.0,False,pdf_import
+pdf_74b6b89c48,production,3,P12,44.933,71.553,280611,29906,280611,9X4X100 SLY BLURSB GGS,20001.6,False,pdf_import
+pdf_075e18459b,production,3,P12,71.533,98.143,280614,29907,280614,6X10X100 SLY STBLEM GGS,19998.0,False,pdf_import
+cs_d1e38ec508,cip,3,P12,90.117,96.117,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_ea7e96f8fe,cip,3,P12,210.117,216.117,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_df21df9709,cip,3,P12,330.117,336.117,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_f40aee161c,cip,3,P12,450.117,456.117,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_a80ecbd304,cip,4,P13,144.0,150.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_ccf5b46524,cip,4,P13,288.0,294.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_8c0d472076,cip,4,P13,432.0,438.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+pdf_2cde1c832e,production,5,P14,0.017,12.017,280602,29909,280602,6X4X90 FV ABERCAR GGS,9000.72,False,pdf_import
+pdf_b0b3a0aa8b,production,5,P14,12.0,36.81,280345,29910,280345,6X4X90 APL APL GGS,18608.4,False,pdf_import
+pdf_c5bcbe6227,production,5,P14,36.8,63.35,280347,29911,280347,6X4X90 APL STB GGS,19919.52,False,pdf_import
+cs_b013dd0613,cip,5,P14,47.0,53.0,CIP,,,,0.0,True,current_state:cip_scheduled
+pdf_37f3fac223,production,5,P14,63.35,76.68,120532,29912,120532,12X4X90 ASTB GGS CAN,10000.8,False,pdf_import
+pdf_53625cdd73,production,5,P14,76.667,124.397,120436,29913,120436,6X12X90 APL GGS,35802.0,False,pdf_import
+cs_01225ff489,cip,5,P14,167.0,173.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_7c30a6019a,cip,5,P14,287.0,293.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_b329bc4f2a,cip,5,P14,407.0,413.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+pdf_641b6962d4,trial,6,P15,-23.983,-21.983,TRIAL,29955,,TRIALS,1499.04,False,pdf_import
+pdf_f5b1523669,production,6,P15,0.017,33.147,280605,29915,280605,9X4X120 ACTCHU ACIN GGS,24900.48,False,pdf_import
+pdf_e1a5ee97c9,production,6,P15,33.15,59.77,280607,29916,280607,6X10X120 ACTCHU ACIN GGS,20001.6,False,pdf_import
+pdf_84b8f63a0c,production,6,P15,59.75,103.4,280610,29917,280610,1X36X120 ACTCHU ACIN FS,32801.76,False,pdf_import
+cs_83598b77b0,cip,6,P15,61.0,67.0,CIP,,,,0.0,True,current_state:cip_scheduled
+cs_aa9c839943,cip,6,P15,205.0,211.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_67d23c835b,cip,6,P15,349.0,355.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_5e52b6c222,cip,6,P15,493.0,499.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+pdf_6feeddf515,production,7,P16,0.017,46.667,280264,29918,280264,6X12X90 WALMRT F&V PEC-BER- STB,34998.48,False,pdf_import
+pdf_7fa85a1f71,production,7,P16,46.667,86.657,120463,29919,120463,1X48X90 APL GGS FS,29998.08,False,pdf_import
+pdf_1d5fc6b3d8,production,7,P16,86.65,110.64,280563,29920,280563,1X24X90 WMT FV PEC-BER-STB- PER,17999.28,False,pdf_import
+pdf_d20046342b,production,7,P16,103.0,133.26,280564,29921,280564,1X24X90 WALMART VP APL-CIN- STB,22699.44,False,pdf_import
+pdf_9ae9351776,production,7,P16,120.017,139.687,280592,29922,280592,1X24X90 VP APL-CIN GGS,14759.28,False,pdf_import
+cs_953475f736,cip,7,P16,137.667,143.667,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_c5707787c7,cip,7,P16,281.667,287.667,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_8dde0db2e8,cip,7,P16,425.667,431.667,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_3d103b0cdd,cip,8,P17,23.0,29.0,CIP,,,,0.0,True,current_state:cip_scheduled
+pdf_189760f5b6,production,8,P17,46.667,133.317,280480,29923,280480,1X28X90 ORG VP APL-CIN-PEC- STB,129999.24,False,pdf_import
+cs_64157ff7da,cip,8,P17,143.0,149.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_9234237036,cip,8,P17,263.0,269.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_75b243c038,cip,8,P17,383.0,389.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_5e12b95131,cip,8,P17,503.0,509.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_6a70e46e1d,cip,9,P18,59.0,65.0,CIP,,,,0.0,True,current_state:cip_scheduled
+cs_e7443eaadc,cip,9,P18,179.0,185.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_6aea1eb664,cip,9,P18,299.0,305.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_2c365b1d8c,cip,9,P18,419.0,425.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_071678d33b,cip,10,P19,-2.233,3.767,CIP (projected),,,,0.0,False,current_state:cip_projected
+pdf_e615c0cf96,production,10,P19,0.017,146.647,280256,29931,280256,1X24X90 KIRKLAND ORG UNSWT APL,220000.32,False,pdf_import
+cs_4022c24666,cip,10,P19,117.767,123.767,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_5611f7b385,cip,10,P19,237.767,243.767,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_c78e78a15c,cip,10,P19,357.767,363.767,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_c4a80a6574,cip,10,P19,477.767,483.767,CIP (projected),,,,0.0,False,current_state:cip_projected
+pdf_21d0036048,production,11,P20,0.017,27.747,280169,29933,280169,6X12X90 FV VP APECSWP- ASTBZUC,41601.6,False,pdf_import
+cs_c73ab74188,cip,11,P20,23.0,29.0,CIP,,,,0.0,True,current_state:cip_scheduled
+pdf_959ab255c8,production,11,P20,27.733,52.533,120448,29957,120448,6X12X90 ACIN GGS,37201.68,False,pdf_import
+pdf_58af1727a1,production,11,P20,49.0,79.0,280583,29958,280583,4X16X90 APL GGS,45002.88,False,pdf_import
+pdf_e848f731e2,production,11,P20,72.0,145.32,280480,29934,280480,1X28X90 ORG VP APL-CIN-PEC- STB,110000.52,False,pdf_import
+cs_b2ca5d105e,cip,11,P20,143.0,149.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_7d7da8f0ab,cip,11,P20,263.0,269.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_b317df09be,cip,11,P20,383.0,389.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_a9d0b94205,cip,11,P20,503.0,509.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+pdf_141fda1afa,production,12,P21,0.017,37.877,280490,29935,280490,1X28X90 FV VP ASTBZUC- APERCAR,56800.8,False,pdf_import
+pdf_34b23c23c0,production,12,P21,37.867,83.527,280591,29936,280591,1X24X90 VP APL-BAN-STB GGS,68500.08,False,pdf_import
+cs_9089d50c43,cip,12,P21,71.0,77.0,CIP,,,,0.0,True,current_state:cip_scheduled
+pdf_64eab362a9,production,12,P21,83.517,103.517,280212,29937,280212,1X24X90 ORG VP APL-CIN-BAN- STB,30000.24,False,pdf_import
+pdf_42e0047be0,production,12,P21,96.0,152.65,280480,29938,280480,1X28X90 ORG VP APL-CIN-PEC- STB,84999.6,False,pdf_import
+cs_5dfed7b89c,cip,12,P21,191.0,197.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_daec8f7a64,cip,12,P21,311.0,317.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_559366093c,cip,12,P21,431.0,437.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+pdf_695f7e2ad9,trial,13,P22,-23.983,96.017,TRIAL,29939,,TRIALS,180040.32,False,pdf_import
+cs_a4cdede453,cip,13,P22,7.483,13.483,CIP (projected),,,,0.0,False,current_state:cip_projected
+pdf_6508489bb0,production,13,P22,104.0,143.99,120448,29940,120448,6X12X90 ACIN GGS,59998.32,False,pdf_import
+cs_0b10864752,cip,13,P22,127.483,133.483,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_7ef2eff37e,cip,13,P22,247.483,253.483,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_11f509a618,cip,13,P22,367.483,373.483,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_7addf2f116,cip,13,P22,487.483,493.483,CIP (projected),,,,0.0,False,current_state:cip_projected

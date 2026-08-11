@@ -283,26 +283,34 @@ for b in schedule:
             b["completion_pct"] = _completion_by_mo[mo]
             b["cases_left"] = _left_by_mo.get(mo)
 
-# scheduled CIPs from cip_info as overlay windows (drawn, not editable)
+# scheduled CIPs from cip_info as overlay windows (drawn, not editable).
+# Skip lines that already have a CIP block in the calendar (e.g. a PDF import
+# or current-state rebuild that carries cip_info-derived CIPs) — otherwise the
+# same scheduled CIP renders twice and the Gantt counts CIP-on-CIP overlaps.
 _cip = read_cip_info(_cip_path)
 from helpers.timefmt import planning_anchor as _pa
 _anchor = _pa(cfg)
+_cal_cip_lines = {str(b.get("line_name")) for b in windows
+                  if b.get("block_type") == "cip"}
 for line, ci in _cip.by_line.items():
-    if ci.scheduled_cip is not None:
-        start_h = (ci.scheduled_cip - _anchor).total_seconds() / 3600.0
-        dur = float(cip_cfg.get("duration_h", 6))
-        lid = -1
-        try:
-            lid = int(str(line)[1:]) - 9
-        except (ValueError, IndexError):
-            lid = 0
-        windows.append({
-            "id": f"cipinfo_{line}", "line_id": lid,
-            "line_name": line, "order_id": "", "sku": "", "sku_description": "",
-            "start_hour": start_h, "end_hour": start_h + dur,
-            "run_hours": dur, "is_trial": False, "block_type": "cip",
-            "label": "CIP (sched)", "locked": True,
-        })
+    if ci.scheduled_cip is None:
+        continue
+    if line in _cal_cip_lines:
+        continue
+    start_h = (ci.scheduled_cip - _anchor).total_seconds() / 3600.0
+    dur = float(cip_cfg.get("duration_h", 6))
+    lid = -1
+    try:
+        lid = int(str(line)[1:]) - 9
+    except (ValueError, IndexError):
+        lid = 0
+    windows.append({
+        "id": f"cipinfo_{line}", "line_id": lid,
+        "line_name": line, "order_id": "", "sku": "", "sku_description": "",
+        "start_hour": start_h, "end_hour": start_h + dur,
+        "run_hours": dur, "is_trial": False, "block_type": "cip",
+        "label": "CIP (sched)", "locked": True,
+    })
 
 # Freeze the on-disk current schedule as baseline once per session (or after reload / save)
 if "cal_baseline_score" not in st.session_state or st.session_state.get("cal_baseline_path") != str(cal_path):
