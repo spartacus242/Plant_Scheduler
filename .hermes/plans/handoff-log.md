@@ -83,9 +83,44 @@ Suite: **110 passed**. App: `.venv\Scripts\python.exe`, port 8501, scrub `PYTHON
     the "always return a note" policy is what exposed it in the run log — that hook now has
     its own two tests.
 
-10. **NOT STARTED** — Warm-start / `AddHint`. `grep -c AddHint code/solver/*.py` = **0**.
-    The manprg queued MOs are a ready-made feasible seed for `present`, `seg_a_start`,
-    `seg_a_run` — the single highest-leverage CP-SAT change available on this model.
+10. **DONE** — Warm start / `AddHint`. — `52937d7`
+    `code/solver/warm_start.py` maps the previous run's `schedule_phase2.csv` onto the
+    current `(line, order)` keys and attaches it as a CP-SAT solution hint on the
+    **single-phase** path (the hard case, pitfall 9). `scenario_runner._prepare_work_dir`
+    preserves the last schedule across the work-dir wipe as `prev_schedule.csv`, so every
+    solve naturally hints from the one before it — the canonical "yesterday's solution" hint.
+    * **Complete, not sparse.** The Primer notes CP-SAT only really benefits from a hint it
+      can finish; a partial hint it struggles to complete can cost more than it saves. So all
+      1,428 `(line, order)` pairs are hinted across `present / seg_a_* / seg_b_* / run_h /
+      eff_end` — pairs unused by the previous schedule get an explicit empty assignment.
+    * **Stale hints are dropped and counted, never guessed.** Every value is range-checked
+      against the CURRENT horizon and every `order_id` against the CURRENT order list, because
+      a hint outside a variable's domain is a hard CP-SAT error. A hint can never change the
+      feasible set (CP-SAT repairs it), which is why this is safe at every relax level.
+    * `--no-warm-start` exists for measurement only. Always logs, including the cold-start and
+      failure paths (pitfall 15).
+    **A/B proof** — `scripts/ab_warm_start.sh`, three real single-phase solves, identical
+    inputs. A tight 120 s budget is the honest test: pitfall 9 records that single-phase at a
+    short budget degrades badly for purely time-related reasons, so that is where a hint
+    should show up.
+
+    | | A seed 300 s cold | B cold 120 s | C **warm** 120 s |
+    |---|---|---|---|
+    | blocks placed | 232 | 229 | **236** |
+    | orders short of qmin | 7 | 10 | **6** |
+    | late orders | 13 | 17 | **15** |
+    | total run hours | 4874 | 5010 | 4889 |
+    | status / relax | FEASIBLE / 3 | FEASIBLE / 3 | FEASIBLE / 3 |
+
+    **At 120 s the warm run beats the cold 120 s run on every demand metric, and beats the
+    300 s cold seed on orders-short-of-qmin (6 vs 7) at 40 % of the budget.**
+    Hint application was verified in the run log, not assumed: `hinted 14280 vars ... 149
+    assignments (83 CIP-split), 232/232 rows mapped (dropped: 0 unknown order, 0 unknown
+    line, 0 outside horizon 504h)`, and the two baselines logged
+    `[warm-start] disabled by --no-warm-start`.
+    Suite **132 passed** (was 124); `tests/test_warm_start.py` adds 8 tests on the pure
+    mapping, covering every drop path that keeps a hint inside the variable domains.
+
 11. **NOT STARTED** — Changeover-matrix compression. `changeovers.csv` is 44,310 rows / 1.39 MB,
     a dense 211×211 matrix stored long. Group SKUs into format families and penalise only
     between-family transitions; cache as parquet keyed by mtime. The Generate page re-parses
@@ -158,6 +193,98 @@ Suite: **110 passed**. App: `.venv\Scripts\python.exe`, port 8501, scrub `PYTHON
     family compression — if presolve is a large share of a 240 s budget, item 11 buys solve
     quality, not just page-load speed.
 
+29. **NOT STARTED (new, this run, from item 10 review)** — **Prove the warm start with a
+    contract/regression test, not just an ad-hoc A/B.** `tests/test_solver_contracts.py` reads
+    the last artifact, so fold a `--no-warm-start` vs default `solve → compare blocks/short`
+    into the suite (a `slow`-marked gate) so every handoff run re-proves the hint helps or at
+    least does not regress. This is the same guard-item-27 instinct applied to item 10.
+30. **NOT STARTED (new, this run)** — **Extend warm start to the two-phase path.** Today it only
+    fires on the single-phase call (pitfall 9 hard case). The two-phase Week-0 solve is the
+    one Carsten re-runs every morning and should benefit most from yesterday's Week-0 schedule
+    — wire `apply_warm_start` into `_run_two_phase` (hint the Week-0 model from the previous
+    `week1_initial_states`/last solve, watch the 168 h horizon + hour_offset so stale hints are
+    dropped, not injected).
+31. **NOT STARTED (new, this run)** — **Second hint source: `helpers/version_manager`.** The
+    saved schedule versions are the canonical "saved plan" — a better warm start than the last
+    solve when the planner has hand-edited a scenario. Let `prev_schedule.csv` be optionally
+    sourced from a chosen saved version, not only the previous work-dir run.
+
+---
+
+## Constraints currently modeled (Step-3 review, this run)
+
+`model_builder.build_model` carries **128 `model.Add`** + **15 `AddImplication`** + 6
+`AddMaxEquality` + 3 `AddMinEquality` + **1 `AddNoOverlap`**. The full review below is
+rotated across (a) constraints, (b) data inputs, (c) solver logic, (d) OR-Tools research,
+(e) suggested improvements.
+
+### a. Constraints — enumeration & risk flags
+- **Due windows** (line ~128): `seg_a_start >= ds_eff` is HARD at all relax levels (good —
+  pitfall 13 rule). `eff_end <= de + 1 + lateness` soft only when `relax_due`. The
+  `WEEK0_END=167 / WEEK1_START=168` literals are still hard-coded here (items 21/26).
+- **Demand bounds** (~227): `prod >= qmin` with the `producible` zeroing from pitfall 11 —
+  correct. `allow_week1_in_week0` rewrites `ds_eff=WEEK0_FILL_START=120`, which is what kept
+  week-2 orders *silently representable* across the 336→504 bug (item 8). Fine, but it is the
+  mechanism that hid item 8, so it is load-bearing on item 22.
+- **Changeovers** (~244) + **CIP** (~560): CIP intervals share the single `AddNoOverlap` with
+  production (line ~909) — so a solved schedule structurally cannot overlap (pitfall 20).
+  `available_from` floor now hoisted out of the changeover block (pitfall 13b).
+- **Running-MO gate** (item 22): `present==1` forced for current-MO orders at all relax levels;
+  `line_running_free_h` used for the gate, not the queue-end. Ladder skip `_RELAX_SKIP={0:3}`.
+- **Risk: only ONE `AddNoOverlap` for the whole plant.** 14 lines × ~100 orders = 1,400
+  optional intervals in one constraint. That is legal but CP-SAT's interval propagation is
+  per-constraint; a per-line `AddNoOverlap` (14 constraints) would localise propagation and may
+  speed the single-phase search further — worth a measurement next to item 10's hint.
+- **Risk: `max_lines_per_order = 2`** creates symmetric interchangeable lines (item 12) with no
+  symmetry breaker; the hint from item 10 now pins a specific assignment, which incidentally
+  *breaks* that symmetry for free on the warm path.
+
+### b. Data inputs (re-checked this run)
+- `data/reference/` unchanged from the last run's snapshot. `demand_plan.csv` still 101 orders.
+- **Silent-failure path still open:** `prev_schedule.csv` carry-over (item 10) reads whatever
+  `schedule_phase2.csv` the last run left — if that run was itself UNKNOWN/garbage, the hint
+  seeds from garbage. Mitigated because the hint is repaired, not forced, and item 29 will
+  regression-guard it; but a planner should know the first solve of a fresh scenario is cold.
+- `changeovers.csv` (44,310 rows) re-parsed per page load + per solve — item 11/28.
+
+### c. Solver logic (deep-read this run)
+- `phase2_scheduler.main()` single-phase is the only warm-start site (now wired). `_run_two_phase`
+  is not (item 30).
+- `data_loader.Params` still has the 3 reconstruction sites (pitfall 1) — `horizon_h` survives
+  after item 8's fix; no new Params field added this run (warm start uses a CLI flag, so the
+  pitfall-1 trap was avoided by design).
+- `model_builder` returns 18 vars; the hint touches 9 of them. Note `produced`, `cip_vars`,
+  `lateness`, `week_dev` are intentionally NOT hinted — `produced` is a derived sum and hinting
+  it would be redundant/possibly conflicting; `cip_vars` are interval vars with no AddHint API.
+  Correct to leave them.
+
+### d. OR-Tools research (this run)
+- **Primer / Laurent Perron consensus:** (1) hints are the standard first move for a model
+  re-solved against a slightly-changed world; (2) **a hint only helps if CP-SAT can complete it
+  quickly — give a COMPLETE hint, or risk wasting search time.** This directly drove the
+  "hint every pair, including empty ones" design in item 10. (3) `fix_variables_to_their_hinted_value`
+  is available if a user ever wants to *force* the previous plan as a baseline and detect
+  conflict — not used now because the hint must remain advisory. (4) Optional-interval cost
+  (pitfall from run 2) still stands: every `(line, order)` is a
+  `new_optional_interval_var` (variable size + presence literal) — the most expensive interval
+  form. The single-`AddNoOverlap` note in (a) is the actionable lever.
+- **Decomposition still beats one flat model** at 504 h (standing concern). Item 10's hint makes
+  single-phase *cheaper* but does not remove the structural case for restoring the two-phase
+  split as "week-0 hard + weeks 1-2 abstract".
+
+### e. Suggested improvements (prioritised, this run)
+1. **Per-line `AddNoOverlap`** (from a) — likely the next biggest single-phase speed win after
+   the hint; measure A/B against item 10's warm path.
+2. **Item 30** — warm start the two-phase Week-0 solve (the daily re-run).
+3. **Item 29** — regression-guard the hint in the suite.
+4. **Item 11/28** — changeover family compression + measure presolve, not just search.
+5. **Item 12** — symmetry breaking now *partially covered* by the hint pinning one assignment;
+   still add an explicit tie-break (e.g. prefer lower line id) so the cold path also breaks it.
+6. **Item 21/23/26** — one week-grid source of truth + the week-2-blind blockages diagnostic.
+7. **Item 22** — report `unrepresentable_orders` so a silent horizon/anchor change can never
+   again hide 38 week-2 orders for a week (the item-8 failure mode).
+
+---
 
 ---
 
@@ -282,4 +409,26 @@ float-string bug fixed at display time rather than at read time.
   root cause class, the week-2-blind blockages diagnostic, a fresh-solve contract gate, and
   presolve cost as the real argument for changeover compression).
 - Commits: `8291ebc` (tests + audit + data fix), doc update following.
+
+### 2026-08-10 (cron run 3)
+- **Built item 10 — CP-SAT warm start.** New `code/solver/warm_start.py` hints the
+  single-phase solve from the previous run's schedule; `scenario_runner` preserves it across
+  the work-dir wipe as `prev_schedule.csv`. Complete-hint design (all 1,428 pairs, derived vars
+  included) per the Primer's "CP-SAT only benefits from complete hints" note; stale rows dropped
+  and counted against the current horizon/order list so a hint can never fall outside a domain.
+  `--no-warm-start` for A/B. Commit `52937d7`.
+- **Proved with three real single-phase solves** (`scripts/ab_warm_start.sh`), not a compile:
+  at a tight 120 s budget the warm run beat the cold 120 s run on every demand metric
+  (236 vs 229 blocks, **6 vs 10 short of qmin**, 15 vs 17 late) and matched/beat the 300 s cold
+  seed on orders-short (6 vs 7) at 40 % of the budget. Hint application verified in the run log:
+  `hinted 14280 vars ... 232/232 rows mapped, 0 dropped`; the two baselines logged
+  `disabled by --no-warm-start`. Suite **132 passed** (was 124), 8 new warm-start tests.
+- Review emphasis this run: **(a) constraints** (full enumeration + risk flags),
+  **(c) solver logic**, **(d) OR-Tools research**. Key new finding: the whole plant shares a
+  single `AddNoOverlap` over ~1,400 optional intervals — a per-line split is the likely next
+  single-phase speed lever after the hint. New items 29–31 appended (regression-guard the hint,
+  two-phase warm start, version_manager as a second hint source).
+- Scratch A/B artifacts left under `data/_ab_warmstart/` (git-ignored path convention); not
+  committed.
+
 
