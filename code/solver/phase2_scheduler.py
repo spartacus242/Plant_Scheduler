@@ -1098,6 +1098,30 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
             f"{len(proto0.variables):,} vars, {len(proto0.constraints):,} constraints",
         )
 
+        # ── Warm start (item 30) ──
+        # Seed the Week-0 search with the previous run's schedule. Week-0 is
+        # the daily re-run Carsten re-solves every morning, so it benefits
+        # most from yesterday's Week-0 plan. The previous schedule lives in
+        # prev_schedule.csv (the full-horizon combined schedule from the last
+        # run). build_hint_plan range-checks every prev row against this
+        # model's 168h horizon and DROPS week 1-2 rows (absolute hours 168+),
+        # and rebuilds order_index from the CURRENT Week-0 order list so every
+        # (line, order) key aligns with vars0["present"]. A hint only steers
+        # the search (CP-SAT repairs it), so it is safe at every relax level.
+        # ALWAYS logs, including the no-op / failure paths (pitfall 15).
+        if not _ARGS.no_warm_start:
+            try:
+                from warm_start import apply_warm_start
+
+                for _wsn in apply_warm_start(
+                    model0, vars0, data0, P0.horizon_h, data_dir
+                ):
+                    log(_wsn)
+            except Exception as _wsexc:  # noqa: BLE001
+                log(f"[warm-start] W0 FAILED, solving cold: {_wsexc}")
+        else:
+            log("[warm-start] disabled by --no-warm-start")
+
         # ── Stage: Solving Week 0 ──
         update_stage(
             data_dir, "solving_week0", "active",

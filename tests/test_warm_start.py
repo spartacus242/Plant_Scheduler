@@ -136,3 +136,76 @@ def test_empty_previous_schedule_yields_no_plan_but_valid_stats():
 
     assert plan == {}
     assert stats["rows"] == 0 and stats["assignments"] == 0
+
+
+def test_two_phase_week0_horizon_drops_week1_absolute_rows():
+    """Item 30 invariant: the previous run's combined schedule carries Week-1
+    orders at ABSOLUTE hours 168+ (phase2_scheduler line 1288: "Phase 2 uses
+    absolute hours"). Against the 168h Week-0 model those rows must be DROPPED
+    by the horizon check, never hinted into Week-0. Here an order that IS in
+    the Week-0 model but was previously placed in Week-1 (h200) gets no hint.
+    """
+    data = _data(["W0-A", "W0-B"])
+    rows = [
+        _row(1, "W0-A", 50, 20),    # Week-0 placement -> maps
+        _row(1, "W0-B", 200, 30),   # same order, previously in Week-1 -> drop
+    ]
+
+    plan, stats = build_hint_plan(data, 168, rows)
+
+    assert stats["matched_rows"] == 1
+    assert stats["out_of_horizon"] == 1
+    assert (1, 0) in plan           # W0-A hinted
+    assert (1, 1) not in plan       # W0-B NOT hinted (its only prev row was Week-1)
+
+
+def test_apply_warm_start_reads_prev_schedule_and_drops_week1(tmp_path):
+    """End-to-end-ish: apply_warm_start reads prev_schedule.csv from the work
+    dir and hints a model for the 168h Week-0 model, dropping Week-1 rows so a
+    Week-1-placed order is hinted as an EMPTY (present=0) assignment rather
+    than carrying its absolute Week-1 start into Week-0 (item 30).
+    """
+    vars_dict = {
+        "present": {(1, 0): object(), (1, 1): object()},
+        "seg_a_start": {(1, 0): object(), (1, 1): object()},
+        "seg_a_run": {(1, 0): object(), (1, 1): object()},
+        "seg_a_end": {(1, 0): object(), (1, 1): object()},
+        "seg_b_present": {(1, 0): object(), (1, 1): object()},
+        "seg_b_start": {(1, 0): object(), (1, 1): object()},
+        "seg_b_run": {(1, 0): object(), (1, 1): object()},
+        "seg_b_end": {(1, 0): object(), (1, 1): object()},
+        "run_h": {(1, 0): object(), (1, 1): object()},
+        "eff_end": {(1, 0): object(), (1, 1): object()},
+    }
+    data = _data(["W0-A", "W0-B"])
+    captured = []
+    model = SimpleNamespace(
+        AddHint=lambda var, val: captured.append((var, val))
+    )
+
+    import csv
+
+    prev = tmp_path / "prev_schedule.csv"
+    with open(prev, "w", newline="") as fh:
+        w = csv.DictWriter(
+            fh,
+            fieldnames=["line_id", "order_id", "start_hour", "end_hour", "run_hours"],
+        )
+        w.writeheader()
+        w.writerow({"line_id": 1, "order_id": "W0-A", "start_hour": 50, "end_hour": 70, "run_hours": 20})
+        w.writerow({"line_id": 1, "order_id": "W0-B", "start_hour": 200, "end_hour": 230, "run_hours": 30})
+
+    from warm_start import apply_warm_start
+
+    notes = apply_warm_start(model, vars_dict, data, 168, tmp_path)
+
+    assert any("hinted" in n for n in notes), notes
+    assert any("outside horizon 168h" in n for n in notes), notes
+
+    hints = {id(var): val for (var, val) in captured}
+    # W0-A: hinted present=1 with its Week-0 start.
+    assert hints[id(vars_dict["present"][(1, 0)])] == 1
+    assert hints[id(vars_dict["seg_a_start"][(1, 0)])] == 50
+    # W0-B: its only prev row was Week-1, so it is hinted as an EMPTY assignment.
+    assert hints[id(vars_dict["present"][(1, 1)])] == 0
+    assert hints[id(vars_dict["seg_a_start"][(1, 1)])] == 0

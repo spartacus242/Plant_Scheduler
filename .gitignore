@@ -30,6 +30,8 @@ code/validation_report.txt
 # Flowstate rebuild scratch
 data/_scenario_work/
 data/_upload/
+data/_ab_warmstart/
+data/_ab_warmstart_twophase/
 
 # Runtime backups (regenerable pre-write copies; do not version them)
 data/_backups/
