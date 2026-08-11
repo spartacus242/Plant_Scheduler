@@ -181,6 +181,16 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--no-warm-start",
+        action="store_true",
+        help=(
+            "Disable CP-SAT solution hinting from the previous run's schedule "
+            "(prev_schedule.csv in the work dir). Hints only steer the search "
+            "- they cannot change the feasible set - so this flag exists for "
+            "A/B measurement, not for correctness."
+        ),
+    )
+    parser.add_argument(
         "--config",
         type=Path,
         default=None,
@@ -196,7 +206,7 @@ _ARGS = _parse_args() if __name__ == "__main__" else argparse.Namespace(
     min_run_hours=None, no_week1_in_week0=False, initial_states=None,
     two_phase=False,
     objective="balanced", validate=False, rolling=False, cross_week=False,
-    cip_flex=False, config=None,
+    cip_flex=False, no_warm_start=False, config=None,
 )
 
 # --- Config file loading (Phase 2.2) ---
@@ -1531,6 +1541,25 @@ def main() -> None:
                         f"{n_vars:,} variables, {n_cons:,} constraints",
                     )
                     log(f"[model] level {lvl} ({RELAX_LABELS[lvl]}): {n_vars} vars, {n_cons} constraints")
+
+                    # ── Warm start (item 10) ──
+                    # Seed the search with the previous run's schedule. A hint
+                    # cannot change the feasible set (CP-SAT repairs it), so it
+                    # is safe at every relax level; it only gives the search a
+                    # foothold on the single-phase model, which is the hard
+                    # case (pitfall 9). ALWAYS logs, including the no-op paths.
+                    if not _ARGS.no_warm_start:
+                        try:
+                            from warm_start import apply_warm_start
+
+                            for _wsn in apply_warm_start(
+                                model, vars_dict, data, P.horizon_h, DATA_DIR
+                            ):
+                                log(_wsn)
+                        except Exception as _wsexc:  # noqa: BLE001
+                            log(f"[warm-start] FAILED, solving cold: {_wsexc}")
+                    else:
+                        log("[warm-start] disabled by --no-warm-start")
 
                     # ── Stage: Solving ──
                     update_stage(

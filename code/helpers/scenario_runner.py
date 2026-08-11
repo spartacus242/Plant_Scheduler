@@ -379,8 +379,27 @@ def _prepare_work_dir(data_dir: Path, work: Path) -> None:
     of Flowstate-legacy/data. All solver inputs are already in reference/.
     """
     if work.exists():
+        # Warm start (item 10): the previous run's schedule is the best
+        # available hint for this one, but the wipe below would destroy it.
+        # Carry it across as prev_schedule.csv; the solver hints from it and
+        # CP-SAT repairs anything stale, so a wrong carry-over can only cost
+        # search time, never correctness.
+        _prev = work / "schedule_phase2.csv"
+        _carry: bytes | None = None
+        if _prev.exists():
+            try:
+                _carry = _prev.read_bytes()
+            except OSError:
+                _carry = None
         shutil.rmtree(work)
-    work.mkdir(parents=True)
+        work.mkdir(parents=True)
+        if _carry is not None:
+            try:
+                (work / "prev_schedule.csv").write_bytes(_carry)
+            except OSError:
+                pass
+    else:
+        work.mkdir(parents=True)
 
     ref = data_dir / "reference"
 
