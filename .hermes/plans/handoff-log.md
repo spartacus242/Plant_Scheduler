@@ -51,11 +51,38 @@ Suite: **110 passed**. App: `.venv\Scripts\python.exe`, port 8501, scrub `PYTHON
 
    Demand coverage is the headline: 40 → 4 orders short. The 14 "late" orders are week-2
    work now genuinely placed against soft due dates instead of being silently squeezed.
-9. **NOT STARTED** — Generalise `scripts/check_solver_current_state.py` into
-   `tests/test_solver_contracts.py` (slow-marked): for each input column that is supposed to
-   constrain the solve (`available_from_hour`, downtime windows, locked blocks, due windows,
-   `MaxHoursBetweenCIP`, locked line for current MOs), assert the OUTPUT honours it. Two of
-   these would have caught both 2026-08-10 solver defects instantly.
+9. **DONE** — `tests/test_solver_contracts.py`: 14 input→output contracts, asserted against a
+   real solved work dir. — `8291ebc`
+   C1 availability gate · C2 downtime windows · C3 no-overlap (production + CIP) · C4 horizon
+   bound · C5 locked current-MO line · C6 CIP spacing · C7 downtime staleness audit ·
+   meta feasibility-report parse. They read artifacts under `data/_scenario_work/`, so they
+   cost ~0.5 s and live in the default suite; they skip cleanly on a never-solved clone.
+   `scripts/check_solver_current_state.py` stays the live-run gate.
+   **The suite immediately earned its keep** — see item 24 below, found RED on first run.
+   Suite now **124 passed** (was 110).
+24. **DONE (found & fixed this run)** — **Two DOWN lines were being scheduled with real
+    production.** — `8291ebc`
+    `downtimes.csv` said `P11 0→336` and `P13 0→336`, written when the horizon was 2 weeks.
+    Item 8 raised the horizon to 504 h; the windows did not move, so the solver correctly
+    concluded both lines came free at hour 336 and filled them. Measured on the existing
+    work dirs: **6 blocks on P11 in scenario E, 3 on P11/P13 in scenario C** — production
+    planned on lines that are physically down.
+    Every component was individually correct (the planner entered a true window, the solver
+    honoured it exactly); the defect lived only in the gap between them. Fix:
+    * `helpers/downtime_horizon.py` — pure audit. A window starting at hour ≤ 0 and ending
+      exactly on a legacy horizon boundary (168/336) strictly inside the current horizon is
+      flagged as a stale full-horizon outage. **Detect and report, never silently rewrite** —
+      an outage window is a statement about the physical plant, and guessing what the planner
+      "meant" would be inventing plant state.
+    * `scenario_runner._audit_work_downtimes` runs it on the WORK-DIR files (what the solver
+      actually reads) on every solve and prepends the notes to the run log.
+    * `data/reference/downtimes.csv` extended to 504.
+    **Verified by a real 240 s single-phase solve** (`scripts/verify_downtime_horizon.py`):
+    ok=True, relax 3, **207 blocks, max end hour 504, zero production inside any downtime
+    window**. The audit hook itself shipped broken on the first attempt (`NameError: pd`) and
+    the "always return a note" policy is what exposed it in the run log — that hook now has
+    its own two tests.
+
 10. **NOT STARTED** — Warm-start / `AddHint`. `grep -c AddHint code/solver/*.py` = **0**.
     The manprg queued MOs are a ready-made feasible seed for `present`, `seg_a_start`,
     `seg_a_run` — the single highest-leverage CP-SAT change available on this model.
@@ -102,9 +129,35 @@ Suite: **110 passed**. App: `.venv\Scripts\python.exe`, port 8501, scrub `PYTHON
     "short of qmin", it is invisible. `feasibility_report.json` should carry an
     `unrepresentable_orders` list with the reason, and the Generate page should show it.
     This is the defect class that hid item 8 for a full week.
-23. **NOT STARTED (new, this run)** — `data_loader.py` lines 321/371 default a missing
+23. **NOT STARTED** — `data_loader.py` lines 321/371 default a missing
     `due_end` to the literal `336 - 1`, independent of `P.horizon_h`. Same magic number,
     third location — fold into item 21's single source of truth.
+25. **NOT STARTED (new, this run)** — **Store time fixtures as DATES, not hour offsets.**
+    This is the root cause behind both item 24 and skill pitfall 18. `downtimes.csv`,
+    `trials.csv` and `initial_states.csv` encode time as an hour offset against an anchor
+    that moves every week (`anchor_mode = "today"`) and a horizon that just grew by 50 %.
+    Every such row silently changes meaning when either moves, and nothing in the pipeline
+    can tell a re-anchored row from a deliberate one. Store real datetimes on disk and
+    convert to offsets at load time, where the anchor is known and a conversion that falls
+    outside the horizon can be reported. Until then, item 24's audit is a patch over one
+    instance of a general defect.
+26. **NOT STARTED (new, this run)** — **The blockages diagnostic cannot see week 2.**
+    `diagnostics.py:24` hard-codes `w_start, w_end = 168, 336`, so on the 504 h horizon the
+    diagnostic analyses weeks 0–1 and silently ignores 38 of 101 orders. Any "why is this
+    infeasible" answer it gives for a week-2 order is wrong by omission. Same literal family
+    as items 21/23 — fix together.
+27. **NOT STARTED (new, this run)** — **Run the contract suite against a FRESH solve, not
+    just the last artifact.** Item 9's tests read whatever work dir solved most recently, so
+    a stale dir can make them pass vacuously. Add a `slow`-marked variant that invokes
+    `run_scenario` itself (~240 s) and have this cron job execute it once per run, so every
+    handoff run ends with a green real-solve gate rather than an artifact gate.
+28. **NOT STARTED (new, this run)** — **Presolve cost of the changeover matrix.** Item 11
+    frames `changeovers.csv` (44,310 rows) as a load-time problem; the CP-SAT literature
+    (and practitioner reports) put the bigger cost in **presolve, which scales with model
+    size** rather than search. Measure `presolve` time in the solver log before and after
+    family compression — if presolve is a large share of a 240 s budget, item 11 buys solve
+    quality, not just page-load speed.
+
 
 ---
 
@@ -166,6 +219,31 @@ float-string bug fixed at display time rather than at read time.
 
 ---
 
+## Research findings
+
+### 2026-08-10 (run 2) — CP-SAT practice, checked against this model
+- **Hints are the consensus first move** for a model re-solved daily against a slightly
+  changed world. Practitioner reports (HN 48120351) and the CP-SAT Primer agree: a good hint
+  "cuts down search time significantly", and the canonical hint is *yesterday's solution*.
+  Flowstate has two hint sources and uses neither — the manprg queued sequence, and the
+  previously saved schedule version (`helpers/version_manager`). Item 10 stands as the top
+  solver change available.
+- **Presolve, not search, is what scales with model size.** Repeated reports of large CP-SAT
+  models spending most of the wall clock in presolve. This reframes item 11 (44,310-row
+  changeover matrix) as a *solve-quality* lever, not a page-load nicety → new item 28.
+- **Optional-interval cost is real.** The Primer ranks `new_optional_interval_var` (variable
+  size + presence literal) the most expensive interval form, and this model uses exactly that
+  shape for every (line, order) pair. `new_optional_fixed_size_interval_var` is much cheaper —
+  worth checking whether CIP intervals (fixed duration from `line_cip_hrs`) are being built
+  as variable-size when they need not be.
+- **Decomposition beats one flat model at this size** — reinforces the standing concern that
+  scenario E and cross-week both discard the two-phase split just as the horizon hit 504 h.
+- **"Start simple, add constraints incrementally"** is the standard advice and is what the
+  relax ladder already implements. The gap here is *diagnosis*, not mechanism — see the
+  standing `status_at_level_0` concern and item 22.
+
+---
+
 ## Run log
 
 ### 2026-08-10 (cron run)
@@ -183,3 +261,25 @@ float-string bug fixed at display time rather than at read time.
   **167 → 244 blocks, 40 → 4 orders short of qmin**, schedule now reaches hour 499 instead
   of stopping dead at 336. Compile + full suite green after the solver edit.
 - New review items 21–23 appended.
+
+### 2026-08-10 (cron run 2)
+- **Built item 9** — `tests/test_solver_contracts.py`, 14 input→output contracts. Verified
+  not-skipped: all 14 run for real against the freshest work dir (`pytest -v -rs` shows 14
+  PASSED, 0 SKIPPED). Full suite **124 passed** (was 110).
+- **The contract suite found a live defect on its first run (item 24).** C7 went RED against
+  the real `data/reference/downtimes.csv`: P11 and P13 were recorded down `0→336 h` under the
+  old 2-week horizon, so the 504 h solve treated both physically-down lines as available from
+  hour 336 and scheduled production on them (6 blocks in the scenario-E work dir, 3 in C).
+  Fixed with a report-don't-rewrite audit (`helpers/downtime_horizon.py`), a
+  `scenario_runner` hook that runs it on the work-dir files every solve, and a data fix to
+  504. **Proved with a real 240 s solve**, not a compile: 207 blocks, max end hour 504, zero
+  production inside any downtime window (`scripts/verify_downtime_horizon.py`).
+- Honest note: the audit hook's first version raised `NameError: pd` and did nothing. It was
+  caught only because the hook returns a note on failure instead of failing silently — the
+  same policy that pitfall 15 exists for. The hook now has its own two tests.
+- Review emphasis this run: **(b) data inputs** and **(c) solver logic**, plus **(d) OR-Tools
+  research**. Findings recorded above; new items 25–28 appended (dates-not-offsets as the
+  root cause class, the week-2-blind blockages diagnostic, a fresh-solve contract gate, and
+  presolve cost as the real argument for changeover compression).
+- Commits: `8291ebc` (tests + audit + data fix), doc update following.
+
