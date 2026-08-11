@@ -721,6 +721,13 @@ def score_cip(
     hours = float((cips["end_h"] - cips["start_h"]).clip(lower=0).sum()) if count else 0.0
     forfeited = 0.0
     forfeited_kg = 0.0
+    # Overdue-CIP count: a line that RUNS PAST its max interval without a clean
+    # is a hygiene failure, not a virtue. The old "fewer CIPs = higher score"
+    # rewarded a schedule that never cleaned a line (measured: a 0-CIP rough
+    # draft scored 100 while lines ran 500h past a 120h interval). Mirror
+    # check_cip_spacing: count each line-segment whose clock-since-last-CIP
+    # exceeds the interval. This makes "no CIPs" score ~0 on this component.
+    overdue = 0
 
     for line_id, cip_grp in cips.groupby("line_id"):
         line_name = str(cip_grp["line_name"].iloc[0]) if len(cip_grp) else str(line_id)
@@ -747,12 +754,40 @@ def score_cip(
             forfeited_kg += lost_h * rate
             last_cip_end = float(cip["end_h"])
 
+    # Overdue pass: for lines that have production but few/no CIPs, walk the
+    # whole horizon and count how many times clock-since-last-CIP exceeds the
+    # interval. Production without a following clean before interval is overdue.
+    for line_id, line_prod in prod.groupby("line_id"):
+        line_name = str(line_prod["line_name"].iloc[0]) if len(line_prod) else str(line_id)
+        interval = float(
+            intervals.get(line_name)
+            or intervals.get(str(line_id))
+            or cfg["cip_interval_fallback_h"]
+        )
+        line_cips = cips[cips["line_id"] == line_id].sort_values("start_h")
+        last_cip_end = 0.0
+        cip_idx = 0
+        cip_starts = [float(c["start_h"]) for _, c in line_cips.iterrows()]
+        cip_ends = [float(c["end_h"]) for _, c in line_cips.iterrows()]
+        for _, p in line_prod.iterrows():
+            ps, pe = float(p["start_h"]), float(p["end_h"])
+            # apply any CIPs that start before this production block
+            while cip_idx < len(cip_starts) and cip_starts[cip_idx] <= ps:
+                last_cip_end = cip_ends[cip_idx]
+                cip_idx += 1
+            clock_at_end = pe - last_cip_end
+            if clock_at_end > interval + 12:
+                overdue += 1
+
     return {
         "cip_count": int(count),
         "cip_hours": round(hours, 2),
         # Reported for continuity / diagnostics; the scored metric is the kg one.
         "cip_forfeited_h": round(forfeited, 2),
         "cip_forfeited_kg": round(forfeited_kg, 2),
+        # Overdue cleanings: lines that ran past their max CIP interval.
+        # Drives the "not enough CIPs" side of the CIP score.
+        "cip_overdue": int(overdue),
     }
 
 
@@ -924,13 +959,18 @@ def category_scores(raw: dict[str, dict], cfg: dict) -> dict[str, float | None]:
         _score_lower_better(co["format_changes"], cfg["cap_format_changes"]),
         _score_lower_better(co["total_co_hours"], cfg["cap_co_hours"]),
     ]
+    # CIPs are MANDATORY and cannot be late/overdue — they are a hard hygiene
+    # compliance requirement, not a soft preference. So the CIP category is
+    # scored on OVERDUE compliance alone: any line-segment that runs past its
+    # max interval without a clean collapses the category toward 0 (cap is 1,
+    # so one overdue event → score 0). A fully compliant schedule (every line
+    # cleaned within interval) scores 100. cip_count / cip_hours /
+    # cip_forfeited_kg are reported for diagnostics but deliberately NOT
+    # averaged in, because "fewer CIPs = higher score" rewarded a schedule
+    # that never cleaned a line at all.
     cip_s = [
-        _score_lower_better(cip["cip_count"], cfg["cap_cip_count"]),
-        _score_lower_better(cip["cip_hours"], cfg["cap_cip_hours"]),
-        # Scored in KILOGRAMS of lost production, not hours (see score_cip).
-        # cip_forfeited_h is still reported but no longer feeds the score.
         _score_lower_better(
-            cip.get("cip_forfeited_kg"), float(cfg["cap_cip_forfeited_kg"])
+            cip.get("cip_overdue"), float(cfg.get("cap_cip_overdue") or 1)
         ),
     ]
     trial_s = [

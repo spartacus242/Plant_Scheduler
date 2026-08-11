@@ -273,7 +273,20 @@ _RELAX_SKIP = {0: 3} if USE_CURRENT_MO else {}
 
 
 def _ladder_levels(base_lvl: int, max_lvl: int) -> list[int]:
-    """Relax levels to try in order, with current-MO skip applied."""
+    """Relax levels to try in order, with current-MO skip applied.
+
+    For ``min-changeovers`` the whole point of the mode is to honour
+    changeovers, so the ladder must NEVER escalate to level 3 (``ignore_co``),
+    which disables the changeover constraints AND the changeover objective
+    term (model_builder gates both behind ``not ignore_co``). A min-changeovers
+    solve that relaxes changeovers is a contradiction and silently emits a
+    schedule with MORE changeovers than a plain draft. Cap at level 2
+    (relax demand + soft due, changeovers still enforced); if even that is
+    infeasible, report it honestly rather than drop the objective.
+    """
+    if OBJECTIVE_MODE == "min-changeovers":
+        base_lvl = min(base_lvl, 2)
+        max_lvl = min(max_lvl, 2)
     if not _RELAX_SKIP:
         return list(range(base_lvl, max_lvl + 1))
     levels: list[int] = []
@@ -282,7 +295,10 @@ def _ladder_levels(base_lvl: int, max_lvl: int) -> list[int]:
         levels.append(lvl)
         nxt = _RELAX_SKIP.get(lvl)
         if nxt is not None and nxt > lvl:
-            lvl = nxt
+            # Clamp the skip to max_lvl so a mode cap (e.g. min-changeovers at
+            # level 2) is never overshot — otherwise {0:3} + max 2 would jump
+            # straight past max and only level 0 would ever be tried.
+            lvl = min(nxt, max_lvl)
         else:
             lvl += 1
     return levels

@@ -67,6 +67,11 @@ def scorecard_config(cfg: dict | None = None) -> dict[str, Any]:
         # Forfeited CIP is scored in kg of lost production (hours x line avg
         # kg/h). Calibrated ~1.6x the seed schedule so it does not clamp to 0.
         "cap_cip_forfeited_kg": 1500000.0,
+        # Overdue CIPs (line ran past its max interval without a clean). CIPs
+        # are MANDATORY and cannot be late/overdue — this is the ONLY scored
+        # component of the CIP category. Cap = 1: a single overdue event drops
+        # the CIP category to 0; zero overdue = 100 (fully compliant).
+        "cap_cip_overdue": 1,
         "cap_trial_hours": 48,
         "cap_trial_disruptions": 20,
         "cap_maint_conflicts": 10,
