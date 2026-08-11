@@ -218,7 +218,6 @@ st.subheader("Solver knobs per scenario")
 for _s in PRESETS:
     _render_knobs(_s)
 
-tl = st.number_input("Solver time limit (s) per scenario", min_value=10, max_value=600, value=default_tl, step=10)
 selected = st.multiselect(
     "Scenarios to generate",
     options=[s["id"] for s in PRESETS],
@@ -258,6 +257,53 @@ if cross_week_on:
         f"Deviation costs {int(_obj_cfg_flex.get('week_deviation_weight', 40))} "
         "per order-hour outside the requested week."
     )
+
+# -- Solver time limit -----------------------------------------------------
+# A single-phase full-horizon model (336h in one CP-SAT model) is a much harder
+# search than the two-phase week-0/week-1 decomposition: measured on this data,
+# tl=120 gave 46 blocks/32 SKUs while tl=300 gave 81 blocks/46 SKUs on the SAME
+# constraints. A level-0 UNKNOWN from a short time limit is indistinguishable in
+# feasibility_report.json from a genuine infeasibility, so recommend 300s
+# whenever the run will be single-phase and warn loudly below 120s.
+SINGLE_PHASE_TL = 300
+TL_WARN_BELOW = 120
+
+_single_phase_ids = sorted(
+    s["id"] for s in PRESETS if not s.get("two_phase", True) and s["id"] in (selected or [])
+)
+single_phase_run = bool(cross_week_on or _single_phase_ids)
+_reason = (
+    "cross-week is ON" if cross_week_on
+    else "scenario " + "/".join(_single_phase_ids) + " is single-phase"
+) if single_phase_run else ""
+
+_tl_default = SINGLE_PHASE_TL if single_phase_run else default_tl
+tl = st.number_input(
+    "Solver time limit (s) per scenario",
+    min_value=10, max_value=600, value=_tl_default, step=10,
+    # Key changes with the mode so flipping cross-week / picking a single-phase
+    # scenario re-seeds the recommended default instead of keeping a stale 60.
+    key=f"solver_time_limit_{'sp' if single_phase_run else 'tp'}",
+    help=(
+        "Per-scenario CP-SAT budget. Two-phase solves each week separately and is "
+        f"usually fine at {default_tl}s; a single-phase full-horizon solve needs "
+        f"{SINGLE_PHASE_TL}s or more to return a good schedule."
+    ),
+)
+if single_phase_run:
+    if int(tl) < TL_WARN_BELOW:
+        st.warning(
+            f"**Time limit {int(tl)}s is too short for this run** ({_reason}, so the "
+            "solver builds one full-horizon model instead of two weekly ones). Below "
+            f"{TL_WARN_BELOW}s CP-SAT typically returns UNKNOWN at relax level 0 and the "
+            "ladder escalates — you get a poor schedule that *looks* like an infeasible "
+            f"model. Raise it to {SINGLE_PHASE_TL}s."
+        )
+    else:
+        st.caption(
+            f"Single-phase run ({_reason}) — budgeting {int(tl)}s per scenario. "
+            f"Recommended minimum is {SINGLE_PHASE_TL}s."
+        )
 
 st.caption(f"Versions in use: {len(list_versions(dd))} / 5. Generating will replace prior Scenario X slots when needed.")
 
