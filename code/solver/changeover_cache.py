@@ -35,6 +35,7 @@ _MACHINE_COLS = ("ttp_change", "ffs_change", "topload_change", "casepacker_chang
 _NEW_COLS = ("conv_to_org_change", "cinn_to_non", "added_flavors")
 _DEFAULT_FAMILY_COLS = (
     "ediact_sku_format",
+    "format",
     "recipe",
     "casepacker_format",
     "topload_format",

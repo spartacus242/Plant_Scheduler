@@ -55,6 +55,9 @@ def load_capabilities(path: str | Path) -> pd.DataFrame:
 
     Tolerates a missing line_name column (older fixtures / tests): derive it
     from line_id (0 -> P09, 1 -> P10, ...).
+    Tolerates both rate column names: the export may use `rate_kgph` (new
+    VIF export) or `calc_rate_kgph` (previous files) — normalized to
+    `calc_rate_kgph` so every consumer reads one name.
     """
     df = pd.read_csv(path, dtype={"sku": str})
     df["sku"] = df["sku"].astype(str).str.strip()
@@ -62,6 +65,8 @@ def load_capabilities(path: str | Path) -> pd.DataFrame:
         df["line_name"] = df["line_id"].apply(
             lambda i: f"P{9 + int(i):02d}")
     df["line_name"] = df["line_name"].astype(str).str.strip().str.upper()
+    if "calc_rate_kgph" not in df.columns and "rate_kgph" in df.columns:
+        df = df.rename(columns={"rate_kgph": "calc_rate_kgph"})
     return df
 
 

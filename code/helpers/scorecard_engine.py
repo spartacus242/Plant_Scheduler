@@ -575,6 +575,8 @@ def _load_line_avg_rates(ref: Path) -> dict[str, float]:
         df = pd.read_csv(path)
         if "line_name" not in df.columns:
             return mapping
+        if "calc_rate_kgph" not in df.columns and "rate_kgph" in df.columns:
+            df = df.rename(columns={"rate_kgph": "calc_rate_kgph"})
         sums: dict[str, list[float]] = {}
         all_lines: set[str] = set()
         for _, r in df.iterrows():

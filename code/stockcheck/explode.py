@@ -20,6 +20,8 @@ def _kg_per_case(azapart: pd.DataFrame) -> dict[str, float]:
 def load_rates(data_dir: str | Path) -> pd.DataFrame:
     p = Path(data_dir) / "reference" / "capabilities_rates.csv"
     df = pd.read_csv(p, dtype={"sku": str})
+    if "calc_rate_kgph" not in df.columns and "rate_kgph" in df.columns:
+        df = df.rename(columns={"rate_kgph": "calc_rate_kgph"})
     return df
 
 

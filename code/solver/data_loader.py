@@ -135,8 +135,12 @@ class Data:
         cap["line_id"] = pd.to_numeric(cap["line_id"], errors="coerce").fillna(0).astype(int)
         cap["sku"] = cap["sku"].astype(str)
         cap["capable"] = pd.to_numeric(cap.get("capable", 0), errors="coerce").fillna(0).astype(int)
-        # Support both old column name (rate_uph) and new (calc_rate_kgph)
-        rate_col = "calc_rate_kgph" if "calc_rate_kgph" in cap.columns else "rate_uph"
+        # Support old column names: rate_uph (legacy), rate_kgph (new VIF
+        # export) and calc_rate_kgph (canonical) — all normalized to
+        # calc_rate_kgph.
+        rate_col = ("calc_rate_kgph" if "calc_rate_kgph" in cap.columns
+                    else "rate_kgph" if "rate_kgph" in cap.columns
+                    else "rate_uph")
         cap[rate_col] = pd.to_numeric(cap.get(rate_col, 0), errors="coerce").fillna(0.0).astype(float)
         self.lines = sorted(cap["line_id"].unique().tolist())
         for _, r in cap.iterrows():
@@ -151,8 +155,13 @@ class Data:
             si = pd.read_csv(self.F.sku_info)
             si["sku"] = si["sku"].astype(str)
             self.sku_info_df = si
+            desc_col = next(
+                (c for c in ("ediact_sku_description", "sku_description",
+                             "description", "name", "designation")
+                 if c in si.columns), None)
             for _, r in si.iterrows():
-                self.sku_desc[str(r["sku"])] = str(r.get("ediact_sku_description", ""))
+                self.sku_desc[str(r["sku"])] = (
+                    str(r.get(desc_col, "")) if desc_col else "")
             self.sku_family = build_sku_families(si)
 
         # ── Line rates (monthly, overrides SKU-specific rates per line) ──

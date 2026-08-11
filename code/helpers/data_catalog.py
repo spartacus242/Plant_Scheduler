@@ -108,8 +108,8 @@ CATALOG: tuple = (
         name="SKU info",
         subdir="reference",
         filename="sku_info.csv",
-        blurb="SKU master: description, format, recipe, organic / flavor attributes.",
-        key_columns=("sku", "recipe"),
+        blurb="SKU master: description/designation, format, organic / flavor attributes.",
+        key_columns=("sku", "designation"),
     ),
     DataFile(
         key="trials",

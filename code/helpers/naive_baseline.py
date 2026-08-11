@@ -104,6 +104,8 @@ def build_naive_calendar(
 
     demand = _read_csv(ref / "demand_plan.csv")
     caps = _read_csv(ref / "capabilities_rates.csv")
+    if "calc_rate_kgph" not in caps.columns and "rate_kgph" in caps.columns:
+        caps = caps.rename(columns={"rate_kgph": "calc_rate_kgph"})
     sku_info = _read_csv(ref / "sku_info.csv")
 
     if demand.empty:
@@ -121,7 +123,9 @@ def build_naive_calendar(
     descriptions: dict[str, str] = {}
     if not sku_info.empty and "sku" in sku_info.columns:
         desc_col = next(
-            (c for c in ("sku_description", "description", "name") if c in sku_info.columns),
+            (c for c in ("sku_description", "description", "name",
+                         "designation", "ediact_sku_description")
+             if c in sku_info.columns),
             None,
         )
         if desc_col:
