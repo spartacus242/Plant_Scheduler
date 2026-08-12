@@ -117,6 +117,30 @@ def test_corrupt_catalog_file(tmp_path):
     assert hit.state == ERROR  # 0 rows
 
 
+def test_cip_info_is_in_catalog_for_upload():
+    """Data Files renders one upload slot per catalog entry — cip_info must be
+    one of them (it was a live-feed-only file with no upload path)."""
+    from helpers.data_catalog import by_key, missing_columns
+    import pandas as pd
+    spec = by_key("cip_info")
+    assert spec is not None, "cip_info missing from CATALOG -> no upload slot"
+    assert spec.filename == "cip_info.csv"
+    df = pd.DataFrame(columns=["ID", "LineEquipment", "PreviousCIP",
+                               "MaxHoursBetweenCIP", "ScheduledCIP", "Notes"])
+    assert missing_columns(df, spec) == []  # upload validation passes
+
+
+def test_cip_info_health_row_not_duplicated(tmp_path):
+    """cip_info has a dedicated live-feed rule; the catalog loop must not emit
+    a second row with the same key."""
+    dd = _empty_data_dir(tmp_path)
+    _min_catalog(dd)
+    health = dh.assess(dd, _cfg())
+    rows = [h for h in health if h.key == "cip_info"]
+    assert len(rows) == 1, f"expected exactly 1 cip_info row, got {len(rows)}"
+    assert rows[0].source == "live_feed"
+
+
 def test_zero_row_catalog_file(tmp_path):
     dd = _empty_data_dir(tmp_path)
     _min_catalog(dd)

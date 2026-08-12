@@ -119,6 +119,16 @@ CATALOG: tuple = (
         blurb="Trial runs that must be protected on the schedule.",
         key_columns=("line_name", "sku", "start_datetime"),
     ),
+    DataFile(
+        key="cip_info",
+        name="CIP schedule (cip_info)",
+        subdir="reference",
+        filename="cip_info.csv",
+        blurb="Per-line CIP state: PreviousCIP (end of the last CIP), "
+        "MaxHoursBetweenCIP (food-safety limit), ScheduledCIP (planned next, "
+        "optional), Notes. Drives CIP projection and the per-line interval limit.",
+        key_columns=("LineEquipment", "PreviousCIP", "MaxHoursBetweenCIP"),
+    ),
 )
 
 

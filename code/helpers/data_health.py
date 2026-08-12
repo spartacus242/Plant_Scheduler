@@ -99,6 +99,10 @@ def _fmt_age(age_h: float | None) -> str:
 def _catalog_statuses(dd: Path) -> list[HealthStatus]:
     out: list[HealthStatus] = []
     for spec in CATALOG:
+        # cip_info has a dedicated live-feed rule (path override via Settings,
+        # freshness cadence) — the generic catalog row would duplicate it.
+        if spec.key == "cip_info":
+            continue
         info = status(spec, dd)
         if not info["exists"]:
             out.append(HealthStatus(
