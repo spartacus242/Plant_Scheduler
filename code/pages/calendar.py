@@ -49,6 +49,20 @@ from helpers.timefmt import planning_anchor, week_index_to_iso
 _horizon = _hz.resolve(cfg)
 _anchor = planning_anchor(cfg)          # storage anchor (hour 0 of the CSV)
 st.caption(_hz.caption(_horizon))
+
+# --- Live feed staleness banner (manprg, cip_info, demand baseline) -------
+from helpers import data_health as _dh
+_live_health = [h for h in _dh.assess(dd, cfg)
+                if h.key in ("manprg", "cip_info", "demand_summary")]
+_live_bad = [h for h in _live_health if h.state in (_dh.MISSING, _dh.ERROR)]
+_live_stale = [h for h in _live_health if h.state == _dh.STALE]
+if _live_bad:
+    st.error("**Live data missing/unreadable:** " +
+              "; ".join(f"{h.name} — {h.detail}" for h in _live_bad))
+elif _live_stale:
+    st.warning("**Live data stale:** " +
+               "; ".join(f"{h.name} — {h.detail}" for h in _live_stale))
+
 cip_cfg = cfg.get("cip", {})
 
 cal = load_calendar(cal_path)

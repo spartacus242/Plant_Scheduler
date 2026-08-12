@@ -48,6 +48,7 @@ DEFAULT_CADENCE_H: dict[str, float] = {
     "cip_info": 26.0,       # daily, allow some drift
     "vif": 26.0,            # daily VIF exports (stock check)
     "demand_plan": 192.0,   # ~weekly + margin
+    "demand_summary": 168.0,  # weekly AZAP baseline (demand_plan_summary.csv)
     "calendar": 24.0,       # the schedule of record should be touched daily
 }
 
@@ -192,6 +193,30 @@ def _live_feed_statuses(dd: Path, cfg: dict) -> list[HealthStatus]:
             + (f" Expected refresh ≤ {cadence.get('cip_info', 26.0):g} h." if stale else ""),
             actions=("Refresh cip_info.csv (or enable SQL live refresh in Settings)",) if stale else (),
             cadence_h=cadence.get("cip_info"), age_h=age,
+            source="live_feed",
+        ))
+
+    dem_sum_path = str(ds.get("demand_summary_csv", "")).strip() or str(
+        reference_dir(dd) / "demand_plan_summary.csv")
+    dem_sum_p = Path(dem_sum_path)
+    if not dem_sum_p.exists():
+        out.append(HealthStatus(
+            key="demand_summary", name="Demand plan summary (baseline)", state=MISSING,
+            detail="demand_plan_summary.csv not found.",
+            actions=("Drop demand_plan_summary.csv in data/reference/, set the "
+                     "path in Settings, or upload it on the Data Files page",),
+            source="live_feed",
+        ))
+    else:
+        age = _age_h(dem_sum_p)
+        stale = age is not None and age > cadence.get("demand_summary", 168.0)
+        out.append(HealthStatus(
+            key="demand_summary", name="Demand plan summary (baseline)", state=STALE if stale else OK,
+            detail=(f"demand_plan_summary.csv last refreshed {_fmt_age(age)} ago."
+                    if age is not None else "demand_plan_summary.csv present (age unknown).")
+            + (f" Expected refresh ≤ {cadence.get('demand_summary', 168.0):g} h." if stale else ""),
+            actions=("Import a fresh demand_plan_summary.csv on the Data Files page",) if stale else (),
+            cadence_h=cadence.get("demand_summary"), age_h=age,
             source="live_feed",
         ))
     return out

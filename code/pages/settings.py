@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -35,6 +36,12 @@ manprg = st.text_input("manprg report files (two paths, ';'-separated)",
                        help="e.g. C:\\...\\manprg.txt;C:\\...\\manprg2.txt")
 pdf = st.text_input("Production-schedule PDF folder", value=ds["schedule_pdf_folder"])
 cip = st.text_input("CIP info CSV", value=ds["cip_info_csv"])
+demand_summary = st.text_input(
+    "Demand plan summary CSV (weekly AZAP baseline)",
+    value=ds["demand_summary_csv"],
+    help="The planner's Week/Product/kg_tons file. When set and the file "
+         "exists, the Data page's demand import uses it as the source "
+         "instead of requiring a manual upload.")
 
 st.divider()
 st.subheader("Live SQL (optional)")
@@ -54,13 +61,13 @@ def _set_toml_section(txt: str, section: str, values: dict[str, str | bool]) -> 
         if isinstance(v, bool):
             lines.append(f"{k} = {'true' if v else 'false'}")
         else:
-            lines.append(f'{k} = "{v}"')
+            lines.append(f"{k} = {json.dumps(v)}")
     block = "\n".join(lines)
     if re.search(rf"^\[{re.escape(section)}\]", txt, flags=re.M):
         # replace existing section body
         return re.sub(
             rf"^\[{re.escape(section)}\].*?(?=^\[|\Z)",
-            block + "\n\n", txt, flags=re.M | re.S)
+            lambda m: block + "\n\n", txt, flags=re.M | re.S)
     return txt.rstrip() + "\n\n" + block + "\n"
 
 
@@ -72,6 +79,7 @@ if st.button("Save data sources", type="primary"):
         "manprg_files": manprg,
         "schedule_pdf_folder": pdf,
         "cip_info_csv": cip,
+        "demand_summary_csv": demand_summary,
         "sql_enabled": sql_enabled,
         "sql_dsn": sql_dsn,
     })
@@ -84,9 +92,9 @@ st.divider()
 st.subheader("Source status")
 checks = {
     "VIF folder": vif,
-    "AZAP CSV": azap,
     "manprg files": manprg,
     "CIP info CSV": cip,
+    "Demand plan summary CSV": demand_summary,
 }
 rows = []
 for name, val in checks.items():

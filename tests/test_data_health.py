@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from helpers import data_health as dh
+from helpers.config import datasources_config, load_toml
 from helpers.process_flow import STAGES, stage_state
 
 OK = dh.OK
@@ -71,6 +72,7 @@ def _min_catalog(dd: Path) -> None:
     _touch(dd / "reference" / "manprg.txt", 0.1)
     _touch(dd / "reference" / "manprg2.txt", 0.1)
     _touch(dd / "reference" / "cip_info.csv", 0.1)
+    _touch(dd / 'reference' / 'demand_plan_summary.csv', 0.1)
 
 
 def _cfg(**overrides) -> dict:
@@ -202,6 +204,40 @@ def test_stale_cip_info(tmp_path):
     health = dh.assess(dd, _cfg())
     hit = next(h for h in health if h.key == "cip_info")
     assert hit.state == STALE
+
+
+# ---------------------------------------------------------------------------
+# demand baseline path config (P1 Dispatch 1 part C)
+# ---------------------------------------------------------------------------
+
+def test_datasources_config_demand_summary_csv(tmp_path):
+    """demand_summary_csv defaults to '' and is honored when set in flowstate.toml."""
+    ds_default = datasources_config({})
+    assert ds_default["demand_summary_csv"] == ""
+
+    toml_path = tmp_path / "flowstate.toml"
+    toml_path.write_text(
+        '[datasources]\ndemand_summary_csv = "C:/carsten/demand_plan_summary.csv"\n',
+        encoding="utf-8")
+    cfg = load_toml(toml_path)
+    ds = datasources_config(cfg)
+    assert ds["demand_summary_csv"] == "C:/carsten/demand_plan_summary.csv"
+
+
+def test_demand_summary_health_row_cadence_and_configured_path(tmp_path):
+    """Demand baseline health row uses the 168h weekly cadence and honors a
+    configured datasources.demand_summary_csv path override."""
+    dd = _empty_data_dir(tmp_path)
+    _min_catalog(dd)
+    custom = tmp_path / "carsten_drop" / "demand_plan_summary.csv"
+    custom.parent.mkdir(parents=True, exist_ok=True)
+    _touch(custom, 0.1)
+    cfg = _cfg()
+    cfg["datasources"]["demand_summary_csv"] = str(custom)
+    health = dh.assess(dd, cfg)
+    hit = next(h for h in health if h.key == "demand_summary")
+    assert hit.cadence_h == 168.0
+    assert hit.state == OK  # uses the configured path, not the missing default
 
 
 # ---------------------------------------------------------------------------

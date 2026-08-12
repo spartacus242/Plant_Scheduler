@@ -31,6 +31,7 @@ def datasources_config(cfg: dict | None = None) -> dict[str, Any]:
         "manprg_files": "",                   # two paths, ';'-separated
         "schedule_pdf_folder": "",
         "cip_info_csv": "",
+        "demand_summary_csv": "",             # weekly AZAP baseline (Week, Product, kg_tons)
         "sql_enabled": False,
         "sql_dsn": "",                        # ODBC connection string for NPA
     }

@@ -14,11 +14,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from helpers.config import load_toml
+from helpers.config import datasources_config, load_toml
 from helpers.data_catalog import CATALOG, CSV_ENCODING, missing_columns, read_csv, status
 from helpers.downtime_ui import render_side_downtime_editor
 from helpers.manual_import_ui import render_manual_import
-from helpers.paths import data_dir
+from helpers.paths import data_dir, reference_dir
 from helpers.safe_io import safe_write_csv
 
 st.header("Data Files")
@@ -168,17 +168,27 @@ st.caption(
 
 with st.expander("Import demand_plan_summary.csv", expanded=True):
     from helpers.demand_summary_import import import_summary as _imps
+    _cfg_demand_path = datasources_config().get("demand_summary_csv", "").strip()
+    _cfg_demand_ok = bool(_cfg_demand_path) and Path(_cfg_demand_path).exists()
+    if _cfg_demand_ok:
+        st.caption(f"Using configured source `{_cfg_demand_path}` "
+                   "(Settings → Demand plan summary CSV). Upload a file "
+                   "below to import a different one instead.")
     sum_up = st.file_uploader("demand_plan_summary.csv", type=["csv"],
                               key="summary_csv_upload",
                               help="Columns: Week (ISO), Product (SKU), kg_tons")
+    _tmp = None
     if sum_up is not None:
+        _payload = sum_up.getvalue()
+        # Write to a temp path; the importer reads a path
+        import tempfile as _tf
+        with _tf.NamedTemporaryFile(delete=False, suffix=".csv") as _t:
+            _t.write(_payload)
+            _tmp = _t.name
+    elif _cfg_demand_ok:
+        _tmp = _cfg_demand_path
+    if _tmp is not None:
         try:
-            _payload = sum_up.getvalue()
-            # Write to a temp path; the importer reads a path
-            import tempfile as _tf
-            with _tf.NamedTemporaryFile(delete=False, suffix=".csv") as _t:
-                _t.write(_payload)
-                _tmp = _t.name
             dem, meta = _imps(_tmp)
         except Exception as exc:
             st.error(f"Not a readable summary: {type(exc).__name__}: {exc}")
