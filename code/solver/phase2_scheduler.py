@@ -741,14 +741,23 @@ def write_week1_initial_states(
         last_cip_end = last_cip_end_by_line.get(l, 0)
         # Original running-MO gate (available_from in the CURRENT schedule's
         # initial_states). A line may have had NO week-0 production because its
-        # running MO occupies it past hour 168 (e.g. P10 gate=169h). That gate
+        # running MO occupies it past hour 168 (e.g. P10 gate=170h). That gate
         # must survive into Phase 2 — otherwise week-1 demand is placed at
         # hour ~0, overlapping the still-running MO (contract C1).
         orig_gate = int(data.init_map.get(l, {}).get("available_from", 0) or 0)
+        # Original CIP carryover (clock hours since the line's last CIP before
+        # the CURRENT horizon). A gated line that produced nothing in week-0
+        # still carries its pre-horizon CIP clock into week-1 — if we reset it
+        # to 0 here, Phase-2 thinks the line is freshly cleaned and schedules
+        # the next CIP far too late (e.g. P10 carryover 133h -> 0, CIP pushed
+        # to hour 314 instead of ~170), violating the mandatory CIP interval.
+        orig_carry = int(
+            data.init_map.get(l, {}).get("carryover_run_hours", 0) or 0
+        )
 
         if not prods:
             initial_sku = str(data.init_map.get(l, {}).get("initial_sku", "CLEAN"))
-            carryover = 0
+            carryover = orig_carry
             last_cip_dt = ""
             last_end_hour = 0
         else:
