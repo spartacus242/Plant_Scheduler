@@ -160,9 +160,17 @@ def run_blockages_diagnostic(P: Params, data: Data, data_dir: Path, two_phase: b
         long_shutdown = int(init.get("long_shutdown_flag", 0))
 
         for week in (0, 1):
-            # Total required run hours on this line in this week (all capable orders in window)
+            # Required run hours on this line in this week. This is NOT the sum
+            # of every order the line COULD run — that worst-case heuristic
+            # summed all capable demand onto each line independently and
+            # printed absurd "P09 needs 2225h in a 168h week" numbers. A line
+            # only needs what is assigned to it; demand distributes across all
+            # capable lines. So we report the FAIR SHARE (qty/rate / num_capable)
+            # per order as the realistic requirement, and keep the worst-case
+            # single-line total only as a labelled upper bound.
             contributions: List[Tuple[str, str, int, float, int]] = []  # order_id, sku, qty_min, run_hours, num_capable_lines
-            required_raw = 0.0
+            required_raw = 0.0        # fair-share demand (realistic)
+            required_raw_worst = 0.0  # worst-case: every capable order here
             for o in data.orders:
                 if not _order_in_week(o, week):
                     continue
@@ -172,12 +180,16 @@ def run_blockages_diagnostic(P: Params, data: Data, data_dir: Path, two_phase: b
                 qmin = int(o["qty_min"])
                 rate = data.rate.get((l, sku)) or 0
                 run_h = qmin / rate
-                required_raw += run_h
                 num_capable = sum(
                     1
                     for ll in data.lines
                     if data.capable.get((ll, sku)) and (data.rate.get((ll, sku)) or 0) > 0
                 )
+                # Fair share: this order's tonnage spreads across every line
+                # that can run it, so this line's fair portion is qty/rate /
+                # num_capable (not the full run_h).
+                required_raw += run_h / num_capable if num_capable else 0.0
+                required_raw_worst += run_h
                 contributions.append((o["order_id"], sku, qmin, run_h, num_capable))
 
             required_rounded = int(math.ceil(required_raw))
@@ -224,7 +236,10 @@ def run_blockages_diagnostic(P: Params, data: Data, data_dir: Path, two_phase: b
                 "line_id": l,
                 "line_name": line_names.get(l, f"L{l}"),
                 "week": week,
+                # Realistic requirement: demand spread across all capable lines.
                 "required_run_hours": required_rounded,
+                # Labelled upper bound: if every capable order were forced here.
+                "worst_case_run_hours": int(math.ceil(required_raw_worst)),
                 "available_hours": available_hours,
                 "overflow_hours": overflow,
                 "order_count": len(contributions),
@@ -236,7 +251,15 @@ def run_blockages_diagnostic(P: Params, data: Data, data_dir: Path, two_phase: b
 
             report_lines.append("")
             report_lines.append(f"--- Line {l} ({line_names.get(l, str(l))}) Week {week} ---")
-            report_lines.append(f"  Required: {required_rounded} h  Available: {available_hours} h  Overflow: {overflow} h")
+            report_lines.append(
+                f"  Required (fair-share): {required_rounded} h  "
+                f"Available: {available_hours} h  Overflow: {overflow} h"
+            )
+            report_lines.append(
+                f"  NOTE: fair-share spreads demand across all {len(data.lines)} "
+                f"capable lines; worst-case (every order here) would be "
+                f"{int(math.ceil(required_raw_worst))} h."
+            )
             report_lines.append("  Contributing orders (order_id, sku, qty_min, run_hours, num_capable_lines):")
             for order_id, sku, qty_min, run_h, num_capable in sorted(
                 contributions, key=lambda x: -x[3]

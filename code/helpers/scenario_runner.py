@@ -468,18 +468,28 @@ def _audit_work_downtimes(work: Path) -> list[str]:
     return audit_downtime_horizon(rows, horizon)
 
 
-def _overlay_current_state(work: Path, data_dir: Path) -> list[str]:
+def _overlay_current_state(
+    work: Path, data_dir: Path, lock_current_mo: bool | None = None
+) -> list[str]:
     """Patch the work-dir initial_states.csv with the real plant state.
 
     Handoff WW32 item 3: the solver must start from ground truth, not from the
     seeded fixture. From `helpers.current_state` we take, per line:
-      * `available_from_hour` <- line_free_h (end of the locked running MO and
-        everything already queued behind it) — the solver may not place work
-        before it;
+      * `available_from_hour` <- end of the RUNNING MO (the starting position:
+        the line is busy until the current run finishes, then demand fills
+        forward) — the solver may not place work before it;
       * `initial_sku`         <- the SKU actually running (so the changeover
         matrix charges the real changeover, not a CLEAN start);
       * `carryover_run_hours_since_last_cip_at_t0` <- hours since the line's
         last CIP, so the first CIP is due at the right time.
+
+    `lock_current_mo` (default: from config `scheduler.use_current_mo`) decides
+    whether the running+queued manprg MOs are ALSO emitted as locked solver
+    orders (current_mo.csv). This is ONLY correct for scenario E ("current
+    state + demand", re-optimize the committed tail). Fresh-generation
+    scenarios (A-D) take manprg purely as a starting state and re-place the
+    demand plan, so they must NOT lock the queued MOs — locking them on top of
+    the demand plan double-counts the tonnage and makes the solve INFEASIBLE.
 
     Returns a list of human-readable notes. Best-effort: if the live feeds are
     missing the initial_states file is left alone, but the reason is REPORTED
@@ -520,22 +530,17 @@ def _overlay_current_state(work: Path, data_dir: Path) -> list[str]:
     if init.empty:
         return ["current-state overlay skipped: initial_states.csv is empty"]
 
-    free_map = {ln.upper(): max(0, int(h)) for ln, h in cs.line_free_h.items()}
-    # When current_mo.csv is produced, the queued MOs become solver orders and
-    # the availability gate must be only the RUNNING MO's end — otherwise the
-    # gate double-counts the queued work and blocks the very MOs the solver
-    # should place. Use line_running_free_h (falls back to line_free_h).
+    # The line is busy until the RUNNING MO finishes — that is the starting
+    # position. (line_free_h is the end of the running MO PLUS every queued MO
+    # behind it; it is NOT used for the gate because queued MOs are re-placed
+    # from the demand plan, not locked.)
     running_free_map = {
         ln.upper(): max(0, int(h)) for ln, h in cs.line_running_free_h.items()
     }
     _use_cmo = str(
         cfg.get("scheduler", {}).get("use_current_mo", "")).strip().lower()
-    if _use_cmo in ("1", "true", "yes"):
-        use_running_gate = True
-    elif _use_cmo in ("0", "false", "no"):
-        use_running_gate = False
-    else:
-        use_running_gate = bool(running_free_map)  # default: running-only gate
+    if lock_current_mo is None:
+        lock_current_mo = _use_cmo in ("1", "true", "yes")
     sku_map = {r["line"].upper(): r["item"] for r in cs.running}
     # hours since the last CIP -> the first CIP is due MaxHoursBetweenCIP later
     from helpers.cip_import import read_cip_info as _rci
@@ -554,7 +559,10 @@ def _overlay_current_state(work: Path, data_dir: Path) -> list[str]:
                 carry_map[line.upper()] = int(min(hrs, max(0, limit - 1)))
 
     changed = 0
-    gate_map = running_free_map if use_running_gate else free_map
+    # The line is busy until the RUNNING MO finishes — that is the starting
+    # position the planner described. queued MOs are re-placed from the demand
+    # plan, so they must NOT widen the gate (that would double-block).
+    gate_map = running_free_map
     for idx, row in init.iterrows():
         ln = str(row.get("line_name", "")).strip().upper()
         if ln in gate_map and gate_map[ln] > 0:
@@ -566,16 +574,28 @@ def _overlay_current_state(work: Path, data_dir: Path) -> list[str]:
             init.at[idx, "carryover_run_hours_since_last_cip_at_t0"] = carry_map[ln]
 
     init.to_csv(init_path, index=False)
-    gate_note = "running-MO end" if use_running_gate else "running+queued end"
     notes.append(
-        f"current state overlaid: {changed} line(s) gated by {gate_note}, "
+        f"current state overlaid: {changed} line(s) gated to running-MO end, "
         f"{len(sku_map)} initial SKU(s), {len(carry_map)} CIP carryover(s)")
 
     # ── current_mo.csv: running + queued MOs as solver input ─────────────
     # Each row is an MO locked to its manprg line; the solver may split /
     # reorder / trim it, and mo_changes.csv records the delta for VIF.
-    # Only written when use_current_mo is enabled (scenario E).
-    if not use_running_gate:
+    #
+    # The RUNNING MO's remaining work is expressed as the availability gate
+    # above (available_from = running-MO end) — the line is busy until it
+    # finishes, and the gate stops the solver placing work over it. It must NOT
+    # also be emitted here as a locked demand order, or its remaining tonnage
+    # is double-counted on top of the demand plan (that made a "minimum
+    # changeovers" solve demand ~150h of P10's running MO PLUS the same SKUs
+    # from the plan -> INFEASIBLE).
+    #
+    # QUEUED MOs are emitted ONLY for scenario E (current state + demand),
+    # where the manprg queue is committed work to re-optimize. Fresh-generation
+    # scenarios (A-D) take manprg as a STARTING STATE and re-place the demand
+    # plan; locking queued MOs on top of demand double-counts tonnage and made
+    # them INFEASIBLE.
+    if not lock_current_mo:
         return notes
     cmo_rows = []
     for r in cs.running:
@@ -590,16 +610,17 @@ def _overlay_current_state(work: Path, data_dir: Path) -> list[str]:
             "due_start_h": 0, "due_end_h": 335,
             "locked_line": 1, "source": "manprg",
         })
-    for r in cs.queued:
-        remaining = round(float(r.get("qty_kg", 0) or 0), 3)
-        start_h = max(0, int(_hours_h(r.get("placed_start"), hz.anchor)))
-        end_h = max(start_h + 1, int(_hours_h(r.get("placed_end"), hz.anchor)))
-        cmo_rows.append({
-            "mo": r["mo"], "line_name": str(r["line"]).upper(),
-            "sku": r["item"], "remaining_kg": remaining,
-            "due_start_h": start_h, "due_end_h": end_h,
-            "locked_line": 1, "source": "manprg",
-        })
+    if lock_current_mo:
+        for r in cs.queued:
+            remaining = round(float(r.get("qty_kg", 0) or 0), 3)
+            start_h = max(0, int(_hours_h(r.get("placed_start"), hz.anchor)))
+            end_h = max(start_h + 1, int(_hours_h(r.get("placed_end"), hz.anchor)))
+            cmo_rows.append({
+                "mo": r["mo"], "line_name": str(r["line"]).upper(),
+                "sku": r["item"], "remaining_kg": remaining,
+                "due_start_h": start_h, "due_end_h": end_h,
+                "locked_line": 1, "source": "manprg",
+            })
     if cmo_rows:
         _pd.DataFrame(cmo_rows).to_csv(Path(work) / "current_mo.csv", index=False)
         notes.append(
@@ -690,6 +711,30 @@ def _patch_work_toml(
                 pass
 
 
+def _set_work_use_current_mo(toml: Path, value: bool) -> None:
+    """Set scheduler.use_current_mo in a work-dir flowstate.toml.
+
+    Keeps the solver's relax-ladder skip (USE_CURRENT_MO -> jump to
+    ignore_co) consistent with the overlay's per-scenario decision. A fresh-
+    generation scenario must not skip to ignore_co — that was how a
+    "minimum changeovers" solve silently ignored changeovers. Best-effort:
+    a failure to write here must not kill a solve, so swallow it.
+    """
+    try:
+        try:
+            import tomllib
+        except ImportError:  # pragma: no cover - py<3.11
+            import tomli as tomllib  # type: ignore
+        import tomli_w
+        with open(toml, "rb") as fh:
+            cfg = tomllib.load(fh)
+        cfg.setdefault("scheduler", {})["use_current_mo"] = bool(value)
+        with open(toml, "wb") as fh:
+            tomli_w.dump(cfg, fh)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _read_feasibility(work: Path) -> dict[str, Any] | None:
     """Read feasibility_report.json from a solver work dir (written every run)."""
     import json
@@ -731,12 +776,24 @@ def run_scenario(
     work = (Path(data_dir) / "_scenario_work" / scenario["id"]).resolve()
     _prepare_work_dir(Path(data_dir).resolve(), work)
 
+    # Only scenario E ("current state + demand") treats the manprg running /
+    # queued MOs as committed work locked to their lines. Fresh-generation
+    # scenarios (A-D) take manprg purely as a STARTING STATE (running-MO end,
+    # initial SKU, next CIP) and re-place the demand plan — locking the queued
+    # MOs on top of demand double-counts tonnage and makes the solve
+    # INFEASIBLE. So the lock flag is per-scenario, and we also write it into
+    # the work toml so the solver's relax-ladder skip (USE_CURRENT_MO ->
+    # {0:3} jump to ignore_co) matches the same intent.
+    lock_current_mo = bool(scenario.get("lock_current_mo", scenario["id"] == "E"))
+    _set_work_use_current_mo(work / "flowstate.toml", lock_current_mo)
+
     # Inject the current plant state: per-line free-from hour, running SKU and
     # CIP carryover so the solver cannot schedule over a locked running MO.
     # Best-effort, but ALWAYS reported — a silent no-op here means the solver
     # quietly plans from the stale fixture.
     try:
-        _cs_notes = _overlay_current_state(work, data_dir)
+        _cs_notes = _overlay_current_state(
+            work, data_dir, lock_current_mo=lock_current_mo)
     except Exception as _exc:  # noqa: BLE001
         _cs_notes = [f"current-state overlay FAILED: {_exc}"]
 

@@ -739,6 +739,12 @@ def write_week1_initial_states(
         line_name = data.line_names.get(l, f"L{l}")
         prods = prod_by_line.get(l, [])
         last_cip_end = last_cip_end_by_line.get(l, 0)
+        # Original running-MO gate (available_from in the CURRENT schedule's
+        # initial_states). A line may have had NO week-0 production because its
+        # running MO occupies it past hour 168 (e.g. P10 gate=169h). That gate
+        # must survive into Phase 2 — otherwise week-1 demand is placed at
+        # hour ~0, overlapping the still-running MO (contract C1).
+        orig_gate = int(data.init_map.get(l, {}).get("available_from", 0) or 0)
 
         if not prods:
             initial_sku = str(data.init_map.get(l, {}).get("initial_sku", "CLEAN"))
@@ -763,7 +769,13 @@ def write_week1_initial_states(
         # end of Week-0); Phase 2 must not schedule production that
         # overlaps with that CIP.
         if set_available_from_schedule:
+            # A line with no week-0 production is either idle or still busy
+            # with its running MO. If the original schedule gated it (running
+            # MO extends past hour 168), carry that gate into Phase 2 so the
+            # week-1 model does not place work over the still-running MO.
             avail_from = max(last_end_hour, last_cip_end)
+            if not prods and orig_gate > avail_from:
+                avail_from = orig_gate
         else:
             avail_from = 0
 
