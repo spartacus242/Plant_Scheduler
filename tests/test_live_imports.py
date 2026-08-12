@@ -52,7 +52,9 @@ def test_cip_info():
     assert p10.previous_cip is not None
     assert p10.max_hours_between == 144
     assert "anti-static" in p10.notes
-    # scheduled CIP parsed
+    # scheduled CIP parsed (WW33 export: P09 has one scheduled, P14 cleaned today)
+    assert p09.scheduled_cip is not None  # scheduled: 8/15 2026 11:00
     p14 = res.by_line["P14"]
-    assert p14.scheduled_cip is not None
+    assert p14.previous_cip is not None  # fresh: 8/12 04:54
+    assert p14.scheduled_cip is None  # cleaned today, none scheduled yet
     assert p14.max_hours_between == 120
