@@ -1,0 +1,22 @@
+{
+  "repo_url": "https://github.com/spartacus242/flowstate-live-data.git",
+  "remote": "origin",
+  "branch": "main",
+  "clone_dir": "C:\\Users\\jbdil\\FlowstateLive",
+  "data_reference_dir": "C:\\Users\\jbdil\\Flowstate\\Plant_Scheduler\\data\\reference",
+  "files": [
+    "manprg.txt",
+    "manprg2.txt",
+    "cip_info.csv",
+    "demand_plan.csv",
+    "demand_plan_summary.csv",
+    "demand_plan.source.json",
+    "capabilities_rates.csv",
+    "sku_info.csv",
+    "line_cip_hrs.csv",
+    "initial_states.csv",
+    "changeovers.csv",
+    "trials.csv",
+    "downtimes.csv"
+  ]
+}
