@@ -1,4 +1,4 @@
-# helpers/calendar_io.py - Unified calendar_blocks load/save + legacy import.
+# helpers/calendar_io.py - Unified calendar_blocks load/save + solver import.
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from helpers.safe_io import safe_write_csv
@@ -56,7 +57,12 @@ def load_calendar(path: Path) -> pd.DataFrame:
         df["locked"] = False
     df["start_h"] = pd.to_numeric(df["start_h"], errors="coerce").fillna(0).astype(float)
     df["end_h"] = pd.to_numeric(df["end_h"], errors="coerce").fillna(0).astype(float)
-    df["qty_kg"] = pd.to_numeric(df.get("qty_kg", 0), errors="coerce").fillna(0).astype(float)
+    # qty_kg keeps NaN for "unknown kg" - do NOT fillna(0). A 0 here is
+    # indistinguishable from "produced nothing", which made the scorecard's
+    # Service excess-kg path read unknown production as "no excess" instead of
+    # falling back to its estimate. Consumers treat NaN as missing; display
+    # sites blank it out (never write 0 back into the data model).
+    df["qty_kg"] = pd.to_numeric(df.get("qty_kg", np.nan), errors="coerce").astype(float)
     # Strip trailing ".0" from code columns that were written by a previous
     # pandas save with float dtype (e.g. "570468.0" in sku). dtype=str alone
     # doesn't fix this because the CSV literally stores the string "570468.0".
@@ -78,13 +84,33 @@ def _new_id(prefix: str = "b") -> str:
     return f"{prefix}_{uuid.uuid4().hex[:10]}"
 
 
-def import_legacy_schedule(
+def _opt_kg(v: Any) -> float | None:
+    """Optional produced kg: unknown stays None, never 0.0.
+
+    Same rule as load_calendar's NaN: a 0 in qty_kg is indistinguishable from
+    "produced nothing" and makes the scorecard read unknown production as "no
+    excess". Blank, NaN, unparseable and the Gantt's 0 placeholder (see
+    useScheduleState.addToHolding, which defaults qty_kg to 0) all collapse to
+    None so the missing-kg path downstream can still fire.
+    """
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(f) or f == 0.0:
+        return None
+    return f
+
+
+def import_solver_schedule(
     schedule_path: Path,
     cip_path: Path | None = None,
     downtimes_path: Path | None = None,
     planning_anchor: str = "2026-02-15 00:00:00",
 ) -> pd.DataFrame:
-    """Convert legacy schedule_phase2 + cip_windows (+ downtimes) → calendar_blocks."""
+    """Convert solver schedule_phase2 + cip_windows (+ downtimes) → calendar_blocks."""
     rows: list[dict[str, Any]] = []
 
     if schedule_path.exists():
@@ -94,6 +120,10 @@ def import_legacy_schedule(
             btype = "trial" if is_trial else "production"
             start = float(r.get("start_hour", 0))
             end = float(r.get("end_hour", start))
+            # Solver schedules carry the produced kg per row (qty_kg). Older
+            # schedules have no such column - keep None then, exactly as before.
+            qty = r.get("qty_kg")
+            qty = None if qty is None or pd.isna(qty) else float(qty)
             rows.append({
                 "block_id": _new_id("prod" if not is_trial else "trial"),
                 "block_type": btype,
@@ -105,7 +135,7 @@ def import_legacy_schedule(
                 "order_id": str(r.get("order_id", "")),
                 "sku": str(r.get("sku", "")),
                 "sku_description": str(r.get("sku_description", "") or ""),
-                "qty_kg": None,
+                "qty_kg": qty,
                 "locked": False,
                 "attrs": "",
             })
@@ -195,6 +225,9 @@ def calendar_to_gantt_payload(df: pd.DataFrame) -> tuple[list[dict], list[dict]]
             "block_type": _to_gantt_type(btype),
             "label": _code(r.get("label")),
             "locked": bool(r.get("locked", False)),
+            # Carried so a drag/drop round trip does not silently drop the
+            # produced kg. Unknown kg travels as null, never 0.
+            "qty_kg": _opt_kg(r.get("qty_kg")),
         }
         if btype in ("production", "trial"):
             schedule.append(block)
@@ -249,7 +282,7 @@ def _block_row(b: dict, btype: str) -> dict:
         "order_id": str(b.get("order_id") or ""),
         "sku": str(b.get("sku") or ""),
         "sku_description": str(b.get("sku_description") or ""),
-        "qty_kg": b.get("qty_kg"),
+        "qty_kg": _opt_kg(b.get("qty_kg")),
         "locked": bool(b.get("locked", False)),
         "attrs": str(b.get("attrs") or ""),
     }

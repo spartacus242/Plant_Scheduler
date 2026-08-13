@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from helpers.calendar_io import import_legacy_schedule
+from helpers.calendar_io import import_solver_schedule
 from helpers.scorecard_engine import score_calendar
 from helpers.version_manager import list_versions, save_version
 
@@ -859,7 +859,7 @@ def run_scenario(
             "diag_blockages": diag_blockages,
         }
 
-    calendar = import_legacy_schedule(
+    calendar = import_solver_schedule(
         sched,
         cip if cip.exists() else None,
         work / "downtimes.csv" if (work / "downtimes.csv").exists() else None,

@@ -14,7 +14,7 @@ if str(BASE_DIR) not in sys.path:
 
 from helpers.calendar_io import (
     ensure_lines_from_calendar,
-    import_legacy_schedule,
+    import_solver_schedule,
     load_calendar,
     save_calendar,
 )
@@ -75,7 +75,7 @@ with st.expander("Import bundled seed schedule (developer / first run)"):
     if src_choice == "Bundled seed data":
         leg = seed_dir(dd)
         if st.button("Import from bundled seed data"):
-            cal = import_legacy_schedule(
+            cal = import_solver_schedule(
                 leg / "schedule_phase2.csv",
                 leg / "cip_windows.csv",
                 reference_dir(dd) / "downtimes.csv",
@@ -99,7 +99,7 @@ with st.expander("Import bundled seed schedule (developer / first run)"):
             if up_cip is not None:
                 cip_p = tmp / "cip_windows.csv"
                 cip_p.write_bytes(up_cip.getvalue())
-            cal = import_legacy_schedule(sched_p, cip_p, reference_dir(dd) / "downtimes.csv", anchor)
+            cal = import_solver_schedule(sched_p, cip_p, reference_dir(dd) / "downtimes.csv", anchor)
             backup_file(cal_path, dd)
             save_calendar(cal, cal_path)
             ensure_lines_from_calendar(cal, dd / "lines.csv")

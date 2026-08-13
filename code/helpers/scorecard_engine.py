@@ -88,6 +88,15 @@ KNOWN_LIMITATIONS = [
         "the composite and its 0.30 weight is renormalized across the other five "
         "categories, which materially changes what the composite means."
     ),
+    (
+        "Excess inventory kg may be estimated, not measured",
+        "When the calendar carries no qty_kg (a hand-built or pre-P3 schedule) the "
+        "produced kg behind excess_inventory_kg are estimated as run_hours x the "
+        "line's AVERAGE kg/h, the same caveat as forfeited CIP kg. The scored "
+        "result sets excess_inventory_kg_estimated=true and the page marks the "
+        "number '(estimated)'. Scoring an estimate is still more honest than the "
+        "old behaviour, which dropped the kg component silently."
+    ),
 ]
 
 METRIC_DOCS: dict[str, dict[str, Any]] = {
@@ -237,7 +246,11 @@ METRIC_DOCS: dict[str, dict[str, Any]] = {
         "formula": "sum(max(0, end_h - start_h)) over blocks where block_type == 'trial'",
         "direction": "lower",
         "cap_key": "cap_trial_hours",
-        "scoring": "score = clamp(100 * (1 - trial_hours / cap_trial_hours), 0, 100)",
+        "scoring": (
+            "score = clamp(100 * (1 - trial_hours / cap_trial_hours), 0, 100). "
+            "Not scored at all when the week has no trial data (no trial blocks "
+            "and no reference/trials.csv) - the category is n/a instead of 100."
+        ),
         "category": "trials",
         "why": (
             "Trials are necessary but they occupy commercial assets. Knowing the hour "
@@ -257,7 +270,10 @@ METRIC_DOCS: dict[str, dict[str, Any]] = {
         ),
         "direction": "lower",
         "cap_key": "cap_trial_disruptions",
-        "scoring": "score = clamp(100 * (1 - trial_disruptions / cap_trial_disruptions), 0, 100)",
+        "scoring": (
+            "score = clamp(100 * (1 - trial_disruptions / cap_trial_disruptions), "
+            "0, 100). Not scored when the week has no trial data (see trial_hours)."
+        ),
         "category": "trials",
         "why": (
             "A trial dropped in the middle of a campaign costs far more than its own "
@@ -342,8 +358,12 @@ METRIC_DOCS: dict[str, dict[str, Any]] = {
         ),
         "formula": (
             "For each order with a qty_max (explicit, or qty_target * upper_pct): "
-            "excess += max(0, sum(qty_kg of its production blocks) - qty_max). "
-            "Returns None unless the calendar carries a populated qty_kg column."
+            "excess += max(0, produced_kg(order) - qty_max). produced_kg is the "
+            "sum of qty_kg over the order's production blocks when the calendar "
+            "carries real kg; when it does not (column absent, all-NaN or all-"
+            "zero) it is ESTIMATED as sum(run_hours * the line's average kg/h) "
+            "and excess_inventory_kg_estimated is set True. Returns None only "
+            "when there is no production data and no rate table at all."
         ),
         "direction": "lower",
         "cap_key": "cap_excess_kg",
@@ -775,7 +795,26 @@ def score_cip(
     }
 
 
-def score_trials(calendar: pd.DataFrame, co_map: dict) -> dict[str, Any]:
+def _trials_input_present(data_dir: Path | None) -> bool:
+    """True when reference/trials.csv exists AND has at least one data row.
+
+    A header-only (or unreadable) trials.csv counts as absent: there is no
+    trial demand to schedule, so the trials category has nothing to measure.
+    """
+    if data_dir is None:
+        return False
+    path = reference_dir(data_dir) / "trials.csv"
+    if not path.exists():
+        return False
+    try:
+        return len(pd.read_csv(path)) > 0
+    except Exception:
+        return False
+
+
+def score_trials(
+    calendar: pd.DataFrame, co_map: dict, data_dir: Path | None = None
+) -> dict[str, Any]:
     trials = _by_type(calendar, "trial")
     hours = float((trials["end_h"] - trials["start_h"]).clip(lower=0).sum()) if len(trials) else 0.0
     disruptions = 0
@@ -794,9 +833,15 @@ def score_trials(calendar: pd.DataFrame, co_map: dict) -> dict[str, Any]:
                 disruptions += 1
         elif len(before) or len(after):
             disruptions += 1
+    # Availability, not performance. With no trial blocks in the calendar AND
+    # no reference/trials.csv there is nothing to score: trial_hours=0 then
+    # means "no trial data", not "a perfectly trial-free week", and scoring it
+    # 100 is a silent-100 on absent data. category_scores turns available=False
+    # into a None (n/a) category instead.
     return {
         "trial_hours": round(hours, 2),
         "trial_disruptions": int(disruptions),
+        "available": bool(len(trials)) or _trials_input_present(data_dir),
     }
 
 
@@ -814,12 +859,65 @@ def score_campaigns(calendar: pd.DataFrame, cfg: dict) -> dict[str, Any]:
     }
 
 
-def score_service(calendar: pd.DataFrame, cfg: dict, demand: pd.DataFrame | None) -> dict[str, Any]:
+def _estimated_produced(
+    prod: pd.DataFrame,
+    data_dir: Path | None,
+    rates: dict[str, float] | None,
+) -> dict[str, float]:
+    """order_id -> estimated produced kg = run_hours x the line's avg kg/h.
+
+    Same avg-rate table (reference/capabilities_rates.csv, via
+    _load_line_avg_rates) that values forfeited CIP kg, so the estimate
+    carries the same known caveat: an average over every SKU the line can
+    run, not the rate of the SKU actually scheduled. Empty dict when no
+    rates are reachable -- the caller then reports excess as None.
+    """
+    if rates is None:
+        if data_dir is None:
+            return {}
+        rates = _load_line_avg_rates(reference_dir(data_dir))
+    if not rates or prod.empty:
+        return {}
+    out: dict[str, float] = {}
+    for _, p in prod.iterrows():
+        rate = float(
+            rates.get(str(p.get("line_name", "")))
+            or rates.get(str(p.get("line_id", "")))
+            or 0.0
+        )
+        if rate <= 0:
+            continue
+        run_h = max(0.0, float(p["end_h"]) - float(p["start_h"]))
+        oid = str(p.get("order_id", ""))
+        out[oid] = out.get(oid, 0.0) + run_h * rate
+    return out
+
+
+def score_service(
+    calendar: pd.DataFrame,
+    cfg: dict,
+    demand: pd.DataFrame | None,
+    data_dir: Path | None = None,
+    rates: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    """Service metrics: lateness, at-risk orders and excess inventory kg.
+
+    Excess kg needs produced kg per order. When the calendar carries real
+    `qty_kg` (solver schedules do since P3) that is used as-is and
+    `excess_inventory_kg_estimated` is False. When it does not, the kg are
+    ESTIMATED as run_hours x the line's average rate (the same avg-rate table
+    used to value forfeited CIP kg), and the flag is True -- so the score
+    still includes the kg part instead of silently dropping it. `rates` is
+    the pre-loaded line -> kg/h map; when absent it is loaded from
+    `data_dir/reference/`. With neither, no estimate is possible and the
+    previous behaviour (excess None) stands.
+    """
     if demand is None or demand.empty:
         return {
             "orders_at_risk": None,
             "orders_late": None,
             "excess_inventory_kg": None,
+            "excess_inventory_kg_estimated": False,
             "available": False,
         }
     prod = _production(calendar)
@@ -829,15 +927,27 @@ def score_service(calendar: pd.DataFrame, cfg: dict, demand: pd.DataFrame | None
     at_risk_h = float(cfg["at_risk_h"])
 
     # Aggregate scheduled end and qty by order_id
+    estimated = False
     if prod.empty:
         scheduled_end: dict[str, float] = {}
         produced: dict[str, float] = {}
     else:
         scheduled_end = prod.groupby("order_id")["end_h"].max().to_dict()
-        if "qty_kg" in prod.columns and prod["qty_kg"].notna().any():
-            produced = prod.groupby("order_id")["qty_kg"].sum().fillna(0).to_dict()
+        has_qty = (
+            "qty_kg" in prod.columns
+            and pd.to_numeric(prod["qty_kg"], errors="coerce").fillna(0).abs().sum() > 0
+        )
+        if has_qty:
+            produced = (
+                pd.to_numeric(prod["qty_kg"], errors="coerce")
+                .fillna(0)
+                .groupby(prod["order_id"])
+                .sum()
+                .to_dict()
+            )
         else:
-            produced = {}
+            produced = _estimated_produced(prod, data_dir, rates)
+            estimated = bool(produced)
 
     for _, o in demand.iterrows():
         oid = str(o.get("order_id", ""))
@@ -867,6 +977,7 @@ def score_service(calendar: pd.DataFrame, cfg: dict, demand: pd.DataFrame | None
         "orders_at_risk": at_risk,
         "orders_late": late,
         "excess_inventory_kg": round(excess, 1) if produced else None,
+        "excess_inventory_kg_estimated": estimated,
         "available": True,
         "orders_total": int(len(demand)),
     }
@@ -918,10 +1029,17 @@ def category_scores(raw: dict[str, dict], cfg: dict) -> dict[str, float | None]:
             cip.get("cip_overdue"), float(cfg.get("cap_cip_overdue") or 1)
         ),
     ]
-    trial_s = [
-        _score_lower_better(tr["trial_hours"], cfg["cap_trial_hours"]),
-        _score_lower_better(tr["trial_disruptions"], cfg["cap_trial_disruptions"]),
-    ]
+    # Trials score only when there IS trial data (calendar blocks or a
+    # non-empty reference/trials.csv). Without it the category is None -- the
+    # composite drops it and the page greys it out -- because a 0-hour, 0-
+    # disruption week with no trial input is absence of data, not a 100.
+    if tr.get("available", True):
+        trial_s: list[float | None] = [
+            _score_lower_better(tr["trial_hours"], cfg["cap_trial_hours"]),
+            _score_lower_better(tr["trial_disruptions"], cfg["cap_trial_disruptions"]),
+        ]
+    else:
+        trial_s = []
     camp_parts = [
         _score_lower_better(camp["short_run_count"], cfg["cap_short_runs"]),
     ]
@@ -953,7 +1071,7 @@ def category_scores(raw: dict[str, dict], cfg: dict) -> dict[str, float | None]:
     return {
         "changeovers": avg(co_s),
         "cip": avg(cip_s),
-        "trials": avg(trial_s),
+        "trials": None if not trial_s else avg(trial_s),
         "campaigns": avg(camp_parts),
         "service": None if service_score is None else round(service_score, 1),
     }
@@ -1028,9 +1146,9 @@ def score_calendar(
     raw = {
         "changeovers": score_changeovers(calendar, cfg, co_map),
         "cip": score_cip(calendar, cfg, intervals, rates),
-        "trials": score_trials(calendar, co_map),
+        "trials": score_trials(calendar, co_map, data_dir),
         "campaigns": score_campaigns(calendar, cfg),
-        "service": score_service(calendar, cfg, demand),
+        "service": score_service(calendar, cfg, demand, data_dir, rates),
     }
     cats = category_scores(raw, cfg)
     comp = composite_score(cats, cfg)

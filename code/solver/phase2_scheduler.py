@@ -804,6 +804,45 @@ def write_week1_initial_states(
     df.to_csv(data_dir / "week1_initial_states.csv", index=False)
 
 
+def _reconcile_row_qty_kg(
+    schedule_rows: List[Dict[str, Any]],
+    produced_by_order: Dict[str, float],
+) -> None:
+    """Make each order's qty_kg rows sum to the solver's produced value.
+
+    Rows arrive carrying rate x run_hours (see _solution_to_rows). That is
+    already the model's own decomposition of produced[o_idx], so normally
+    nothing moves; this pass is the guard for the two edge cases:
+      * the rate was unreachable (all rows 0 kg) -> split produced by run_hours
+      * rounding drift -> scale the rows, then push the remainder onto the
+        last row so the order total matches produced exactly.
+    Mutates schedule_rows in place. Output only - no solver behaviour.
+    """
+    if not schedule_rows or not produced_by_order:
+        return
+    by_order: Dict[str, List[Dict[str, Any]]] = {}
+    for row in schedule_rows:
+        by_order.setdefault(str(row.get("order_id", "")), []).append(row)
+    for oid, rows in by_order.items():
+        total = produced_by_order.get(oid)
+        if total is None:
+            continue
+        total = float(total)
+        raw = sum(float(r.get("qty_kg", 0) or 0) for r in rows)
+        if raw <= 0:
+            run_total = sum(float(r.get("run_hours", 0) or 0) for r in rows)
+            if run_total <= 0:
+                continue
+            for r in rows:
+                r["qty_kg"] = round(total * float(r.get("run_hours", 0) or 0) / run_total, 1)
+        elif abs(raw - total) > 0.5:
+            for r in rows:
+                r["qty_kg"] = round(total * float(r["qty_kg"]) / raw, 1)
+        drift = round(total - sum(float(r["qty_kg"]) for r in rows), 1)
+        if drift:
+            rows[-1]["qty_kg"] = round(float(rows[-1]["qty_kg"]) + drift, 1)
+
+
 def _solution_to_rows(
     solver: cp_model.CpSolver,
     data: Data,
@@ -844,6 +883,14 @@ def _solution_to_rows(
 
             is_trial = bool(o.get("is_trial", False))
             sku_desc = data.sku_desc.get(o["sku"], "")
+            # Produced kg per row. The model defines produced[o_idx] as
+            # sum over lines of int(round(rate(l, sku))) * run_h(l, o), and
+            # run_h = seg_a_run + seg_b_run, so rate * row run_hours is the
+            # exact per-row share of the solver's produced value. A missing
+            # rate leaves 0 here and the reconcile pass below splits the
+            # solver total by run_hours instead. Output only - no constraint
+            # or objective change.
+            row_rate = int(round(float(data.rate.get((l, o["sku"])) or 0)))
 
             # seg_a (always present when order is assigned)
             sa_s = solver.Value(seg_a_start[key]) + hour_offset
@@ -861,6 +908,7 @@ def _solution_to_rows(
                     "start_hour": sa_s,
                     "end_hour": sa_e,
                     "run_hours": sa_r,
+                    "qty_kg": row_rate * sa_r,
                     "start_dt": sa_start_dt.strftime("%Y-%m-%d %H:%M:%S"),
                     "end_dt": sa_end_dt.strftime("%Y-%m-%d %H:%M:%S"),
                     "is_trial": is_trial,
@@ -883,14 +931,17 @@ def _solution_to_rows(
                         "start_hour": sb_s,
                         "end_hour": sb_e,
                         "run_hours": sb_r,
+                        "qty_kg": row_rate * sb_r,
                         "start_dt": sb_start_dt.strftime("%Y-%m-%d %H:%M:%S"),
                         "end_dt": sb_end_dt.strftime("%Y-%m-%d %H:%M:%S"),
                         "is_trial": is_trial,
                     })
 
     bounds_rows = []
+    produced_by_order: Dict[str, float] = {}
     for o_idx, o in enumerate(orders):
         prod_val = solver.Value(produced[o_idx])
+        produced_by_order[str(o["order_id"])] = float(prod_val)
         qmin, qmax = int(o["qty_min"]), int(o["qty_max"])
         in_bounds = qmin <= prod_val <= qmax
         bounds_rows.append({
@@ -901,6 +952,7 @@ def _solution_to_rows(
             "produced": prod_val,
             "in_bounds": in_bounds,
         })
+    _reconcile_row_qty_kg(schedule_rows, produced_by_order)
     return schedule_rows, bounds_rows
 
 

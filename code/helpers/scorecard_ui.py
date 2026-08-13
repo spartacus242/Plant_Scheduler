@@ -74,7 +74,12 @@ def render_scorecard(
         else:
             st.write(f"**Orders at risk:** {svc.get('orders_at_risk', '—')}")
             st.write(f"**Orders late:** {svc.get('orders_late', '—')}")
-            st.write(f"**Excess inventory (kg):** {svc.get('excess_inventory_kg', '—')}")
+            # Flag estimated kg: the calendar had no qty_kg, so the excess is
+            # run_hours x the line's AVERAGE rate, not measured production.
+            est = " _(estimated)_" if svc.get("excess_inventory_kg_estimated") else ""
+            st.write(
+                f"**Excess inventory (kg):** {svc.get('excess_inventory_kg', '—')}{est}"
+            )
 
     notes = data.get("notes") or []
     if notes:
