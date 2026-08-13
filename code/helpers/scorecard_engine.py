@@ -39,11 +39,10 @@ CATEGORY_WEIGHT_KEYS = {
     "changeovers": "weight_changeovers",
     "cip": "weight_cip",
     "campaigns": "weight_campaigns",
-    "maintenance": "weight_maintenance",
     "trials": "weight_trials",
 }
 
-CATEGORY_ORDER = ["service", "changeovers", "cip", "campaigns", "maintenance", "trials"]
+CATEGORY_ORDER = ["service", "changeovers", "cip", "campaigns", "trials"]
 
 CATEGORY_DOCS = {
     "service": (
@@ -66,10 +65,6 @@ CATEGORY_DOCS = {
         "longer-is-better against campaign_run_floor_h - long runs are never "
         "penalised."
     ),
-    "maintenance": (
-        "Whether planned maintenance is piggy-backed onto CIP downtime instead of "
-        "stealing production time."
-    ),
     "trials": (
         "The cost of R&D / trial work on the plant floor: the hours it consumes and "
         "the production it interrupts."
@@ -86,13 +81,6 @@ KNOWN_LIMITATIONS = [
         "kg figure as an order-of-magnitude cost, not an exact tonnage. If "
         "capabilities_rates.csv is missing the metric reads 0 kg and the CIP "
         "category quietly looks better than it is."
-    ),
-    (
-        "Maintenance scores 100 when nothing is scheduled",
-        "If maint_count == 0 the CIP-alignment sub-metric returns a flat 100 "
-        "(neutral-good) and conflicts are also 0, so the category reads a perfect "
-        "100. That is an absence of data, not good performance - do not read it as "
-        "an achievement."
     ),
     (
         "Service is all-or-nothing",
@@ -277,50 +265,6 @@ METRIC_DOCS: dict[str, dict[str, Any]] = {
             "a natural break makes this number zero."
         ),
     },
-    # --- maintenance -------------------------------------------------------
-    "maint_aligned": {
-        "definition": (
-            "Maintenance blocks whose window overlaps a CIP on the same line "
-            "(or within +/- align_tolerance_h). Higher is better."
-        ),
-        "formula": (
-            "Count maintenance blocks m where some CIP c on the same line satisfies "
-            "(m.start_h - align_tolerance_h) < c.end_h and "
-            "(m.end_h + align_tolerance_h) > c.start_h."
-        ),
-        "direction": "higher",
-        "cap_key": None,
-        "scoring": (
-            "score = clamp(100 * maint_aligned / max(1, maint_count), 0, 100). "
-            "If maint_count == 0 this sub-metric is skipped and a flat 100 is used."
-        ),
-        "category": "maintenance",
-        "why": (
-            "The line is already down for cleaning - doing maintenance in that same "
-            "window is free downtime. Doing it separately costs a second stop."
-        ),
-    },
-    "maint_conflicts": {
-        "definition": (
-            "Maintenance blocks that overlap production, trial, or contractor on the "
-            "same line. Higher is worse."
-        ),
-        "formula": (
-            "Count maintenance blocks m for which at least one block b on the same "
-            "line with block_type in (production, trial, contractor) satisfies "
-            "m.start_h < b.end_h and m.end_h > b.start_h (counted once per "
-            "maintenance block, not once per overlap)."
-        ),
-        "direction": "lower",
-        "cap_key": "cap_maint_conflicts",
-        "scoring": "score = clamp(100 * (1 - maint_conflicts / cap_maint_conflicts), 0, 100)",
-        "category": "maintenance",
-        "why": (
-            "A conflict means the plan is double-booked: maintenance and production "
-            "both claim the line. One of them will be bumped on the day, usually at "
-            "the worst moment."
-        ),
-    },
     # --- campaigns ---------------------------------------------------------
     "avg_run_h": {
         "definition": "Mean duration (hours) of production blocks.",
@@ -437,8 +381,6 @@ def metric_docs(cfg: dict | None = None) -> dict[str, dict[str, Any]]:
         entry["cap_value"] = cap_value
         if cap_key and cap_value is not None:
             entry["cap_label"] = f"{cap_key} = {cap_value:g}"
-        elif key == "maint_aligned":
-            entry["cap_label"] = "target = maint_count (dynamic)"
         else:
             entry["cap_label"] = "n/a"
         wkey = CATEGORY_WEIGHT_KEYS.get(doc["category"])
@@ -513,7 +455,6 @@ class ScorecardResult:
     changeovers: dict[str, Any] = field(default_factory=dict)
     cip: dict[str, Any] = field(default_factory=dict)
     trials: dict[str, Any] = field(default_factory=dict)
-    maintenance: dict[str, Any] = field(default_factory=dict)
     campaigns: dict[str, Any] = field(default_factory=dict)
     service: dict[str, Any] = field(default_factory=dict)
     category_scores: dict[str, float | None] = field(default_factory=dict)
@@ -532,7 +473,6 @@ class ScorecardResult:
             changeovers=dict(data.get("changeovers") or {}),
             cip=dict(data.get("cip") or {}),
             trials=dict(data.get("trials") or {}),
-            maintenance=dict(data.get("maintenance") or {}),
             campaigns=dict(data.get("campaigns") or {}),
             service=dict(data.get("service") or {}),
             category_scores=dict(data.get("category_scores") or {}),
@@ -860,44 +800,6 @@ def score_trials(calendar: pd.DataFrame, co_map: dict) -> dict[str, Any]:
     }
 
 
-def _windows_near(a_start: float, a_end: float, b_start: float, b_end: float, tol: float) -> bool:
-    # expand A by tol and test overlap with B
-    return (a_start - tol) < b_end and (a_end + tol) > b_start
-
-
-def score_maintenance(calendar: pd.DataFrame, cfg: dict) -> dict[str, Any]:
-    maint = _by_type(calendar, "maintenance")
-    cips = _by_type(calendar, "cip")
-    blockers = calendar[calendar["block_type"].isin(["production", "trial", "contractor"])]
-    tol = float(cfg["align_tolerance_h"])
-    aligned = 0
-    aligned_h = 0.0
-    conflicts = 0
-    for _, m in maint.iterrows():
-        ms, me = float(m["start_h"]), float(m["end_h"])
-        line = m["line_id"]
-        line_cips = cips[cips["line_id"] == line]
-        is_aligned = False
-        for _, c in line_cips.iterrows():
-            if _windows_near(ms, me, float(c["start_h"]), float(c["end_h"]), tol):
-                is_aligned = True
-                break
-        if is_aligned:
-            aligned += 1
-            aligned_h += max(0.0, me - ms)
-        line_blockers = blockers[blockers["line_id"] == line]
-        for _, b in line_blockers.iterrows():
-            if ms < float(b["end_h"]) and me > float(b["start_h"]):
-                conflicts += 1
-                break
-    return {
-        "maint_aligned": int(aligned),
-        "maint_aligned_hours": round(aligned_h, 2),
-        "maint_conflicts": int(conflicts),
-        "maint_count": int(len(maint)),
-    }
-
-
 def score_campaigns(calendar: pd.DataFrame, cfg: dict) -> dict[str, Any]:
     prod = _production(calendar)
     if prod.empty:
@@ -994,7 +896,6 @@ def category_scores(raw: dict[str, dict], cfg: dict) -> dict[str, float | None]:
     co = raw["changeovers"]
     cip = raw["cip"]
     tr = raw["trials"]
-    m = raw["maintenance"]
     camp = raw["campaigns"]
     svc = raw["service"]
 
@@ -1021,15 +922,6 @@ def category_scores(raw: dict[str, dict], cfg: dict) -> dict[str, float | None]:
         _score_lower_better(tr["trial_hours"], cfg["cap_trial_hours"]),
         _score_lower_better(tr["trial_disruptions"], cfg["cap_trial_disruptions"]),
     ]
-    # maintenance: aligned high good, conflicts low good
-    maint_parts = [
-        _score_lower_better(m["maint_conflicts"], cfg["cap_maint_conflicts"]),
-    ]
-    if m.get("maint_count", 0) > 0:
-        maint_parts.append(_score_higher_better(m["maint_aligned"], max(1, m["maint_count"])))
-    else:
-        maint_parts.append(100.0)  # no maint scheduled → neutral-good
-
     camp_parts = [
         _score_lower_better(camp["short_run_count"], cfg["cap_short_runs"]),
     ]
@@ -1062,19 +954,24 @@ def category_scores(raw: dict[str, dict], cfg: dict) -> dict[str, float | None]:
         "changeovers": avg(co_s),
         "cip": avg(cip_s),
         "trials": avg(trial_s),
-        "maintenance": avg(maint_parts),
         "campaigns": avg(camp_parts),
         "service": None if service_score is None else round(service_score, 1),
     }
 
 
 def composite_score(cats: dict[str, float | None], cfg: dict) -> float | None:
+    """Weighted mean of the category scores present in `cats`.
+
+    Any category missing from `cats` (score is None, e.g. Service with no
+    demand_plan.csv, or a category removed from CATEGORY_ORDER entirely) is
+    simply excluded from both the numerator and the weight sum (`den`), so
+    the remaining categories' weights renormalise to fill the gap.
+    """
     weights = {
         "service": float(cfg["weight_service"]),
         "changeovers": float(cfg["weight_changeovers"]),
         "cip": float(cfg["weight_cip"]),
         "campaigns": float(cfg["weight_campaigns"]),
-        "maintenance": float(cfg["weight_maintenance"]),
         "trials": float(cfg["weight_trials"]),
     }
     num = 0.0
@@ -1132,7 +1029,6 @@ def score_calendar(
         "changeovers": score_changeovers(calendar, cfg, co_map),
         "cip": score_cip(calendar, cfg, intervals, rates),
         "trials": score_trials(calendar, co_map),
-        "maintenance": score_maintenance(calendar, cfg),
         "campaigns": score_campaigns(calendar, cfg),
         "service": score_service(calendar, cfg, demand),
     }
@@ -1145,7 +1041,6 @@ def score_calendar(
         changeovers=raw["changeovers"],
         cip=raw["cip"],
         trials=raw["trials"],
-        maintenance=raw["maintenance"],
         campaigns=raw["campaigns"],
         service=raw["service"],
         category_scores=cats,
@@ -1191,8 +1086,6 @@ def delta_narrative(baseline: ScorecardResult, proposed: ScorecardResult) -> lis
         ("cip", "cip_forfeited_kg", "forfeited CIP kg"),
         ("trials", "trial_hours", "trial hours"),
         ("trials", "trial_disruptions", "trial disruptions"),
-        ("maintenance", "maint_aligned", "CIP-aligned maintenance"),
-        ("maintenance", "maint_conflicts", "maintenance conflicts"),
         ("campaigns", "short_run_count", "short runs"),
         ("campaigns", "avg_run_h", "avg run hours"),
         ("service", "orders_late", "late orders"),
@@ -1210,8 +1103,7 @@ def delta_narrative(baseline: ScorecardResult, proposed: ScorecardResult) -> lis
         diff = db - da
         if abs(diff) < 1e-6:
             continue
-        # For aligned maintenance, higher is better
-        better_higher = key in ("maint_aligned", "avg_run_h")
+        better_higher = key in ("avg_run_h",)
         improved = (diff > 0) if better_higher else (diff < 0)
         sign = "+" if diff > 0 else ""
         tag = "better" if improved else "worse"
@@ -1234,7 +1126,6 @@ def contribution_breakdown(
         "changeovers": data.get("changeovers") or {},
         "cip": data.get("cip") or {},
         "trials": data.get("trials") or {},
-        "maintenance": data.get("maintenance") or {},
         "campaigns": data.get("campaigns") or {},
         "service": data.get("service") or {},
     }
@@ -1243,7 +1134,6 @@ def contribution_breakdown(
         "changeovers": float(cfg["weight_changeovers"]),
         "cip": float(cfg["weight_cip"]),
         "campaigns": float(cfg["weight_campaigns"]),
-        "maintenance": float(cfg["weight_maintenance"]),
         "trials": float(cfg["weight_trials"]),
     }
     # Cap saturation hints
@@ -1262,7 +1152,6 @@ def contribution_breakdown(
             ("trial_hours", "cap_trial_hours"),
             ("trial_disruptions", "cap_trial_disruptions"),
         ],
-        "maintenance": [("maint_conflicts", "cap_maint_conflicts")],
         "campaigns": [("short_run_count", "cap_short_runs")],
         "service": [
             ("orders_late", "cap_orders_late"),

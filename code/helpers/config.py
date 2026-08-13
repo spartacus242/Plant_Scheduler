@@ -56,7 +56,6 @@ def scorecard_config(cfg: dict | None = None) -> dict[str, Any]:
         "weight_changeovers": 0.20,
         "weight_cip": 0.15,
         "weight_campaigns": 0.15,
-        "weight_maintenance": 0.10,
         "weight_trials": 0.10,
         # Caps for normalizing category scores (worse beyond cap → score 0)
         "cap_recipe_changes": 40,
@@ -75,7 +74,6 @@ def scorecard_config(cfg: dict | None = None) -> dict[str, Any]:
         "cap_cip_overdue": 1,
         "cap_trial_hours": 48,
         "cap_trial_disruptions": 20,
-        "cap_maint_conflicts": 10,
         "cap_short_runs": 30,
         "cap_orders_late": 15,
         "cap_orders_at_risk": 20,

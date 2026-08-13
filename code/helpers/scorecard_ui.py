@@ -39,7 +39,7 @@ def render_scorecard(
 
     top = st.columns(7)
     top[0].metric("Composite", f"{composite:.0f}" if composite is not None else "n/a")
-    for i, key in enumerate(["service", "changeovers", "cip", "campaigns", "maintenance", "trials"], start=1):
+    for i, key in enumerate(["service", "changeovers", "cip", "campaigns", "trials"], start=1):
         v = cats.get(key)
         top[i].metric(key.title(), f"{v:.0f}" if v is not None else "n/a")
 
@@ -61,11 +61,6 @@ def render_scorecard(
         tr = data.get("trials") or {}
         st.write(f"**Hours:** {tr.get('trial_hours', '—')}")
         st.write(f"**Disruptions:** {tr.get('trial_disruptions', '—')}")
-        st.subheader("Maintenance")
-        m = data.get("maintenance") or {}
-        st.write(f"**Aligned with CIP:** {m.get('maint_aligned', '—')}")
-        st.write(f"**Aligned hours:** {m.get('maint_aligned_hours', '—')}")
-        st.write(f"**Conflicts:** {m.get('maint_conflicts', '—')}")
     with c3:
         st.subheader("Campaigns")
         camp = data.get("campaigns") or {}
@@ -96,7 +91,6 @@ def render_scorecard(
 # Metric "no data" signals per category: when these raw values are empty/zero
 # the category score is NOT evidence of good performance — it is absence of data.
 _NO_DATA_KEYS: dict[str, tuple[str, ...]] = {
-    "maintenance": ("maint_count",),
     "trials": ("trial_hours",),
     "cip": ("cip_count",),
     "service": ("orders_late",),
@@ -106,8 +100,8 @@ _NO_DATA_KEYS: dict[str, tuple[str, ...]] = {
 def _category_has_data(cat: str, data: dict[str, Any]) -> bool:
     """True when a category's raw metrics indicate real data (not absence).
 
-    Maintenance with zero blocks, trials with zero hours, CIP with zero blocks
-    are 'no data' — the score of 100 is an artifact, not an achievement.
+    Trials with zero hours and CIP with zero blocks are 'no data' — the score
+    of 100 is an artifact, not an achievement.
     """
     raw = data.get(cat) or {}
     keys = _NO_DATA_KEYS.get(cat, ())
@@ -127,7 +121,7 @@ def render_scorecard_bars(data: dict[str, Any]) -> None:
     """Category contribution bars + composite gauge.
 
     'No data' categories render gray with a 'no data' label instead of a green
-    bar — absence of maintenance/trials/CIP is not good performance.
+    bar — absence of trials/CIP is not good performance.
     """
     composite = data.get("composite")
     cats = data.get("category_scores") or {}
@@ -157,7 +151,7 @@ def render_scorecard_bars(data: dict[str, Any]) -> None:
                     st.markdown(f"**{key.title()}** — :gray[no data]")
                     st.progress(0.0)
         st.caption(
-            "Gray = no data for that category (e.g. zero maintenance blocks), "
+            "Gray = no data for that category (e.g. zero CIP blocks), "
             "not a good score. Saturation notes appear in the contribution table."
         )
 
@@ -193,8 +187,7 @@ def render_metric_reference(
             "- *lower is better*: `score = clamp(100 * (1 - value / cap), 0, 100)` - "
             "a value **at or above its cap scores 0**.\n"
             "- *higher is better*: `score = clamp(100 * value / target, 0, 100)` - "
-            "used for `maint_aligned` and, since the run-length recalibration, for "
-            "`avg_run_h` against `campaign_run_floor_h`: the score ramps 0 -> 100 up "
+            "used for `avg_run_h` against `campaign_run_floor_h`: the score ramps 0 -> 100 up "
             "to the floor and **stays 100 above it**, so only short runs lose "
             "points and long campaigns are never penalised.\n\n"
             "Caps and targets are read live from `flowstate.toml [scorecard]`, so the "
@@ -306,7 +299,7 @@ def render_delta_strip(
     else:
         cols[0].metric("Composite", f"{p_comp:.0f}" if p_comp is not None else "n/a")
 
-    for i, key in enumerate(["service", "changeovers", "cip", "campaigns", "maintenance", "trials"], start=1):
+    for i, key in enumerate(["service", "changeovers", "cip", "campaigns", "trials"], start=1):
         pv = p_cats.get(key)
         bv = b_cats.get(key)
         if pv is None:

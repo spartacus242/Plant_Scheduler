@@ -119,8 +119,6 @@ sections = [
     ("cip", "cip_forfeited_kg", "CIP forfeited kg", False),
     ("trials", "trial_hours", "Trial hours", False),
     ("trials", "trial_disruptions", "Trial disruptions", False),
-    ("maintenance", "maint_aligned", "Maint aligned", True),
-    ("maintenance", "maint_conflicts", "Maint conflicts", False),
     ("campaigns", "avg_run_h", "Avg run h", True),
     ("campaigns", "short_run_count", "Short runs", False),
     ("service", "orders_late", "Orders late", False),
