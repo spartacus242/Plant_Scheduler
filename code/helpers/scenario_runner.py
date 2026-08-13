@@ -409,6 +409,7 @@ def _prepare_work_dir(data_dir: Path, work: Path) -> None:
         "demand_plan.csv": "demand_plan.csv",
         "capabilities_rates.csv": "capabilities_rates.csv",
         "line_cip_hrs.csv": "line_cip_hrs.csv",
+        "line_rates.csv": "line_rates.csv",
         "trials.csv": "trials.csv",
         "sku_info.csv": "sku_info.csv",
         "initial_states.csv": "initial_states.csv",

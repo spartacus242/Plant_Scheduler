@@ -304,11 +304,26 @@ def test_changeover_quality_all_zero(tmp_path):
 
 
 def test_rate_mode_false_warns(tmp_path):
+    """use_sku_rates=false with no data/reference/line_rates.csv -> STALE
+    (solver falls back to per-SKU rates, disagreeing with the intended flat mode)."""
     dd = _empty_data_dir(tmp_path)
     _min_catalog(dd)
     health = dh.assess(dd, _cfg(use_sku_rates=False))
     hit = next(h for h in health if h.key == "rate_mode")
     assert hit.state == STALE
+
+
+def test_rate_mode_false_with_line_rates_ok(tmp_path):
+    """use_sku_rates=false with data/reference/line_rates.csv present -> OK
+    (the intended flat-rate mode: solver and scorecard both read line_rates.csv)."""
+    dd = _empty_data_dir(tmp_path)
+    _min_catalog(dd)
+    import pandas as pd
+    pd.DataFrame([{"line_id": 0, "Line": "P09", "rate_kgph": 737}]).to_csv(
+        dd / "reference" / "line_rates.csv", index=False)
+    health = dh.assess(dd, _cfg(use_sku_rates=False))
+    hit = next(h for h in health if h.key == "rate_mode")
+    assert hit.state == OK
 
 
 def test_rate_mode_true_ok(tmp_path):

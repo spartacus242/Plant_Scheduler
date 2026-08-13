@@ -13,7 +13,7 @@ from typing import Any
 
 import pandas as pd
 
-from helpers.config import scorecard_config
+from helpers.config import load_toml, scorecard_config
 from helpers.paths import reference_dir, scorecards_dir
 from helpers.safe_io import safe_write_json
 
@@ -565,7 +565,33 @@ def _co_lookup(co_df: pd.DataFrame) -> dict[tuple[str, str], dict]:
     return out
 
 
-def _load_line_avg_rates(ref: Path) -> dict[str, float]:
+def _load_flat_line_rates(ref: Path) -> dict[str, float]:
+    """Flat rate_kgph per line from reference/line_rates.csv, keyed by Line name."""
+    path = ref / "line_rates.csv"
+    mapping: dict[str, float] = {}
+    if not path.exists():
+        return mapping
+    try:
+        df = pd.read_csv(path)
+    except Exception:
+        return mapping
+    name_col = "Line" if "Line" in df.columns else "line_name"
+    if name_col not in df.columns or "rate_kgph" not in df.columns:
+        return mapping
+    for _, r in df.iterrows():
+        name = str(r.get(name_col, "")).strip()
+        if not name:
+            continue
+        try:
+            rate = float(r.get("rate_kgph", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if rate > 0:
+            mapping[name] = rate
+    return mapping
+
+
+def _load_sku_avg_rates(ref: Path) -> dict[str, float]:
     """Mean calc_rate_kgph per line over the SKUs that line is capable of running."""
     path = ref / "capabilities_rates.csv"
     mapping: dict[str, float] = {}
@@ -607,6 +633,24 @@ def _load_line_avg_rates(ref: Path) -> dict[str, float]:
     except Exception:
         return {}
     return mapping
+
+
+def _load_line_avg_rates(ref: Path) -> dict[str, float]:
+    """Line -> kg/h used to value forfeited CIP dirty-time.
+
+    Flat-rate mode (flowstate.toml [scheduler] use_sku_rates = false AND
+    reference/line_rates.csv exists): each line's flat rate_kgph from
+    line_rates.csv. Otherwise (or if the flat file is missing/empty): mean
+    calc_rate_kgph per line over the SKUs that line is capable of running
+    (capabilities_rates.csv).
+    """
+    cfg = load_toml()
+    use_sku = bool((cfg.get("scheduler") or {}).get("use_sku_rates", True))
+    if not use_sku:
+        flat = _load_flat_line_rates(ref)
+        if flat:
+            return flat
+    return _load_sku_avg_rates(ref)
 
 
 def _load_cip_intervals(ref: Path, fallback: float) -> dict[str, float]:

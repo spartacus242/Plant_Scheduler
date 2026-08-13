@@ -175,12 +175,16 @@ class Data:
             plan_month = anchor.month
             lr = pd.read_csv(self.F.line_rates)
             lr["line_id"] = pd.to_numeric(lr["line_id"], errors="coerce").fillna(0).astype(int)
-            lr["Month"] = pd.to_numeric(lr["Month"], errors="coerce").fillna(0).astype(int)
             lr["rate_kgph"] = pd.to_numeric(lr["rate_kgph"], errors="coerce").fillna(0.0)
-            lr_month = lr[lr["Month"] == plan_month]
+            if "Month" in lr.columns:
+                lr["Month"] = pd.to_numeric(lr["Month"], errors="coerce").fillna(0).astype(int)
+                lr_active = lr[lr["Month"] == plan_month]
+            else:
+                # No Month column: every row is a flat rate for every month.
+                lr_active = lr
             # Build per-line rate: {line_id: rate_kgph}
             line_rate_map: dict = {}
-            for _, r in lr_month.iterrows():
+            for _, r in lr_active.iterrows():
                 line_rate_map[int(r["line_id"])] = float(r["rate_kgph"])
             # Override self.rate for all (line, sku) pairs present in line_rate_map.
             # Keep rates even for non-capable pairs so trials can look them up.

@@ -359,23 +359,32 @@ def _changeover_quality(dd: Path, cfg: dict) -> list[HealthStatus]:
 
 
 def _rate_mode_semantics(dd: Path, cfg: dict) -> list[HealthStatus]:
-    """use_sku_rates must be true for the solver to agree with the UI rates."""
+    """Flat line rates (use_sku_rates=false + line_rates.csv present) is the
+    intended mode; per-SKU rates (use_sku_rates=true) remain OK as before."""
     out: list[HealthStatus] = []
     sched = cfg.get("scheduler", {})
     use_sku = bool(sched.get("use_sku_rates", False))
-    if not use_sku:
+    has_flat_file = (reference_dir(dd) / "line_rates.csv").exists()
+    if use_sku:
         out.append(HealthStatus(
-            key="rate_mode", name="Solver rate mode", state=STALE,
-            detail=("use_sku_rates = false: the solver overrides per-SKU "
-                    "calc_rate_kgph with flat line_rates.csv, so solver run "
-                    "durations disagree with the calendar/scorecard."),
-            actions=("Set use_sku_rates = true in flowstate.toml [scheduler]",),
+            key="rate_mode", name="Solver rate mode", state=OK,
+            detail="use_sku_rates = true: solver and UI both use per-SKU calc_rate_kgph.",
+            source="semantic",
+        ))
+    elif has_flat_file:
+        out.append(HealthStatus(
+            key="rate_mode", name="Solver rate mode", state=OK,
+            detail=("flat line rates active: solver and scorecard both use "
+                    "line_rates.csv."),
             source="semantic",
         ))
     else:
         out.append(HealthStatus(
-            key="rate_mode", name="Solver rate mode", state=OK,
-            detail="use_sku_rates = true: solver and UI both use per-SKU calc_rate_kgph.",
+            key="rate_mode", name="Solver rate mode", state=STALE,
+            detail=("use_sku_rates = false but data/reference/line_rates.csv is "
+                    "missing: the solver falls back to per-SKU calc_rate_kgph, so "
+                    "solver run durations disagree with the calendar/scorecard."),
+            actions=("Place line_rates.csv in data/reference/",),
             source="semantic",
         ))
     return out
