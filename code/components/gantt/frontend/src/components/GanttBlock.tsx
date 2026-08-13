@@ -191,10 +191,18 @@ export const GanttBlock: React.FC<Props> = ({
           {label}
         </text>
       )}
-      {/* Left resize handle */}
-      <rect x={x} y={y} width={8} height={h} fill="transparent" style={{ cursor: "ew-resize" }} onPointerDown={handleLeftResize} />
-      {/* Right resize handle */}
-      <rect x={x + Math.max(w, 2) - 8} y={y} width={8} height={h} fill="transparent" style={{ cursor: "ew-resize" }} onPointerDown={handleRightResize} />
+      {/* Resize handles: adaptive width — generous on wide blocks (easier to
+          grab than a fixed 8px sliver), but never more than a third of a
+          narrow block so its body stays draggable. */}
+      {(() => {
+        const hw = Math.min(14, Math.max(5, Math.max(w, 2) / 3));
+        return (
+          <>
+            <rect x={x} y={y} width={hw} height={h} fill="transparent" style={{ cursor: "ew-resize" }} onPointerDown={handleLeftResize} />
+            <rect x={x + Math.max(w, 2) - hw} y={y} width={hw} height={h} fill="transparent" style={{ cursor: "ew-resize" }} onPointerDown={handleRightResize} />
+          </>
+        );
+      })()}
     </g>
   );
 };

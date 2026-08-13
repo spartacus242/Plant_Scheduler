@@ -330,6 +330,49 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     [schedule, cipWindows],
   );
 
+  // Typed edits from the popover (start / duration / tonnage). Same guards as
+  // a drag: locked blocks reject, min-run enforced, overlaps reject. Returns
+  // true when committed so the popover closes; false keeps it open to fix.
+  const handleApplyEdit = useCallback(
+    (blockId: string, edit: { startHour: number; durationH: number; qtyKg: number | null }): boolean => {
+      const block =
+        schedule.find((b) => b.id === blockId) ?? cipWindows.find((b) => b.id === blockId);
+      if (!block) return false;
+      if (block.locked) {
+        reject("Block is locked");
+        return false;
+      }
+      const minDur = isWindowBlock(block.block_type) ? 1 : args.config.min_run_hours;
+      if (edit.durationH < minDur) {
+        reject(`Duration ${edit.durationH}h is under the ${minDur}h minimum`);
+        return false;
+      }
+      const newStart = Math.max(0, edit.startHour);
+      const newEnd = newStart + edit.durationH;
+      const allBlocks = [...schedule, ...cipWindows];
+      if (findOverlapsOnLine(allBlocks, block.line_name, block.id, newStart, newEnd)) {
+        reject(`Overlap on ${block.line_name} at ${hourToStamp(newStart, anchor)}`);
+        return false;
+      }
+      setErrorMsg(null);
+      const patch: Partial<ScheduleBlock> = {
+        start_hour: newStart,
+        end_hour: newEnd,
+        run_hours: edit.durationH,
+      };
+      if (!isWindowBlock(block.block_type)) {
+        patch.qty_kg = edit.qtyKg ?? undefined;
+      }
+      actions.updateBlock(blockId, patch);
+      actions.reportAction(
+        `Edited ${block.order_id || block.sku}: ${hourToStamp(newStart, anchor)} for ${edit.durationH}h` +
+          (edit.qtyKg ? `, ${edit.qtyKg.toLocaleString()} kg` : ""),
+      );
+      return true;
+    },
+    [schedule, cipWindows, actions, reject, anchor, args.config.min_run_hours],
+  );
+
   const kpis = useMemo(
     () => computeKpis(schedule, cipWindows, args.demandTargets, args.capabilities),
     [schedule, cipWindows, args.demandTargets, args.capabilities],
@@ -511,6 +554,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           rate={getRate(popover.block.line_name, popover.block.sku, args.capabilities)}
           anchor={anchor}
           onClose={() => setPopover(null)}
+          onApply={handleApplyEdit}
         />
       )}
 
