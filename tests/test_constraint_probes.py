@@ -269,10 +269,14 @@ def _min_run_hours(o: dict, rate: float, cfg: dict) -> int:
     max_len = max(0, min(horizon, o["due_end"] + 1) - max(0, ds_eff))
     floor_h = cfg["min_run_hours"]
     if o["current_mo"]:
-        # model_builder.py:257-258 -- the FULL remaining kg would make a
-        # committed MO unpresentable inside a gated window, so the floor is
-        # just the global min_run_hours.
-        return int(min(max_len, max(1, floor_h)))
+        # model_builder.py:257-... -- qty_min == qty_max == remaining, so the
+        # floor applies only when the remaining kg supports it
+        # (remaining/rate >= floor_h); otherwise no floor (nearly-done MO).
+        # rate <= 0 -> cannot verify the qty cap -> treat as no floor.
+        max_hours_qty = (o["qty_max"] / rate) if rate > 0 else 0.0
+        if max_hours_qty >= floor_h:
+            return int(min(max_len, max(1, floor_h)))
+        return 0
     pct = 0
     if rate > 0:
         pct = math.ceil(cfg["min_run_pct_of_qty"] * o["qty_min"] / rate)
@@ -286,9 +290,8 @@ def test_p1_every_production_block_meets_the_min_run_floor(schedule, cfg):
     """model_builder.py:269-274 -- seg_a_run and seg_b_run are each floored at
     [scheduler] min_run_hours, so no BLOCK may be shorter than that.
 
-    Current-state MOs are checked separately in P1c: model_builder.py:242
-    `continue`s out of the run-bound block for them, so the floor the code
-    intends at lines 251-274 is never actually posted.
+    Current-state MOs are checked separately in P1c, which states the same
+    floor against the current-MO branch of the run-bound block.
     """
     floor_h = cfg["min_run_hours"]
     prod = schedule[~schedule["trial"] & ~schedule["current_mo"]]
@@ -337,53 +340,45 @@ def test_p1b_per_line_order_run_hours_meet_the_replicated_min_run(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="KNOWN SOLVER DEFECT (dispatch 4 finding 1): model_builder.py:236-242 "
-    "skips the min-run floor for current-state MOs -> committed work can be "
-    "chopped into short stubs. Fix = user-approved solver change; this marker "
-    "goes XPASS (strict) the moment the contract is honoured.",
-)
-def test_p1c_current_mo_blocks_meet_the_min_run_floor(schedule, cfg, orders):
-    """KNOWN SOLVER DEFECT -- expected to FAIL until it is fixed (dispatch 4
-    finding 1; fixing solver code was out of scope for that dispatch).
+def test_p1c_current_mo_blocks_meet_the_min_run_floor(schedule, cfg, orders, rates):
+    """model_builder.py:236-247 -- a current-state MO on its locked line has
+    presence forced and then FALLS THROUGH to the run-bound block, so the
+    current-MO floor applies to committed work.
 
-    model_builder.py:236-242 handles current-state MOs and ends with `continue`,
-    so the run-bound block at 251-274 -- including the current-MO floor its own
-    comment describes ("the floor is just the global min_run_hours") and the
-    per-segment seg_a_run / seg_b_run minimums -- is unreachable for them. The
-    result is committed work chopped into 1-3 h stubs, which is exactly what
-    min_run_hours exists to prevent. The probe asserts the INTENDED contract
-    rather than the current behaviour: a 1 h run of a committed MO is not
-    operationally defensible, so this stays xfailed (strict) as the standing
-    signal until the solver fix lands.
+    This was dispatch-4 finding 1: the old code `continue`d out of the
+    run-bound block, leaving the floor unreachable and letting committed work
+    be chopped into 1-3 h stubs. Fixed in dispatch 5 (user-approved, 4 h
+    floor). The contract: an MO whose remaining kg supports a full floor
+    (remaining/rate >= min_run_hours) must run at least that many hours in
+    TOTAL. Nearly-done MOs have no floor by design, and individual segments
+    may be shorter (forced CIP splits) -- the order TOTAL is the contract.
     """
     floor_h = cfg["min_run_hours"]
     cur = schedule[schedule["current_mo"] & ~schedule["trial"]]
     if cur.empty:
         pytest.skip("no current-state MOs in this work dir (not a scenario-E solve)")
 
-    block_violations = [
-        f"{r.line_name} {r.order_id} {r.start_hour:g}-{r.end_hour:g}h = {r.duration:g}h"
-        for r in cur[cur["duration"] < floor_h - TOL].itertuples()
-    ]
     total_violations = []
     for (line_id, order_id), grp in cur.groupby(["line_id", "order_id"]):
         o = orders.get(order_id)
         if o is None:
             continue
-        want = _min_run_hours(o, 0.0, cfg)
+        rate = rates.get((line_id, o["sku"])) if rates else None
+        if rate is None:
+            continue  # rate basis ambiguous -- cannot verify the qty cap
+        want = _min_run_hours(o, rate, cfg)
         total = float(grp["run_hours"].sum())
         if total < want - TOL:
             total_violations.append(
-                f"{grp.iloc[0]['line_name']} {order_id}: {total:g}h run < {want}h"
+                f"{grp.iloc[0]['line_name']} {order_id}: {total:g}h run < "
+                f"{want}h floor (rate {rate:g})"
             )
-    assert not block_violations and not total_violations, (
-        f"current-state MOs below min_run_hours={floor_h}h -- "
-        f"{len(block_violations)} short block(s), "
+    assert not total_violations, (
+        f"current-state MOs below their min-run floor -- "
         f"{len(total_violations)} short (line, order) total(s). "
-        "model_builder.py:242 makes the min-run floor unreachable for current MOs. "
-        + "; ".join((block_violations + total_violations)[:12])
+        "The floor is posted by the run-bound block at model_builder.py:257-286; "
+        "nearly-done MOs (remaining < floor_h x rate) have no floor by design. "
+        + "; ".join(total_violations[:12])
     )
 
 
@@ -436,14 +431,15 @@ def test_p2_produced_stays_within_the_demand_bounds(work, relax):
 # P3 -- charter row 3: capability
 # --------------------------------------------------------------------------
 def test_p3_every_scheduled_line_sku_pair_is_capable(schedule, capabilities):
-    """model_builder.py:245-249 -- a (line, sku) pair with capable == 0, no rate
+    """model_builder.py:257-261 -- a (line, sku) pair with capable == 0, no rate
     or a non-positive rate is forced present == 0.
 
     Trials are excluded: they are PINNED to their line (model_builder.py:197-227)
     and skip the capability branch entirely. Current-state MOs are INCLUDED even
-    though model_builder.py:242 `continue`s past the same branch for them --
-    running a committed MO on an incapable line is a real defect, so the probe
-    covers the latent hole rather than the code path.
+    though the gate deliberately does not apply to them (manprg is ground truth,
+    so a committed MO is never zeroed by the capabilities table) -- running a
+    committed MO on an incapable line is still a real data defect, so the probe
+    covers the hole the solver leaves open by design.
     """
     capable = {
         (int(r.line_id), str(r.sku)): int(r.capable)

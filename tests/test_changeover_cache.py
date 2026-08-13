@@ -34,6 +34,11 @@ def _stage_workdir(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def _csv_rows(path: Path) -> int:
+    """Data-row count of a CSV (header excluded) — structural, not a magic pin."""
+    return sum(1 for _ in open(path, encoding="utf-8-sig")) - 1
+
+
 def _direct_dicts(path: Path):
     """Replicate the legacy inline build (pre-cache) for an equivalence check."""
     chg = pd.read_csv(path)
@@ -67,7 +72,7 @@ def test_load_changeover_dicts_matches_legacy(tmp_path):
     assert got[0] == expected[0]
     assert got[1] == expected[1]
     assert got[2] == expected[2]
-    assert len(got[0]) == 44310  # full dense matrix preserved
+    assert len(got[0]) == _csv_rows(wd / "changeovers.csv")  # dense matrix preserved
 
 
 def test_nested_matches_legacy(tmp_path):
@@ -102,7 +107,7 @@ def test_parquet_cache_written_and_reused(tmp_path):
     load_changeover_dicts(p)
     assert cp.exists(), "parquet cache should be written on first parse"
     cached = pd.read_parquet(cp)
-    assert len(cached) == 44310
+    assert len(cached) == _csv_rows(p)
 
 
 def test_build_sku_families_and_compression():

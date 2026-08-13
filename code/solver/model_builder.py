@@ -233,18 +233,30 @@ def build_model(
             # skips levels 1-2 (changeovers + relaxed demand drop MOs) and
             # jumps straight to level 3 (ignore_co) which is fast and keeps
             # every MO on its locked line.
-            if o.get("is_current_mo"):
-                if o.get("locked_line") is not None and l == o["locked_line"]:
-                    model.Add(present[key] == 1)
-                else:
+            is_current = bool(o.get("is_current_mo"))
+            if is_current:
+                if o.get("locked_line") is None or l != o["locked_line"]:
                     model.Add(present[key] == 0)
                     model.Add(run_h[key] == 0)
-                continue
+                    continue
+                # On the locked line presence is forced, then we FALL THROUGH
+                # to the run-bound block below so the current-MO min-run floor
+                # (see the comment at the `is_current` branch there) and the
+                # per-segment seg_a / seg_b minimums actually apply. Committed
+                # work must not be chopped into short stubs.
+                model.Add(present[key] == 1)
 
             # Capability / run bounds
             r = data.rate.get((l, o["sku"]))
             cap = data.capable.get((l, o["sku"]))
-            if (cap is None) or (cap == 0) or (r is None) or (r <= 0):
+            # Current-state MOs skip this gate on purpose: manprg is ground
+            # truth -- the plant is physically running that (line, sku) pair,
+            # so a capabilities table that disagrees is the thing that is
+            # wrong. Zeroing a committed MO here would silently drop it; the
+            # app's capability check surfaces the data defect instead.
+            if not is_current and (
+                (cap is None) or (cap == 0) or (r is None) or (r <= 0)
+            ):
                 model.Add(present[key] == 0)
                 model.Add(run_h[key] == 0)
             else:
@@ -254,8 +266,18 @@ def build_model(
                 # kg (e.g. 171h for a 184t MO) would make the MO unpresentable
                 # inside a gated/CIP'd window and the solver skips it. For
                 # those, the floor is just the global min_run_hours.
-                if o.get("is_current_mo"):
-                    min_run = min(max_len, max(1, P.min_run_hours))
+                if is_current:
+                    # qty_min == qty_max == remaining for current MOs
+                    # (data_loader.py:315-316): prod is pinned to the remaining
+                    # kg, so a floor above remaining/rate is unsatisfiable
+                    # (integer run hours x rate > remaining -> INFEASIBLE at
+                    # every relax level, dispatch 5 A/B). The floor applies
+                    # only when the remaining work physically supports it.
+                    max_hours_qty = (qmin / r) if (r is not None and r > 0) else 0.0
+                    if max_hours_qty >= P.min_run_hours:
+                        min_run = min(max_len, max(1, P.min_run_hours))
+                    else:
+                        min_run = 0
                 else:
                     min_run_from_pct = (
                         math.ceil(P.min_run_pct_of_qty * qmin / r) if r > 0 else 0
@@ -265,13 +287,21 @@ def build_model(
                     )
                 model.Add(run_h[key] >= min_run).OnlyEnforceIf(present[key])
                 model.Add(run_h[key] == 0).OnlyEnforceIf(present[key].Not())
-                # Per-segment minimums (avoid wasteful short stubs)
-                model.Add(
-                    seg_a_run[key] >= P.min_run_hours
-                ).OnlyEnforceIf(present[key])
-                model.Add(
-                    seg_b_run[key] >= P.min_run_hours
-                ).OnlyEnforceIf(seg_b_present[key])
+                # Per-segment minimums (avoid wasteful short stubs) -- normal
+                # orders only. For current-state MOs the segment floors
+                # over-constrain against CIP-split geometry (a forced split can
+                # leave < 4h on one side of a clean, which made the model
+                # INFEASIBLE at every relax level -- dispatch 5 A/B). The
+                # ORDER-level run_h floor above already guarantees committed
+                # work runs >= min_run_hours in total, which is the
+                # stub-prevention contract.
+                if not is_current:
+                    model.Add(
+                        seg_a_run[key] >= min(P.min_run_hours, max_len)
+                    ).OnlyEnforceIf(present[key])
+                    model.Add(
+                        seg_b_run[key] >= min(P.min_run_hours, max_len)
+                    ).OnlyEnforceIf(seg_b_present[key])
 
     # ── NoOverlap prep: collect intervals per line ────────────────────────
     line_intervals = {l: [] for l in lines}
