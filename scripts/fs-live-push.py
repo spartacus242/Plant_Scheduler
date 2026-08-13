@@ -48,7 +48,8 @@ def git(repo: Path, *args: str) -> subprocess.CompletedProcess:
 
 
 def ensure_clone(conf: dict) -> Path:
-    clone = Path(conf["clone_dir"])
+    # Work side uses its own clone location (differs from the personal laptop's).
+    clone = Path(conf.get("clone_dir_work") or conf["clone_dir"])
     if (clone / ".git").exists():
         return clone
     clone.parent.mkdir(parents=True, exist_ok=True)
