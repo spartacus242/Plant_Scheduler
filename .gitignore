@@ -44,3 +44,28 @@ data/stockcheck/*.cache.json
 node_modules/
 code/components/gantt/frontend/node_modules/
 
+# Live data — refreshed daily by the GitHub file-drop bridge (scripts/fs-live-*.py).
+# The bridge owns these; the app repo never commits them.
+data/reference/manprg.txt
+data/reference/manprg2.txt
+data/reference/cip_info.csv
+data/reference/demand_plan.csv
+data/reference/demand_plan_summary.csv
+data/reference/demand_plan.source.json
+data/reference/capabilities_rates.csv
+data/reference/sku_info.csv
+data/reference/line_cip_hrs.csv
+data/reference/initial_states.csv
+data/reference/changeovers.csv
+data/reference/trials.csv
+data/reference/downtimes.csv
+
+# Generated scorecard runs (the app writes these on every run)
+data/scorecards/Week-*.json
+data/scorecards/latest.json
+
+# Scratch / attachments (not part of the build)
+data/_scenario_regeneration/
+.hermes/desktop-attachments/
+.worktrees/
+

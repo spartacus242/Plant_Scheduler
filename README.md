@@ -68,7 +68,7 @@ git commit -m "Describe the change"
 git push -u origin HEAD
 ```
 
-Then open a PR into `main` on GitHub.
+Then open a PR into `develop` on GitHub.
 
 ## Data
 

@@ -1,6 +1,6 @@
 # P2 Dispatch 1 — Flat per-line rates ON (charter §6.1–6.3, M1/M3)
 
-**Branch:** `feature/live-data-links`. **Owner:** Director. **Executor:** Claude Code (sonnet).
+**Branch:** `develop` (one dedicated branch, renamed 2026-08-13). **Owner:** Director. **Executor:** Claude Code (sonnet).
 **Status:** spec — Claude executes, Director verifies before "done".
 
 ## Context (verified 2026-08-12/13, do not re-derive)

@@ -1,6 +1,6 @@
 # P2 Dispatch 2a — Maintenance REMOVED from the scorecard (charter M5)
 
-**Branch:** `feature/live-data-links`. **Owner:** Director. **Executor:** Claude Code (sonnet).
+**Branch:** `develop` (one dedicated branch, renamed 2026-08-13). **Owner:** Director. **Executor:** Claude Code (sonnet).
 **Status:** spec — Claude executes, Director verifies before "done".
 
 ## Context (verified 2026-08-13, do not re-derive)

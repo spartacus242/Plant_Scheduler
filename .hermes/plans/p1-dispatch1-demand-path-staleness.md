@@ -1,6 +1,6 @@
 # P1 Dispatch 1 — Demand baseline path config + live staleness on the calendar
 
-**Branch:** `feature/live-data-links` (off `feature/handoff`). **Owner:** Director. **Executor:** Claude Code.
+**Branch:** `develop` (one dedicated branch, renamed 2026-08-13) (off `feature/handoff`). **Owner:** Director. **Executor:** Claude Code.
 **Status:** spec — Claude Code executes, Director verifies before "done".
 
 ## Context (verified, do not re-derive)
