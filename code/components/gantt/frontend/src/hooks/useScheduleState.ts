@@ -132,8 +132,16 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
   const resizeBlock = useCallback((id: string, newStart: number, newEnd: number) => {
     pushUndo();
     const dur = newEnd - newStart;
+    // Produced kg follows the duration the user sets: scale proportionally so
+    // a resized run stays honest (rate x hours), never a stale carry-over.
+    // Unknown kg (null/undefined/0) stays unknown - never invent a number.
+    const scaledKg = (b: ScheduleBlock): number | undefined => {
+      const oldDur = b.end_hour - b.start_hour;
+      if (!b.qty_kg || oldDur <= 0) return b.qty_kg;
+      return Math.round(((b.qty_kg * dur) / oldDur) * 10) / 10;
+    };
     setSchedule((prev) =>
-      prev.map((b) => (b.id === id ? { ...b, start_hour: newStart, end_hour: newEnd, run_hours: dur } : b)),
+      prev.map((b) => (b.id === id ? { ...b, start_hour: newStart, end_hour: newEnd, run_hours: dur, qty_kg: scaledKg(b) } : b)),
     );
     setCipWindows((prev) =>
       prev.map((b) => (b.id === id ? { ...b, start_hour: newStart, end_hour: newEnd, run_hours: dur } : b)),
@@ -147,8 +155,16 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
       const idx = prev.findIndex((b) => b.id === id);
       if (idx < 0) return prev;
       const b = prev[idx];
-      const segA: ScheduleBlock = { ...b, id: `blk_${_nextId++}`, end_hour: splitHour, run_hours: splitHour - b.start_hour };
-      const segB: ScheduleBlock = { ...b, id: `blk_${_nextId++}`, start_hour: splitHour, run_hours: b.end_hour - splitHour };
+      // Apportion produced kg by duration share - a plain spread would give
+      // BOTH segments the full kg and double-count production. Segment B takes
+      // the exact remainder so the two always sum back to the original.
+      // Unknown kg (null/undefined/0) stays unknown on both segments.
+      const total = b.end_hour - b.start_hour;
+      const fracA = total > 0 ? (splitHour - b.start_hour) / total : 0.5;
+      const kgA = b.qty_kg ? Math.round(b.qty_kg * fracA * 10) / 10 : b.qty_kg;
+      const kgB = b.qty_kg ? Math.round((b.qty_kg - (kgA as number)) * 10) / 10 : b.qty_kg;
+      const segA: ScheduleBlock = { ...b, id: `blk_${_nextId++}`, end_hour: splitHour, run_hours: splitHour - b.start_hour, qty_kg: kgA };
+      const segB: ScheduleBlock = { ...b, id: `blk_${_nextId++}`, start_hour: splitHour, run_hours: b.end_hour - splitHour, qty_kg: kgB };
       const next = [...prev];
       next.splice(idx, 1, segA, segB);
       return next;
