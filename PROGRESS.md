@@ -34,6 +34,8 @@
 
 1. ~~Stabilize the live-data tests~~ ✅ DONE — suite green (165 passed)
 2. **P2 finish:** ✅ dispatch 5 done — min-run floor verified (suite 175 green). **Notes:** P6/P8 coverage needs an A–D solve at relax ≤2 (small follow-up); TRIALS oddity open
-3. **P3:** ✅ DONE (`c462769`, suite 196 green, browser-verified). Open: Plant Calendar save wipes qty_kg (TS frontend — fold into P4)
-4. **P4:** rebuild the daily screens around the sandbox (biggest chunk — bidirectional DnD, Reconcile with stock flags, qty_kg-preserving save)
+3. **P3:** ✅ DONE (`c462769`, suite 196 green, browser-verified). ~~Open: Plant Calendar save wipes qty_kg~~ ✅ fixed (P4 slice 1)
+4. **P4:** IN PROGRESS — plan: `.hermes/plans/p4-daily-loop-plan-2026-08-13.md` (4 slices: qty_kg honesty → Reconcile screen → week-lock + mo_changes export → loop framing/weekly roll)
+   - **Slice 1 ✅ DONE:** qty_kg survives sandbox edits. Root cause: Python payload legs were already fixed in P3; the real bugs were the frontend mutations — split gave BOTH segments the full kg (double-count), resize kept stale kg. Fixed in `useScheduleState.ts` (split apportions by duration share, segment B takes the exact remainder; resize scales kg proportionally; unknown kg stays unknown; cross-line moves already correct — kg is the invariant, duration re-integrates). Bundle rebuilt. Browser-verified end-to-end on the live app: split 80,000 kg @ 56/111.7h → 40,095.9 + 39,904.1 (sums exact); resize 38.5h→18.5h → 56,800 → 27,300.4 kg (exact proportional). Suite 196 green.
+   - **Finding (pre-existing, for slice 3):** saving the calendar persists the display-only cip_info overlay windows ("CIP (sched)") into calendar_blocks.csv — display overlay leaks into the data model on save. Not new; surfaced during slice-1 QA.
 5. **P5/P6:** trial with Carsten
