@@ -13,20 +13,24 @@ sys.path.insert(0, str(ROOT / "code"))
 from helpers.cip_import import read_cip_info  # noqa: E402
 from helpers.manprg_import import read_manprg  # noqa: E402
 
-M1 = ROOT / "data" / "reference" / "manprg.txt"
-M2 = ROOT / "data" / "reference" / "manprg2.txt"
-CIP = ROOT / "data" / "reference" / "cip_info.csv"
+# Pinned snapshot (committed baseline) — data/reference is refreshed daily by
+# the live-data bridge; tests must never read live values. See the fixture
+# README for provenance and how to re-pin.
+FIX = ROOT / "data" / "test_fixtures" / "live_2026-08-13"
+M1 = FIX / "manprg.txt"
+M2 = FIX / "manprg2.txt"
+CIP = FIX / "cip_info.csv"
 
 
 def test_manprg_merge_counts():
     res = read_manprg([M1, M2])
-    assert res.rows == 58  # fresh Aug-10 export (later snapshot), zero overlap union
+    assert res.rows == 58  # pinned baseline export, zero overlap union
     assert res.warnings == []
 
 
 def test_manprg_current_mo_per_line():
     res = read_manprg([M1, M2])
-    # spot checks from the fresh Aug-10 probe (only lines with made>0 appear)
+    # spot checks from the pinned baseline (only lines with made>0 appear)
     assert res.current["P14"].mo == "29911"
     assert res.current["P14"].completion_pct == pytest.approx(26.0, abs=0.2)
     assert res.current["P17"].mo == "29956"
@@ -46,15 +50,15 @@ def test_cip_info():
     res = read_cip_info(CIP)
     assert len(res.by_line) == 14
     p09 = res.by_line["P09"]
-    assert p09.previous_cip is not None  # fresh: 8/10 11:05
+    assert p09.previous_cip is not None  # pinned baseline: 8/10/2026 11:05
     assert p09.max_hours_between == 120
     p10 = res.by_line["P10"]
     assert p10.previous_cip is not None
     assert p10.max_hours_between == 144
     assert "anti-static" in p10.notes
-    # scheduled CIP parsed (WW33 export: P09 has one scheduled, P14 cleaned today)
-    assert p09.scheduled_cip is not None  # scheduled: 8/15 2026 11:00
+    # scheduled CIP parsed (pinned baseline: P09 has one, P14 cleaned today)
+    assert p09.scheduled_cip is not None  # 8/15/2026 11:00
     p14 = res.by_line["P14"]
-    assert p14.previous_cip is not None  # fresh: 8/12 04:54
+    assert p14.previous_cip is not None  # 8/12/2026 04:54
     assert p14.scheduled_cip is None  # cleaned today, none scheduled yet
     assert p14.max_hours_between == 120

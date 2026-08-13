@@ -83,7 +83,7 @@ def test_real_manprg_reports_four_known_conflicts():
     """Live-manprg regression: the 4 known conflicts were resolved by the
     one-click capability fix (2026-08-10, browser-verified). The real-data
     check must now pass clean — a conflict here means the table regressed."""
-    ref = ROOT / "data" / "reference"
+    ref = ROOT / "data" / "test_fixtures" / "live_2026-08-13"  # pinned snapshot, not live data
     if not (ref / "manprg.txt").exists():
         pytest.skip("no real manprg export")
     caps = load_capabilities(ref / "capabilities_rates.csv")
@@ -94,7 +94,7 @@ def test_real_manprg_reports_four_known_conflicts():
 
 def test_real_manprg_pairs_are_capable_after_fix():
     """The specific pairs the fix flipped must be capable=1 in the table."""
-    ref = ROOT / "data" / "reference"
+    ref = ROOT / "data" / "test_fixtures" / "live_2026-08-13"  # pinned snapshot, not live data
     if not (ref / "manprg.txt").exists():
         pytest.skip("no real manprg export")
     caps = load_capabilities(ref / "capabilities_rates.csv")
