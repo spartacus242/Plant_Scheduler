@@ -8,6 +8,20 @@ import { snapToHour, hourToStamp } from "./layout";
 import type { SideDowntime } from "./abLines";
 import { groupOf, hasOneSidedStretch, isDouble } from "./abLines";
 
+export interface InsertPlan {
+  /** Where the dragged block lands (after the left neighbour + its setup). */
+  insStart: number;
+  insEnd: number;
+  /** The displaced block (first whose span the drop point hits). */
+  nextId: string;
+  nextLabel: string;
+  /** Uniform right-shift applied to the displaced block and everything after it. */
+  deltaH: number;
+  shiftedCount: number;
+  /** Set when the insert cannot be committed (locked block in the path, horizon overflow). */
+  blockedReason: string | null;
+}
+
 export interface DragPreview {
   /** Line the block would land on. */
   targetLine: string;
@@ -27,6 +41,76 @@ export interface DragPreview {
   reason: string | null;
   /** True when the placement crosses hours where only one side is running. */
   oneSided: boolean;
+  /** Present when the drop point hits occupied space and the block could be
+   * INSERTED there, sliding the displaced block (and everything after it on
+   * the line) to the right. */
+  insert?: InsertPlan | null;
+}
+
+export interface InsertContext {
+  /** setup hours between two blocks (0 for windows / same SKU). */
+  setupBetween: (from: ScheduleBlock, to: ScheduleBlock) => number;
+  horizonH: number;
+  lockedThroughH: number | null;
+  isBlockLocked: (b: ScheduleBlock) => boolean;
+}
+
+/**
+ * Plan an insert-at-drop-point: the dragged block lands after its left
+ * neighbour (setup respected) and the displaced block plus everything after
+ * it slides right by one uniform delta (relative gaps preserved, so no new
+ * overlaps can appear downstream). Pure — shared by the drag preview and the
+ * drop commit so they can never disagree.
+ */
+export function computeInsertPlan(
+  dragged: ScheduleBlock,
+  targetLine: string,
+  dropHour: number,
+  durH: number,
+  allBlocks: ScheduleBlock[],
+  ctx: InsertContext,
+): InsertPlan | null {
+  const others = allBlocks
+    .filter((b) => b.id !== dragged.id && b.line_name === targetLine)
+    // Display-only cip_info overlays are not calendar data (stripped on
+    // save, redrawn from the live feed) - they neither shift nor block an
+    // insert; a resulting overlap shows in the KPI bar and Reconcile.
+    .filter((b) => !String(b.id).startsWith("cipinfo_"))
+    .sort((a, b) => a.start_hour - b.start_hour);
+  const next = others.find((b) => b.end_hour > dropHour + 1e-9);
+  if (!next || next.start_hour > dropHour + 1e-9) return null; // free space — normal move
+  const idx = others.indexOf(next);
+  const prev = idx > 0 ? others[idx - 1] : undefined;
+  const insStart = Math.max(
+    dropHour,
+    prev ? prev.end_hour + ctx.setupBetween(prev, dragged) : 0,
+    next.start_hour, // never start before the displaced block's own start
+  );
+  const insEnd = insStart + durH;
+  const needNextStart = insEnd + ctx.setupBetween(dragged, next);
+  const deltaH = Math.max(0, needNextStart - next.start_hour);
+  const shifted = others.filter((b) => b.start_hour >= next.start_hour - 1e-9);
+  let blockedReason: string | null = null;
+  const lockedHit = shifted.find((b) => ctx.isBlockLocked(b));
+  if (ctx.lockedThroughH != null && insStart < ctx.lockedThroughH - 1e-9) {
+    blockedReason = "insert point is inside the locked window";
+  } else if (lockedHit) {
+    blockedReason = `would shift locked block ${lockedHit.sku || lockedHit.label}`;
+  } else {
+    const lastEnd = Math.max(...shifted.map((b) => b.end_hour)) + deltaH;
+    if (lastEnd > ctx.horizonH + 1e-9) {
+      blockedReason = `shift would push ${(lastEnd - ctx.horizonH).toFixed(1)}h past the horizon`;
+    }
+  }
+  return {
+    insStart,
+    insEnd,
+    nextId: next.id,
+    nextLabel: String(next.sku || next.label || next.block_type),
+    deltaH,
+    shiftedCount: shifted.length,
+    blockedReason,
+  };
 }
 
 export interface DragPreviewInput {
@@ -49,6 +133,8 @@ export interface DragPreviewInput {
   anchor: Date;
   /** Per-side scheduled downtime, keyed by line/side name. */
   downtime?: SideDowntime;
+  /** When provided, an overlapping drop point is planned as an INSERT. */
+  insertCtx?: InsertContext;
 }
 
 /**
@@ -60,6 +146,7 @@ export function computeDragPreview(input: DragPreviewInput): DragPreview | null 
   const {
     block, activeId, overId, deltaX, deltaY, pointerHour,
     lines, caps, allBlocks, hourWidth, lineHeight, anchor, downtime = {},
+    insertCtx,
   } = input;
 
   const sourceRate = getRate(block.line_name, block.sku, caps);
@@ -129,9 +216,20 @@ export function computeDragPreview(input: DragPreviewInput): DragPreview | null 
 
   const oneSided = hasOneSidedStretch(targetGroup, startHour, endHour, downtime);
 
+  let insert: InsertPlan | null = null;
   if (valid && findOverlapsOnLine(allBlocks, targetLineName, block.id, startHour, endHour)) {
-    valid = false;
-    reason = `Overlap on ${targetLineName} at ${hourToStamp(startHour, anchor)}`;
+    insert = insertCtx
+      ? computeInsertPlan(block, targetLineName, startHour, hours, allBlocks, insertCtx)
+      : null;
+    if (insert && !insert.blockedReason) {
+      // still a valid gesture: it becomes an INSERT on drop
+      reason = null;
+    } else {
+      valid = false;
+      reason = insert?.blockedReason
+        ? `Cannot insert: ${insert.blockedReason}`
+        : `Overlap on ${targetLineName} at ${hourToStamp(startHour, anchor)}`;
+    }
   }
 
   return {
@@ -145,5 +243,6 @@ export function computeDragPreview(input: DragPreviewInput): DragPreview | null 
     valid,
     reason,
     oneSided,
+    insert,
   };
 }

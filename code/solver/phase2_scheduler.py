@@ -1632,6 +1632,28 @@ def main() -> None:
                 solver = None
                 status = None
                 vars_dict = None
+                # Warm-start hints are only useful when the previous schedule
+                # honoured AT LEAST this attempt's constraints. Hinting a
+                # changeover-ENFORCING level with a changeover-IGNORING
+                # (level-3) schedule starves the search instead of seeding it
+                # — measured 2026-08-14: level 2 cold found FEASIBLE in 300s,
+                # level 2 warm-hinted from a level-3 run timed out UNKNOWN and
+                # the ladder silently escalated back to ignore_co.
+                _prev_relax: int | None = None
+                try:
+                    import json as _json
+                    # prev_feasibility.json is the copy the scenario runner
+                    # carries across its work-dir wipe; a direct CLI rerun in
+                    # the same dir still has its own feasibility_report.json.
+                    for _name in ("prev_feasibility.json",
+                                  "feasibility_report.json"):
+                        _fr = Path(DATA_DIR) / _name
+                        if _fr.exists():
+                            _prev_relax = _json.loads(
+                                _fr.read_text(encoding="utf-8")).get("relax_level")
+                            break
+                except Exception:  # noqa: BLE001
+                    _prev_relax = None
                 for lvl in _ladder_levels(base_lvl, max_lvl):
                     flags = RELAX_LADDER[lvl]
                     if lvl > base_lvl:
@@ -1669,7 +1691,13 @@ def main() -> None:
                     # is safe at every relax level; it only gives the search a
                     # foothold on the single-phase model, which is the hard
                     # case (pitfall 9). ALWAYS logs, including the no-op paths.
-                    if not _ARGS.no_warm_start:
+                    if _ARGS.no_warm_start:
+                        log("[warm-start] disabled by --no-warm-start")
+                    elif _prev_relax is not None and _prev_relax > lvl:
+                        log(f"[warm-start] skipped: previous schedule is relax "
+                            f"level {_prev_relax}, attempting level {lvl} — "
+                            "hints from a more-relaxed plan starve the search")
+                    else:
                         try:
                             from warm_start import apply_warm_start
 
@@ -1679,8 +1707,6 @@ def main() -> None:
                                 log(_wsn)
                         except Exception as _wsexc:  # noqa: BLE001
                             log(f"[warm-start] FAILED, solving cold: {_wsexc}")
-                    else:
-                        log("[warm-start] disabled by --no-warm-start")
 
                     # ── Stage: Solving ──
                     update_stage(

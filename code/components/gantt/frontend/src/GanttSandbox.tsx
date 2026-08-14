@@ -15,7 +15,7 @@ import { computeKpis, computeAdherence } from "./utils/kpi";
 import { isCapable, recalcDuration, findOverlapsOnLine } from "./utils/validation";
 import { LINE_HEIGHT, MIN_HOUR_WIDTH, MAX_HOUR_WIDTH, snapToHour, fitToWidth, xToHour, hourToStamp } from "./utils/layout";
 import { getRate } from "./utils/validation";
-import { computeDragPreview, type DragPreview } from "./utils/dragPreview";
+import { computeDragPreview, computeInsertPlan, type DragPreview, type InsertContext } from "./utils/dragPreview";
 import { isDouble } from "./utils/abLines";
 import { buildRows } from "./utils/ganttRows";
 import { skuColor, skuTextColor, blockLabel } from "./utils/colors";
@@ -177,6 +177,13 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     [schedule, cipWindows, setupBetween],
   );
 
+  const insertCtx = useMemo<InsertContext>(() => ({
+    setupBetween: (from, to) => setupBetween(from, to),
+    horizonH: horizon,
+    lockedThroughH,
+    isBlockLocked,
+  }), [setupBetween, horizon, lockedThroughH, isBlockLocked]);
+
   const hourFromPointer = useCallback((clientX: number | undefined): number => {
     const svg = chartSvgRef.current;
     if (!svg || clientX == null) return 0;
@@ -229,10 +236,11 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           lineHeight: LINE_HEIGHT,
           anchor,
           downtime,
+          insertCtx,
         }),
       );
     },
-    [schedule, cipWindows, lines, caps, hourWidth, hourFromPointer, anchor, downtime],
+    [schedule, cipWindows, lines, caps, hourWidth, hourFromPointer, anchor, downtime, insertCtx],
   );
 
   const onDragCancel = useCallback(() => {
@@ -348,7 +356,20 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         const newEnd = newStart + dur;
         const allBlocks = [...schedule, ...cipWindows];
         if (findOverlapsOnLine(allBlocks, block.line_name, block.id, newStart, newEnd)) {
-          reject(`Overlap on ${block.line_name} at ${hourToStamp(newStart, anchor)}`);
+          const plan = computeInsertPlan(block, block.line_name, newStart, dur, allBlocks, insertCtx);
+          const nextBlk = plan ? allBlocks.find((n) => n.id === plan.nextId) : undefined;
+          if (plan && nextBlk && !plan.blockedReason) {
+            setErrorMsg(null);
+            const shiftIds = allBlocks
+              .filter((b) => b.id !== block.id && b.line_name === block.line_name)
+              .filter((b) => b.start_hour >= nextBlk.start_hour - 1e-9)
+              .map((b) => b.id);
+            actions.insertShift(block.id, block.line_name, block.line_id, plan.insStart, dur, shiftIds, plan.deltaH);
+            return;
+          }
+          reject(plan && plan.blockedReason
+            ? `Cannot insert: ${plan.blockedReason}`
+            : `Overlap on ${block.line_name} at ${hourToStamp(newStart, anchor)}`);
           return;
         }
         setErrorMsg(null);
@@ -377,7 +398,20 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         const newEnd = newStart + dur;
         const allBlocks = [...schedule, ...cipWindows];
         if (findOverlapsOnLine(allBlocks, targetLine.line_name, block.id, newStart, newEnd)) {
-          reject(`Overlap on ${targetLine.line_name} at ${hourToStamp(newStart, anchor)}`);
+          const plan = computeInsertPlan(block, targetLine.line_name, newStart, dur, allBlocks, insertCtx);
+          const nextBlk = plan ? allBlocks.find((n) => n.id === plan.nextId) : undefined;
+          if (plan && nextBlk && !plan.blockedReason) {
+            setErrorMsg(null);
+            const shiftIds = allBlocks
+              .filter((b) => b.id !== block.id && b.line_name === targetLine.line_name)
+              .filter((b) => b.start_hour >= nextBlk.start_hour - 1e-9)
+              .map((b) => b.id);
+            actions.insertShift(block.id, targetLine.line_name, targetLine.line_id, plan.insStart, dur, shiftIds, plan.deltaH);
+            return;
+          }
+          reject(plan && plan.blockedReason
+            ? `Cannot insert: ${plan.blockedReason}`
+            : `Overlap on ${targetLine.line_name} at ${hourToStamp(newStart, anchor)}`);
           return;
         }
         setErrorMsg(null);
@@ -385,7 +419,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         setWarnMsg(setupWarning(block.id, targetLine.line_name, newStart, newEnd));
       }
     },
-    [schedule, cipWindows, holdingArea, actions, hourWidth, caps, lines, hourFromPointer, reject, anchor, downtime, isBlockLocked, lockReason, intoLockedZone, lockedThroughH],
+    [schedule, cipWindows, holdingArea, actions, hourWidth, caps, lines, hourFromPointer, reject, anchor, downtime, isBlockLocked, lockReason, intoLockedZone, lockedThroughH, insertCtx],
   );
 
   const onResizeCommit = useCallback(
@@ -663,6 +697,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           highlightSku={highlightSku}
           capableLines={capableLines}
           lockedThroughH={lockedThroughH}
+          insertPreview={dragPreview && dragPreview.insert && !dragPreview.insert.blockedReason ? dragPreview.insert : null}
           svgRef={chartSvgRef}
           onResizeStart={guardedStartResize}
           onContextMenu={handleContextMenu}

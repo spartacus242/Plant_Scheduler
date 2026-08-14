@@ -13,6 +13,12 @@ function ensureId(b: ScheduleBlock): ScheduleBlock {
 
 export interface ScheduleStateActions {
   updateBlock: (id: string, patch: Partial<ScheduleBlock>) => void;
+  /** Insert-between: move `id` to [newStart, newStart+dur] on `lineName` and
+   * shift every listed block right by `deltaH` - ONE undo step. */
+  insertShift: (
+    id: string, lineName: string, lineId: number, newStart: number, dur: number,
+    shiftIds: string[], deltaH: number,
+  ) => void;
   moveBlock: (id: string, newLine: string, newLineId: number, newStart: number, newDuration: number) => void;
   resizeBlock: (id: string, newStart: number, newEnd: number) => void;
   splitBlock: (id: string, splitHour: number) => void;
@@ -109,6 +115,29 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
     setSchedule((prev) => prev.map((b) => (b.id === id ? { ...b, ...patch } : b)));
     setCipWindows((prev) => prev.map((b) => (b.id === id ? { ...b, ...patch } : b)));
   }, [pushUndo]);
+
+  const insertShift = useCallback((
+    id: string, lineName: string, lineId: number, newStart: number, dur: number,
+    shiftIds: string[], deltaH: number,
+  ) => {
+    pushUndo();
+    const shift = new Set(shiftIds);
+    const apply = (b: ScheduleBlock): ScheduleBlock => {
+      if (b.id === id) {
+        return { ...b, line_name: lineName, line_id: lineId,
+                 start_hour: newStart, end_hour: newStart + dur, run_hours: dur };
+      }
+      if (shift.has(b.id) && deltaH > 0) {
+        return { ...b, start_hour: b.start_hour + deltaH, end_hour: b.end_hour + deltaH };
+      }
+      return b;
+    };
+    setSchedule((prev) => prev.map(apply));
+    setCipWindows((prev) => prev.map(apply));
+    setLastAction(
+      `Inserted at ${stamp(newStart)} - ${shiftIds.length} block(s) slid ${deltaH.toFixed(1)}h right`,
+    );
+  }, [pushUndo, stamp]);
 
   const moveBlock = useCallback((id: string, newLine: string, newLineId: number, newStart: number, newDuration: number) => {
     pushUndo();
@@ -294,7 +323,7 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
 
   const data: ScheduleStateData = { schedule, cipWindows, holdingArea, lastAction };
   const actions: ScheduleStateActions = {
-    updateBlock, moveBlock, resizeBlock, splitBlock,
+    updateBlock, insertShift, moveBlock, resizeBlock, splitBlock,
     removeToHolding, restoreFromHolding, addToHolding, addCip, addTrial, addWindowBlock,
     reportAction,
     undo, redo,

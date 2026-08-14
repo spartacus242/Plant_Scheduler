@@ -391,11 +391,29 @@ def _prepare_work_dir(data_dir: Path, work: Path) -> None:
                 _carry = _prev.read_bytes()
             except OSError:
                 _carry = None
+        # The previous run's relax level travels WITH the schedule: the solver
+        # skips warm-start hints when the previous plan was solved at a MORE
+        # relaxed level than the current attempt (hints from a changeover-
+        # ignoring schedule starve a changeover-enforcing search — measured
+        # 2026-08-14). Without this carry the wipe below deleted the report
+        # and the gate silently never fired.
+        _prev_feas = work / "feasibility_report.json"
+        _carry_feas: bytes | None = None
+        if _prev_feas.exists():
+            try:
+                _carry_feas = _prev_feas.read_bytes()
+            except OSError:
+                _carry_feas = None
         shutil.rmtree(work)
         work.mkdir(parents=True)
         if _carry is not None:
             try:
                 (work / "prev_schedule.csv").write_bytes(_carry)
+            except OSError:
+                pass
+        if _carry_feas is not None:
+            try:
+                (work / "prev_feasibility.json").write_bytes(_carry_feas)
             except OSError:
                 pass
     else:

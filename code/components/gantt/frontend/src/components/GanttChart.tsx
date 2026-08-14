@@ -14,6 +14,7 @@ import {
   LINE_LABEL_WIDTH,
 } from "../utils/layout";
 import type { ResizeState } from "../hooks/useBlockResize";
+import type { InsertPlan } from "../utils/dragPreview";
 
 interface Props {
   schedule: ScheduleBlock[];
@@ -28,6 +29,9 @@ interface Props {
   capableLines: Set<string> | null;
   /** 2-week lock boundary (hour offset); draws the lock line + shading. */
   lockedThroughH?: number | null;
+  /** Live insert preview: dashed ghost of the displaced block at its slid
+   * position, so the user SEES the right block moving over before dropping. */
+  insertPreview?: InsertPlan | null;
   svgRef?: React.RefObject<SVGSVGElement | null>;
   onResizeStart: (blockId: string, edge: "left" | "right", startH: number, endH: number, clientX: number, hourWidth: number) => void;
   onContextMenu: (e: React.MouseEvent, blockId: string) => void;
@@ -98,7 +102,7 @@ const LineRow: React.FC<{
 
 export const GanttChart: React.FC<Props> = ({
   schedule, cipWindows, lines, viewStart, viewEnd, hourWidth, anchor,
-  resizing, highlightSku, capableLines, lockedThroughH, svgRef: externalSvgRef,
+  resizing, highlightSku, capableLines, lockedThroughH, insertPreview, svgRef: externalSvgRef,
   onResizeStart, onContextMenu, onBlockClick, onZoomIn, onZoomOut, onResetZoom,
 }) => {
   const localSvgRef = useRef<SVGSVGElement>(null);
@@ -178,6 +182,32 @@ export const GanttChart: React.FC<Props> = ({
               )}
             </>
           )}
+
+          {/* Insert preview: dashed outline of the displaced block at its
+              slid-right position + insertion marker. */}
+          {insertPreview && (() => {
+            const nb = allBlocks.find((b) => b.id === insertPreview.nextId);
+            if (!nb) return null;
+            const li = rowIndexOf(rows, nb.line_name);
+            if (li < 0) return null;
+            const y = HEADER_HEIGHT + li * LINE_HEIGHT;
+            const slot = blockSlot(rows[li], nb.line_name, LINE_HEIGHT);
+            const gx = LINE_LABEL_WIDTH + (nb.start_hour + insertPreview.deltaH - viewStart) * hourWidth;
+            const gw = (nb.end_hour - nb.start_hour) * hourWidth;
+            const ix = LINE_LABEL_WIDTH + (insertPreview.insStart - viewStart) * hourWidth;
+            return (
+              <g pointerEvents="none">
+                <rect
+                  x={gx} y={y + slot.y + 2} width={Math.max(gw, 2)} height={(slot.height ?? LINE_HEIGHT) - 8}
+                  rx={4} fill="none" stroke="#1976d2" strokeWidth={2} strokeDasharray="5 3" opacity={0.8}
+                />
+                <line x1={ix} y1={y} x2={ix} y2={y + LINE_HEIGHT} stroke="#1976d2" strokeWidth={2} />
+                <text x={ix + 3} y={y + 10} fontSize={9} fontWeight={700} fill="#1976d2">
+                  insert - {insertPreview.shiftedCount} block(s) slide {insertPreview.deltaH.toFixed(1)}h
+                </text>
+              </g>
+            );
+          })()}
 
           {/* Blocks */}
           {allBlocks.map((block) => {
