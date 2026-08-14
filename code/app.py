@@ -31,6 +31,9 @@ pg = st.navigation(
         "Data": [
             st.Page("pages/data.py", title="Data Files", icon=":material/table:"),
         ],
+        "Reconcile": [
+            st.Page("pages/reconcile.py", title="Reconcile", icon=":material/checklist:"),
+        ],
         "Score": [
             st.Page("pages/scorecard.py", title="Schedule Scorecard", icon=":material/analytics:"),
         ],
