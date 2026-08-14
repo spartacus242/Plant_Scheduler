@@ -32,6 +32,10 @@ export interface DemandTarget {
   sku: string;
   qty_min: number;
   qty_max: number;
+  /** Due window (hour offsets) - drives waterfall crediting of committed-MO
+   * production that carries no matching demand order id. */
+  due_start_hour?: number;
+  due_end_hour?: number;
 }
 
 export interface LineInfo {

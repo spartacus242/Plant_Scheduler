@@ -13,7 +13,7 @@ import { useBlockResize } from "./hooks/useBlockResize";
 import { useContextMenu } from "./hooks/useContextMenu";
 import { computeKpis, computeAdherence } from "./utils/kpi";
 import { isCapable, recalcDuration, findOverlapsOnLine } from "./utils/validation";
-import { LINE_HEIGHT, MIN_HOUR_WIDTH, MAX_HOUR_WIDTH, snapToHour, fitToWidth, xToHour, hourToStamp } from "./utils/layout";
+import { LINE_HEIGHT, MIN_HOUR_WIDTH, MAX_HOUR_WIDTH, snapToHour, fitToWidth, xToHour, hourToStamp, displayOrderId } from "./utils/layout";
 import { getRate } from "./utils/validation";
 import { computeDragPreview, computeInsertPlan, type DragPreview, type InsertContext } from "./utils/dragPreview";
 import { isDouble } from "./utils/abLines";
@@ -760,6 +760,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         </strong>
         <AdherenceTable
           rows={adherenceRows}
+          formatOrder={(id) => displayOrderId(id, anchor)}
           highlightSku={highlightSku}
           onSkuClick={setHighlightSku}
           onAddToHolding={(row, missingKg, runHours) => {

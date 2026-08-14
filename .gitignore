@@ -57,7 +57,6 @@ data/reference/sku_info.csv
 data/reference/line_cip_hrs.csv
 data/reference/initial_states.csv
 data/reference/changeovers.csv
-data/reference/trials.csv
 data/reference/downtimes.csv
 data/reference/ediact 3.csv
 data/reference/ediact 4.csv
@@ -76,3 +75,7 @@ data/_scenario_regeneration/
 .hermes/desktop-attachments/
 .worktrees/
 
+
+# never commit credentials or local version sandboxes
+github repo key.txt
+data/versions/

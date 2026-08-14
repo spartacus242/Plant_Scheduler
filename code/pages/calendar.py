@@ -269,6 +269,8 @@ if dem_path.exists():
             "sku": str(r["sku"]),
             "qty_min": target * lo,
             "qty_max": target * hi,
+            "due_start_hour": float(r.get("due_start_hour", 0) or 0),
+            "due_end_hour": float(r.get("due_end_hour", 0) or 0),
         })
 
 schedule, windows = calendar_to_gantt_payload(cal)

@@ -2,7 +2,7 @@
 // Zoom buttons are rendered as a separate HTML component by GanttChart.
 
 import React from "react";
-import { hourToX, LINE_LABEL_WIDTH, HEADER_HEIGHT } from "../utils/layout";
+import { hourToX, isoWeekAtHour, LINE_LABEL_WIDTH, HEADER_HEIGHT } from "../utils/layout";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -22,6 +22,11 @@ export const TimeAxisSvg: React.FC<SvgProps> = ({
   const dayPixels = 24 * hourWidth;
 
   // ── Day ticks ──
+  // ISO week band: one label per week span (planner-facing W33/W34...).
+  const weekTicks: { hour: number; label: string }[] = [];
+  for (let h = Math.floor(viewStart / 168) * 168; h < viewEnd; h += 168) {
+    weekTicks.push({ hour: h, label: `W${isoWeekAtHour(anchor, h + 1)}` });
+  }
   const dayTicks: { hour: number; label: string }[] = [];
   const firstDay = Math.floor(viewStart / 24) * 24;
   for (let h = firstDay; h <= viewEnd; h += 24) {
@@ -49,6 +54,19 @@ export const TimeAxisSvg: React.FC<SvgProps> = ({
       <line x1={LINE_LABEL_WIDTH} y1={HEADER_HEIGHT} x2={svgWidth} y2={HEADER_HEIGHT} stroke="#ccc" />
 
       {/* Day columns */}
+      {weekTicks.map((t) => {
+        const wx0 = hourToX(t.hour, viewStart, hourWidth);
+        return (
+          <g key={`wk_${t.hour}`}>
+            <line x1={wx0} y1={0} x2={wx0} y2={svgHeight}
+                  stroke="#90a4ae" strokeWidth={1.5} strokeDasharray="8 4" />
+            <text x={Math.max(wx0, hourToX(viewStart, viewStart, hourWidth)) + 6}
+                  y={11} fontSize={11} fontWeight={700} fill="#455a64">
+              {t.label}
+            </text>
+          </g>
+        );
+      })}
       {dayTicks.map((t, i) => {
         const x = hourToX(t.hour, viewStart, hourWidth);
         const nextX = hourToX(t.hour + 24, viewStart, hourWidth);

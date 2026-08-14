@@ -410,18 +410,22 @@ def build_current_state(
 def _block(r: dict, line: str, lid: int, start, end, kind: str,
            *, locked: bool, anchor: datetime) -> dict:
     label = r["item"] or r["mo"]
+    # manprg TRIALS pseudo-MOs ARE the plant's trial reservations (user
+    # 2026-08-14: "the trials will show up on those files" — trials.csv is
+    # not a source). A trial is blocked production time, never tonnage.
+    is_trial = str(r["item"]).strip().upper() == "TRIALS"
     return {
         "block_id": _bid("mo", line, r["mo"], start),
-        "block_type": "production",
+        "block_type": "trial" if is_trial else "production",
         "line_id": lid,
         "line_name": line,
         "start_h": round(_hours(start, anchor), 3),
         "end_h": round(_hours(end, anchor), 3),
-        "label": label,
+        "label": "TRIAL" if is_trial else label,
         "order_id": r["mo"],
         "sku": r["item"],
         "sku_description": r["designation"],
-        "qty_kg": r["qty_kg"],
+        "qty_kg": None if is_trial else r["qty_kg"],
         "locked": locked,
         "attrs": f"current_state:{kind};pct={r['completion_pct']}",
     }

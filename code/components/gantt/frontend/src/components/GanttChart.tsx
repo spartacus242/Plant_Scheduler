@@ -120,7 +120,7 @@ export const GanttChart: React.FC<Props> = ({
       <ZoomControls onZoomIn={onZoomIn} onZoomOut={onZoomOut} onResetZoom={onResetZoom} />
 
       {/* Single SVG containing time axis + rows + blocks */}
-      <div style={{ overflowX: "hidden", overflowY: "hidden", border: "1px solid #e0e0e5", borderRadius: 8 }}>
+      <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: 640, border: "1px solid #e0e0e5", borderRadius: 8 }}>
         <svg ref={svgRef as React.RefObject<SVGSVGElement>} width={svgWidth} height={svgHeight} style={{ display: "block" }}>
           {/* Time axis: day labels, shift lines, week boundary — all SVG */}
           <TimeAxisSvg

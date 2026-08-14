@@ -428,7 +428,6 @@ def _prepare_work_dir(data_dir: Path, work: Path) -> None:
         "capabilities_rates.csv": "capabilities_rates.csv",
         "line_cip_hrs.csv": "line_cip_hrs.csv",
         "line_rates.csv": "line_rates.csv",
-        "trials.csv": "trials.csv",
         "sku_info.csv": "sku_info.csv",
         "initial_states.csv": "initial_states.csv",
     }
@@ -616,8 +615,50 @@ def _overlay_current_state(
     # them INFEASIBLE.
     if not lock_current_mo:
         return notes
+
+    def _is_trial(r: dict) -> bool:
+        return str(r.get("item", "")).strip().upper() == "TRIALS"
+
+    # manprg TRIALS pseudo-MOs are the plant's trial reservations (user rule
+    # 2026-08-14; trials.csv is NOT a source). As solver ORDERS they were
+    # impossible by construction (no rate -> prod == 0 vs qty_min > 0, one
+    # root of the level-0 infeasibility) — they are BLOCKED LINE TIME, so
+    # they go into the work-dir downtimes instead.
+    trial_windows: list[dict] = []
+    for r in cs.running:
+        if _is_trial(r):
+            s_h = max(0, _hours_h(r.get("shown_start"), hz.anchor))
+            e_h = max(s_h + 1, _hours_h(r.get("est_end"), hz.anchor))
+            trial_windows.append({"line": str(r["line"]).upper(),
+                                  "start": s_h, "end": e_h})
+    for r in cs.queued:
+        if _is_trial(r):
+            s_h = max(0, _hours_h(r.get("placed_start"), hz.anchor))
+            e_h = max(s_h + 1, _hours_h(r.get("placed_end"), hz.anchor))
+            trial_windows.append({"line": str(r["line"]).upper(),
+                                  "start": s_h, "end": e_h})
+    if trial_windows:
+        dt_path = Path(work) / "downtimes.csv"
+        dt = _pd.read_csv(dt_path) if dt_path.exists() else _pd.DataFrame(
+            columns=["line_id", "line_name", "start_hour", "end_hour", "reason"])
+        from helpers.calendar_io import load_lines as _ll2
+        lines_df = _ll2(Path(dd) / "lines.csv")
+        lid_map = {str(r["line_name"]).upper(): int(r["line_id"])
+                   for _, r in lines_df.iterrows()} if len(lines_df) else {}
+        add = _pd.DataFrame([{
+            "line_id": lid_map.get(w["line"], 0), "line_name": w["line"],
+            "start_hour": int(w["start"]), "end_hour": int(round(w["end"])),
+            "reason": "Trial (manprg)",
+        } for w in trial_windows])
+        _pd.concat([dt, add], ignore_index=True).to_csv(dt_path, index=False)
+        notes.append(
+            f"{len(trial_windows)} manprg TRIALS window(s) blocked as downtime "
+            "(trials are blocked hours, never orders)")
+
     cmo_rows = []
     for r in cs.running:
+        if _is_trial(r):
+            continue
         left_cas = float(r.get("left_cas", 0) or 0)
         fct_cas = float(r.get("fct_cas", 0) or 0)
         qty_kg = float(r.get("qty_kg", 0) or 0)
@@ -629,17 +670,18 @@ def _overlay_current_state(
             "due_start_h": 0, "due_end_h": 335,
             "locked_line": 1, "source": "manprg",
         })
-    if lock_current_mo:
-        for r in cs.queued:
-            remaining = round(float(r.get("qty_kg", 0) or 0), 3)
-            start_h = max(0, int(_hours_h(r.get("placed_start"), hz.anchor)))
-            end_h = max(start_h + 1, int(_hours_h(r.get("placed_end"), hz.anchor)))
-            cmo_rows.append({
-                "mo": r["mo"], "line_name": str(r["line"]).upper(),
-                "sku": r["item"], "remaining_kg": remaining,
-                "due_start_h": start_h, "due_end_h": end_h,
-                "locked_line": 1, "source": "manprg",
-            })
+    for r in cs.queued:
+        if _is_trial(r):
+            continue
+        remaining = round(float(r.get("qty_kg", 0) or 0), 3)
+        start_h = max(0, int(_hours_h(r.get("placed_start"), hz.anchor)))
+        end_h = max(start_h + 1, int(_hours_h(r.get("placed_end"), hz.anchor)))
+        cmo_rows.append({
+            "mo": r["mo"], "line_name": str(r["line"]).upper(),
+            "sku": r["item"], "remaining_kg": remaining,
+            "due_start_h": start_h, "due_end_h": end_h,
+            "locked_line": 1, "source": "manprg",
+        })
     if cmo_rows:
         _pd.DataFrame(cmo_rows).to_csv(Path(work) / "current_mo.csv", index=False)
         notes.append(

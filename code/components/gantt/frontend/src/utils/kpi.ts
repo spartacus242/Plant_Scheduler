@@ -8,12 +8,48 @@ export function computeAdherence(
   demand: DemandTarget[],
   caps: Record<string, Record<string, number>>,
 ): AdherenceRow[] {
-  // Sum scheduled qty per order
+  // Sum scheduled qty per order. The block's own qty_kg (the solver's real
+  // decomposition) wins over rate x hours. Trials are blocked hours, never
+  // tonnage (user rule 2026-08-14).
   const schedByOrder: Record<string, number> = {};
+  const demandIds = new Set(demand.map((d) => d.order_id));
+  // committed-MO / manual blocks whose order id matches no demand order:
+  // their kg still IS production of that SKU - waterfall it below.
+  const unmatchedBySku: Record<string, number> = {};
   for (const b of schedule) {
-    if (isWindowBlock(b.block_type)) continue;
-    const rate = caps[b.line_name]?.[b.sku] ?? 0;
-    schedByOrder[b.order_id] = (schedByOrder[b.order_id] ?? 0) + rate * b.run_hours;
+    if (isWindowBlock(b.block_type) || b.is_trial || b.block_type === "trial") continue;
+    const kg = b.qty_kg && b.qty_kg > 0
+      ? b.qty_kg
+      : (caps[b.line_name]?.[b.sku] ?? 0) * b.run_hours;
+    if (demandIds.has(b.order_id)) {
+      schedByOrder[b.order_id] = (schedByOrder[b.order_id] ?? 0) + kg;
+    } else {
+      unmatchedBySku[b.sku] = (unmatchedBySku[b.sku] ?? 0) + kg;
+    }
+  }
+  // Waterfall: committed production credits the EARLIEST-due open order of
+  // its SKU first (plant logic: what is running now covers the nearest due),
+  // spilling forward; any remainder lands on the last order of that SKU.
+  const bySku: Record<string, DemandTarget[]> = {};
+  for (const d of demand) (bySku[d.sku] ??= []).push(d);
+  for (const skuOrders of Object.values(bySku)) {
+    skuOrders.sort((a, b2) => (a.due_start_hour ?? 0) - (b2.due_start_hour ?? 0));
+  }
+  for (const [sku, kg0] of Object.entries(unmatchedBySku)) {
+    let kg = kg0;
+    const orders = bySku[sku] ?? [];
+    for (let i = 0; i < orders.length && kg > 1e-9; i++) {
+      const d = orders[i];
+      const have = schedByOrder[d.order_id] ?? 0;
+      const room = i === orders.length - 1
+        ? kg  // last order takes the remainder
+        : Math.max(0, Math.max(d.qty_max, d.qty_min) - have);
+      const take = Math.min(kg, room);
+      if (take > 0) {
+        schedByOrder[d.order_id] = have + take;
+        kg -= take;
+      }
+    }
   }
 
   // Mean capable-line rate per SKU (only capable lines with rate > 0)

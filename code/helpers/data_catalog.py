@@ -112,14 +112,6 @@ CATALOG: tuple = (
         key_columns=("sku", "designation"),
     ),
     DataFile(
-        key="trials",
-        name="Trials",
-        subdir="reference",
-        filename="trials.csv",
-        blurb="Trial runs that must be protected on the schedule.",
-        key_columns=("line_name", "sku", "start_datetime"),
-    ),
-    DataFile(
         key="cip_info",
         name="CIP schedule (cip_info)",
         subdir="reference",

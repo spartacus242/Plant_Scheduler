@@ -61,3 +61,24 @@ export function fitToWidth(containerWidth: number, horizonHours: number): number
   const available = containerWidth - LINE_LABEL_WIDTH - 10;
   return Math.max(MIN_HOUR_WIDTH, available / horizonHours);
 }
+
+
+/** ISO-8601 week number of a date (planner-facing: W33, W34...). */
+export function isoWeek(d: Date): number {
+  const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const day = t.getUTCDay() || 7;
+  t.setUTCDate(t.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+  return Math.ceil(((t.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
+}
+
+export function isoWeekAtHour(anchor: Date, hour: number): number {
+  return isoWeek(new Date(anchor.getTime() + hour * 3600_000));
+}
+
+/** Planner-facing order id: the internal -W0/-W1/-W2 horizon suffix becomes
+ * the ISO week (-W33/-W34/-W35). Display only - never stored. */
+export function displayOrderId(orderId: string, anchor: Date): string {
+  return String(orderId ?? "").replace(/-W(\d+)$/, (_m, k) =>
+    `-W${isoWeekAtHour(anchor, parseInt(k, 10) * 168 + 1)}`);
+}

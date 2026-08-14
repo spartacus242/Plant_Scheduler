@@ -6,6 +6,8 @@ import type { AdherenceRow } from "../types";
 
 interface Props {
   rows: AdherenceRow[];
+  /** Display-only order-id formatter (ISO week suffix). */
+  formatOrder?: (id: string) => string;
   highlightSku: string | null;
   onSkuClick: (sku: string | null) => void;
   onAddToHolding: (row: AdherenceRow, missingKg: number, runHours: number) => void;
@@ -17,7 +19,7 @@ const statusColors: Record<string, string> = {
   OVER: "#FFA15A",
 };
 
-export const AdherenceTable: React.FC<Props> = ({ rows, highlightSku, onSkuClick, onAddToHolding }) => {
+export const AdherenceTable: React.FC<Props> = ({ rows, highlightSku, onSkuClick, onAddToHolding, formatOrder }) => {
   return (
     <div style={{ maxHeight: 260, overflowY: "auto", border: "1px solid #e0e0e5", borderRadius: 8, background: "#ffffff" }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: "#333" }}>
@@ -50,7 +52,7 @@ export const AdherenceTable: React.FC<Props> = ({ rows, highlightSku, onSkuClick
                 }}
               >
                 <td style={{ ...td, fontWeight: isSelected ? 700 : 400 }}>{r.sku}</td>
-                <td style={td}>{r.order_id}</td>
+                <td style={td}>{formatOrder ? formatOrder(r.order_id) : r.order_id}</td>
                 <td style={tdRight}>{r.qty_min.toLocaleString()}</td>
                 <td style={tdRight}>{r.scheduled_qty.toLocaleString()}</td>
                 <td style={tdRight}>{r.pct_adherence}%</td>

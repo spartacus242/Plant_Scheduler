@@ -124,6 +124,10 @@ def import_solver_schedule(
             # schedules have no such column - keep None then, exactly as before.
             qty = r.get("qty_kg")
             qty = None if qty is None or pd.isna(qty) else float(qty)
+            # Trials are blocked production hours, never tonnage (user rule
+            # 2026-08-14) - a trial's target_kgs sizes its window, nothing else.
+            if is_trial:
+                qty = None
             rows.append({
                 "block_id": _new_id("prod" if not is_trial else "trial"),
                 "block_type": btype,

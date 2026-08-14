@@ -55,7 +55,6 @@ def _min_catalog(dd: Path) -> None:
         ("line_cip_hrs", ["line_id", "max_cip_hrs"], 1),
         ("initial_states", ["line_id", "line_name", "initial_sku", "available_from_hour"], 1),
         ("sku_info", ["sku", "recipe"], 1),
-        ("trials", ["line_name", "sku", "start_datetime"], 1),
     ]:
         import pandas as pd
         df = pd.DataFrame([{c: (i if c in ("line_id", "start_h", "end_h", "start_hour", "end_hour", "qty_target", "week_index", "max_cip_hrs", "available_from_hour") else f"{c}{i}") for i, c in enumerate(cols)} for i in range(rows)])
@@ -102,9 +101,9 @@ def _cfg(**overrides) -> dict:
 def test_missing_catalog_file(tmp_path):
     dd = _empty_data_dir(tmp_path)
     _min_catalog(dd)
-    (dd / "reference" / "trials.csv").unlink()
+    (dd / "reference" / "line_cip_hrs.csv").unlink()
     health = dh.assess(dd, _cfg())
-    hit = next(h for h in health if h.key == "trials")
+    hit = next(h for h in health if h.key == "line_cip_hrs")
     assert hit.state == MISSING
     assert hit.severity == 2
 
@@ -402,18 +401,18 @@ def test_version_slots_full(tmp_path):
 def test_next_actions_blocking_first(tmp_path):
     dd = _empty_data_dir(tmp_path)
     _min_catalog(dd)
-    (dd / "reference" / "trials.csv").unlink()       # MISSING (blocking)
+    (dd / "reference" / "line_cip_hrs.csv").unlink()  # MISSING (blocking)
     _touch(dd / "reference" / "manprg.txt", 3.0)     # STALE
     _touch(dd / "reference" / "manprg2.txt", 3.0)
     actions = dh.next_actions(dh.assess(dd, _cfg()), limit=3)
     assert actions, "expected at least one action"
-    assert "Upload trials.csv" in actions[0] or "trials.csv" in actions[0]
+    assert "line_cip_hrs.csv" in actions[0]
 
 
 def test_next_actions_dedupe(tmp_path):
     dd = _empty_data_dir(tmp_path)
     _min_catalog(dd)
-    (dd / "reference" / "trials.csv").unlink()
+    (dd / "reference" / "line_cip_hrs.csv").unlink()
     cip = dd / "reference" / "cip_info.csv"
     if cip.exists():
         cip.unlink()
@@ -434,7 +433,7 @@ def test_next_actions_empty_when_all_ok(tmp_path):
 def test_summary_counts(tmp_path):
     dd = _empty_data_dir(tmp_path)
     _min_catalog(dd)
-    (dd / "reference" / "trials.csv").unlink()
+    (dd / "reference" / "line_cip_hrs.csv").unlink()
     counts = dh.summary(dh.assess(dd, _cfg()))
     assert counts[MISSING] >= 1
 

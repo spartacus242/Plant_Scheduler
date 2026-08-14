@@ -11,7 +11,7 @@
 import React, { useMemo, useState } from "react";
 import type { ScheduleBlock } from "../types";
 import { isWindowBlock } from "../types";
-import { hourToStamp } from "../utils/layout";
+import { displayOrderId, hourToStamp } from "../utils/layout";
 
 export interface BlockEdit {
   startHour: number;
@@ -148,7 +148,7 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClo
       onClick={(e) => e.stopPropagation()}
     >
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-        <strong>{block.block_type === "cip" ? "CIP" : block.order_id}</strong>
+        <strong>{block.block_type === "cip" ? "CIP" : displayOrderId(block.order_id, anchor)}</strong>
         <span style={{ cursor: "pointer", fontWeight: 700, color: "#888" }} onClick={onClose}>
           ×
         </span>
