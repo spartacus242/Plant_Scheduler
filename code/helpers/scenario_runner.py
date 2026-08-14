@@ -766,6 +766,7 @@ def run_scenario(
     time_limit: int | None = None,
     python_exe: str | None = None,
     overrides: dict[str, Any] | None = None,
+    work_dir_patch: Any | None = None,
 ) -> dict[str, Any]:
     """Run one scenario. Returns {ok, calendar, scorecard, log, returncode,
     feasibility, relax_level}.
@@ -773,6 +774,13 @@ def run_scenario(
     ``overrides`` is a flat weight mapping (see OVERRIDE_SECTIONS) written into
     the work-dir flowstate.toml before the solver runs. Scenarios may also carry
     their own 'overrides' key (custom scenarios); the argument wins.
+
+    ``work_dir_patch`` is the agent seam: a callable ``(work: Path) ->
+    list[str]`` invoked AFTER staging + current-state overlay and BEFORE the
+    solve. It may rewrite the solver's own input copies (never the real
+    data/reference files) — e.g. the agent trimming component-blocked demand —
+    and returns human-readable notes that are prepended to the run log so
+    every input mutation is visible in the record.
     """
     work = (Path(data_dir) / "_scenario_work" / scenario["id"]).resolve()
     _prepare_work_dir(Path(data_dir).resolve(), work)
@@ -805,6 +813,13 @@ def run_scenario(
         _cs_notes.extend(_audit_work_downtimes(work))
     except Exception as _exc:  # noqa: BLE001
         _cs_notes.append(f"downtime horizon audit FAILED: {_exc}")
+
+    # Agent seam: let the caller rewrite the WORK-DIR inputs (never reference/)
+    # with every mutation reported into the log. A failing patch aborts the
+    # solve — silently running on half-patched inputs would be dishonest.
+    if work_dir_patch is not None:
+        _patch_notes = work_dir_patch(work)
+        _cs_notes.extend(f"[input patch] {n}" for n in (_patch_notes or []))
 
     scheduler = (Path(data_dir).resolve().parent / "code" / "solver" / "phase2_scheduler.py").resolve()
     toml = work / "flowstate.toml"
