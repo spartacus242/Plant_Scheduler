@@ -32,11 +32,14 @@ interface Props {
    * human-readable rejection reason, shown INSIDE the popover — the chart's
    * top banner is out of sight while the popup has the user's eyes. */
   onApply?: (blockId: string, edit: BlockEdit) => string | null;
+  /** Snap flush against the neighbouring block (setup hours respected).
+   * Same contract as onApply: null = done, string = why not. */
+  onSnap?: (blockId: string, dir: "left" | "right") => string | null;
 }
 
 const LABEL: React.CSSProperties = { color: "#888", paddingRight: 12 };
 const INPUT: React.CSSProperties = {
-  width: 130,
+  width: 178,
   fontSize: 12,
   padding: "2px 4px",
   border: "1px solid #ccc",
@@ -58,7 +61,7 @@ function fromLocalInput(anchor: Date, value: string): number | null {
 
 const round1 = (v: number) => Math.round(v * 10) / 10;
 
-export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClose, onApply }) => {
+export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClose, onApply, onSnap }) => {
   // Draft field state, (re)seeded whenever a different block is opened.
   const [draft, setDraft] = useState<{ id: string; start: string; dur: string; qty: string } | null>(null);
   const [applyError, setApplyError] = useState<string | null>(null);
@@ -139,7 +142,7 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClo
         padding: "10px 14px",
         boxShadow: "0 4px 16px rgba(0,0,0,0.15)",
         zIndex: 1000,
-        minWidth: 220,
+        minWidth: 272,
         fontSize: 13,
       }}
       onClick={(e) => e.stopPropagation()}
@@ -254,6 +257,30 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClo
           }}
         >
           {applyError} — the change was NOT applied.
+        </div>
+      )}
+      {editable && onSnap && (
+        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+          <button
+            title="Place flush against the previous block on this line, leaving exactly the setup time between the two SKUs"
+            style={{ fontSize: 12, padding: "4px 10px", borderRadius: 4, border: "1px solid #78909c", background: "#eceff1", cursor: "pointer" }}
+            onClick={() => {
+              const err = onSnap(block.id, "left");
+              if (err) setApplyError(err); else { setApplyError(null); onClose(); }
+            }}
+          >
+            ⇤ Snap left
+          </button>
+          <button
+            title="Place flush against the next block on this line, leaving exactly the setup time between the two SKUs"
+            style={{ fontSize: 12, padding: "4px 10px", borderRadius: 4, border: "1px solid #78909c", background: "#eceff1", cursor: "pointer" }}
+            onClick={() => {
+              const err = onSnap(block.id, "right");
+              if (err) setApplyError(err); else { setApplyError(null); onClose(); }
+            }}
+          >
+            Snap right ⇥
+          </button>
         </div>
       )}
       {editable && (

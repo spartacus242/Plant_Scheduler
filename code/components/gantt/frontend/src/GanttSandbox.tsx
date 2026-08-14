@@ -84,6 +84,8 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   const [activeDragBlock, setActiveDragBlock] = useState<ScheduleBlock | null>(null);
   const [dragPreview, setDragPreview] = useState<DragPreview | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Non-blocking notices (e.g. "setup time not respected") — orange, not red.
+  const [warnMsg, setWarnMsg] = useState<string | null>(null);
 
   const capableLines = useMemo(() => {
     if (!activeDragSku) return null;
@@ -125,6 +127,54 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     (startHour: number): boolean =>
       lockedThroughH != null && startHour < lockedThroughH - 1e-9,
     [lockedThroughH],
+  );
+
+  // Setup hours between two SKUs from the changeover matrix (0 when the pair
+  // is unknown or either side is a non-production window: a CIP's 6h wash
+  // absorbs any changeover).
+  const setupBetween = useCallback(
+    (from: ScheduleBlock | undefined, to: ScheduleBlock | undefined): number => {
+      if (!from || !to) return 0;
+      if (isWindowBlock(from.block_type) || isWindowBlock(to.block_type)) return 0;
+      if (from.sku === to.sku) return 0;
+      return Number(args.changeovers?.[from.sku]?.[to.sku] ?? 0) || 0;
+    },
+    [args.changeovers],
+  );
+
+  // Non-blocking honesty check after a placement: does the gap to either
+  // neighbour undercut the required setup time? The planner MAY place blocks
+  // closer (their call) — but never silently.
+  const setupWarning = useCallback(
+    (blockId: string, lineName: string, newStart: number, newEnd: number): string | null => {
+      const others = [...schedule, ...cipWindows].filter(
+        (b) => b.id !== blockId && b.line_name === lineName,
+      );
+      const me = [...schedule, ...cipWindows].find((b) => b.id === blockId);
+      const left = others.filter((b) => b.end_hour <= newStart + 1e-9)
+        .sort((a, b) => b.end_hour - a.end_hour)[0];
+      const right = others.filter((b) => b.start_hour >= newEnd - 1e-9)
+        .sort((a, b) => a.start_hour - b.start_hour)[0];
+      const msgs: string[] = [];
+      if (me && left) {
+        const need = setupBetween(left, me);
+        const gap = newStart - left.end_hour;
+        if (need > 0 && gap < need - 1e-9) {
+          msgs.push(`gap to ${left.sku || left.label} is ${gap.toFixed(1)}h but the changeover needs ${need}h`);
+        }
+      }
+      if (me && right) {
+        const need = setupBetween(me, right);
+        const gap = right.start_hour - newEnd;
+        if (need > 0 && gap < need - 1e-9) {
+          msgs.push(`gap to ${right.sku || right.label} is ${gap.toFixed(1)}h but the changeover needs ${need}h`);
+        }
+      }
+      return msgs.length
+        ? `⚠ Setup time not respected: ${msgs.join("; ")}. The plant will need that time anyway.`
+        : null;
+    },
+    [schedule, cipWindows, setupBetween],
   );
 
   const hourFromPointer = useCallback((clientX: number | undefined): number => {
@@ -303,6 +353,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         }
         setErrorMsg(null);
         actions.moveBlock(block.id, block.line_name, block.line_id, newStart, dur);
+        setWarnMsg(setupWarning(block.id, block.line_name, newStart, newStart + dur));
       } else {
         if (block.block_type !== "cip" && !isCapable(targetLine.line_name, block.sku, caps)) {
           reject(`Line ${targetLine.line_name} cannot run ${block.sku}`);
@@ -331,6 +382,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         }
         setErrorMsg(null);
         actions.moveBlock(block.id, targetLine.line_name, targetLine.line_id, newStart, dur);
+        setWarnMsg(setupWarning(block.id, targetLine.line_name, newStart, newEnd));
       }
     },
     [schedule, cipWindows, holdingArea, actions, hourWidth, caps, lines, hourFromPointer, reject, anchor, downtime, isBlockLocked, lockReason, intoLockedZone, lockedThroughH],
@@ -438,9 +490,67 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         `Edited ${block.order_id || block.sku}: ${hourToStamp(newStart, anchor)} for ${edit.durationH}h` +
           (edit.qtyKg ? `, ${edit.qtyKg.toLocaleString()} kg` : ""),
       );
+      setWarnMsg(setupWarning(blockId, block.line_name, newStart, newEnd));
       return null;
     },
     [schedule, cipWindows, actions, reject, anchor, args.config.min_run_hours, isBlockLocked, lockReason, intoLockedZone, lockedThroughH],
+  );
+
+  // Snap flush against the neighbouring block, leaving EXACTLY the setup
+  // time between the two SKUs (user request 2026-08-14). Returns null on
+  // success or the reason it could not snap.
+  const handleSnap = useCallback(
+    (blockId: string, dir: "left" | "right"): string | null => {
+      const block =
+        schedule.find((b) => b.id === blockId) ?? cipWindows.find((b) => b.id === blockId);
+      if (!block) return "Block no longer exists";
+      if (isBlockLocked(block)) return lockReason(block);
+      const dur = block.end_hour - block.start_hour;
+      const others = [...schedule, ...cipWindows].filter(
+        (b) => b.id !== blockId && b.line_name === block.line_name,
+      );
+      let newStart: number;
+      let against: ScheduleBlock | undefined;
+      let setup: number;
+      if (dir === "left") {
+        against = others
+          .filter((b) => b.start_hour < block.start_hour + 1e-9)
+          .sort((a, b) => b.end_hour - a.end_hour)[0];
+        if (!against) return "No block to the left on this line";
+        setup = setupBetween(against, block);
+        newStart = against.end_hour + setup;
+      } else {
+        against = others
+          .filter((b) => b.end_hour > block.end_hour - 1e-9)
+          .sort((a, b) => a.start_hour - b.start_hour)[0];
+        if (!against) return "No block to the right on this line";
+        setup = setupBetween(block, against);
+        newStart = against.start_hour - setup - dur;
+      }
+      if (newStart < 0) return "Not enough room before hour 0";
+      if (intoLockedZone(newStart)) {
+        return `Cannot move into the locked window (committed through ${hourToStamp(lockedThroughH ?? 0, anchor)})`;
+      }
+      const newEnd = newStart + dur;
+      const clash = others.find(
+        (b) => b.start_hour < newEnd - 1e-9 && b.end_hour > newStart + 1e-9,
+      );
+      if (clash) {
+        return `No room: would overlap ${clash.sku || clash.label} (${hourToStamp(clash.start_hour, anchor)} - ${hourToStamp(clash.end_hour, anchor)})`;
+      }
+      setErrorMsg(null);
+      actions.updateBlock(blockId, {
+        start_hour: newStart,
+        end_hour: newEnd,
+        run_hours: dur,
+      });
+      actions.reportAction(
+        `Snapped ${block.order_id || block.sku} ${dir} against ${against.sku || against.label}` +
+          (setup > 0 ? ` (setup ${setup}h respected)` : " (no setup needed)"),
+      );
+      return null;
+    },
+    [schedule, cipWindows, actions, isBlockLocked, lockReason, intoLockedZone, lockedThroughH, anchor, setupBetween],
   );
 
   const kpis = useMemo(
@@ -515,6 +625,22 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           }}
         >
           {errorMsg}
+        </div>
+      )}
+      {warnMsg && (
+        <div
+          style={{
+            background: "#fff8e1",
+            color: "#8d6e00",
+            border: "1px solid #ffe082",
+            borderRadius: 6,
+            padding: "6px 10px",
+            fontSize: 12,
+            marginBottom: 6,
+          }}
+          onClick={() => setWarnMsg(null)}
+        >
+          {warnMsg}
         </div>
       )}
 
@@ -626,6 +752,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           anchor={anchor}
           onClose={() => setPopover(null)}
           onApply={isBlockLocked(popover.block) ? undefined : handleApplyEdit}
+          onSnap={isBlockLocked(popover.block) ? undefined : handleSnap}
         />
       )}
 

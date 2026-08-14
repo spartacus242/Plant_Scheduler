@@ -17,6 +17,9 @@ interface Props {
   previewStart?: number;
   previewEnd?: number;
   isHighlighted: boolean;
+  /** True when ANOTHER SKU is highlighted: this block fades back so the
+   * highlighted campaign stands out (user request 2026-08-14). */
+  isDimmed?: boolean;
   /** Vertical offset within the row (0 unless the block sits on one side). */
   slotY?: number;
   /** Height of the slot; the full row height unless one-sided. */
@@ -30,7 +33,7 @@ interface Props {
 
 export const GanttBlock: React.FC<Props> = ({
   block, lineIndex, viewStart, hourWidth, anchor, isResizing, previewStart, previewEnd,
-  isHighlighted, slotY = 0, slotHeight, side = null, onResizeStart, onContextMenu, onClick,
+  isHighlighted, isDimmed = false, slotY = 0, slotHeight, side = null, onResizeStart, onContextMenu, onClick,
 }) => {
   const { attributes, listeners, setNodeRef: setDragRef, transform, isDragging } = useDraggable({
     id: block.id,
@@ -128,7 +131,11 @@ export const GanttBlock: React.FC<Props> = ({
       {...listeners}
       {...attributes}
       transform={`translate(${dragX}, ${dragY})`}
-      style={{ cursor: isDragging ? "grabbing" : "grab", opacity: isDragging ? 0.6 : 1 }}
+      style={{
+        cursor: isDragging ? "grabbing" : "grab",
+        opacity: isDragging ? 0.6 : isDimmed ? 0.25 : 1,
+        transition: "opacity 120ms ease",
+      }}
       onContextMenu={handleContext}
       onClick={handleClick}
     >

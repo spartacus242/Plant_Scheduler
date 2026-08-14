@@ -189,6 +189,7 @@ export const GanttChart: React.FC<Props> = ({
             const slot = blockSlot(rows[lineIndex], block.line_name, LINE_HEIGHT);
             const isThisResizing = resizing.blockId === block.id;
             const isHighlighted = highlightSku !== null && block.sku === highlightSku && !isWindowBlock(block.block_type);
+            const isDimmed = highlightSku !== null && !isHighlighted;
             return (
               <g key={block.id} transform={`translate(0, ${y})`}>
                 <GanttBlock
@@ -201,6 +202,7 @@ export const GanttChart: React.FC<Props> = ({
                   previewStart={isThisResizing ? resizing.previewStart : undefined}
                   previewEnd={isThisResizing ? resizing.previewEnd : undefined}
                   isHighlighted={isHighlighted}
+                  isDimmed={isDimmed}
                   slotY={slot.y}
                   slotHeight={slot.height}
                   side={slot.side}
