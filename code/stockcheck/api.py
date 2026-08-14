@@ -69,7 +69,7 @@ def stock_check_report(data_dir: str | Path, vif_folder: str | Path,
                 "import_errors": snap.errors,
                 "source_files": snap.source_files}
 
-    bom = BomGraph(ediact)
+    bom = BomGraph(ediact, frames.get("ediact 4.csv"))
     rm = frames.get("jestkexp.csv")
     pkg = frames.get("jestkexp2.csv")
     avail = cov.available_stock(rm, pkg, toggles)

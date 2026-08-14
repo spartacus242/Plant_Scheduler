@@ -83,6 +83,29 @@ def load_ediact(path: Path) -> pd.DataFrame:
     return df
 
 
+EDIACT4_COLS = [
+    # Same export family as ediact 3 but WITHOUT the flow-type column:
+    # PF;Activity;Effective date;Famille;Item type;Item;Designation;Qty;(unit);Freinte
+    "PF", "Activity", "effective_date", "family",
+    "item_type", "item", "designation", "qty_act", "unit",
+]
+
+
+def load_ediact4(path: Path) -> pd.DataFrame:
+    """ediact 4 = the semi-finished (HSM) recipes: Activity is the HSM code,
+    Input rows its components per batch, the Output row the batch basis
+    (e.g. 1,000 kg of slurry). Feeds BomGraph so HSM inputs explode through
+    to their sub-components instead of counting as unstocked leaves."""
+    df = _read_semicolon(path)
+    df = df.iloc[:, :9]
+    df.columns = EDIACT4_COLS
+    df["qty_act"] = _num(df["qty_act"])
+    df["effective_date"] = _dates(df["effective_date"])
+    for c in ("PF", "Activity", "family", "item_type", "item", "unit"):
+        df[c] = df[c].str.strip()
+    return df
+
+
 def load_jestkexp(path: Path, packaging: bool = False) -> pd.DataFrame:
     df = _read_semicolon(path)
     df = df.iloc[:, :11]
@@ -132,7 +155,7 @@ def import_vif_folder(folder: str | Path) -> VifSnapshot:
     errors: list[str] = []
     loaders = {
         "ediact 3.csv": lambda p: load_ediact(p),
-        "ediact 4.csv": lambda p: load_ediact(p),
+        "ediact 4.csv": lambda p: load_ediact4(p),
         "jestkexp.csv": lambda p: load_jestkexp(p, packaging=False),
         "jestkexp2.csv": lambda p: load_jestkexp(p, packaging=True),
         "azapart.csv": load_azapart,

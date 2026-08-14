@@ -39,12 +39,23 @@ class ExplosionResult:
 
 
 class BomGraph:
-    def __init__(self, ediact: pd.DataFrame):
+    def __init__(self, ediact: pd.DataFrame, ediact4: pd.DataFrame | None = None):
         df = ediact[ediact["item_type"].isin(("Output", "Input"))].copy()
         df = df[~df["item"].str.endswith("SCN")]
         self.df = df
         self._by_act = {a: g for a, g in df.groupby("Activity")}
         self._by_pf = {p: set(g["Activity"]) for p, g in df.groupby("PF")}
+        # Semi-finished (HSM) recipes from ediact 4: registering them as
+        # activities makes the walker recurse THROUGH an HSM input to its
+        # sub-components, and the intermediate filter in explode() then drops
+        # the HSM itself from the requirements — an HSM never counts against
+        # a SKU on its own (house-made, no stock rows); only short
+        # sub-components do (user rule 2026-08-14).
+        if ediact4 is not None and len(ediact4):
+            e4 = ediact4[ediact4["item_type"].isin(("Output", "Input"))].copy()
+            e4 = e4[~e4["item"].str.endswith("SCN")]
+            for a, g in e4.groupby("Activity"):
+                self._by_act.setdefault(a, g)  # ediact 3 wins on collision
 
     def has_bom(self, sku: str) -> bool:
         return sku in self._by_pf
