@@ -478,6 +478,31 @@ def _week_moved_orders(
     )
 
 
+def input_signature(data_dir: Path) -> str:
+    """Fingerprint of the solve inputs (md5 over the staged input files).
+
+    Warm-start hints from a previous schedule are only trustworthy when the
+    inputs that shaped it are the SAME inputs being solved now. Measured
+    2026-08-14 (dry-run 6): new trial-downtime windows landed exactly where
+    the previous schedule had placed blocks, the (level-legitimate) hints
+    steered the search into walls, and level 2 starved to UNKNOWN.
+    """
+    import hashlib
+    h = hashlib.md5()
+    for name in ("capabilities_rates.csv", "changeovers.csv",
+                 "demand_plan.csv", "downtimes.csv", "initial_states.csv",
+                 "line_cip_hrs.csv", "line_rates.csv", "sku_info.csv",
+                 "current_mo.csv", "trials.csv"):
+        p = Path(data_dir) / name
+        if p.exists():
+            try:
+                h.update(name.encode())
+                h.update(p.read_bytes())
+            except OSError:
+                pass
+    return h.hexdigest()
+
+
 def write_feasibility_report(data_dir: Path, report: Dict[str, Any]) -> None:
     """Write feasibility_report.json — always, on any solve outcome."""
     import json as _json
@@ -485,6 +510,7 @@ def write_feasibility_report(data_dir: Path, report: Dict[str, Any]) -> None:
     report.setdefault("orders_short_of_qmin", [])
     report.setdefault("late_orders", [])
     report.setdefault("blocking_lines", _read_blocking_lines(data_dir))
+    report.setdefault("input_sig", input_signature(data_dir))
     try:
         with open(data_dir / "feasibility_report.json", "w", encoding="utf-8") as f:
             _json.dump(report, f, indent=2)
@@ -1640,6 +1666,7 @@ def main() -> None:
                 # level 2 warm-hinted from a level-3 run timed out UNKNOWN and
                 # the ladder silently escalated back to ignore_co.
                 _prev_relax: int | None = None
+                _prev_sig: str | None = None
                 try:
                     import json as _json
                     # prev_feasibility.json is the copy the scenario runner
@@ -1649,11 +1676,17 @@ def main() -> None:
                                   "feasibility_report.json"):
                         _fr = Path(DATA_DIR) / _name
                         if _fr.exists():
-                            _prev_relax = _json.loads(
-                                _fr.read_text(encoding="utf-8")).get("relax_level")
+                            _prev = _json.loads(_fr.read_text(encoding="utf-8"))
+                            _prev_relax = _prev.get("relax_level")
+                            _prev_sig = _prev.get("input_sig")
                             break
                 except Exception:  # noqa: BLE001
                     _prev_relax = None
+                # Hints from a schedule solved on DIFFERENT inputs steer into
+                # walls (see input_signature docstring). Unknown previous sig
+                # (older report) counts as changed — cold is the safe default.
+                _cur_sig = input_signature(Path(DATA_DIR))
+                _inputs_changed = _prev_sig != _cur_sig
                 for lvl in _ladder_levels(base_lvl, max_lvl):
                     flags = RELAX_LADDER[lvl]
                     if lvl > base_lvl:
@@ -1693,6 +1726,10 @@ def main() -> None:
                     # case (pitfall 9). ALWAYS logs, including the no-op paths.
                     if _ARGS.no_warm_start:
                         log("[warm-start] disabled by --no-warm-start")
+                    elif _inputs_changed:
+                        log("[warm-start] skipped: solve inputs changed since "
+                            "the previous schedule (input_sig mismatch) — "
+                            "stale hints steer into the new constraints")
                     elif _prev_relax is not None and _prev_relax > lvl:
                         log(f"[warm-start] skipped: previous schedule is relax "
                             f"level {_prev_relax}, attempting level {lvl} — "
