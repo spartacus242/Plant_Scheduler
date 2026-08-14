@@ -148,7 +148,7 @@ with st.expander("🏭 Rebuild calendar from current plant state (manprg + cip_i
         st.caption(
             f"Ground truth: **{_c['running']}** running MO(s) (locked), "
             f"**{_c['queued']}** queued, **{_c['completed']}** completed "
-            f"(greyed, immovable), **{_c['cip']}** CIP block(s) → "
+            f"(not shown), **{_c['cip']}** CIP block(s) → "
             f"{_c['blocks']} blocks.")
         for _w in _cs.warnings[:6]:
             st.caption(f"⚠️ {_w}")

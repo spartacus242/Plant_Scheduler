@@ -78,15 +78,13 @@ def _state(rows, cips=None, cfg=None, hz=None):
                                cips=cips or CipInfoResult(), cfg=cfg, now=NOW)
 
 
-def test_completed_mos_render_greyed_and_immovable():
-    # User decision 2026-08-14: completed MOs SHOW as greyed, locked history
-    # (they used to be dropped). Same rn=1 semantics as the planner's SQL.
+def test_completed_mos_are_counted_but_not_drawn():
+    # User decision 2026-08-14 (revised): completed MOs stay OFF the board —
+    # counted in state.completed (rn=1 semantics, same as the planner's SQL)
+    # but never emitted as blocks.
     st = _state([{"mo": "DONE", "made_cas": 100.0, "left_cas": 0.0},
                  {"mo": "NEXT", "made_cas": ""}])
-    assert "DONE" in set(st.blocks["order_id"])
-    done = st.blocks[st.blocks["order_id"] == "DONE"].iloc[0]
-    assert bool(done["locked"]) is True
-    assert "current_state:completed" in str(done["attrs"])
+    assert "DONE" not in set(st.blocks["order_id"])
     assert "NEXT" in set(st.blocks["order_id"])
     assert len(st.completed) == 1
 
