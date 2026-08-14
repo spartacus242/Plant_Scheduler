@@ -72,7 +72,7 @@ class CurrentState:
         return {
             "running": len(self.running),
             "queued": len(self.queued),
-            "completed_dropped": len(self.completed),
+            "completed": len(self.completed),
             "cip": len(self.cips),
             "blocks": int(len(self.blocks)),
         }
@@ -341,6 +341,19 @@ def build_current_state(
             state.queued.append({**r, "placed_start": start, "placed_end": end})
             cursor = end
 
+        # Completed MOs (made >= fct, or superseded per the latest-start rule
+        # — the same rn=1 logic as the planner's SQL) render as GREYED,
+        # immovable history (user decision 2026-08-14). Their window is the
+        # manprg start + nominal hours; anything fully before the anchor is
+        # clipped away by the horizon filter below.
+        for r in line_rows:
+            if r["kind"] != "completed":
+                continue
+            c_start = pd.Timestamp(r["start_dt"])
+            c_end = c_start + timedelta(hours=r["hours"] if r["hours"] > 0 else 1.0)
+            blk = _block(r, line, lid, c_start, c_end, "completed",
+                         locked=True, anchor=hz.anchor)
+            blocks.append(blk)
         state.completed.extend([r for r in line_rows if r["kind"] == "completed"])
         state.line_free_h[line] = round(_hours(cursor, hz.anchor), 3)
 

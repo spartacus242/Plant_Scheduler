@@ -25,6 +25,10 @@ export interface ScheduleBlock {
   completion_pct?: number;
   cases_left?: number;
   qty_kg?: number;
+  /** Provenance flags (e.g. current_state:completed) — round-tripped. */
+  attrs?: string;
+  /** Completed manprg history: greyed, immovable, no drag. */
+  completed?: boolean;
 }
 
 export interface DemandTarget {

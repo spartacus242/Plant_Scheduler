@@ -232,6 +232,10 @@ def calendar_to_gantt_payload(df: pd.DataFrame) -> tuple[list[dict], list[dict]]
             # Carried so a drag/drop round trip does not silently drop the
             # produced kg. Unknown kg travels as null, never 0.
             "qty_kg": _opt_kg(r.get("qty_kg")),
+            # attrs round-trips so provenance flags (current_state:completed)
+            # survive a save; `completed` drives the greyed render.
+            "attrs": _txt(r.get("attrs")),
+            "completed": "current_state:completed" in _txt(r.get("attrs")),
         }
         if btype in ("production", "trial"):
             schedule.append(block)

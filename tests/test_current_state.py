@@ -78,10 +78,15 @@ def _state(rows, cips=None, cfg=None, hz=None):
                                cips=cips or CipInfoResult(), cfg=cfg, now=NOW)
 
 
-def test_completed_mos_are_dropped_from_the_calendar():
+def test_completed_mos_render_greyed_and_immovable():
+    # User decision 2026-08-14: completed MOs SHOW as greyed, locked history
+    # (they used to be dropped). Same rn=1 semantics as the planner's SQL.
     st = _state([{"mo": "DONE", "made_cas": 100.0, "left_cas": 0.0},
                  {"mo": "NEXT", "made_cas": ""}])
-    assert "DONE" not in set(st.blocks["order_id"])
+    assert "DONE" in set(st.blocks["order_id"])
+    done = st.blocks[st.blocks["order_id"] == "DONE"].iloc[0]
+    assert bool(done["locked"]) is True
+    assert "current_state:completed" in str(done["attrs"])
     assert "NEXT" in set(st.blocks["order_id"])
     assert len(st.completed) == 1
 
@@ -208,6 +213,10 @@ def test_real_manprg_and_cip_files_build_a_state():
     assert len(st.blocks) > 0
     # no production block overlaps another on the same line
     prod = st.blocks[st.blocks["block_type"] == "production"]
+    # completed history may overlap the runs that superseded it - the
+    # no-overlap invariant applies to the PLAN (running + queued) only
+    prod = prod[~prod["attrs"].astype(str).str.contains(
+        "current_state:completed", na=False)]
     for line, grp in prod.groupby("line_name"):
         g = grp.sort_values("start_h")
         for a, b in zip(g.itertuples(), list(g.itertuples())[1:]):

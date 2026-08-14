@@ -402,6 +402,11 @@ def fit_findings(
         return out
     busy = calendar[calendar["block_type"].isin(
         ["production", "trial", "cip"])].copy()
+    # Completed manprg history (greyed blocks) is bookkeeping, not plan —
+    # superseded MOs legitimately overlap the run that replaced them.
+    if "attrs" in busy.columns:
+        busy = busy[~busy["attrs"].astype(str).str.contains(
+            "current_state:completed", na=False)]
     busy["start_h"] = pd.to_numeric(busy["start_h"], errors="coerce")
     busy["end_h"] = pd.to_numeric(busy["end_h"], errors="coerce")
 

@@ -147,8 +147,9 @@ with st.expander("🏭 Rebuild calendar from current plant state (manprg + cip_i
         _c = _cs.counts
         st.caption(
             f"Ground truth: **{_c['running']}** running MO(s) (locked), "
-            f"**{_c['queued']}** queued, **{_c['completed_dropped']}** completed "
-            f"(dropped), **{_c['cip']}** CIP block(s) → {_c['blocks']} blocks.")
+            f"**{_c['queued']}** queued, **{_c['completed']}** completed "
+            f"(greyed, immovable), **{_c['cip']}** CIP block(s) → "
+            f"{_c['blocks']} blocks.")
         for _w in _cs.warnings[:6]:
             st.caption(f"⚠️ {_w}")
         if len(_cs.blocks):
@@ -172,6 +173,10 @@ with st.expander("🏭 Rebuild calendar from current plant state (manprg + cip_i
                 cal_path.read_bytes())
             save_calendar(_cs.blocks, cal_path)
             st.session_state.pop("cal_baseline_score", None)
+            # Remount the Gantt or it keeps showing the PRE-replace board
+            # (the component holds its own state under a stable key).
+            st.session_state["cal_reset_gen"] = (
+                st.session_state.get("cal_reset_gen", 0) + 1)
             st.success(f"Calendar rebuilt from plant state ({_c['blocks']} blocks). "
                        "Reloading…")
             st.rerun()

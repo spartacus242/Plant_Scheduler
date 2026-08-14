@@ -51,8 +51,9 @@ export const GanttBlock: React.FC<Props> = ({
   const pad = rowH >= LINE_HEIGHT ? 4 : 2;
   const y = slotY + pad;
   const h = Math.max(6, rowH - pad * 2);
-  const bg = skuColor(block.sku, block.block_type);
-  const fg = skuTextColor(bg);
+  // Completed manprg history renders grey and read-only (user 2026-08-14).
+  const bg = block.completed ? "#b0bec5" : skuColor(block.sku, block.block_type);
+  const fg = block.completed ? "#37474f" : skuTextColor(bg);
 
   const handleLeftResize = useCallback(
     (e: React.PointerEvent) => {
