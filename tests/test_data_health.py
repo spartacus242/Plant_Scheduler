@@ -73,6 +73,8 @@ def _min_catalog(dd: Path) -> None:
     _touch(dd / "reference" / "manprg2.txt", 0.1)
     _touch(dd / "reference" / "cip_info.csv", 0.1)
     _touch(dd / 'reference' / 'demand_plan_summary.csv', 0.1)
+    # VIF exports for the stock check (P1 live link) — anchored by ediact 3
+    _touch(dd / "reference" / "ediact 3.csv", 0.1)
 
 
 def _cfg(**overrides) -> dict:

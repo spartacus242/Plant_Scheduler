@@ -19,8 +19,13 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
+from helpers.config import load_toml  # noqa: E402
 from helpers.paths import data_dir  # noqa: E402
-from helpers.timefmt import hour_to_stamp  # noqa: E402
+from helpers.timefmt import hour_to_stamp, planning_anchor  # noqa: E402
+
+# Block hour offsets are anchored to the REAL planning anchor — omitting it
+# fell back to timefmt's 2026-02-15 default and showed February dates.
+_ANCHOR = planning_anchor(load_toml())
 
 st.header("Stock Check")
 st.caption(
@@ -34,6 +39,23 @@ SETTINGS = SC_DIR / "settings.json"
 DEFAULT_VIF = r"\\usnpa-appfs\DATA\vif-export\auto editions"
 DEV_VIF = SC_DIR / "dev_vif"
 DEV_RECV = SC_DIR / "dev_receiving_schedule.xlsm"
+# Live link (P1, landed 2026-08-14): the GitHub bridge drops the VIF exports
+# into data/reference/ daily. Default source order: saved setting → network
+# share (work PC) → bridge-refreshed reference/ → bundled dev fixtures.
+REF_VIF = DATA / "reference"
+REF_RECV = REF_VIF / "Shipping Receiving Schedule NPA - 2024.xlsm"
+
+
+def _default_vif_folder() -> str:
+    if Path(DEFAULT_VIF).exists():
+        return DEFAULT_VIF
+    if (REF_VIF / "ediact 3.csv").exists():
+        return str(REF_VIF)
+    return str(DEV_VIF)
+
+
+def _receiving_path() -> Path:
+    return REF_RECV if REF_RECV.exists() else DEV_RECV
 
 # ---------------------------------------------------------------- settings
 def _load_settings() -> dict:
@@ -79,10 +101,9 @@ left, mid, right = st.columns([3, 2, 2])
 with left:
     vif_folder = st.text_input(
         "VIF export folder",
-        value=settings.get("vif_folder",
-                           DEFAULT_VIF if Path(DEFAULT_VIF).exists()
-                           else str(DEV_VIF)),
-        help="Network share on Carsten's machine; dev fixtures locally.")
+        value=settings.get("vif_folder", _default_vif_folder()),
+        help="Network share on Carsten's machine; data/reference/ when the "
+             "GitHub bridge delivers the exports; dev fixtures as last resort.")
 with mid:
     from helpers.timefmt import week_label as _wk_label
     week_index = st.selectbox("Demand week", options=[None, 0, 1, 2],
@@ -146,7 +167,8 @@ if rep.get("import_errors"):
                "; ".join(rep["import_errors"]))
 
 # receiving appointments
-appts, appt_errors = parse_receiving_schedule(DEV_RECV) if DEV_RECV.exists() else ([], [])
+_recv = _receiving_path()
+appts, appt_errors = parse_receiving_schedule(_recv) if _recv.exists() else ([], [])
 po_appts = {a["po"]: a for a in appts if a["po"]}
 
 # ---------------------------------------------------------------- metrics
@@ -184,8 +206,8 @@ with tab_sched:
     for b in sorted(risky, key=lambda b: (b["start_h"])):
         with st.expander(
                 f"{STATUS_CHIP.get(b['status'], b['status'])} **{b['sku']}** "
-                f"{b['line_name']} · {hour_to_stamp(b['start_h'])} → "
-                f"{hour_to_stamp(b['end_h'])} · {b['cases']:.0f} cases"):
+                f"{b['line_name']} · {hour_to_stamp(b['start_h'], _ANCHOR)} → "
+                f"{hour_to_stamp(b['end_h'], _ANCHOR)} · {b['cases']:.0f} cases"):
             bad = [i for i in b["items"]
                    if i["status"] in ("AT_RISK", "TIGHT", "NOT_TRACKED")]
             bad.sort(key=lambda i: (i["ratio"] is None,
@@ -267,7 +289,7 @@ with tab_recv:
                      hide_index=True)
     else:
         st.info("No receiving file found at "
-                f"`{DEV_RECV}`. Drop the weekly xlsm there.")
+                f"`{_receiving_path()}`. Drop the weekly xlsm there or push it via the bridge.")
     if appt_errors:
         st.caption(f"{len(appt_errors)} rows skipped (decayed cells).")
 

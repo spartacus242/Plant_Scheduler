@@ -219,6 +219,39 @@ def _live_feed_statuses(dd: Path, cfg: dict) -> list[HealthStatus]:
             cadence_h=cadence.get("demand_summary"), age_h=age,
             source="live_feed",
         ))
+
+    # VIF exports for the stock check (P1 live link, landed 2026-08-14 via the
+    # bridge). "ediact 3.csv" anchors the set — the engine cannot run without
+    # it, so its age speaks for all six files + the receiving xlsm. Dev
+    # fixtures under data/stockcheck/dev_vif keep the page usable without the
+    # live link, so their presence downgrades MISSING to STALE (warn).
+    vif_anchor = reference_dir(dd) / "ediact 3.csv"
+    if not vif_anchor.exists():
+        dev_ok = (dd / "stockcheck" / "dev_vif" / "ediact 3.csv").exists()
+        out.append(HealthStatus(
+            key="vif_stock",
+            name="VIF exports (stock check)",
+            state=STALE if dev_ok else MISSING,
+            detail=("Live VIF link not landed — stock check is running on the "
+                    "bundled dev fixtures." if dev_ok else
+                    "No VIF exports found (live link or dev fixtures)."),
+            actions=("Push the VIF exports from the work PC "
+                     "(fs-live-push) and pull the bridge",),
+            source="live_feed",
+        ))
+    else:
+        age = _age_h(vif_anchor)
+        stale = age is not None and age > cadence.get("vif", 26.0)
+        out.append(HealthStatus(
+            key="vif_stock", name="VIF exports (stock check)",
+            state=STALE if stale else OK,
+            detail=(f"VIF exports last refreshed {_fmt_age(age)} ago."
+                    if age is not None else "VIF exports present (age unknown).")
+            + (f" Expected refresh ≤ {cadence.get('vif', 26.0):g} h." if stale else ""),
+            actions=("Refresh the VIF export push from the work PC",) if stale else (),
+            cadence_h=cadence.get("vif"), age_h=age,
+            source="live_feed",
+        ))
     return out
 
 

@@ -258,15 +258,33 @@ def test_stock_do_not_schedule_is_blocking():
     assert x.category == STOCK if (x := f[0]) else False
 
 
-def test_stock_short_is_warning_and_ok_is_silent():
+def test_stock_at_risk_is_blocking_tight_warns_ok_silent():
+    # Live vocabulary (coverage.item_status): AT_RISK < 0.95 -> blocking;
+    # TIGHT 0.95-1.10 -> warn; OK silent. ('SHORT' never existed — the first
+    # mapping guessed it and live AT_RISK blocks produced no findings.)
     report = {"schedule_view": [
         {"block_id": "b1", "sku": "111", "line_name": "P09", "start_h": 0,
-         "qty_kg": 1, "status": "SHORT", "items": []},
+         "qty_kg": 1, "status": "AT_RISK", "items": []},
         {"block_id": "b2", "sku": "222", "line_name": "P10", "start_h": 0,
+         "qty_kg": 1, "status": "TIGHT", "items": []},
+        {"block_id": "b3", "sku": "333", "line_name": "P11", "start_h": 0,
          "qty_kg": 1, "status": "OK", "items": []},
     ]}
     f = stock_findings(report)
+    assert len(f) == 2
+    assert {x.severity for x in f} == {BLOCKING, WARN}
+
+
+def test_stock_dns_demand_skus_roll_into_one_warning():
+    report = {"schedule_view": [], "demand_view": [
+        {"sku": "111", "status": "DO_NOT_SCHEDULE", "achievable_ratio": 0.2},
+        {"sku": "222", "status": "DO_NOT_SCHEDULE", "achievable_ratio": 0.5},
+        {"sku": "333", "status": "OK", "achievable_ratio": 2.0},
+    ]}
+    f = stock_findings(report)
     assert len(f) == 1 and f[0].severity == WARN
+    assert "2 demand SKU(s)" in f[0].title
+    assert f[0].context["skus"] == ["111", "222"]
 
 
 def test_stock_report_error_becomes_data_finding():

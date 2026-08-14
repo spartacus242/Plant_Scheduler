@@ -71,9 +71,14 @@ def summary(findings: Iterable[Finding]) -> dict[str, int]:
 # Rule: STOCK — components won't cover scheduled runs
 # ---------------------------------------------------------------------------
 
-# stock_check statuses that mean "this scheduled block cannot be made as-is".
-_STOCK_BLOCKING = {"DO_NOT_SCHEDULE"}
-_STOCK_WARN = {"SHORT", "UNK", "NO_BOM", "UNK_PARTIAL"}
+# stock_check statuses (coverage.item_status vocabulary, verified against the
+# live engine 2026-08-14 — an earlier guess used 'SHORT', which does not
+# exist, so live AT_RISK blocks produced no findings at all):
+#   AT_RISK  (< 0.95 coverage)          -> the block cannot run as-is: BLOCKING
+#   TIGHT    (0.95–1.10)                -> runnable but no slack: WARN
+#   UNK / NO_BOM / UNK_PARTIAL          -> unknown supply: WARN
+_STOCK_BLOCKING = {"DO_NOT_SCHEDULE", "AT_RISK"}
+_STOCK_WARN = {"TIGHT", "UNK", "NO_BOM", "UNK_PARTIAL", "NOT_TRACKED"}
 
 
 def stock_findings(report: dict) -> list[Finding]:
@@ -90,6 +95,24 @@ def stock_findings(report: dict) -> list[Finding]:
             page="pages/stock_check.py",
         ))
         return out
+
+    # Demand-side: SKUs whose components can't reach the DNS ratio should
+    # not be planned at all this cycle — one summary finding.
+    dns = [d for d in report.get("demand_view", [])
+           if d.get("status") == "DO_NOT_SCHEDULE"]
+    if dns:
+        worst = sorted(dns, key=lambda d: d.get("achievable_ratio") or 0)[:6]
+        out.append(Finding(
+            key="stock_dns_demand", category=STOCK, severity=WARN,
+            title=(f"{len(dns)} demand SKU(s) lack components — do not "
+                   "schedule them"),
+            detail=", ".join(
+                f"{d['sku']} ({(d.get('achievable_ratio') or 0):.0%} achievable)"
+                for d in worst) + ("…" if len(dns) > 6 else ""),
+            action="Check constraining components on Stock Check → Demand view",
+            page="pages/stock_check.py",
+            context={"skus": [d["sku"] for d in dns]},
+        ))
 
     for b in report.get("schedule_view", []):
         status = str(b.get("status", "OK"))

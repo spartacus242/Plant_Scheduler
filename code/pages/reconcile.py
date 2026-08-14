@@ -65,8 +65,13 @@ try:
         if SC_SETTINGS.exists() else {}
 except Exception:  # noqa: BLE001
     _sc = {}
-_vif = str(_sc.get("vif_folder", "")).strip() or str(
-    Path(dd) / "stockcheck" / "dev_vif")
+# Source order mirrors the Stock Check page: saved setting → bridge-refreshed
+# data/reference/ (P1 live link) → bundled dev fixtures.
+_vif = str(_sc.get("vif_folder", "")).strip()
+if not _vif:
+    _ref = Path(dd) / "reference"
+    _vif = str(_ref) if (_ref / "ediact 3.csv").exists() else str(
+        Path(dd) / "stockcheck" / "dev_vif")
 if Path(_vif).exists():
     stock_report = _stock_report(_vif, json.dumps(_sc.get("toggles", {}),
                                                   sort_keys=True))

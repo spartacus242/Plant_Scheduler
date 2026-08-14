@@ -44,19 +44,40 @@ class VifSnapshot:
     errors: list[str] = field(default_factory=list)
 
 
-def _read_semicolon(path: Path) -> pd.DataFrame:
+def _read_semicolon(path: Path, header: int | None = 0) -> pd.DataFrame:
     return pd.read_csv(path, delimiter=";", encoding="cp1252",
-                       dtype=str, keep_default_na=False)
+                       dtype=str, keep_default_na=False, header=header)
+
+
+def _num(series: pd.Series) -> pd.Series:
+    """VIF numeric column → float. The live export writes thousands with a
+    comma ('1,600' cases) which to_numeric refuses — that single quirk made
+    8,403 of 15,267 BOM quantities NaN and every explosion UNK (2026-08-14).
+    Decimals are dot-separated throughout, so stripping commas is safe."""
+    return pd.to_numeric(
+        series.str.strip().str.replace(",", "", regex=False).replace("", None),
+        errors="coerce")
+
+
+def _dates(series: pd.Series) -> pd.Series:
+    """VIF date column → datetime, auto-detecting %d/%m/%Y vs %m/%d/%Y.
+
+    One live export mixes conventions per column (measured 2026-08-14:
+    ediact effective_date is day-first, jestkexp BBD is month-first), so the
+    convention is chosen per column: whichever format leaves fewer NaT wins;
+    ties keep the legacy day-first."""
+    s = series.str.strip()
+    dayfirst = pd.to_datetime(s, format="%d/%m/%Y", errors="coerce")
+    monthfirst = pd.to_datetime(s, format="%m/%d/%Y", errors="coerce")
+    return monthfirst if monthfirst.isna().sum() < dayfirst.isna().sum() else dayfirst
 
 
 def load_ediact(path: Path) -> pd.DataFrame:
     df = _read_semicolon(path)
     df = df.iloc[:, :10]
     df.columns = EDIACT_COLS
-    df["qty_act"] = pd.to_numeric(df["qty_act"].str.strip().replace("", None),
-                                  errors="coerce")
-    df["effective_date"] = pd.to_datetime(df["effective_date"].str.strip(),
-                                          format="%d/%m/%Y", errors="coerce")
+    df["qty_act"] = _num(df["qty_act"])
+    df["effective_date"] = _dates(df["effective_date"])
     for c in ("PF", "Activity", "family", "item_type", "item", "unit"):
         df[c] = df[c].str.strip()
     return df
@@ -66,17 +87,18 @@ def load_jestkexp(path: Path, packaging: bool = False) -> pd.DataFrame:
     df = _read_semicolon(path)
     df = df.iloc[:, :11]
     df.columns = JESTKEXP2_COLS if packaging else JESTKEXP_COLS
-    df["qty"] = pd.to_numeric(df["qty"].str.strip().replace("", None),
-                              errors="coerce").fillna(0.0)
-    df["bbd"] = pd.to_datetime(df["bbd"].str.strip(), format="%d/%m/%Y",
-                               errors="coerce")
+    df["qty"] = _num(df["qty"]).fillna(0.0)
+    df["bbd"] = _dates(df["bbd"])
     for c in ("item", "status", "unit", "depot", "location", "batch"):
         df[c] = df[c].str.strip()
     return df
 
 
 def load_azapart(path: Path) -> pd.DataFrame:
-    df = _read_semicolon(path)
+    # header=None: the live export has NO header row — reading with a header
+    # silently ate the first SKU (030480). The dev fixture's "Column1;..."
+    # junk header becomes a data row instead, dropped by the filter below.
+    df = _read_semicolon(path, header=None)
     df = df.iloc[:, :8]
     df.columns = ["sku", "description", "cas_unit", "kg_unit",
                   "cas_conv", "cnt_conv", "kg_per_case", "format"]

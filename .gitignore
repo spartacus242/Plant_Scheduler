@@ -59,6 +59,13 @@ data/reference/initial_states.csv
 data/reference/changeovers.csv
 data/reference/trials.csv
 data/reference/downtimes.csv
+data/reference/ediact 3.csv
+data/reference/ediact 4.csv
+data/reference/jestkexp.csv
+data/reference/jestkexp2.csv
+data/reference/azapart.csv
+data/reference/rmpkitems.csv
+data/reference/Shipping Receiving Schedule NPA - 2024.xlsm
 
 # Generated scorecard runs (the app writes these on every run)
 data/scorecards/Week-*.json
