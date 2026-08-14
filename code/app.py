@@ -23,31 +23,30 @@ st.set_page_config(
     layout="wide",
 )
 
+# Navigation IS the daily loop (charter §2.2): Connect → Reconcile → Plan →
+# Lock & Export → Track, then weekly roll. The planner walks the sidebar top
+# to bottom every morning; reference/setup pages sit below the loop.
 pg = st.navigation(
     {
         "Home": [
-            st.Page("pages/home.py", title="Home", icon=":material/home:", default=True),
+            st.Page("pages/home.py", title="Command Center", icon=":material/home:", default=True),
         ],
-        "Data": [
+        "1 · Connect": [
             st.Page("pages/data.py", title="Data Files", icon=":material/table:"),
         ],
-        "Reconcile": [
+        "2 · Reconcile": [
             st.Page("pages/reconcile.py", title="Reconcile", icon=":material/checklist:"),
-        ],
-        "Score": [
-            st.Page("pages/scorecard.py", title="Schedule Scorecard", icon=":material/analytics:"),
-        ],
-        "Stock": [
             st.Page("pages/stock_check.py", title="Stock Check", icon=":material/inventory:"),
         ],
-        "Twin": [
+        "3 · Plan": [
             st.Page("pages/calendar.py", title="Plant Calendar", icon=":material/drag_indicator:"),
-        ],
-        "Compare": [
-            st.Page("pages/compare.py", title="Version Compare", icon=":material/compare:"),
-        ],
-        "Optimize": [
             st.Page("pages/generate.py", title="Generate Scenarios", icon=":material/auto_awesome:"),
+        ],
+        "4 · Lock & Export": [
+            st.Page("pages/compare.py", title="Compare & Promote", icon=":material/compare:"),
+        ],
+        "5 · Track": [
+            st.Page("pages/scorecard.py", title="Schedule Scorecard", icon=":material/analytics:"),
         ],
         "Setup": [
             st.Page("pages/lines.py", title="Lines", icon=":material/view_week:"),

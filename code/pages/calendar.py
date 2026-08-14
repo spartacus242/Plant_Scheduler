@@ -107,8 +107,15 @@ if _horizon.mode == "today" and _horizon.stale:
                     f'planning_start_date = "{_horizon.anchor:%Y-%m-%d %H:%M:%S}"',
                     _txt),
             encoding="utf-8")
+        # Charter §2.2: "each week the lock rolls forward one week." The roll
+        # is the ONE weekly action, so an existing lock advances with it —
+        # 2 whole weeks from the new anchor. No lock set = none created.
+        if read_lock(dd) is not None:
+            write_lock(dd, default_lock_through(_horizon.anchor))
         st.session_state.pop("cal_baseline_score", None)
-        st.success("Calendar rolled to today. Reloading…")
+        st.session_state["cal_reset_gen"] = (
+            st.session_state.get("cal_reset_gen", 0) + 1)
+        st.success("Calendar rolled to today (lock advanced with it). Reloading…")
         st.rerun()
 
 # --- Rebuild the calendar from PLANT GROUND TRUTH -------------------------
