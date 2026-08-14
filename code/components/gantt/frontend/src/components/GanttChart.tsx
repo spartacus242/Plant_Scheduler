@@ -26,6 +26,8 @@ interface Props {
   resizing: ResizeState;
   highlightSku: string | null;
   capableLines: Set<string> | null;
+  /** 2-week lock boundary (hour offset); draws the lock line + shading. */
+  lockedThroughH?: number | null;
   svgRef?: React.RefObject<SVGSVGElement | null>;
   onResizeStart: (blockId: string, edge: "left" | "right", startH: number, endH: number, clientX: number, hourWidth: number) => void;
   onContextMenu: (e: React.MouseEvent, blockId: string) => void;
@@ -96,7 +98,7 @@ const LineRow: React.FC<{
 
 export const GanttChart: React.FC<Props> = ({
   schedule, cipWindows, lines, viewStart, viewEnd, hourWidth, anchor,
-  resizing, highlightSku, capableLines, svgRef: externalSvgRef,
+  resizing, highlightSku, capableLines, lockedThroughH, svgRef: externalSvgRef,
   onResizeStart, onContextMenu, onBlockClick, onZoomIn, onZoomOut, onResetZoom,
 }) => {
   const localSvgRef = useRef<SVGSVGElement>(null);
@@ -136,6 +138,46 @@ export const GanttChart: React.FC<Props> = ({
               isCapable={capableLines ? capableLines.has(row.name) : null}
             />
           ))}
+
+          {/* 2-week lock window: shaded committed zone + boundary line.
+              Drawn UNDER the blocks (shading) with the line and label on top
+              of the rows so the boundary reads at every zoom. */}
+          {lockedThroughH != null && lockedThroughH > viewStart && (
+            <>
+              <rect
+                x={LINE_LABEL_WIDTH}
+                y={HEADER_HEIGHT}
+                width={Math.max(0, (Math.min(lockedThroughH, viewEnd) - viewStart) * hourWidth)}
+                height={rows.length * LINE_HEIGHT}
+                fill="#607d8b"
+                opacity={0.07}
+                pointerEvents="none"
+              />
+              {lockedThroughH <= viewEnd && (
+                <g pointerEvents="none">
+                  <line
+                    x1={LINE_LABEL_WIDTH + (lockedThroughH - viewStart) * hourWidth}
+                    y1={HEADER_HEIGHT - 6}
+                    x2={LINE_LABEL_WIDTH + (lockedThroughH - viewStart) * hourWidth}
+                    y2={HEADER_HEIGHT + rows.length * LINE_HEIGHT}
+                    stroke="#546e7a"
+                    strokeWidth={2}
+                    strokeDasharray="6 3"
+                  />
+                  <text
+                    x={LINE_LABEL_WIDTH + (lockedThroughH - viewStart) * hourWidth - 6}
+                    y={HEADER_HEIGHT + 12}
+                    textAnchor="end"
+                    fontSize={10}
+                    fontWeight={700}
+                    fill="#546e7a"
+                  >
+                    🔒 locked
+                  </text>
+                </g>
+              )}
+            </>
+          )}
 
           {/* Blocks */}
           {allBlocks.map((block) => {

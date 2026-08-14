@@ -103,6 +103,30 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     actions.reportAction(`Rejected: ${msg}`);
   }, [actions]);
 
+  // ── 2-week lock window ──
+  // Blocks starting before locked_through_h are committed to the plant:
+  // no drag, no resize, no typed edit — and nothing may be moved INTO the
+  // frozen zone either (that would silently change the committed plan).
+  const lockedThroughH = args.config.locked_through_h ?? null;
+  const isBlockLocked = useCallback(
+    (b: ScheduleBlock): boolean =>
+      Boolean(b.locked) ||
+      (lockedThroughH != null && b.start_hour < lockedThroughH - 1e-9),
+    [lockedThroughH],
+  );
+  const lockReason = useCallback(
+    (b: ScheduleBlock): string =>
+      b.locked
+        ? "Block is locked"
+        : `Inside the locked window (committed through ${hourToStamp(lockedThroughH ?? 0, anchor)})`,
+    [lockedThroughH, anchor],
+  );
+  const intoLockedZone = useCallback(
+    (startHour: number): boolean =>
+      lockedThroughH != null && startHour < lockedThroughH - 1e-9,
+    [lockedThroughH],
+  );
+
   const hourFromPointer = useCallback((clientX: number | undefined): number => {
     const svg = chartSvgRef.current;
     if (!svg || clientX == null) return 0;
@@ -208,6 +232,10 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           if (newDur !== null) dur = newDur;
         }
         const startHour = hourFromPointer(pointerX);
+        if (intoLockedZone(startHour)) {
+          reject(`Cannot drop into the locked window (committed through ${hourToStamp(lockedThroughH ?? 0, anchor)})`);
+          return;
+        }
         const endHour = startHour + dur;
         const allBlocks = [...schedule, ...cipWindows];
         if (findOverlapsOnLine(allBlocks, targetLineName, block.id, startHour, endHour)) {
@@ -224,8 +252,8 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         const moving =
           schedule.find((b) => b.id === activeId) ??
           cipWindows.find((b) => b.id === activeId);
-        if (moving?.locked) {
-          reject("Block is locked");
+        if (moving && isBlockLocked(moving)) {
+          reject(lockReason(moving));
           return;
         }
         setErrorMsg(null);
@@ -239,8 +267,8 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         cipWindows.find((b) => b.id === activeId);
       if (!block) return;
 
-      if (block.locked) {
-        reject("Block is locked");
+      if (isBlockLocked(block)) {
+        reject(lockReason(block));
         return;
       }
 
@@ -256,6 +284,10 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       if (sameLine) {
         const newStart = Math.max(0, snapToHour(block.start_hour + deltaHours));
         if (newStart === block.start_hour) return;
+        if (intoLockedZone(newStart)) {
+          reject(`Cannot move into the locked window (committed through ${hourToStamp(lockedThroughH ?? 0, anchor)})`);
+          return;
+        }
         // On a double line, sliding into or out of a side-down window changes
         // how long the block takes, so re-integrate rather than keep the hours.
         let dur = block.run_hours;
@@ -287,6 +319,10 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           dur = newDur;
         }
         const newStart = Math.max(0, snapToHour(block.start_hour + deltaHours));
+        if (intoLockedZone(newStart)) {
+          reject(`Cannot move into the locked window (committed through ${hourToStamp(lockedThroughH ?? 0, anchor)})`);
+          return;
+        }
         const newEnd = newStart + dur;
         const allBlocks = [...schedule, ...cipWindows];
         if (findOverlapsOnLine(allBlocks, targetLine.line_name, block.id, newStart, newEnd)) {
@@ -297,7 +333,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         actions.moveBlock(block.id, targetLine.line_name, targetLine.line_id, newStart, dur);
       }
     },
-    [schedule, cipWindows, holdingArea, actions, hourWidth, caps, lines, hourFromPointer, reject, anchor, downtime],
+    [schedule, cipWindows, holdingArea, actions, hourWidth, caps, lines, hourFromPointer, reject, anchor, downtime, isBlockLocked, lockReason, intoLockedZone, lockedThroughH],
   );
 
   const onResizeCommit = useCallback(
@@ -306,18 +342,33 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   );
   const { resizing, startResize } = useBlockResize(args.config.min_run_hours, onResizeCommit);
 
+  // Resize entry gate: drags and edits check locks, so resize must too — an
+  // ungated handle let a locked block be resized (found in slice-1 QA).
+  const guardedStartResize = useCallback<typeof startResize>(
+    (blockId, edge, startHour, endHour, clientX, hw) => {
+      const block =
+        schedule.find((b) => b.id === blockId) ?? cipWindows.find((b) => b.id === blockId);
+      if (block && isBlockLocked(block)) {
+        reject(lockReason(block));
+        return;
+      }
+      startResize(blockId, edge, startHour, endHour, clientX, hw);
+    },
+    [schedule, cipWindows, isBlockLocked, lockReason, reject, startResize],
+  );
+
   const { menu, openMenu, closeMenu } = useContextMenu();
   const handleContextMenu = useCallback(
     (e: React.MouseEvent, blockId: string) => {
       const block = [...schedule, ...cipWindows].find((b) => b.id === blockId);
       if (!block) return;
-      if (block.locked) {
-        reject("Block is locked");
+      if (isBlockLocked(block)) {
+        reject(lockReason(block));
         return;
       }
       openMenu(e.clientX, e.clientY, blockId, block.block_type, block.start_hour, block.end_hour);
     },
-    [schedule, cipWindows, openMenu, reject],
+    [schedule, cipWindows, openMenu, reject, isBlockLocked, lockReason],
   );
 
   const [popover, setPopover] = useState<{ block: ScheduleBlock; x: number; y: number } | null>(null);
@@ -340,9 +391,14 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       const block =
         schedule.find((b) => b.id === blockId) ?? cipWindows.find((b) => b.id === blockId);
       if (!block) return "Block no longer exists";
-      if (block.locked) {
-        reject("Block is locked");
-        return "Block is locked";
+      if (isBlockLocked(block)) {
+        reject(lockReason(block));
+        return lockReason(block);
+      }
+      if (intoLockedZone(edit.startHour)) {
+        const msg = `Cannot move into the locked window (committed through ${hourToStamp(lockedThroughH ?? 0, anchor)})`;
+        reject(msg);
+        return msg;
       }
       const minDur = isWindowBlock(block.block_type) ? 1 : args.config.min_run_hours;
       if (edit.durationH < minDur) {
@@ -384,7 +440,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       );
       return null;
     },
-    [schedule, cipWindows, actions, reject, anchor, args.config.min_run_hours],
+    [schedule, cipWindows, actions, reject, anchor, args.config.min_run_hours, isBlockLocked, lockReason, intoLockedZone, lockedThroughH],
   );
 
   const kpis = useMemo(
@@ -480,8 +536,9 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           resizing={resizing}
           highlightSku={highlightSku}
           capableLines={capableLines}
+          lockedThroughH={lockedThroughH}
           svgRef={chartSvgRef}
-          onResizeStart={startResize}
+          onResizeStart={guardedStartResize}
           onContextMenu={handleContextMenu}
           onBlockClick={handleBlockClick}
           onZoomIn={zoomIn}
@@ -568,7 +625,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           rate={getRate(popover.block.line_name, popover.block.sku, args.capabilities)}
           anchor={anchor}
           onClose={() => setPopover(null)}
-          onApply={handleApplyEdit}
+          onApply={isBlockLocked(popover.block) ? undefined : handleApplyEdit}
         />
       )}
 

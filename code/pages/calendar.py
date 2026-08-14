@@ -15,11 +15,18 @@ if str(BASE_DIR) not in sys.path:
 from components.gantt import gantt_calendar
 from helpers.calendar_io import (
     calendar_to_gantt_payload,
+    drop_display_overlays,
     ensure_lines_from_calendar,
     gantt_payload_to_calendar,
     load_calendar,
     load_lines,
     save_calendar,
+)
+from helpers.week_lock import (
+    default_lock_through,
+    locked_through_h,
+    read_lock,
+    write_lock,
 )
 from helpers.config import load_toml
 from helpers.downtime_ui import downtime_map_for_calendar, render_side_downtime_editor
@@ -410,6 +417,14 @@ if _auto_held:
         f"💡 {_auto_held} under-target demand order(s) auto-placed in holding "
         "(from the latest scenario solve). Drag them onto a line or ignore.")
 
+# ── 2-week lock window (charter: 2 weeks locked, week 3 fluid) ────────────
+_lock_dt = read_lock(dd)
+_lock_h = locked_through_h(_lock_dt, _anchor)
+if _lock_dt is not None:
+    st.info(f"🔒 Weeks locked through **{_lock_dt:%a %Y-%m-%d %H:%M}** — "
+            "blocks starting before then are committed to the plant "
+            "(no drag/resize/edit).")
+
 state = gantt_calendar(
     schedule=schedule,
     cip_windows=windows,
@@ -424,6 +439,7 @@ state = gantt_calendar(
         "cip_duration_h": int(cip_cfg.get("duration_h", 6)),
         "min_run_hours": int(sched_cfg.get("min_run_hours", 4)),
         "horizon_hours": int(_horizon.hours),
+        "locked_through_h": None if _lock_h is None else float(_lock_h),
     },
     height=820,
     key=f"gantt_calendar_{st.session_state['cal_reset_gen']}",
@@ -463,10 +479,11 @@ with b1:
         if n_holding:
             st.warning(f"Saving without {n_holding} held block(s). Holding area cleared.")
         # Merge hidden (already-finished) rows back so hiding the past never
-        # deletes it from disk.
+        # deletes it from disk. Display-only cip_info overlays are stripped —
+        # they are a live-feed visualization, not calendar data.
         _out = working if _past_rows.empty else pd.concat(
             [_past_rows, working], ignore_index=True)
-        save_calendar(_out, cal_path)
+        save_calendar(drop_display_overlays(_out), cal_path)
         st.session_state["cal_holding"] = []
         st.session_state.pop("cal_baseline_score", None)
         st.success("Saved calendar_blocks.csv")
@@ -477,7 +494,7 @@ with b2:
         try:
             slug = save_version(
                 save_name or "Option",
-                working,
+                drop_display_overlays(working),
                 live.to_dict(),
                 dd,
                 source="digital_twin",
@@ -486,6 +503,32 @@ with b2:
             st.success(f"Saved version `{slug}` — see Version Compare")
         except ValueError as e:
             st.error(str(e))
+
+# ── Lock & Export ──────────────────────────────────────────────────────────
+st.divider()
+st.subheader("Lock & Export")
+st.caption(
+    "Charter: **2 weeks locked and ready, week 3 flexible.** Locking freezes "
+    "every block that starts before the boundary — the Gantt refuses "
+    "drag/resize/edit inside the window. The weekly roll advances it."
+)
+_lc1, _lc2, _lc3 = st.columns(3)
+with _lc1:
+    _default_lock = default_lock_through(_anchor)
+    if st.button(f"🔒 Lock weeks 1–2 (through {_default_lock:%a %m-%d})",
+                 use_container_width=True):
+        write_lock(dd, _default_lock)
+        st.session_state["cal_reset_gen"] += 1  # remount so the Gantt sees it
+        st.rerun()
+with _lc2:
+    if st.button("Unlock", use_container_width=True,
+                 disabled=_lock_dt is None):
+        write_lock(dd, None)
+        st.session_state["cal_reset_gen"] += 1
+        st.rerun()
+with _lc3:
+    st.caption(
+        f"Currently: **{'locked through ' + f'{_lock_dt:%a %Y-%m-%d %H:%M}' if _lock_dt else 'no lock set'}**")
 
 n_ver = len(list_versions(dd))
 st.caption(f"{n_ver} / 5 versions saved")

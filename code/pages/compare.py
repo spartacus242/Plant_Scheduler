@@ -213,3 +213,53 @@ for v in versions:
 if st.button("Delete all versions", type="secondary"):
     delete_all_versions(dd)
     st.rerun()
+
+# ---------------------------------------------------------------------------
+# Plant write-back (mo_changes) — the charter's "changes go back to VIF" step.
+# The solver records every delta against committed manprg MOs (tonnage trims,
+# splits, reorders) in mo_changes.csv per scenario run. Review here, export
+# for VIF.
+# ---------------------------------------------------------------------------
+st.divider()
+st.subheader("Plant write-back — MO changes (VIF export)")
+st.caption(
+    "What the selected solver run changed against the plant's committed MOs "
+    "(from manprg): tonnage trims, splits, reorders. Scenario **E** is the "
+    "current-state re-optimization — that is the one the plant cares about."
+)
+
+_scen_root = dd / "_scenario_work"
+_mo_files = sorted(
+    (p for p in _scen_root.glob("*/mo_changes.csv")),
+    key=lambda p: p.stat().st_mtime, reverse=True,
+) if _scen_root.exists() else []
+
+if not _mo_files:
+    st.info("No solver run has produced mo_changes.csv yet — run a scenario "
+            "(Generate Scenarios), typically E (current state + demand).")
+else:
+    from datetime import datetime as _dt
+    _labels = {
+        str(p): (f"{p.parent.name} — "
+                 f"{_dt.fromtimestamp(p.stat().st_mtime):%Y-%m-%d %H:%M}")
+        for p in _mo_files
+    }
+    _sel = st.selectbox(
+        "Solver run", [str(p) for p in _mo_files],
+        format_func=lambda s: _labels.get(s, s), key="mo_changes_run")
+    _mo = pd.read_csv(_sel, dtype={"mo": str, "sku": str})
+    if _mo.empty:
+        st.caption("This run changed nothing against the committed MOs.")
+    else:
+        _changed = _mo[_mo["reason"] != "unmoved"]
+        st.markdown(
+            f"**{len(_changed)} of {len(_mo)} committed MO(s) changed** — "
+            f"total tonnage delta "
+            f"**{_mo['delta_kg'].sum():+,.0f} kg**")
+        st.dataframe(_mo, use_container_width=True, hide_index=True)
+        st.download_button(
+            "Download mo_changes.csv (VIF write-back)",
+            data=Path(_sel).read_bytes(),
+            file_name=f"mo_changes_{Path(_sel).parent.name}.csv",
+            mime="text/csv",
+        )

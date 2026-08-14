@@ -49,6 +49,9 @@ export interface SandboxConfig {
   cip_duration_h: number;
   min_run_hours: number;
   horizon_hours: number;
+  /** Hour offset of the 2-week lock boundary; blocks starting before it are
+   * committed to the plant and refuse drag/resize/edit. null/absent = no lock. */
+  locked_through_h?: number | null;
 }
 
 export interface SandboxArgs {

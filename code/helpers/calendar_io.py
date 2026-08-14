@@ -288,6 +288,22 @@ def _block_row(b: dict, btype: str) -> dict:
     }
 
 
+def drop_display_overlays(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove display-only overlay blocks before a save.
+
+    The Plant Calendar draws cip_info's ScheduledCIP as overlay windows
+    (block_id 'cipinfo_<line>') so the planner SEES the plant's cleaning
+    plan — but they are a live-feed visualization, not calendar data. A save
+    that keeps them writes the overlay into calendar_blocks.csv, where the
+    next page load skips re-overlaying (line already has a CIP) and the
+    scorecard counts a CIP the planner never placed. Strip them at every
+    save boundary.
+    """
+    if df is None or df.empty or "block_id" not in df.columns:
+        return df
+    return df[~df["block_id"].astype(str).str.startswith("cipinfo_")]
+
+
 def load_lines(path: Path) -> pd.DataFrame:
     if path.exists():
         return pd.read_csv(path)
