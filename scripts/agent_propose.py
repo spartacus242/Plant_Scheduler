@@ -43,6 +43,9 @@ DATA = ROOT / "data"
 
 def main() -> int:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--scenario", default="F",
+                    help="F = fill the tail (committed plan fixed, default); "
+                         "E = full current-state re-optimization (diagnostic)")
     ap.add_argument("--time-limit", type=int, default=300)
     ap.add_argument("--name", default=f"Agent proposal {date.today():%Y-%m-%d}")
     ap.add_argument("--out", default=None, help="write the run report JSON here")
@@ -66,7 +69,7 @@ def main() -> int:
         return [f"DNS trim: {len(notes)} order(s) adjusted "
                 f"({len(dns)} component-blocked SKU(s))"] + notes[:5]
 
-    scenario = next(s for s in SCENARIOS if s["id"] == "E")
+    scenario = next(s for s in SCENARIOS if s["id"] == args.scenario.upper())
     result = run_scenario(scenario, DATA, time_limit=args.time_limit,
                           work_dir_patch=patch)
     if not result["ok"]:
@@ -86,9 +89,9 @@ def main() -> int:
 
     # ── 4b. save the sandbox version with the reasoning ─────────────────
     reasons = [
-        f"AGENT PROPOSAL ({date.today():%Y-%m-%d}). Scenario E "
-        f"(current state + demand), {args.time_limit}s, relax level "
-        f"{result.get('relax_level')}.",
+        f"AGENT PROPOSAL ({date.today():%Y-%m-%d}). Scenario "
+        f"{args.scenario.upper()} ({scenario['name']}), {args.time_limit}s, "
+        f"relax level {result.get('relax_level')}.",
         f"Situational input: {counts.get(BLOCKING, 0)} blocking finding(s) "
         f"on the official board at solve time.",
         ("APPROVED POLICY — component-blocked demand trimmed in the solver's "

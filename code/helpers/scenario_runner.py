@@ -271,6 +271,29 @@ SCENARIOS = [
         "knobs": _KNOBS_BALANCED,
     },
     {
+        "id": "F",
+        "name": "Scenario F — Fill the tail (committed plan fixed)",
+        "objective": "balanced",
+        # Single-phase: the committed layer spans arbitrary hours; fill
+        # placement must see the whole horizon at once.
+        "two_phase": False,
+        "fill_mode": True,
+        # Pack tails: idle time between fill blocks is the enemy of the
+        # user's "never leave large blocks of idle time" rule.
+        "overrides": {"idle_weight": 3},
+        "intent": (
+            "The user's process (2026-08-14): manprg + cip_info lay out the "
+            "committed plan as FIXED line-time (running + queued MOs, trials, "
+            "CIPs projected at each line's max interval through the horizon). "
+            "The solver only fills the remaining time with demand_plan "
+            "orders — right tonnage on the right ISO week, minimum "
+            "changeovers, tails packed. The plant's own plan is never "
+            "rewritten: no current_mo.csv, no mo_changes."
+        ),
+        "objective_formula": _FORMULA_BALANCED,
+        "knobs": _KNOBS_BALANCED,
+    },
+    {
         "id": "E",
         "name": "Scenario E — Current state + demand",
         "objective": "balanced",
@@ -696,6 +719,111 @@ def _hours_h(when, anchor) -> float:
     return (ts - anchor).total_seconds() / 3600.0
 
 
+def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
+    """Scenario F staging: the committed plan becomes FIXED line-time.
+
+    manprg + cip_info (via build_current_state) are laid out as blocked
+    windows; per line the fill region starts where committed work ends, with
+    the last committed SKU as the changeover base. Demand targets are reduced
+    by what the committed plan already produces (surplus carries forward).
+    The solver's own CIP generation stands down — layer-1 CIPs are projected
+    at the real per-line interval through the whole horizon, so fill dirty-
+    time between cleans is bounded by construction. No current_mo.csv: the
+    plant's plan is never a solver order in F.
+    """
+    import math as _math
+
+    import pandas as _pd
+
+    from helpers.calendar_io import load_lines as _ll
+    from helpers.config import datasources_config as _ds
+    from helpers.config import load_toml as _lt
+    from helpers.current_state import build_current_state as _bcs
+    from helpers.horizon import resolve as _hr
+    from helpers.paths import data_dir as _dd
+    from helpers.plan_fill import (SOLVER_CIP_INTERVAL_STANDDOWN_H,
+                                   committed_windows, last_sku_per_line,
+                                   line_free_from, subtract_committed)
+
+    notes: list[str] = []
+    dd = Path(data_dir) if Path(data_dir).name == "data" else Path(_dd())
+    cfg = _lt()
+    hz = _hr(cfg)
+    H = float(hz.hours)
+    ds = _ds(cfg)
+    mp_paths = [p.strip() for p in str(ds.get("manprg_files", "")).split(";")
+                if p.strip()] or [str(dd / "reference" / "manprg.txt"),
+                                  str(dd / "reference" / "manprg2.txt")]
+    cip_path = str(ds.get("cip_info_csv", "")).strip() or str(
+        dd / "reference" / "cip_info.csv")
+    cs = _bcs(hz, manprg_paths=mp_paths, cip_path=cip_path,
+              lines=_ll(dd / "lines.csv"), cfg=cfg)
+    blocks = cs.blocks
+
+    # 1. committed windows -> downtimes (existing line-downs kept). The
+    # TRUE committed blocks are stashed alongside so the proposal calendar
+    # can show them as production/trial/CIP instead of fake maintenance.
+    windows = committed_windows(blocks, H)
+    blocks.to_csv(work / "committed_blocks.csv", index=False)
+    dt_path = work / "downtimes.csv"
+    dt = _pd.read_csv(dt_path) if dt_path.exists() else _pd.DataFrame(
+        columns=["line_id", "line_name", "start_hour", "end_hour", "reason"])
+    dt.to_csv(work / "real_downtimes.csv", index=False)
+    _pd.concat([dt, _pd.DataFrame(windows)], ignore_index=True).to_csv(
+        dt_path, index=False)
+    notes.append(f"{len(windows)} committed window(s) fixed as blocked time "
+                 "(running+queued MOs, trials, projected CIPs)")
+
+    # 2. initial states: fill starts at the committed tail, changeover base =
+    #    last committed SKU, dirty-clock carryover 0 (layer-1 CIPs rule)
+    free = line_free_from(blocks, H)
+    last_sku = last_sku_per_line(blocks)
+    init_path = work / "initial_states.csv"
+    if init_path.exists():
+        init = _pd.read_csv(init_path)
+        n_gated = 0
+        for idx, row in init.iterrows():
+            ln = str(row.get("line_name", "")).strip().upper()
+            if ln in free:
+                init.at[idx, "available_from_hour"] = int(_math.ceil(free[ln]))
+                n_gated += 1
+            if ln in last_sku:
+                init.at[idx, "initial_sku"] = last_sku[ln]
+            if "carryover_run_hours_since_last_cip_at_t0" in init.columns:
+                init.at[idx, "carryover_run_hours_since_last_cip_at_t0"] = 0
+        init.to_csv(init_path, index=False)
+        notes.append(f"{n_gated} line(s) gated to their committed tail; "
+                     f"{len(last_sku)} changeover base SKU(s) set")
+
+    # 3. solver CIP standdown (projected CIPs carry the cleans)
+    cip_hrs_path = work / "line_cip_hrs.csv"
+    if cip_hrs_path.exists():
+        ch = _pd.read_csv(cip_hrs_path)
+        if "max_cip_hrs" in ch.columns:
+            ch["max_cip_hrs"] = SOLVER_CIP_INTERVAL_STANDDOWN_H
+            ch.to_csv(cip_hrs_path, index=False)
+            notes.append("solver CIP generation stood down "
+                         "(layer-1 projected CIPs carry the cleans)")
+
+    # 4. demand minus committed production (carry-forward per SKU)
+    dem_path = work / "demand_plan.csv"
+    if dem_path.exists():
+        dem = _pd.read_csv(dem_path, dtype={"sku": str})
+        dem2, sub_notes = subtract_committed(dem, blocks)
+        dem2.to_csv(dem_path, index=False)
+        notes.append(f"demand reduced by committed production on "
+                     f"{len(sub_notes)} order(s)")
+        notes.extend(sub_notes[:5])
+
+    # 5. never a committed order in F
+    cmo = work / "current_mo.csv"
+    if cmo.exists():
+        cmo.unlink()
+    for w in cs.warnings[:4]:
+        notes.append(f"current-state warning: {w}")
+    return notes
+
+
 def normalize_overrides(overrides: dict[str, Any] | None) -> dict[str, Any]:
     """Keep only known weight keys with a real value; coerce to int.
 
@@ -853,16 +981,23 @@ def run_scenario(
     # INFEASIBLE. So the lock flag is per-scenario, and we also write it into
     # the work toml so the solver's relax-ladder skip (USE_CURRENT_MO ->
     # {0:3} jump to ignore_co) matches the same intent.
+    fill_mode = bool(scenario.get("fill_mode"))
     lock_current_mo = bool(scenario.get("lock_current_mo", scenario["id"] == "E"))
+    if fill_mode:
+        lock_current_mo = False
     _set_work_use_current_mo(work / "flowstate.toml", lock_current_mo)
 
-    # Inject the current plant state: per-line free-from hour, running SKU and
-    # CIP carryover so the solver cannot schedule over a locked running MO.
-    # Best-effort, but ALWAYS reported — a silent no-op here means the solver
-    # quietly plans from the stale fixture.
+    # Inject the current plant state. Scenario F fixes the committed plan as
+    # blocked line-time (fill mode); every other scenario uses the classic
+    # overlay (gates + optional locked current-MO orders). Best-effort, but
+    # ALWAYS reported — a silent no-op here means the solver quietly plans
+    # from the stale fixture.
     try:
-        _cs_notes = _overlay_current_state(
-            work, data_dir, lock_current_mo=lock_current_mo)
+        if fill_mode:
+            _cs_notes = _overlay_fill(work, data_dir)
+        else:
+            _cs_notes = _overlay_current_state(
+                work, data_dir, lock_current_mo=lock_current_mo)
     except Exception as _exc:  # noqa: BLE001
         _cs_notes = [f"current-state overlay FAILED: {_exc}"]
 
@@ -934,11 +1069,29 @@ def run_scenario(
             "diag_blockages": diag_blockages,
         }
 
-    calendar = import_solver_schedule(
-        sched,
-        cip if cip.exists() else None,
-        work / "downtimes.csv" if (work / "downtimes.csv").exists() else None,
-    )
+    if fill_mode:
+        # Committed layer (true block types) + the solver's fill blocks +
+        # only the REAL line-downs — the committed windows in downtimes.csv
+        # were solver plumbing, not calendar content.
+        import pandas as _pd2
+
+        from helpers.calendar_io import load_calendar as _lc
+        committed_path = work / "committed_blocks.csv"
+        committed = _lc(committed_path) if committed_path.exists() else None
+        real_dt = work / "real_downtimes.csv"
+        fill_part = import_solver_schedule(
+            sched,
+            cip if cip.exists() else None,
+            real_dt if real_dt.exists() else None,
+        )
+        calendar = (_pd2.concat([committed, fill_part], ignore_index=True)
+                    if committed is not None and len(committed) else fill_part)
+    else:
+        calendar = import_solver_schedule(
+            sched,
+            cip if cip.exists() else None,
+            work / "downtimes.csv" if (work / "downtimes.csv").exists() else None,
+        )
     score = score_calendar(calendar, week_label=scenario["name"], data_dir=data_dir)
     return {
         "ok": True,
