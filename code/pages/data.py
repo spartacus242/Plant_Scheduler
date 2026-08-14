@@ -16,23 +16,30 @@ if str(BASE_DIR) not in sys.path:
 
 from helpers.config import datasources_config, load_toml
 from helpers.data_catalog import CATALOG, CSV_ENCODING, missing_columns, read_csv, status
-from helpers.downtime_ui import render_side_downtime_editor
 from helpers.manual_import_ui import render_manual_import
 from helpers.paths import data_dir, reference_dir
 from helpers.safe_io import safe_write_csv
 
-st.header("Data Files")
-st.caption("Replace, edit or download the CSVs Flowstate reads. Every write backs up the old file first.")
+st.header("Connect — Data Files")
+st.caption(
+    "Step 1 of the daily loop: get the inputs in and fresh. Import the demand "
+    "plan, fix capability gaps, replace any input file. Every write backs up "
+    "the old file first. (Scheduled downtime moved to the Plant Calendar's "
+    "Start-of-day strip.)"
+)
 
 dd = data_dir()
 st.caption(f"Data folder: `{dd}`  |  backups: `{dd / '_backups'}`")
 
-st.subheader("STEP 1 - Scheduled downtime per side")
-with st.expander("Set downtime per line / side (do this before scheduling production)", expanded=False):
-    render_side_downtime_editor(dd, key_prefix="data_dt")
 
-st.divider()
-st.subheader("All input files")
+def backup(path: Path) -> Path:
+    """Copy path into data/_backups/<stem>.<timestamp>.csv. Returns the backup path."""
+    bdir = dd / "_backups"
+    bdir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    dest = bdir / f"{path.stem}.{stamp}{path.suffix}"
+    dest.write_bytes(path.read_bytes())
+    return dest
 
 
 # ── Line/SKU capability check (manprg + demand plan vs capabilities) ─────
@@ -144,16 +151,6 @@ try:
                    "the capabilities table, and every demand SKU has a capable line.")
 except Exception as _cap_exc:  # noqa: BLE001
     st.caption(f"Capability check unavailable: {_cap_exc}")
-
-
-def backup(path: Path) -> Path:
-    """Copy path into data/_backups/<stem>.<timestamp>.csv. Returns the backup path."""
-    bdir = dd / "_backups"
-    bdir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    dest = bdir / f"{path.stem}.{stamp}{path.suffix}"
-    dest.write_bytes(path.read_bytes())
-    return dest
 
 
 st.divider()
@@ -334,6 +331,13 @@ with st.expander("Import manual line schedule (CSV / Excel)", expanded=False):
         key="data_manual",
     )
 
+st.divider()
+st.subheader("All input files")
+st.caption(
+    "Upload to replace (backed up first), preview, download. Cell-editing "
+    "lives in Excel — re-upload the file after edits."
+)
+
 for spec in CATALOG:
     info = status(spec, dd)
     badge = "OK" if info["exists"] and not info["error"] else ("MISSING" if not info["exists"] else "ERROR")
@@ -385,30 +389,16 @@ for spec in CATALOG:
 
         df = read_csv(spec, dd)
 
-        # (b) Editable grid + Save.
-        edited = st.data_editor(
-            df,
-            num_rows="dynamic",
-            use_container_width=True,
-            key=f"ed_{spec.key}",
+        # (b) Read-only preview + download. The in-browser cell editor was
+        # developer furniture — planner edits happen in Excel and come back
+        # through the upload above (every write is backed up first).
+        st.dataframe(df.head(20), use_container_width=True, hide_index=True)
+        if len(df) > 20:
+            st.caption(f"… {len(df) - 20:,} more row(s) — download to see all.")
+        st.download_button(
+            "Download",
+            data=path.read_bytes(),
+            file_name=spec.filename,
+            mime="text/csv",
+            key=f"dl_{spec.key}",
         )
-        c1, c2 = st.columns([1, 3])
-        with c1:
-            if st.button("Save", key=f"save_{spec.key}"):
-                out = pd.DataFrame(edited)
-                gaps = missing_columns(out, spec)
-                if gaps:
-                    st.error("Missing required column(s): " + ", ".join(gaps))
-                else:
-                    b = backup(path)
-                    safe_write_csv(out, path)
-                    st.success(f"Saved {spec.rel()} ({len(out)} rows). Backup: {b.name}")
-        with c2:
-            # (c) Download the file as it is on disk.
-            st.download_button(
-                "Download",
-                data=path.read_bytes(),
-                file_name=spec.filename,
-                mime="text/csv",
-                key=f"dl_{spec.key}",
-            )

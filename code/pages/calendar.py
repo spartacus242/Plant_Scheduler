@@ -176,13 +176,27 @@ with st.expander("🏭 Rebuild calendar from current plant state (manprg + cip_i
                        "Reloading…")
             st.rerun()
 
-# --- Hide what already happened ------------------------------------------
-# "Nothing in the past is shown." Hidden rows are held aside and merged back
-# in on save so hiding never destroys history.
-_hide_past = st.checkbox(
-    "Hide blocks that already finished", value=True, key="cal_hide_past",
-    help="Completed blocks (end before now) stay on disk — they are merged "
-         "back when you save.")
+# --- Start of day: downtime + view options --------------------------------
+# One compact strip instead of scattered controls — the Gantt is the page.
+# Hidden past rows are held aside and merged back on save (never destroyed).
+with st.expander("🌅 Start of day — downtime · view options", expanded=False):
+    st.markdown("**Scheduled downtime per side** — set before scheduling "
+                "production; the sandbox stretches blocks over one-sided hours.")
+    render_side_downtime_editor(dd, key_prefix="cal_dt")
+    st.markdown("**View**")
+    _vc1, _vc2 = st.columns([3, 1])
+    with _vc1:
+        _hide_past = st.checkbox(
+            "Hide blocks that already finished", value=True, key="cal_hide_past",
+            help="Completed blocks (end before now) stay on disk — they are "
+                 "merged back when you save.")
+    with _vc2:
+        if st.button("Reload from disk", use_container_width=True):
+            st.session_state["cal_reset_gen"] = (
+                st.session_state.get("cal_reset_gen", 0) + 1)
+            st.session_state.pop("cal_holding", None)
+            st.session_state.pop("cal_baseline_score", None)
+            st.rerun()
 _past_rows = cal.iloc[0:0]
 if _hide_past:
     _now_h = (_horizon.now - _anchor).total_seconds() / 3600.0
@@ -226,13 +240,8 @@ if caps_path.exists():
 # (both sides running), whichever way capabilities_rates.csv is keyed.
 caps = expand_caps_with_groups(caps)
 
-# STEP 1 of the workflow: scheduled downtime per side, entered before production.
-with st.expander(
-    "STEP 1 - Set scheduled downtime per side first, then schedule production",
-    expanded=False,
-):
-    render_side_downtime_editor(dd, key_prefix="cal_dt")
-
+# Downtime editor lives in the Start-of-day strip above; only the map is
+# computed here (it must see the file the editor just wrote).
 side_downtime = {k: [[s, e] for s, e in v] for k, v in downtime_map_for_calendar(dd, cal).items()}
 _one_sided = [g for g in sorted({str(l["line_group"]) for l in lines if l["is_double"]})
               if any(side_downtime.get(s) for s in sides_of(g))]
@@ -351,32 +360,22 @@ if "cal_baseline_score" not in st.session_state or st.session_state.get("cal_bas
 if "cal_reset_gen" not in st.session_state:
     st.session_state["cal_reset_gen"] = 0
 
-c1, c2, c3 = st.columns(3)
-with c1:
-    if st.button("Reload from disk", use_container_width=True):
-        st.session_state["cal_reset_gen"] += 1
-        st.session_state.pop("cal_holding", None)
-        st.session_state.pop("cal_baseline_score", None)
-        st.rerun()
-with c2:
-    save_name = st.text_input("Save as version name", value="Option 1", label_visibility="collapsed")
-with c3:
-    pass
-
 # ---- Now-running table: current MO per line from manprg ----
-# Only MOs actually in progress (not completed, not future) belong here; the
-# user doesn't want finished MOs cluttering the view.
+# Only MOs actually in progress (not completed, not future) belong here —
+# collapsed so the Gantt stays the first thing on the page.
 _active = [r for r in _now_running if 0 < r["pct"] < 100]
 if _active:
-    st.subheader("Now running (live from manprg)")
-    _desig = {line: lp.designation for line, lp in _mp.current.items()}
-    _nr = sorted(_active, key=lambda r: r["line"])
-    st.dataframe(
-        [{"Line": r["line"], "MO": r["mo"], "SKU": r["item"],
-          "Designation": _desig.get(r["line"], ""),
-          "Completion": f"{r['pct']:.1f}%",
-          "Cases left": int(r["left"])} for r in _nr],
-        use_container_width=True, hide_index=True)
+    with st.expander(
+            f"▶ Now running (live from manprg) — {len(_active)} line(s)",
+            expanded=False):
+        _desig = {line: lp.designation for line, lp in _mp.current.items()}
+        _nr = sorted(_active, key=lambda r: r["line"])
+        st.dataframe(
+            [{"Line": r["line"], "MO": r["mo"], "SKU": r["item"],
+              "Designation": _desig.get(r["line"], ""),
+              "Completion": f"{r['pct']:.1f}%",
+              "Cases left": int(r["left"])} for r in _nr],
+            use_container_width=True, hide_index=True)
 
 # ── Auto-populate holding from the latest scenario solve ─────────────────
 # After a scenario (esp. E) produces a schedule, demand orders left under
@@ -495,6 +494,8 @@ with b1:
         st.session_state.pop("cal_baseline_score", None)
         st.success("Saved calendar_blocks.csv")
 with b2:
+    save_name = st.text_input("Version name", value="Option 1",
+                              key="cal_save_name")
     if st.button("Save as named version", use_container_width=True):
         if n_holding:
             st.warning(f"Version will omit {n_holding} held block(s).")
