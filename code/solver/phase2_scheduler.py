@@ -269,7 +269,15 @@ if CROSS_WEEK and TWO_PHASE:
 # (ignore_co) keeps the model small and the MOs present (presence is forced
 # at level 0; at level 3 demand + due relax but the MO stays locked-line).
 USE_CURRENT_MO = bool(_CFG_SCHED.get("use_current_mo", False))
-_RELAX_SKIP = {0: 3} if USE_CURRENT_MO else {}
+# Historically {0: 3} in current-MO mode: the ladder jumped straight to
+# ignore_co because levels 1-2 always proved INFEASIBLE with committed MOs.
+# 2026-08-14: the true causes were three presence-gating bugs in the
+# changeover block (first-flag and pairwise ordering compared against ABSENT
+# orders' collapsed-to-0 intervals; the week-gap stitch classified committed
+# MOs), invisible until live gates/initial SKUs arrived. With those fixed,
+# level 2 is FEASIBLE on the live dataset with changeovers ENFORCED — the
+# skip would now only rob the ladder of its changeover-preserving rungs.
+_RELAX_SKIP: dict[int, int] = {}
 
 
 def _ladder_levels(base_lvl: int, max_lvl: int) -> list[int]:

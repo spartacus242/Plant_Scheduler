@@ -16,6 +16,46 @@ WEEK0_FILL_START = 120
 MAX_GAP_W0_W1_HOURS = 1
 
 
+def _producible_kg_in_window(P: Params, data: Data, o: dict, lines) -> int:
+    """Provable upper bound on what ONE order can produce in its due window.
+
+    Sum over capable lines of usable hours in [ds_eff, min(H, de+1)] × rate,
+    where usable subtracts the line's availability gate and downtime overlaps.
+    ds_eff mirrors the interval construction in build_model exactly (week-1
+    orders may fill week 0 from WEEK0_FILL_START when allow_week1_in_week0).
+    Contention with other orders and min-run rounding are deliberately
+    ignored — the bound must only ever OVER-estimate, so clamping qty_min to
+    it removes provably-impossible demand and nothing else.
+    """
+    H = P.horizon_h
+    ds_raw, de = int(o["due_start"]), int(o["due_end"])
+    if ds_raw > WEEK0_END and getattr(P, "allow_week1_in_week0", False):
+        ds_eff = WEEK0_FILL_START
+    else:
+        ds_eff = ds_raw
+    win_end = min(H, de + 1)
+    total = 0.0
+    for l in lines:
+        r = data.rate.get((l, o["sku"])) or 0
+        if r <= 0:
+            continue
+        gate = max(0, data.init_map.get(l, {}).get("available_from", 0))
+        a = max(0, ds_eff, gate)
+        b = win_end
+        if b <= a:
+            continue
+        usable = float(b - a)
+        for dt in data.downtimes:
+            if dt["line_id"] != l:
+                continue
+            overlap = min(b, dt["end"]) - max(a, dt["start"])
+            if overlap > 0:
+                usable -= overlap
+        if usable > 0:
+            total += usable * r
+    return int(total)
+
+
 def build_model(
     P: Params,
     data: Data,
@@ -348,7 +388,28 @@ def build_model(
             (data.rate.get((l, o["sku"])) or 0) > 0
             and available_hours_line(P, data, l) > 0
             for l in lines)
-        qmin = (int(o["qty_min"]) if not relax_demand else 0) if producible else 0
+        qmin_raw = (int(o["qty_min"]) if not relax_demand else 0) if producible else 0
+        # Producible-zeroing v2 (2026-08-14, user-approved): the bool above
+        # only catches TOTAL impossibility. A demand order whose qty_min
+        # exceeds what its capable lines can physically produce INSIDE its
+        # due window (gates + downtimes subtracted) is just as provably
+        # impossible and used to turn the whole level-0 model INFEASIBLE —
+        # the auto-relax ladder then lands on ignore_co and changeovers stop
+        # being optimized at all (measured: +82 unoptimized changeovers on
+        # the 2026-08-14 dataset). Clamp qty_min to the per-order window
+        # capacity. The bound ignores contention and min-run rounding, so it
+        # OVER-estimates what one order could get — clamping to it can never
+        # exclude a feasible solution, only demands no schedule could meet.
+        # Committed MOs and trials keep the legacy behavior untouched
+        # (dispatch-5 contracts; manprg is ground truth).
+        qmin = qmin_raw
+        if qmin_raw > 0 and not o.get("is_current_mo") and not o.get("is_trial"):
+            cap_kg = _producible_kg_in_window(P, data, o, lines)
+            if cap_kg < qmin_raw:
+                qmin = cap_kg
+                print(f"[producible] {o['order_id']}: qty_min {qmin_raw} -> "
+                      f"{qmin} (window capacity: capable lines x usable "
+                      f"hours in [{int(o['due_start'])},{int(o['due_end'])}+1])")
         qmax = int(o["qty_max"])
         model.Add(prod >= qmin)
         model.Add(prod <= qmax)
@@ -450,10 +511,22 @@ def build_model(
                 for j_idx in elig:
                     if j_idx == i_idx:
                         continue
+                    # Gate on present[j]: an ABSENT order's interval collapses
+                    # to start = end = 0 (present.Not() => seg_a_end == 0), so
+                    # comparing against absent orders forced the line's first
+                    # start <= 0 — impossible once the current-state overlay
+                    # introduced real availability gates (> 0). One line could
+                    # dodge it by making EVERY elig order present (4h min-run
+                    # each), but max_lines_per_order caps an order at 2 lines,
+                    # so >= 3 gated lines sharing elig SKUs were pigeonhole-
+                    # INFEASIBLE at every relax level below 3 (2026-08-14
+                    # bisection: nocmo FEASIBLE, 1-2 MO-lines FEASIBLE, 6+
+                    # INFEASIBLE). "First" only ranks against orders that are
+                    # actually on the line.
                     model.Add(
                         seg_a_start[(l, i_idx)]
                         <= seg_a_start[(l, j_idx)]
-                    ).OnlyEnforceIf(first_i)
+                    ).OnlyEnforceIf([first_i, present[(l, j_idx)]])
                 base = (
                     data.setup.get((init_sku, i["sku"]), 0)
                     if init_sku != "CLEAN"
@@ -488,11 +561,24 @@ def build_model(
                         seg_a_start[(l, j_idx)]
                         >= eff_end[(l, i_idx)] + setup_ij
                     ).OnlyEnforceIf(b_ij)
-                    # j before i: i's seg_a starts after j's effective end
+                    # j before i: i's seg_a starts after j's effective end.
+                    # MUST be gated on BOTH presences: b_ij implies both
+                    # present, so (i absent, j present) FORCES b_ij false —
+                    # and this branch then demanded start_i(=0, absent
+                    # intervals collapse to 0) >= eff_end_j + setup, i.e.
+                    # every present order had to END at 0 whenever any
+                    # earlier-indexed elig order was absent. Same absorb-
+                    # every-elig-order pressure as the first-flag bug, second
+                    # source (2026-08-14). Ordering only exists between two
+                    # orders that are actually on the line.
                     model.Add(
                         seg_a_start[(l, i_idx)]
                         >= eff_end[(l, j_idx)] + setup_ji
-                    ).OnlyEnforceIf(b_ij.Not())
+                    ).OnlyEnforceIf([
+                        b_ij.Not(),
+                        present[(l, i_idx)],
+                        present[(l, j_idx)],
+                    ])
 
                     # Successor variables: j immediately follows i (or vice versa)
                     s_ij = model.NewBoolVar(
@@ -616,15 +702,25 @@ def build_model(
     # start immediately after the line's last Week-0 order, which structurally
     # forbids the interleaving/merging cross-week mode exists to allow.
     if P.allow_week1_in_week0 and not cross_week:
+        # The week-boundary stitch (gap <= MAX_GAP_W0_W1_HOURS) is a FRESH-PLAN
+        # rule: don't leave an idle wall between weeks the solver itself
+        # planned. Committed manprg MOs are exempt — their windows are plant
+        # fact with HARD start floors, and classifying them here forced
+        # impossible stitches (measured 2026-08-14: P09's forced-w0 MOs end
+        # <= h151 while its forced-w1 MO starts >= h177 — a 26h wall the 1h
+        # gap rule forbids at hard dues, one root of the level-0/1
+        # infeasibility in current-MO mode).
         week0_order_idxs = [
             o_idx
             for o_idx, o in enumerate(orders)
             if int(o["due_end"]) <= WEEK0_END
+            and not o.get("is_current_mo")
         ]
         week1_order_idxs = [
             o_idx
             for o_idx, o in enumerate(orders)
             if int(o["due_start"]) >= WEEK1_START
+            and not o.get("is_current_mo")
         ]
         if week0_order_idxs and week1_order_idxs:
             for l in lines:
