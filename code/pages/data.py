@@ -16,7 +16,6 @@ if str(BASE_DIR) not in sys.path:
 
 from helpers.config import datasources_config, load_toml
 from helpers.data_catalog import CATALOG, CSV_ENCODING, missing_columns, read_csv, status
-from helpers.manual_import_ui import render_manual_import
 from helpers.paths import data_dir, reference_dir
 from helpers.safe_io import safe_write_csv
 
@@ -239,97 +238,6 @@ with st.expander("Import demand_plan_summary.csv", expanded=True):
                            f"(weeks {[int(w) for w in meta2.weeks]}), "
                            f"anchor {meta2.anchor.strftime('%Y-%m-%d') if meta2.anchor else '—'}.")
                 st.rerun()
-
-st.divider()
-st.subheader("Import a weekly production schedule (PDF)")
-st.caption(
-    "Upload the plant's weekly 'Production Schedule' PDF (the VIF print) to bring "
-    "the actual line schedule in as a version to compare against, or as the "
-    "current baseline.")
-
-with st.expander("Import production schedule PDF", expanded=False):
-    from helpers.schedule_pdf_import import parse_schedule_pdf, to_calendar_rows
-    from helpers.timefmt import planning_anchor
-
-    pdf_up = st.file_uploader("Production Schedule (.pdf)", type=["pdf"],
-                              key="sched_pdf_upload")
-    if pdf_up is not None:
-        import tempfile
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tf:
-            tf.write(pdf_up.getvalue())
-            tmp_pdf = tf.name
-        try:
-            pres = parse_schedule_pdf(tmp_pdf)
-        except Exception as exc:
-            st.error(f"Could not parse PDF: {type(exc).__name__}: {exc}")
-            st.stop()
-        if not pres.blocks:
-            st.error("No schedule blocks recognized in this PDF.")
-            st.stop()
-
-        # anchor: Monday of the week the PDF covers (earliest date -> its Monday)
-        from datetime import datetime as _dt, timedelta as _td
-        dates = sorted({_dt.strptime(f"{pres.year}-{b.date}", "%Y-%m/%d")
-                        for b in pres.blocks})
-        monday = dates[0] - _td(days=dates[0].weekday())
-        st.success(
-            f"Parsed **{len(pres.blocks)}** blocks "
-            f"({sum(1 for b in pres.blocks if b.block_type=='production')} production, "
-            f"{sum(1 for b in pres.blocks if b.block_type=='cip')} CIP, "
-            f"{sum(1 for b in pres.blocks if b.block_type=='trial')} trial) "
-            f"across {len({b.line for b in pres.blocks})} lines, week of "
-            f"**{monday.date()}** ({pres.year}).")
-        n_prod = sum(1 for b in pres.blocks if b.block_type == "production")
-        st.dataframe(
-            [{"line": b.line, "date": b.date, "time": b.time, "item": b.item,
-              "hours": b.hours, "kg": b.qty_kg, "type": b.block_type}
-             for b in pres.blocks[:12]],
-            use_container_width=True, hide_index=True)
-
-        mode = st.radio(
-            "Add as:",
-            ["Version to compare against", "Current baseline (overwrite calendar_blocks.csv)"],
-            key="pdf_mode", horizontal=True)
-        ver_name = st.text_input("Version name", value=f"WW schedule {monday.date()}",
-                                 key="pdf_ver_name")
-        if st.button("Import schedule PDF", key="pdf_commit", type="primary"):
-            rows = to_calendar_rows(pres, monday)
-            import pandas as _pd
-            cal = _pd.DataFrame(rows)
-            if mode.startswith("Current baseline"):
-                old = dd / "calendar_blocks.csv"
-                if old.exists():
-                    b = backup(old)
-                    st.caption(f"Backed up to `{b.name}`")
-                cal.to_csv(dd / "calendar_blocks.csv", index=False)
-                st.success(f"Wrote {len(cal)} blocks to calendar_blocks.csv.")
-            else:
-                from helpers.version_manager import upsert_version
-                from helpers.scorecard_engine import score_calendar
-                sc = score_calendar(cal, week_label=ver_name, data_dir=dd)
-                slug = upsert_version(
-                    ver_name.lower().replace(" ", "_"), ver_name, cal,
-                    sc.to_dict(), dd, source="pdf_import",
-                    notes=f"Imported from production schedule PDF, week of {monday.date()}.")
-                st.success(f"Saved version `{slug}` - {ver_name}")
-            st.rerun()
-
-st.divider()
-st.subheader("Upload the planner's manual line schedule")
-st.caption(
-    "AZAP (the demand plan, data/reference/demand_plan.csv) says which SKUs and how many kg -- "
-    "it never assigns lines. The production planner builds the real line schedule himself. "
-    "Upload it here to make it the base model."
-)
-_cfg = load_toml()
-_sched = _cfg.get("scheduler", {})
-with st.expander("Import manual line schedule (CSV / Excel)", expanded=False):
-    render_manual_import(
-        dd,
-        _sched.get("planning_start_date", "2026-02-15 00:00:00"),
-        int(_sched.get("horizon_hours", 336)),
-        key="data_manual",
-    )
 
 st.divider()
 st.subheader("All input files")

@@ -22,7 +22,6 @@ from helpers.config import load_toml
 from helpers.labels import display_label
 from helpers.manual_import_ui import (
     backup_file,
-    render_manual_import,
     snapshot_current_schedule,
 )
 from helpers.paths import data_dir, reference_dir, seed_dir
@@ -49,14 +48,6 @@ cfg = load_toml()
 anchor = cfg.get("scheduler", {}).get("planning_start_date", "2026-02-15 00:00:00")
 horizon_h = int(cfg.get("scheduler", {}).get("horizon_hours", 336))
 week_label = st.text_input("Week label", value=f"Week-{date.today().isoformat()}")
-
-
-# -- Import the planner's own manual schedule ---------------------------
-with st.expander(
-    "Upload the planner's manual line schedule (recommended base model)",
-    expanded=not cal_path.exists(),
-):
-    render_manual_import(dd, anchor, horizon_h, key="sc_manual")
 
 
 # -- Import the bundled seed data ----------------------------------------
