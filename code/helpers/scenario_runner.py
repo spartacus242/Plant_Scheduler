@@ -742,8 +742,9 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
     from helpers.horizon import resolve as _hr
     from helpers.paths import data_dir as _dd
     from helpers.plan_fill import (SOLVER_CIP_INTERVAL_STANDDOWN_H,
-                                   committed_windows, last_sku_per_line,
-                                   line_free_from, subtract_committed)
+                                   coalesce_windows, committed_windows,
+                                   last_sku_per_line, line_free_from,
+                                   subtract_committed)
 
     notes: list[str] = []
     dd = Path(data_dir) if Path(data_dir).name == "data" else Path(_dd())
@@ -769,7 +770,14 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
     dt = _pd.read_csv(dt_path) if dt_path.exists() else _pd.DataFrame(
         columns=["line_id", "line_name", "start_hour", "end_hour", "reason"])
     dt.to_csv(work / "real_downtimes.csv", index=False)
-    _pd.concat([dt, _pd.DataFrame(windows)], ignore_index=True).to_csv(
+    combined = dt.to_dict("records") + windows
+    merged = coalesce_windows([
+        {"line_id": r.get("line_id", 0), "line_name": r["line_name"],
+         "start_hour": r["start_hour"], "end_hour": r["end_hour"],
+         "reason": r.get("reason", "blocked")}
+        for r in combined])
+    _pd.DataFrame(merged, columns=["line_id", "line_name", "start_hour",
+                                   "end_hour", "reason"]).to_csv(
         dt_path, index=False)
     notes.append(f"{len(windows)} committed window(s) fixed as blocked time "
                  "(running+queued MOs, trials, projected CIPs)")

@@ -67,13 +67,20 @@ def last_sku_per_line(blocks: pd.DataFrame) -> dict[str, str]:
 
 
 def line_free_from(blocks: pd.DataFrame, horizon_h: float) -> dict[str, float]:
-    """First hour each line is free of committed work (max committed end,
-    clipped to [0, horizon]). Fill may not start before this — gaps INSIDE
-    the committed stretch belong to the plant team, not the solver."""
+    """First hour each line is free of committed WORK (production + trials),
+    clipped to [0, horizon]. Fill may not start before this — gaps INSIDE the
+    committed stretch belong to the plant team, not the solver.
+
+    Projected CIPs are deliberately EXCLUDED: they are spaced through the
+    whole horizon, so counting them gated every line at ~504h, clamped every
+    order's window capacity to zero and made an EMPTY schedule "OPTIMAL"
+    (measured on F run 2). Future CIPs block fill via their windows instead.
+    """
     out: dict[str, float] = {}
     if blocks is None or not len(blocks):
         return out
-    for line, grp in blocks.groupby(blocks["line_name"].astype(str).str.upper()):
+    work = blocks[blocks["block_type"].isin(["production", "trial"])]
+    for line, grp in work.groupby(work["line_name"].astype(str).str.upper()):
         out[line] = float(min(horizon_h, max(0.0, grp["end_h"].max())))
     return out
 
@@ -123,6 +130,42 @@ def subtract_committed(
                 df.at[idx, "qty_target"] = round(target - consumed, 1)
                 notes.append(
                     f"{df.at[idx, 'order_id']}: committed plan already makes "
-                    f"{consumed:,.0f} kg — fill target {target:,.0f}→"
+                    f"{consumed:,.0f} kg - fill target {target:,.0f}->"
                     f"{target - consumed:,.0f} kg")
     return df, notes
+
+
+def coalesce_windows(rows: list[dict]) -> list[dict]:
+    """Union of blocked windows per line -> disjoint rows.
+
+    Committed MO windows can OVERLAP existing line-downs (the plant plans
+    onto P11/P13 even while downtimes.csv says they are down - the exact
+    inconsistency Reconcile flags). Two overlapping FIXED intervals make
+    NoOverlap instantly infeasible at every relax level (measured on the
+    first F run), so everything blocked is merged into one interval union.
+    """
+    by_line: dict[str, list[dict]] = {}
+    for r in rows:
+        by_line.setdefault(str(r["line_name"]).upper(), []).append(r)
+    out: list[dict] = []
+    for line, rs in sorted(by_line.items()):
+        rs = sorted(rs, key=lambda r: (float(r["start_hour"]), float(r["end_hour"])))
+        cur = None
+        for r in rs:
+            s0, e0 = float(r["start_hour"]), float(r["end_hour"])
+            if cur is None:
+                cur = dict(r)
+                continue
+            if s0 <= float(cur["end_hour"]) + 1e-9:   # overlap or touch: merge
+                cur["end_hour"] = max(float(cur["end_hour"]), e0)
+                if str(r["reason"]) not in str(cur["reason"]):
+                    cur["reason"] = f"{cur['reason']} + {r['reason']}"[:120]
+            else:
+                out.append(cur)
+                cur = dict(r)
+        if cur is not None:
+            out.append(cur)
+    for r in out:
+        r["start_hour"] = int(r["start_hour"])
+        r["end_hour"] = int(round(float(r["end_hour"])))
+    return out

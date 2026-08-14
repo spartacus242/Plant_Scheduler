@@ -64,15 +64,20 @@ def test_last_sku_ignores_trials_and_cips():
     assert last_sku_per_line(blocks) == {"P09": "222"}
 
 
-def test_free_from_is_the_committed_tail_including_cips():
+def test_free_from_is_committed_work_only_cips_excluded():
+    # Projected CIPs run through the WHOLE horizon; counting them gated
+    # every line at ~504h and made an empty schedule "optimal" (F run 2).
     blocks = _blocks([
         {"sku": "111", "start_h": 0, "end_h": 30},
         {"block_type": "cip", "sku": "CIP", "start_h": 30, "end_h": 36},
+        {"block_type": "cip", "sku": "CIP", "start_h": 490, "end_h": 496},
         {"line_name": "P10", "sku": "333", "start_h": 5, "end_h": 12},
+        {"line_name": "P10", "block_type": "trial", "sku": "TRIALS",
+         "start_h": 12, "end_h": 20},
     ])
     free = line_free_from(blocks, 504)
-    assert free["P09"] == 36.0   # cip counts — the line is busy
-    assert free["P10"] == 12.0
+    assert free["P09"] == 30.0   # work tail; CIPs block via windows instead
+    assert free["P10"] == 20.0   # trials ARE committed work-time
 
 
 # ── subtract_committed ─────────────────────────────────────────────────────
@@ -111,3 +116,27 @@ def test_trials_and_unknown_kg_never_reduce_demand():
     out, notes = subtract_committed(dem, blocks)
     assert out.iloc[0]["qty_target"] == 50000
     assert notes == []
+
+
+# ── coalesce_windows ───────────────────────────────────────────────────────
+
+def test_coalesce_merges_overlapping_fixed_windows():
+    from helpers.plan_fill import coalesce_windows
+    rows = [
+        {"line_id": 2, "line_name": "P11", "start_hour": 0, "end_hour": 504,
+         "reason": "Down"},
+        {"line_id": 2, "line_name": "P11", "start_hour": 10, "end_hour": 40,
+         "reason": "Committed PRODUCTION 29901"},
+        {"line_id": 0, "line_name": "P09", "start_hour": 0, "end_hour": 10,
+         "reason": "Committed PRODUCTION A"},
+        {"line_id": 0, "line_name": "P09", "start_hour": 10, "end_hour": 16,
+         "reason": "Committed CIP"},          # touching: merges
+        {"line_id": 0, "line_name": "P09", "start_hour": 30, "end_hour": 40,
+         "reason": "Committed PRODUCTION B"},  # gap: stays separate
+    ]
+    out = coalesce_windows(rows)
+    p11 = [r for r in out if r["line_name"] == "P11"]
+    assert len(p11) == 1 and (p11[0]["start_hour"], p11[0]["end_hour"]) == (0, 504)
+    p09 = sorted([(r["start_hour"], r["end_hour"]) for r in out
+                  if r["line_name"] == "P09"])
+    assert p09 == [(0, 16), (30, 40)]
