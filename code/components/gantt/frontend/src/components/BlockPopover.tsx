@@ -28,8 +28,10 @@ interface Props {
   /** Planning anchor, so hour offsets render as wall-clock date + time. */
   anchor: Date;
   onClose: () => void;
-  /** Commit typed edits. Returns true when accepted (popover closes). */
-  onApply?: (blockId: string, edit: BlockEdit) => boolean;
+  /** Commit typed edits. Returns null when accepted (popover closes) or a
+   * human-readable rejection reason, shown INSIDE the popover — the chart's
+   * top banner is out of sight while the popup has the user's eyes. */
+  onApply?: (blockId: string, edit: BlockEdit) => string | null;
 }
 
 const LABEL: React.CSSProperties = { color: "#888", paddingRight: 12 };
@@ -59,6 +61,7 @@ const round1 = (v: number) => Math.round(v * 10) / 10;
 export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClose, onApply }) => {
   // Draft field state, (re)seeded whenever a different block is opened.
   const [draft, setDraft] = useState<{ id: string; start: string; dur: string; qty: string } | null>(null);
+  const [applyError, setApplyError] = useState<string | null>(null);
 
   const seeded = useMemo(() => {
     if (!block) return null;
@@ -103,10 +106,25 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClo
     const startHour = fromLocalInput(anchor, d.start);
     const durationH = parseFloat(d.dur);
     const qtyKg = d.qty.trim() === "" ? null : parseFloat(d.qty);
-    if (startHour === null || !Number.isFinite(durationH) || durationH <= 0) return;
-    if (qtyKg !== null && !Number.isFinite(qtyKg)) return;
-    const ok = onApply(block.id, { startHour, durationH, qtyKg: isWindow ? null : qtyKg });
-    if (ok) onClose();
+    if (startHour === null) {
+      setApplyError("Start is not a valid date/time");
+      return;
+    }
+    if (!Number.isFinite(durationH) || durationH <= 0) {
+      setApplyError("Duration must be a positive number of hours");
+      return;
+    }
+    if (qtyKg !== null && !Number.isFinite(qtyKg)) {
+      setApplyError("Qty must be a number (or empty for unknown)");
+      return;
+    }
+    const err = onApply(block.id, { startHour, durationH, qtyKg: isWindow ? null : qtyKg });
+    if (err) {
+      setApplyError(err);
+    } else {
+      setApplyError(null);
+      onClose();
+    }
   };
 
   return (
@@ -222,11 +240,27 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClo
           )}
         </tbody>
       </table>
+      {editable && applyError && (
+        <div
+          style={{
+            marginTop: 8,
+            padding: "6px 8px",
+            background: "#fdecea",
+            color: "#b71c1c",
+            border: "1px solid #f5c6cb",
+            borderRadius: 4,
+            fontSize: 12,
+            maxWidth: 260,
+          }}
+        >
+          {applyError} — the change was NOT applied.
+        </div>
+      )}
       {editable && (
         <div style={{ display: "flex", gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
           <button
             style={{ fontSize: 12, padding: "4px 10px", borderRadius: 4, border: "1px solid #ccc", background: "#f5f5f5", cursor: "pointer" }}
-            onClick={() => setDraft(null)}
+            onClick={() => { setDraft(null); setApplyError(null); }}
           >
             Reset
           </button>

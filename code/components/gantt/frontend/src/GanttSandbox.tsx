@@ -332,27 +332,41 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
 
   // Typed edits from the popover (start / duration / tonnage). Same guards as
   // a drag: locked blocks reject, min-run enforced, overlaps reject. Returns
-  // true when committed so the popover closes; false keeps it open to fix.
+  // null when committed (popover closes) or the rejection reason — the
+  // popover shows it inline, because the chart's top banner is out of the
+  // user's sight while the popup is open.
   const handleApplyEdit = useCallback(
-    (blockId: string, edit: { startHour: number; durationH: number; qtyKg: number | null }): boolean => {
+    (blockId: string, edit: { startHour: number; durationH: number; qtyKg: number | null }): string | null => {
       const block =
         schedule.find((b) => b.id === blockId) ?? cipWindows.find((b) => b.id === blockId);
-      if (!block) return false;
+      if (!block) return "Block no longer exists";
       if (block.locked) {
         reject("Block is locked");
-        return false;
+        return "Block is locked";
       }
       const minDur = isWindowBlock(block.block_type) ? 1 : args.config.min_run_hours;
       if (edit.durationH < minDur) {
-        reject(`Duration ${edit.durationH}h is under the ${minDur}h minimum`);
-        return false;
+        const msg = `Duration ${edit.durationH}h is under the ${minDur}h minimum`;
+        reject(msg);
+        return msg;
       }
       const newStart = Math.max(0, edit.startHour);
       const newEnd = newStart + edit.durationH;
       const allBlocks = [...schedule, ...cipWindows];
-      if (findOverlapsOnLine(allBlocks, block.line_name, block.id, newStart, newEnd)) {
-        reject(`Overlap on ${block.line_name} at ${hourToStamp(newStart, anchor)}`);
-        return false;
+      const clash = allBlocks.find(
+        (b) =>
+          b.line_name === block.line_name &&
+          b.id !== block.id &&
+          b.start_hour < newEnd &&
+          b.end_hour > newStart,
+      );
+      if (clash) {
+        const msg =
+          `Overlaps ${clash.sku || clash.label || clash.block_type} ` +
+          `(${hourToStamp(clash.start_hour, anchor)} - ${hourToStamp(clash.end_hour, anchor)}) ` +
+          `on ${block.line_name}`;
+        reject(msg);
+        return msg;
       }
       setErrorMsg(null);
       const patch: Partial<ScheduleBlock> = {
@@ -368,7 +382,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         `Edited ${block.order_id || block.sku}: ${hourToStamp(newStart, anchor)} for ${edit.durationH}h` +
           (edit.qtyKg ? `, ${edit.qtyKg.toLocaleString()} kg` : ""),
       );
-      return true;
+      return null;
     },
     [schedule, cipWindows, actions, reject, anchor, args.config.min_run_hours],
   );
