@@ -29,7 +29,6 @@ def datasources_config(cfg: dict | None = None) -> dict[str, Any]:
     defaults = {
         "vif_folder": r"\\usnpa-appfs\DATA\vif-export\auto editions",
         "manprg_files": "",                   # two paths, ';'-separated
-        "schedule_pdf_folder": "",
         "cip_info_csv": "",
         "demand_summary_csv": "",             # weekly AZAP baseline (Week, Product, kg_tons)
         "sql_enabled": False,

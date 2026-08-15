@@ -48,9 +48,9 @@ def test_windows_path_roundtrip():
 def test_user_entered_backslash_path():
     """User-entered Windows paths with backslashes are properly escaped."""
     value = r"C:\Users\Carsten\vif_export"
-    txt = _set_toml_section("", "datasources", {"schedule_pdf_folder": value})
+    txt = _set_toml_section("", "datasources", {"cip_info_csv": value})
     parsed = tomllib.loads(txt)
-    assert parsed["datasources"]["schedule_pdf_folder"] == value
+    assert parsed["datasources"]["cip_info_csv"] == value
 
 
 def test_bool_keys_write_true_false():
