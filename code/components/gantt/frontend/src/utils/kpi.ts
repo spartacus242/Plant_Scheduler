@@ -41,9 +41,13 @@ export function computeAdherence(
     for (let i = 0; i < orders.length && kg > 1e-9; i++) {
       const d = orders[i];
       const have = schedByOrder[d.order_id] ?? 0;
-      const room = i === orders.length - 1
-        ? kg  // last order takes the remainder
-        : Math.max(0, Math.max(d.qty_max, d.qty_min) - have);
+      // Every order takes at most its qty_max. The old "last order takes
+      // the remainder" rule dumped ALL surplus committed tonnage onto one
+      // order — a W35 order read 1764% adherence because a week of W33
+      // committed production of its SKU landed on it (2026-08-14). Surplus
+      // beyond every open order's max is production serving demand that is
+      // not on this board (already-shipped weeks) — leave it uncredited.
+      const room = Math.max(0, Math.max(d.qty_max, d.qty_min) - have);
       const take = Math.min(kg, room);
       if (take > 0) {
         schedByOrder[d.order_id] = have + take;
@@ -71,8 +75,13 @@ export function computeAdherence(
 
   const rows: AdherenceRow[] = demand.map((d) => {
     const sq = schedByOrder[d.order_id] ?? 0;
-    // Show actual % of target (no cap at 100)
-    const pct = d.qty_min > 0 ? (sq / d.qty_min) * 100 : (sq > 0 ? 999 : 100);
+    // % of TARGET (the 100% point), not of qty_min. Dividing by qty_min
+    // (90% of target) made a fill at the allowed 110% cap read as "122%"
+    // — the planner's band is 90-110 of target (user rule 2026-08-14).
+    const target = d.qty_min > 0 && d.qty_max >= d.qty_min
+      ? (d.qty_min + d.qty_max) / 2
+      : Math.max(d.qty_min, d.qty_max);
+    const pct = target > 0 ? (sq / target) * 100 : (sq > 0 ? 999 : 100);
     // MET = between min and max inclusive
     let status: "MET" | "UNDER" | "OVER" = "MET";
     if (sq < d.qty_min) status = "UNDER";
