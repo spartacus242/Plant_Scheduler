@@ -1377,20 +1377,41 @@ def build_model(
             # scheduled order to its 110% cap while other orders sat at 0
             # (measured 2026-08-14 run 10) — meeting ALL targets must beat
             # over-filling any one of them. qty_max stays the hard wall.
+            #
+            # Week-proximity gradient (user rule "right tonnage on the
+            # right ISO week", 2026-08-15): when residual demand exceeds
+            # free capacity, a flat per-kg reward hands the NEAREST week's
+            # scarce hours to whichever week's orders make the biggest
+            # runs — measured run 17: W34's own demand filled 14% while
+            # W36 (early-filling into W34's hours) hit 92%. Each week
+            # earlier than the last pays +1% per step, so contested hours
+            # serve the nearest due week first; the gradient is far below
+            # the 100%-vs-5% tier split, so it can only ever re-ORDER
+            # weeks, not starve total fill.
+            week_ends = sorted({
+                int(o["due_end"]) for o in orders
+                if not o.get("is_current_mo") and not o.get("is_trial")})
+            wk_rank = {e: i for i, e in enumerate(week_ends)}
+            n_wk = len(week_ends)
+
+            def _w1(o: dict) -> int:
+                r = wk_rank.get(int(o["due_end"]), n_wk - 1)
+                return 1000 + 10 * max(0, n_wk - 1 - r)
+
             tier1 = []
             over_terms = []
             for o_idx, o in enumerate(orders):
                 if o.get("is_current_mo"):
-                    tier1.append(produced[o_idx] * 10)
+                    tier1.append(produced[o_idx] * 10000)
                     continue
                 tgt = int(o.get("qty_target") or 0)
                 if tgt <= 0 or tgt >= int(o["qty_max"]):
-                    tier1.append(produced[o_idx])
+                    tier1.append(produced[o_idx] * _w1(o))
                     continue
                 capped = model.NewIntVar(
                     0, tgt, f"prodcap_{o['order_id']}")
                 model.AddMinEquality(capped, [produced[o_idx], tgt])
-                tier1.append(capped)
+                tier1.append(capped * _w1(o))
                 over_terms.append(produced[o_idx] - capped)
             prod_sum = sum(tier1)
             if over_terms:

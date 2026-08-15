@@ -98,8 +98,11 @@ def resolve(cfg: dict | None = None, now: datetime | None = None) -> Horizon:
     anchor = today_anchor(n) if mode == "today" else cfg_anchor
     weeks = horizon_weeks(cfg)
     hours = weeks * HOURS_PER_WEEK
-    # An explicit horizon_hours still wins when it is set and no weeks override.
-    if "horizon_hours" in sched and "horizon_weeks" not in sched:
+    # Precedence mirrors the solver (audit 2026-08-15): an explicit
+    # horizon_hours ALWAYS wins; horizon_weeks is the fallback. The app used
+    # to invert this, so setting one key alone silently desynced UI and
+    # solver horizons.
+    if "horizon_hours" in sched:
         try:
             hours = max(1, int(sched["horizon_hours"]))
         except (TypeError, ValueError):

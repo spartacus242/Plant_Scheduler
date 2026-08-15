@@ -273,20 +273,39 @@ def _demand_week_semantics(dd: Path, cfg: dict) -> list[HealthStatus]:
         return out
     try:
         hz: Horizon = resolve_horizon(cfg)
-        max_week = int(df["week_index"].max())
-        # week_index 0 == the ISO week containing the anchor. Current demand
-        # week should be the anchor week or the next one.
         iso_now = hz.anchor.isocalendar()[1]
-        from helpers.timefmt import week_index_to_iso
-        stored_weeks = {int(w): week_index_to_iso(int(w), hz.anchor) for w in df["week_index"].unique()}
+        # week_index 0 == the ISO week of the DEMAND FILE'S OWN anchor
+        # (demand_plan.source.json), NOT the planning anchor — the file is
+        # self-anchored to the Monday of its earliest week (audit
+        # 2026-08-15: mapping via the planning anchor reported the plan a
+        # week fresher than it was, so the staleness gate under-fired).
+        import json as _json
+        base_iso = None
+        _meta = reference_dir(dd) / "demand_plan.source.json"
+        if _meta.exists():
+            try:
+                base_iso = int(_json.loads(
+                    _meta.read_text(encoding="utf-8"))["anchor_iso_week"])
+            except Exception:
+                base_iso = None
+        if base_iso is None:
+            from helpers.timefmt import week_index_to_iso
+            stored_weeks = {int(w): week_index_to_iso(int(w), hz.anchor)
+                            for w in df["week_index"].unique()}
+        else:
+            stored_weeks = {int(w): base_iso + int(w)
+                            for w in df["week_index"].unique()}
         latest_iso = max(stored_weeks.values())
         stale = latest_iso < iso_now - 1  # more than one week behind today
         out.append(HealthStatus(
             key="demand_week", name="Demand plan week", state=STALE if stale else OK,
             detail=(f"demand_plan covers through ISO week {latest_iso} "
                     f"(today is ISO week {iso_now}).")
-            + ("" if not stale else " Re-import the AZAP export to refresh the 3-week window."),
-            actions=("Import the raw AZAP export on the Data Files page",) if stale else (),
+            + ("" if not stale else " Refresh demand_plan_summary.csv — the "
+               "pull script derives demand_plan.csv from it automatically."),
+            actions=("Run scripts/fs-live-pull.py (or re-upload "
+                     "demand_plan_summary.csv on the Data Files page)",)
+            if stale else (),
             source="semantic",
         ))
     except Exception as exc:  # pragma: no cover - defensive

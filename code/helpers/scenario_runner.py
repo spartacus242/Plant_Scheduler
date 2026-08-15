@@ -485,6 +485,60 @@ def _prepare_work_dir(data_dir: Path, work: Path) -> None:
         )
 
 
+def _stage_time_frame(work: Path, dd: Path, hz) -> list[str]:
+    """Put every staged input into ONE time frame (audit 2026-08-15).
+
+    Three anchors coexist: the demand file's self-anchor
+    (demand_plan.source.json), the root toml's planning_start_date, and the
+    resolved horizon anchor (anchor_mode="today"). Staging without
+    reconciling them put gates in the today-frame while demand due windows
+    sat in the demand frame — up to 264h apart. This helper (called by BOTH
+    overlays, so scenarios A-E get it too, not just F):
+      1. rewrites the work toml's planning_start_date to hz.anchor, and
+      2. re-bases demand_plan.csv due windows into the hz.anchor frame,
+         dropping weeks that ended before the horizon (misses).
+    """
+    import json as _json
+    from datetime import datetime as _dt
+
+    import pandas as _pd
+
+    from helpers.plan_fill import rebase_demand
+
+    notes: list[str] = []
+    try:
+        import tomllib as _tl
+        import tomli_w as _tw
+        _tp = work / "flowstate.toml"
+        with open(_tp, "rb") as _fh:
+            _tcfg = _tl.load(_fh)
+        _tcfg["planning_start_date"] = hz.anchor.strftime("%Y-%m-%d %H:%M:%S")
+        with open(_tp, "wb") as _fh:
+            _tw.dump(_tcfg, _fh)
+    except Exception:  # noqa: BLE001 — stamp cosmetics must not kill a solve
+        pass
+
+    dem_path = work / "demand_plan.csv"
+    src_meta = dd / "reference" / "demand_plan.source.json"
+    if dem_path.exists() and src_meta.exists():
+        try:
+            _da = str(_json.loads(
+                src_meta.read_text(encoding="utf-8")).get("anchor") or "")
+            shift_h = ((hz.anchor - _dt.strptime(
+                _da, "%Y-%m-%d %H:%M:%S")).total_seconds() / 3600.0
+                if _da else 0.0)
+        except (OSError, ValueError):
+            shift_h = 0.0
+        if shift_h:
+            dem = _pd.read_csv(dem_path, dtype={"sku": str})
+            dem, rb_notes = rebase_demand(dem, shift_h, float(hz.hours))
+            dem.to_csv(dem_path, index=False)
+            notes.append(f"demand due windows re-based {shift_h:+.0f}h "
+                         "(demand anchor -> staging anchor)")
+            notes.extend(rb_notes)
+    return notes
+
+
 def _audit_work_downtimes(work: Path) -> list[str]:
     """Report downtime windows that went stale when the horizon grew.
 
@@ -567,11 +621,12 @@ def _overlay_current_state(
                     str(dd / "reference" / "manprg2.txt")]
     cip_path = str(ds.get("cip_info_csv", "")).strip() or str(
         dd / "reference" / "cip_info.csv")
+    notes.extend(_stage_time_frame(work, dd, hz))
     try:
         cs = _bcs(hz, manprg_paths=mp_paths, cip_path=cip_path,
                   lines=_ll(dd / "lines.csv"), cfg=cfg)
     except Exception as exc:  # noqa: BLE001
-        return [f"current-state overlay skipped: {exc}"]
+        return notes + [f"current-state overlay skipped: {exc}"]
 
     init_path = Path(work) / "initial_states.csv"
     if not init_path.exists():
@@ -699,7 +754,10 @@ def _overlay_current_state(
         cmo_rows.append({
             "mo": r["mo"], "line_name": str(r["line"]).upper(),
             "sku": r["item"], "remaining_kg": remaining,
-            "due_start_h": 0, "due_end_h": 335,
+            # full horizon, not the pre-rolling 336h window (audit
+            # 2026-08-15): a running MO finishing after hour 335 was
+            # forced late/infeasible by construction
+            "due_start_h": 0, "due_end_h": int(hz.hours) - 1,
             "locked_line": 1, "source": "manprg",
         })
     for r in cs.queued:
@@ -753,7 +811,7 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
     from helpers.plan_fill import (SOLVER_CIP_INTERVAL_STANDDOWN_H,
                                    coalesce_windows, committed_windows,
                                    last_sku_per_line, line_free_from,
-                                   rebase_demand, subtract_committed)
+                                   subtract_committed)
 
     notes: list[str] = []
     dd = Path(data_dir) if Path(data_dir).name == "data" else Path(_dd())
@@ -766,6 +824,7 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
                                   str(dd / "reference" / "manprg2.txt")]
     cip_path = str(ds.get("cip_info_csv", "")).strip() or str(
         dd / "reference" / "cip_info.csv")
+    notes.extend(_stage_time_frame(work, dd, hz))
     cs = _bcs(hz, manprg_paths=mp_paths, cip_path=cip_path,
               lines=_ll(dd / "lines.csv"), cfg=cfg)
     blocks = cs.blocks
@@ -804,21 +863,6 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
     if now_floor:
         notes.append(f"fill floor at now (t+{now_floor:.0f}h): no new block "
                      "may start in the past")
-    # Sync the solver's datetime origin to the staging frame. The committed
-    # windows above are staged in hz.anchor hours; a stale
-    # planning_start_date (e.g. Monday while anchor_mode="today") shifts
-    # every exported start_dt/end_dt stamp by the difference.
-    try:
-        import tomllib as _tl
-        import tomli_w as _tw
-        _tp = work / "flowstate.toml"
-        with open(_tp, "rb") as _fh:
-            _tcfg = _tl.load(_fh)
-        _tcfg["planning_start_date"] = hz.anchor.strftime("%Y-%m-%d %H:%M:%S")
-        with open(_tp, "wb") as _fh:
-            _tw.dump(_tcfg, _fh)
-    except Exception:  # noqa: BLE001 — stamp cosmetics must not kill a solve
-        pass
     free = line_free_from(blocks, H)
     last_sku = last_sku_per_line(blocks)
     init_path = work / "initial_states.csv"
@@ -849,35 +893,14 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
             notes.append("solver CIP generation stood down "
                          "(layer-1 projected CIPs carry the cleans)")
 
-    # 4. demand re-based into the staging frame, then minus committed
-    #    production (carry-forward per SKU). The demand import self-anchors
-    #    to the Monday of its earliest ISO week; the rolling horizon anchors
-    #    at TODAY — stage unshifted and every due window reads late by the
-    #    gap (a Friday anchor slid the whole grid +4 days: this week's
-    #    leftovers looked placeable through next Thursday).
+    # 4. demand minus committed production (carry-forward per SKU). The due
+    #    windows were already re-based into the staging frame by
+    #    _stage_time_frame (called at the top of this overlay).
     dem_path = work / "demand_plan.csv"
     if dem_path.exists():
-        import json as _json2
-        from datetime import datetime as _dt2
         from datetime import timedelta as _td2
 
         dem = _pd.read_csv(dem_path, dtype={"sku": str})
-        shift_h = 0.0
-        src_meta = dd / "reference" / "demand_plan.source.json"
-        if src_meta.exists():
-            try:
-                _da = str(_json2.loads(
-                    src_meta.read_text(encoding="utf-8")).get("anchor") or "")
-                if _da:
-                    shift_h = (hz.anchor - _dt2.strptime(
-                        _da, "%Y-%m-%d %H:%M:%S")).total_seconds() / 3600.0
-            except (OSError, ValueError):
-                shift_h = 0.0
-        if shift_h:
-            dem, rb_notes = rebase_demand(dem, shift_h, H)
-            notes.append(f"demand due windows re-based {shift_h:+.0f}h "
-                         "(demand anchor -> staging anchor)")
-            notes.extend(rb_notes)
         # ISO week boundaries in the staging frame: bucket committed kg by
         # the TRUE Monday marks, not a 168h grid off a mid-week anchor.
         _mon0 = hz.anchor - _td2(days=hz.anchor.weekday())

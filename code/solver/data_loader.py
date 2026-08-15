@@ -309,7 +309,9 @@ class Data:
             if remaining <= 0:
                 continue  # fully produced MO — nothing left to schedule
             due_start = num_or_default(r.get("due_start_h"), 0)
-            due_end = num_or_default(r.get("due_end_h"), 336 - 1)
+            # default = full horizon (audit 2026-08-15): 336-1 was the
+            # pre-rolling 2-week window and clipped rows inside a 504h plan
+            due_end = num_or_default(r.get("due_end_h"), self.P.horizon_h - 1)
             locked = int(num_or_default(r.get("locked_line"), 1)) == 1
             out.append(
                 dict(
@@ -359,7 +361,8 @@ class Data:
                     order_id=order_id,
                     sku=sku,
                     due_start=num_or_default(r.get("due_start_hour"), 0),
-                    due_end=num_or_default(r.get("due_end_hour"), 336 - 1),
+                    due_end=num_or_default(r.get("due_end_hour"),
+                                           self.P.horizon_h - 1),
                     qty_min=qmin,
                     qty_max=qmax,
                     # 100%-of-demand point for the two-tier fill reward

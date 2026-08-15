@@ -11,6 +11,7 @@
     "cip_info.csv",
     "demand_plan_summary.csv",
     "capabilities_rates.csv",
+    "line_rates.csv",
     "sku_info.csv",
     "line_cip_hrs.csv",
     "initial_states.csv",

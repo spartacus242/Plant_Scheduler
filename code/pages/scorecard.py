@@ -45,8 +45,12 @@ st.info(
 dd = data_dir()
 cal_path = dd / "calendar_blocks.csv"
 cfg = load_toml()
-anchor = cfg.get("scheduler", {}).get("planning_start_date", "2026-02-15 00:00:00")
-horizon_h = int(cfg.get("scheduler", {}).get("horizon_hours", 336))
+# resolved horizon (anchor_mode="today" aware) — the raw toml read ignored
+# the rolling anchor and fell back to pre-rolling defaults (audit 2026-08-15)
+from helpers import horizon as _hz
+_hres = _hz.resolve(cfg)
+anchor = f"{_hres.config_anchor:%Y-%m-%d %H:%M:%S}"
+horizon_h = int(_hres.hours)
 week_label = st.text_input("Week label", value=f"Week-{date.today().isoformat()}")
 
 
@@ -65,7 +69,11 @@ with st.expander("Import bundled seed schedule (developer / first run)"):
 
     if src_choice == "Bundled seed data":
         leg = seed_dir(dd)
-        if st.button("Import from bundled seed data"):
+        st.warning("Seed data is a DEVELOPMENT fixture (February 2026, 2-week "
+                   "horizon). Importing REPLACES the live schedule of record.")
+        _seed_ok = st.checkbox("I understand — overwrite the live calendar "
+                               "with seed fixtures", key="seed_confirm")
+        if st.button("Import from bundled seed data", disabled=not _seed_ok):
             cal = import_solver_schedule(
                 leg / "schedule_phase2.csv",
                 leg / "cip_windows.csv",

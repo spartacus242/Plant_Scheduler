@@ -43,12 +43,19 @@ def test_fixed_mode_keeps_config_anchor():
     assert h.stale is False
 
 
-def test_horizon_weeks_override():
+def test_horizon_hours_wins_weeks_is_fallback():
+    """Precedence mirrors the solver (audit 2026-08-15): horizon_hours wins;
+    horizon_weeks only fills in when hours is absent. The app used to invert
+    this, silently desyncing UI and solver horizons."""
     cfg = {"scheduler": {"planning_start_date": "2026-08-03", "horizon_weeks": 3,
                          "horizon_hours": 999}}
     h = hz.resolve(cfg, now=NOW)
-    assert h.hours == 504
-    assert len(h.week_starts()) == 3
+    assert h.hours == 999
+    cfg2 = {"scheduler": {"planning_start_date": "2026-08-03",
+                          "horizon_weeks": 3}}
+    h2 = hz.resolve(cfg2, now=NOW)
+    assert h2.hours == 504
+    assert len(h2.week_starts()) == 3
 
 
 def _cal():

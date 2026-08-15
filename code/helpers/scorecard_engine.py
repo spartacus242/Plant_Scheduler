@@ -1181,6 +1181,35 @@ def load_demand(ref: Path) -> pd.DataFrame | None:
         df["qty_max"] = df["qty_target"] * df["upper_pct"]
     if "qty_min" not in df.columns and "qty_target" in df.columns and "lower_pct" in df.columns:
         df["qty_min"] = df["qty_target"] * df["lower_pct"]
+    # Frame reconciliation (audit 2026-08-15): demand hours are offsets from
+    # the demand file's OWN anchor (demand_plan.source.json); calendar hours
+    # are offsets from the planning anchor. Comparing them raw made
+    # orders_late / at-risk off by the anchor gap. Shift demand into the
+    # planning frame; weeks that ended before it are already-history rows
+    # the Service metrics should not chase.
+    try:
+        import json as _json
+
+        from helpers import horizon as _hz
+        from helpers.config import load_toml as _lt
+
+        meta_p = ref / "demand_plan.source.json"
+        if meta_p.exists():
+            _da = str(_json.loads(
+                meta_p.read_text(encoding="utf-8")).get("anchor") or "")
+            if _da:
+                from datetime import datetime as _dt
+                shift_h = (_hz.resolve(_lt()).anchor - _dt.strptime(
+                    _da, "%Y-%m-%d %H:%M:%S")).total_seconds() / 3600.0
+                if shift_h:
+                    df["due_start_hour"] = (
+                        pd.to_numeric(df["due_start_hour"], errors="coerce")
+                        - shift_h).clip(lower=0)
+                    df["due_end_hour"] = pd.to_numeric(
+                        df["due_end_hour"], errors="coerce") - shift_h
+                    df = df[df["due_end_hour"] > 0].copy()
+    except Exception:  # noqa: BLE001 — scoring must not die on frame meta
+        pass
     return df
 
 

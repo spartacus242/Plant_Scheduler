@@ -1,4 +1,5 @@
-// kpi.ts — Client-side KPI computation (mirrors sandbox_engine.py).
+// kpi.ts — Client-side KPI computation (tracks helpers/scorecard_engine.py;
+// sandbox_engine.py no longer exists).
 
 import type { ScheduleBlock, DemandTarget, AdherenceRow, KpiData } from "../types";
 import { isWindowBlock } from "../types";
