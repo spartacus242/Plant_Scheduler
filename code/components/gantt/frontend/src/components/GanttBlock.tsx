@@ -88,7 +88,13 @@ export const GanttBlock: React.FC<Props> = ({
 
   const rawDesc = block.sku_description || "";
   const desc = /^nan$/i.test(rawDesc.trim()) ? "" : rawDesc;  // defensive: never render 'nan'
-  const baseLabel = blockLabel(block.block_type, block.sku, block.label);
+  // Committed manprg MOs (current_state overlay) read "MO <sku>" and render
+  // slightly muted, so already-planned plant work is visually distinct from
+  // blocks placed by the seed/solver (user request 2026-08-14).
+  const isCommittedMo = (block.attrs ?? "").includes("current_state:")
+    && block.block_type === "sku";
+  const baseLabel0 = blockLabel(block.block_type, block.sku, block.label);
+  const baseLabel = isCommittedMo ? `MO ${baseLabel0}` : baseLabel0;
   const hoursTxt = (Number.isFinite(block.run_hours) ? block.run_hours : 0).toFixed(1);
 
   // Estimate available characters from pixel width (~6.5px per char at 11px font)
@@ -135,6 +141,9 @@ export const GanttBlock: React.FC<Props> = ({
       style={{
         cursor: isDragging ? "grabbing" : "grab",
         opacity: isDragging ? 0.6 : isDimmed ? 0.25 : 1,
+        // committed manprg MOs: muted so new (seed/solver/planner) blocks pop
+        filter: isCommittedMo && !isDragging && !isDimmed
+          ? "saturate(0.45) brightness(1.06)" : undefined,
         transition: "opacity 120ms ease",
       }}
       onContextMenu={handleContext}

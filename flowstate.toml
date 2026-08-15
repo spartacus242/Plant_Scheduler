@@ -73,6 +73,14 @@ weight_trials = 0.10
 cap_recipe_changes = 40
 cap_format_changes = 40
 cap_co_hours = 80
+# Severity-weighted changeovers: FFS & topload worst, casepacker next,
+# TTP least, recipe-only cheapest. Scored metric = sum(weight x count).
+co_weight_topload = 3.0
+co_weight_ffs = 3.0
+co_weight_casepacker = 2.0
+co_weight_ttp = 1.0
+co_weight_recipe_only = 1.0
+cap_weighted_co = 150.0
 cap_cip_count = 30
 cap_cip_hours = 120
 # Forfeited CIP hours cap. Retained only for the reported (unscored)

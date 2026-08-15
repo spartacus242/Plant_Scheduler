@@ -785,8 +785,19 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
     notes.append(f"{len(windows)} committed window(s) fixed as blocked time "
                  "(running+queued MOs, trials, projected CIPs)")
 
-    # 2. initial states: fill starts at the committed tail, changeover base =
-    #    last committed SKU, dirty-clock carryover 0 (layer-1 CIPs rule)
+    # 2. initial states: fill starts at the committed tail OR NOW, whichever
+    #    is later; changeover base = last committed SKU, dirty-clock
+    #    carryover 0 (layer-1 CIPs rule). The now-floor exists because a
+    #    line whose manprg queue ran dry yesterday has a committed tail in
+    #    the past — without the floor the solver placed fill blocks 28h ago
+    #    (user report 2026-08-14). Only applied when "now" falls inside the
+    #    horizon, so replays/tests on stale snapshots stay untouched.
+    from datetime import datetime as _dtm
+    now_h = (_dtm.now() - hz.anchor).total_seconds() / 3600.0
+    now_floor = now_h if 0.0 <= now_h < H else 0.0
+    if now_floor:
+        notes.append(f"fill floor at now (t+{now_floor:.0f}h): no new block "
+                     "may start in the past")
     free = line_free_from(blocks, H)
     last_sku = last_sku_per_line(blocks)
     init_path = work / "initial_states.csv"
@@ -795,8 +806,9 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
         n_gated = 0
         for idx, row in init.iterrows():
             ln = str(row.get("line_name", "")).strip().upper()
-            if ln in free:
-                init.at[idx, "available_from_hour"] = int(_math.ceil(free[ln]))
+            if ln in free or now_floor:
+                gate = max(free.get(ln, 0.0), now_floor)
+                init.at[idx, "available_from_hour"] = int(_math.ceil(gate))
                 n_gated += 1
             if ln in last_sku:
                 init.at[idx, "initial_sku"] = last_sku[ln]

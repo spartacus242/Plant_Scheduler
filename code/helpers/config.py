@@ -61,6 +61,16 @@ def scorecard_config(cfg: dict | None = None) -> dict[str, Any]:
         "cap_recipe_changes": 40,
         "cap_format_changes": 40,
         "cap_co_hours": 80,
+        # Severity-weighted changeover load (plant ranking 2026-08-14):
+        # FFS & topload changes are the most expensive, casepacker next,
+        # TTP least; a recipe-only change touches no machine. The scored
+        # changeover metric is sum(weight x count) against cap_weighted_co.
+        "co_weight_topload": 3.0,
+        "co_weight_ffs": 3.0,
+        "co_weight_casepacker": 2.0,
+        "co_weight_ttp": 1.0,
+        "co_weight_recipe_only": 1.0,
+        "cap_weighted_co": 150.0,
         "cap_cip_count": 30,
         "cap_cip_hours": 120,
         "cap_cip_forfeited": 200,

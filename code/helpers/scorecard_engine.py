@@ -101,6 +101,29 @@ KNOWN_LIMITATIONS = [
 
 METRIC_DOCS: dict[str, dict[str, Any]] = {
     # --- changeovers -------------------------------------------------------
+    "weighted_co": {
+        "definition": (
+            "Severity-weighted changeover load. Each transition is counted per "
+            "machine it touches: FFS x3, topload x3, casepacker x2, TTP x1; a "
+            "recipe-only change (no machine flags) counts x1."
+        ),
+        "formula": (
+            "weighted_co = 3*ffs_changes + 3*topload_changes + "
+            "2*casepacker_changes + 1*ttp_changes + 1*recipe_only_changes "
+            "(weights configurable: co_weight_* in [scorecard])."
+        ),
+        "direction": "lower",
+        "cap_key": "cap_weighted_co",
+        "scoring": "score = clamp(100 * (1 - weighted_co / cap_weighted_co), 0, 100)",
+        "category": "changeovers",
+        "why": (
+            "Not all changeovers cost the same (plant ranking 2026-08-14): FFS and "
+            "topload are the expensive ones, casepacker is moderate, TTP is cheap. "
+            "130 TTP/recipe swaps can be a GOOD schedule; 100 topload swaps never are. "
+            "This is the scored changeover metric; the per-machine counts are shown "
+            "alongside it."
+        ),
+    },
     "recipe_changes": {
         "definition": (
             "Count of adjacent production transitions on the same line where recipe/SKU "
@@ -667,6 +690,12 @@ def score_changeovers(calendar: pd.DataFrame, cfg: dict, co_map: dict) -> dict[s
     fmt = 0
     hours = 0.0
     transitions = 0
+    # Per-machine severity breakdown (plant ranking 2026-08-14): FFS and
+    # topload changes hurt most, casepacker next, TTP least. A recipe-only
+    # change (no machine touched) is the cheapest kind. The scored metric
+    # is the WEIGHTED count, so 100 TTP swaps can beat 30 topload swaps.
+    machine = {"topload": 0, "ffs": 0, "casepacker": 0, "ttp": 0}
+    recipe_only = 0
     for _, grp in prod.sort_values(["line_id", "start_h"]).groupby("line_id"):
         rows = grp.to_dict("records")
         for i in range(1, len(rows)):
@@ -680,6 +709,16 @@ def score_changeovers(calendar: pd.DataFrame, cfg: dict, co_map: dict) -> dict[s
                 recipe += 1
             if _is_format_change(flags):
                 fmt += 1
+            touched = False
+            for flag_key, name in (("topload_change", "topload"),
+                                   ("ffs_change", "ffs"),
+                                   ("casepacker_change", "casepacker"),
+                                   ("ttp_change", "ttp")):
+                if flags and int(flags.get(flag_key, 0) or 0) == 1:
+                    machine[name] += 1
+                    touched = True
+            if not touched:
+                recipe_only += 1
             elif flags is None:
                 # no standards row — assume format unknown; count base hours only
                 pass
@@ -699,9 +738,22 @@ def score_changeovers(calendar: pd.DataFrame, cfg: dict, co_map: dict) -> dict[s
                 if _is_format_change(flags):
                     hours += float(cfg["default_co_hours_format"]) - float(cfg["default_co_hours_base"])
                 hours += float(cfg["default_co_hours_recipe"])
+    weighted = (
+        float(cfg.get("co_weight_topload", 3.0)) * machine["topload"]
+        + float(cfg.get("co_weight_ffs", 3.0)) * machine["ffs"]
+        + float(cfg.get("co_weight_casepacker", 2.0)) * machine["casepacker"]
+        + float(cfg.get("co_weight_ttp", 1.0)) * machine["ttp"]
+        + float(cfg.get("co_weight_recipe_only", 1.0)) * recipe_only
+    )
     return {
         "recipe_changes": recipe,
         "format_changes": fmt,
+        "topload_changes": machine["topload"],
+        "ffs_changes": machine["ffs"],
+        "casepacker_changes": machine["casepacker"],
+        "ttp_changes": machine["ttp"],
+        "recipe_only_changes": recipe_only,
+        "weighted_co": round(weighted, 1),
         "total_co_hours": round(hours, 2),
         "sku_transitions": transitions,
     }
@@ -762,6 +814,11 @@ def score_cip(
     # whole horizon and count how many times clock-since-last-CIP exceeds the
     # interval. Production without a following clean before interval is overdue.
     for line_id, line_prod in prod.groupby("line_id"):
+        # MUST be time-sorted: the fill-mode calendar stores committed blocks
+        # and fill blocks in separate runs of rows, and walking them in file
+        # order marched the CIP pointer past early cleans — 90 phantom
+        # overdue events zeroed the CIP category (found 2026-08-14).
+        line_prod = line_prod.sort_values("start_h")
         line_name = str(line_prod["line_name"].iloc[0]) if len(line_prod) else str(line_id)
         interval = float(
             intervals.get(line_name)
@@ -1010,11 +1067,21 @@ def category_scores(raw: dict[str, dict], cfg: dict) -> dict[str, float | None]:
     camp = raw["campaigns"]
     svc = raw["service"]
 
-    co_s = [
-        _score_lower_better(co["recipe_changes"], cfg["cap_recipe_changes"]),
-        _score_lower_better(co["format_changes"], cfg["cap_format_changes"]),
-        _score_lower_better(co["total_co_hours"], cfg["cap_co_hours"]),
-    ]
+    # Severity-weighted changeover score (2026-08-14): FFS/topload count 3x,
+    # casepacker 2x, TTP 1x, recipe-only 1x. Falls back to the legacy
+    # recipe/format pair for scorecards saved before weighted_co existed.
+    if co.get("weighted_co") is not None:
+        co_s = [
+            _score_lower_better(
+                co["weighted_co"], float(cfg.get("cap_weighted_co") or 120)),
+            _score_lower_better(co["total_co_hours"], cfg["cap_co_hours"]),
+        ]
+    else:
+        co_s = [
+            _score_lower_better(co["recipe_changes"], cfg["cap_recipe_changes"]),
+            _score_lower_better(co["format_changes"], cfg["cap_format_changes"]),
+            _score_lower_better(co["total_co_hours"], cfg["cap_co_hours"]),
+        ]
     # CIPs are MANDATORY and cannot be late/overdue — they are a hard hygiene
     # compliance requirement, not a soft preference. So the CIP category is
     # scored on OVERDUE compliance alone: any line-segment that runs past its
@@ -1195,8 +1262,12 @@ def delta_narrative(baseline: ScorecardResult, proposed: ScorecardResult) -> lis
     """Human-readable 'show me why' deltas for version / scenario compare."""
     lines: list[str] = []
     pairs = [
-        ("changeovers", "recipe_changes", "recipe changeovers"),
-        ("changeovers", "format_changes", "format changeovers"),
+        ("changeovers", "topload_changes", "topload changeovers"),
+        ("changeovers", "ffs_changes", "FFS changeovers"),
+        ("changeovers", "casepacker_changes", "casepacker changeovers"),
+        ("changeovers", "ttp_changes", "TTP changeovers"),
+        ("changeovers", "recipe_only_changes", "recipe-only changeovers"),
+        ("changeovers", "weighted_co", "weighted changeover load"),
         ("changeovers", "total_co_hours", "changeover hours"),
         ("cip", "cip_count", "CIPs"),
         ("cip", "cip_hours", "CIP hours"),
