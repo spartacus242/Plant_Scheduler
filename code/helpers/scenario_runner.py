@@ -289,7 +289,7 @@ SCENARIOS = [
         # equivalent (FFS ~61 kg, TTP ~3 kg): strong resequencing pressure
         # that still never trades away meaningful target tonnage.
         "overrides": {"idle_weight": 3, "changeover_weight": 300,
-                      "topload_weight": 150, "ffs_weight": 200},
+                      "topload_weight": 450, "ffs_weight": 600},
         "intent": (
             "The user's process (2026-08-14): manprg + cip_info lay out the "
             "committed plan as FIXED line-time (running + queued MOs, trials, "
