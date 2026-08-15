@@ -73,32 +73,53 @@ const LineRow: React.FC<{
   return (
     <g ref={setNodeRef}>
       <rect x={0} y={y} width={svgWidth} height={LINE_HEIGHT} fill={fill} />
+      {/* Split rule between side A (top) and side B (bottom). */}
       {row.isDouble && (
-        <>
-          {/* Split rule between side A (top) and side B (bottom). */}
-          <line
-            x1={LINE_LABEL_WIDTH}
-            y1={y + half}
-            x2={svgWidth}
-            y2={y + half}
-            stroke="#c7ccd4"
-            strokeDasharray="3 3"
-          />
-          <text x={LINE_LABEL_WIDTH - 12} y={y + half / 2} textAnchor="end" dominantBaseline="middle" fontSize={8} fill="#777">
-            A
-          </text>
-          <text x={LINE_LABEL_WIDTH - 12} y={y + half + half / 2} textAnchor="end" dominantBaseline="middle" fontSize={8} fill="#777">
-            B
-          </text>
-        </>
+        <line
+          x1={LINE_LABEL_WIDTH}
+          y1={y + half}
+          x2={svgWidth}
+          y2={y + half}
+          stroke="#c7ccd4"
+          strokeDasharray="3 3"
+        />
       )}
       <line x1={0} y1={y + LINE_HEIGHT} x2={svgWidth} y2={y + LINE_HEIGHT} stroke="#eee" />
-      <text x={4} y={y + LINE_HEIGHT / 2} dominantBaseline="middle" fontSize={11} fontWeight={600} fill="#333">
-        {row.name}
-      </text>
     </g>
   );
 };
+
+/** Sticky left strip: line names (+ A/B side letters) drawn ON TOP of the
+ * blocks and kept at the container's left edge by a scroll-driven
+ * translate in GanttChart. */
+const LineLabelsOverlay: React.FC<{ rows: GanttRow[]; svgHeight: number }> = ({ rows, svgHeight }) => (
+  <>
+    <rect x={0} y={HEADER_HEIGHT} width={LINE_LABEL_WIDTH} height={svgHeight - HEADER_HEIGHT} fill="#fff" opacity={0.94} />
+    <line x1={LINE_LABEL_WIDTH} y1={HEADER_HEIGHT} x2={LINE_LABEL_WIDTH} y2={svgHeight} stroke="#e0e0e5" />
+    {rows.map((row, i) => {
+      const y = HEADER_HEIGHT + i * LINE_HEIGHT;
+      const half = LINE_HEIGHT / 2;
+      return (
+        <g key={row.name}>
+          <text x={4} y={y + LINE_HEIGHT / 2} dominantBaseline="middle" fontSize={11} fontWeight={600} fill="#333">
+            {row.name}
+          </text>
+          {row.isDouble && (
+            <>
+              <text x={LINE_LABEL_WIDTH - 12} y={y + half / 2} textAnchor="end" dominantBaseline="middle" fontSize={8} fill="#777">
+                A
+              </text>
+              <text x={LINE_LABEL_WIDTH - 12} y={y + half + half / 2} textAnchor="end" dominantBaseline="middle" fontSize={8} fill="#777">
+                B
+              </text>
+            </>
+          )}
+          <line x1={0} y1={y + LINE_HEIGHT} x2={LINE_LABEL_WIDTH} y2={y + LINE_HEIGHT} stroke="#eee" />
+        </g>
+      );
+    })}
+  </>
+);
 
 export const GanttChart: React.FC<Props> = ({
   schedule, cipWindows, lines, viewStart, viewEnd, hourWidth, anchor,
@@ -111,6 +132,63 @@ export const GanttChart: React.FC<Props> = ({
   const rows = React.useMemo(() => buildRows(lines), [lines]);
   const svgWidth = LINE_LABEL_WIDTH + (viewEnd - viewStart) * hourWidth;
   const svgHeight = HEADER_HEIGHT + rows.length * LINE_HEIGHT + 4;
+
+  // Frozen panes: the day/week header sticks to the top of whatever is
+  // scrolling and the line-name strip sticks to the left edge. Two scroll
+  // sources exist: the container's own overflow scroll (zoomed horizontal)
+  // AND the parent Streamlit page — the component iframe auto-grows to full
+  // content height, so vertical scrolling happens in the PARENT document.
+  // The iframe is same-origin, so window.frameElement gives our position in
+  // the parent viewport and we pin the header against it. Transforms are
+  // set directly on the DOM (rAF-throttled) so scrolling stays 60fps.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const headerGRef = useRef<SVGGElement>(null);
+  const labelsGRef = useRef<SVGGElement>(null);
+  const scrollRafRef = useRef(0);
+  const handleScroll = React.useCallback(() => {
+    cancelAnimationFrame(scrollRafRef.current);
+    scrollRafRef.current = requestAnimationFrame(() => {
+      const el = scrollRef.current;
+      if (!el) return;
+      let pageOffset = 0;
+      try {
+        const fe = window.frameElement as HTMLElement | null;
+        const feTop = fe ? fe.getBoundingClientRect().top : 0;
+        // Streamlit's top toolbar is a fixed overlay — pin below it, not
+        // behind it (it swallowed the header at viewport y=0).
+        let allowance = 0;
+        const hdr = fe?.ownerDocument?.querySelector(
+          'header[data-testid="stHeader"]');
+        if (hdr) allowance = hdr.getBoundingClientRect().height;
+        pageOffset = Math.max(
+          0, allowance - (feTop + el.getBoundingClientRect().top));
+      } catch {
+        pageOffset = 0; // cross-origin embed: container scroll only
+      }
+      const maxY = Math.max(0, svgHeight - HEADER_HEIGHT - 8);
+      const y = Math.min(el.scrollTop + pageOffset, maxY);
+      headerGRef.current?.setAttribute("transform", `translate(0, ${y})`);
+      labelsGRef.current?.setAttribute("transform", `translate(${el.scrollLeft}, 0)`);
+    });
+  }, [svgHeight]);
+  React.useEffect(() => {
+    handleScroll();
+    let pw: Window | null = null;
+    try {
+      pw = window.parent && window.parent !== window ? window.parent : null;
+      // touch the parent document to prove same-origin before subscribing
+      void pw?.document;
+    } catch {
+      pw = null;
+    }
+    const opts: AddEventListenerOptions = { passive: true, capture: true };
+    pw?.addEventListener("scroll", handleScroll, opts);
+    pw?.addEventListener("resize", handleScroll, opts);
+    return () => {
+      pw?.removeEventListener("scroll", handleScroll, opts);
+      pw?.removeEventListener("resize", handleScroll, opts);
+    };
+  }, [handleScroll]);
 
   const allBlocks = [...schedule, ...cipWindows];
 
@@ -127,9 +205,9 @@ export const GanttChart: React.FC<Props> = ({
         .gantt-scroll::-webkit-scrollbar-thumb { background: #90a4ae; border-radius: 6px; border: 2px solid #eceff1; }
         .gantt-scroll::-webkit-scrollbar-thumb:hover { background: #607d8b; }
       `}</style>
-      <div className="gantt-scroll" style={{ overflowX: "auto", overflowY: "auto", maxHeight: 640, width: "100%", border: "1px solid #e0e0e5", borderRadius: 8 }}>
+      <div ref={scrollRef} onScroll={handleScroll} className="gantt-scroll" style={{ overflowX: "auto", overflowY: "auto", maxHeight: 640, width: "100%", border: "1px solid #e0e0e5", borderRadius: 8 }}>
         <svg ref={svgRef as React.RefObject<SVGSVGElement>} width={svgWidth} height={svgHeight} style={{ display: "block" }}>
-          {/* Time axis: day labels, shift lines, week boundary — all SVG */}
+          {/* Time axis body layer: gridlines that scroll with the rows */}
           <TimeAxisSvg
             viewStart={viewStart}
             viewEnd={viewEnd}
@@ -137,6 +215,7 @@ export const GanttChart: React.FC<Props> = ({
             anchor={anchor}
             svgWidth={svgWidth}
             svgHeight={svgHeight}
+            layer="body"
           />
 
           {/* Line rows (droppable zones) */}
@@ -250,6 +329,24 @@ export const GanttChart: React.FC<Props> = ({
               </g>
             );
           })}
+
+          {/* Frozen panes (drawn last = on top). The line-name strip pins to
+              the viewport's left edge; the header band pins to its top.
+              Their transforms are updated in handleScroll. */}
+          <g ref={labelsGRef}>
+            <LineLabelsOverlay rows={rows} svgHeight={svgHeight} />
+          </g>
+          <g ref={headerGRef}>
+            <TimeAxisSvg
+              viewStart={viewStart}
+              viewEnd={viewEnd}
+              hourWidth={hourWidth}
+              anchor={anchor}
+              svgWidth={svgWidth}
+              svgHeight={svgHeight}
+              layer="header"
+            />
+          </g>
         </svg>
       </div>
     </>

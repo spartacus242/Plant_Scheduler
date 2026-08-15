@@ -283,7 +283,13 @@ SCENARIOS = [
         "soft_demand": True,
         # Pack tails: idle time between fill blocks is the enemy of the
         # user's "never leave large blocks of idle time" rule.
-        "overrides": {"idle_weight": 3},
+        # Changeover pressure (user, 2026-08-14): FFS & topload swaps are
+        # the expensive ones — push the solver hard on those specifically.
+        # At weight 300 a topload swap costs ~46 kg of tier-1 production
+        # equivalent (FFS ~61 kg, TTP ~3 kg): strong resequencing pressure
+        # that still never trades away meaningful target tonnage.
+        "overrides": {"idle_weight": 3, "changeover_weight": 300,
+                      "topload_weight": 150, "ffs_weight": 200},
         "intent": (
             "The user's process (2026-08-14): manprg + cip_info lay out the "
             "committed plan as FIXED line-time (running + queued MOs, trials, "

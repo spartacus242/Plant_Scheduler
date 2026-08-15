@@ -13,12 +13,18 @@ interface SvgProps {
   anchor: Date;
   svgWidth: number;
   svgHeight: number;
+  /** "body" = gridlines through the chart rows (scrolls with content);
+   *  "header" = the label band only (kept sticky by GanttChart);
+   *  "all" = legacy single-layer rendering. */
+  layer?: "all" | "body" | "header";
 }
 
 /** SVG group rendered INSIDE the <svg> element. */
 export const TimeAxisSvg: React.FC<SvgProps> = ({
-  viewStart, viewEnd, hourWidth, anchor, svgWidth, svgHeight,
+  viewStart, viewEnd, hourWidth, anchor, svgWidth, svgHeight, layer = "all",
 }) => {
+  const showBody = layer !== "header";
+  const showHeader = layer !== "body";
   const dayPixels = 24 * hourWidth;
 
   // ── Day ticks ──
@@ -50,20 +56,32 @@ export const TimeAxisSvg: React.FC<SvgProps> = ({
   return (
     <g className="time-axis">
       {/* Header background */}
-      <rect x={0} y={0} width={svgWidth} height={HEADER_HEIGHT} fill="#fafafa" />
-      <line x1={LINE_LABEL_WIDTH} y1={HEADER_HEIGHT} x2={svgWidth} y2={HEADER_HEIGHT} stroke="#ccc" />
+      {showHeader && (
+        <>
+          <rect x={0} y={0} width={svgWidth} height={HEADER_HEIGHT} fill="#fafafa" />
+          <line x1={LINE_LABEL_WIDTH} y1={HEADER_HEIGHT} x2={svgWidth} y2={HEADER_HEIGHT} stroke="#ccc" />
+        </>
+      )}
 
       {/* Day columns */}
       {weekTicks.map((t) => {
         const wx0 = hourToX(t.hour, viewStart, hourWidth);
         return (
           <g key={`wk_${t.hour}`}>
-            <line x1={wx0} y1={0} x2={wx0} y2={svgHeight}
-                  stroke="#90a4ae" strokeWidth={1.5} strokeDasharray="8 4" />
-            <text x={Math.max(wx0, hourToX(viewStart, viewStart, hourWidth)) + 6}
-                  y={11} fontSize={11} fontWeight={700} fill="#455a64">
-              {t.label}
-            </text>
+            {showBody && (
+              <line x1={wx0} y1={HEADER_HEIGHT} x2={wx0} y2={svgHeight}
+                    stroke="#90a4ae" strokeWidth={1.5} strokeDasharray="8 4" />
+            )}
+            {showHeader && (
+              <>
+                <line x1={wx0} y1={0} x2={wx0} y2={HEADER_HEIGHT}
+                      stroke="#90a4ae" strokeWidth={1.5} strokeDasharray="8 4" />
+                <text x={Math.max(wx0, hourToX(viewStart, viewStart, hourWidth)) + 6}
+                      y={11} fontSize={11} fontWeight={700} fill="#455a64">
+                  {t.label}
+                </text>
+              </>
+            )}
           </g>
         );
       })}
@@ -74,13 +92,15 @@ export const TimeAxisSvg: React.FC<SvgProps> = ({
         return (
           <g key={t.hour}>
             {/* Alternating band */}
-            {i % 2 === 1 && (
+            {showHeader && i % 2 === 1 && (
               <rect x={x} y={0} width={colW} height={HEADER_HEIGHT} fill="#eef0f5" />
             )}
             {/* Day boundary line through chart body */}
-            <line x1={x} y1={HEADER_HEIGHT} x2={x} y2={svgHeight} stroke="#d0d0d0" strokeWidth={1} />
+            {showBody && (
+              <line x1={x} y1={HEADER_HEIGHT} x2={x} y2={svgHeight} stroke="#d0d0d0" strokeWidth={1} />
+            )}
             {/* Day label centered in column */}
-            {dayPixels > 30 && (
+            {showHeader && dayPixels > 30 && (
               <text
                 x={x + colW / 2}
                 y={HEADER_HEIGHT / 2 + 1}
@@ -98,7 +118,7 @@ export const TimeAxisSvg: React.FC<SvgProps> = ({
       })}
 
       {/* Shift change lines: 7AM and 7PM */}
-      {shiftLines.map((s) => {
+      {showBody && shiftLines.map((s) => {
         const x = hourToX(s.hour, viewStart, hourWidth);
         return (
           <line
@@ -119,9 +139,9 @@ export const TimeAxisSvg: React.FC<SvgProps> = ({
       {168 >= viewStart && 168 <= viewEnd && (
         <line
           x1={hourToX(168, viewStart, hourWidth)}
-          y1={0}
+          y1={showHeader ? 0 : HEADER_HEIGHT}
           x2={hourToX(168, viewStart, hourWidth)}
-          y2={svgHeight}
+          y2={showBody ? svgHeight : HEADER_HEIGHT}
           stroke="#AB63FA"
           strokeDasharray="6,3"
           strokeWidth={2}
