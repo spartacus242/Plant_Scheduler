@@ -58,7 +58,8 @@ def import_summary(
     src = path if path.suffix == ".csv" else path
     raw = pd.read_csv(src, encoding="utf-8-sig", dtype=str)
     raw.columns = [c.strip().lower() for c in raw.columns]
-    raw = raw.rename(columns={"product": "sku"})
+    # bridge exports drift on the tonnage header: kg_tons vs Tons
+    raw = raw.rename(columns={"product": "sku", "tons": "kg_tons"})
 
     warnings: list[str] = []
 
