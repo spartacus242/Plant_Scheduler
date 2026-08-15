@@ -46,7 +46,9 @@ def main() -> int:
     ap.add_argument("--scenario", default="F",
                     help="F = fill the tail (committed plan fixed, default); "
                          "E = full current-state re-optimization (diagnostic)")
-    ap.add_argument("--time-limit", type=int, default=300)
+    ap.add_argument("--time-limit", type=int, default=600,
+                help="Scenario F solves ONCE at level 0 (soft demand) - "
+                     "the budget IS the fill quality; 600s default")
     ap.add_argument("--name", default=f"Agent proposal {datetime.now():%Y-%m-%d %H:%M}")
     ap.add_argument("--out", default=None, help="write the run report JSON here")
     args = ap.parse_args()

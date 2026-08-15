@@ -56,6 +56,26 @@ def _producible_kg_in_window(P: Params, data: Data, o: dict, lines) -> int:
     return int(total)
 
 
+def _usable_hours_on_line(P: Params, data: Data, l: int,
+                          ds_eff: int, de: int) -> float:
+    """Hours line `l` can actually host work inside [ds_eff, de+1]:
+    window minus the availability gate and downtime overlaps. Zero means the
+    pair is DEAD — no feasible schedule can place this order there."""
+    b = min(P.horizon_h, de + 1)
+    gate = max(0, data.init_map.get(l, {}).get("available_from", 0))
+    a = max(0, ds_eff, gate)
+    if b <= a:
+        return 0.0
+    usable = float(b - a)
+    for dt in data.downtimes:
+        if dt["line_id"] != l:
+            continue
+        overlap = min(b, dt["end"]) - max(a, dt["start"])
+        if overlap > 0:
+            usable -= overlap
+    return max(0.0, usable)
+
+
 def build_model(
     P: Params,
     data: Data,
@@ -88,6 +108,7 @@ def build_model(
     # A CIP can land between seg_a and seg_b without charging a changeover
     # because the line resumes the same SKU immediately after the CIP.
 
+    dead_pairs: set = set()  # (l, o_idx) provably unusable — pruned
     present = {}        # BoolVar: order assigned to this line
     run_h = {}          # IntVar: total run hours on this line (seg_a + seg_b)
     seg_a_run = {}
@@ -115,6 +136,16 @@ def build_model(
             else:
                 ds_eff = ds_raw
             max_len = max(0, min(H, de + 1) - max(0, ds_eff))
+            # Dead-pair pruning (2026-08-14): a normal order whose window on
+            # this line is fully eaten by the gate/downtimes can NEVER run
+            # here. Forcing absence up front (and excluding the pair from the
+            # changeover web below) removes thousands of interval + pairwise
+            # vars — in fill mode most lines are gated deep into the horizon
+            # and the search was drowning (600s moved W35 fill by only 50t).
+            if (not o.get("is_current_mo") and not o.get("is_trial")
+                    and not relax_due
+                    and _usable_hours_on_line(P, data, l, max(0, ds_eff), de) <= 0):
+                dead_pairs.add(key)
             run_h[key] = model.NewIntVar(
                 0, max(H, max_len), f"runh_l{l}_o{oid}"
             )
@@ -285,6 +316,11 @@ def build_model(
                 # per-segment seg_a / seg_b minimums actually apply. Committed
                 # work must not be chopped into short stubs.
                 model.Add(present[key] == 1)
+
+            if key in dead_pairs:
+                model.Add(present[key] == 0)
+                model.Add(run_h[key] == 0)
+                continue
 
             # Capability / run bounds
             r = data.rate.get((l, o["sku"]))
@@ -493,13 +529,14 @@ def build_model(
             elig = [
                 o_idx
                 for o_idx, o in enumerate(orders)
-                if (
+                if (l, o_idx) not in dead_pairs
+                and ((
                     o.get("is_trial") and o.get("trial_line") == l
                 ) or (
                     not o.get("is_trial")
                     and data.capable.get((l, o["sku"]))
                     and (data.rate.get((l, o["sku"])) or 0) > 0
-                )
+                ))
             ]
             any_present = model.NewBoolVar(f"any_present_l{l}")
             model.Add(

@@ -478,6 +478,11 @@ def _week_moved_orders(
     )
 
 
+# Set once P is resolved; write_feasibility_report stamps it into every
+# report so the probes know the demand contract of the artifact they read.
+_SOFT_DEMAND_ACTIVE = False
+
+
 def input_signature(data_dir: Path) -> str:
     """Fingerprint of the solve inputs (md5 over the staged input files).
 
@@ -511,6 +516,7 @@ def write_feasibility_report(data_dir: Path, report: Dict[str, Any]) -> None:
     report.setdefault("late_orders", [])
     report.setdefault("blocking_lines", _read_blocking_lines(data_dir))
     report.setdefault("input_sig", input_signature(data_dir))
+    report.setdefault("soft_demand", _SOFT_DEMAND_ACTIVE)
     try:
         with open(data_dir / "feasibility_report.json", "w", encoding="utf-8") as f:
             _json.dump(report, f, indent=2)
@@ -1601,6 +1607,8 @@ def main() -> None:
     # Soft demand (Scenario F): set AFTER the Params reconstruction above so
     # the flag can never be dropped by it.
     P.soft_demand = bool(_CFG_SCHED.get("soft_demand", False))
+    global _SOFT_DEMAND_ACTIVE
+    _SOFT_DEMAND_ACTIVE = P.soft_demand
     if _CFG_SCHED.get("shortfall_weight") is not None:
         P.objective_shortfall_weight = int(_CFG_SCHED["shortfall_weight"])
     if P.soft_demand:

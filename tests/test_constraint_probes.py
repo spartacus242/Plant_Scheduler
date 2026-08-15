@@ -146,9 +146,24 @@ def relax(work: Path) -> dict:
     except Exception:  # noqa: BLE001
         pytest.skip(f"{work.name}: unreadable feasibility_report.json")
     mode = str(data.get("relax_mode", ""))
+    soft = data.get("soft_demand")
+    if soft is None:
+        # Older artifacts predate the report stamp - the work dir's own
+        # flowstate.toml carries the flag the solve actually ran with.
+        soft = False
+        toml_p = work / "flowstate.toml"
+        if toml_p.exists():
+            try:
+                import tomllib
+                soft = bool(tomllib.loads(
+                    toml_p.read_text(encoding="utf-8"))
+                    .get("scheduler", {}).get("soft_demand", False))
+            except Exception:  # noqa: BLE001
+                soft = False
     return {
         "level": data.get("relax_level"),
         "mode": mode,
+        "soft_demand": bool(soft),
         "relax_demand": "relax_demand" in mode,
         "relax_due": "soft_due" in mode,
         "ignore_co": "ignore_co" in mode,
@@ -415,6 +430,13 @@ def test_p2_produced_stays_within_the_demand_bounds(work, relax):
     assert not not_reported, "; ".join(not_reported)
 
     under = [i for i in issues if i.startswith("UNDER:")]
+    if relax.get("soft_demand"):
+        pytest.skip(
+            f"soft-demand artifact (Scenario F): {len(under)} order(s) short "
+            "of qty_min BY CONTRACT (every short kg is penalized in the "
+            "objective and reported) -- upper bound and reporting "
+            "completeness asserted above"
+        )
     if relax["relax_demand"]:
         pytest.skip(
             f"qty_min floor relaxed by relax level {relax['level']} "
