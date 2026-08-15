@@ -465,6 +465,27 @@ def build_model(
         if not o.get("is_trial"):
             model.Add(sum(present[(l, o_idx)] for l in lines) <= mlpo)
 
+    # Soft demand: bias the SEARCH toward assigning fill orders (present=1
+    # first). The objective already makes filling pay; without this hint
+    # CP-SAT's default search settles on a sparse incumbent early and
+    # improves glacially (measured: W35 stuck ~240-300t of 1,364t across
+    # 300s/600s/pruned runs). Fixed search only guides the first solutions -
+    # optimality semantics are untouched.
+    if getattr(P, "soft_demand", False):
+        fill_present = [
+            present[(l, o_idx)]
+            for l in lines
+            for o_idx, o in enumerate(orders)
+            if (l, o_idx) in present and (l, o_idx) not in dead_pairs
+            and not o.get("is_current_mo") and not o.get("is_trial")
+        ]
+        if fill_present:
+            model.AddDecisionStrategy(
+                fill_present,
+                cp_model.CHOOSE_FIRST,
+                cp_model.SELECT_MAX_VALUE,
+            )
+
     # Soft-demand penalty (0 when the mode is off or nothing is short).
     shortfall_pen = model.NewIntVar(0, 10**11, "shortfall_pen")
     if shortfall_terms:
