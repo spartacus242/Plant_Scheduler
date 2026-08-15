@@ -835,6 +835,98 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
     return notes
 
 
+def _work_input_signature(work: Path) -> str:
+    """MUST mirror phase2_scheduler.input_signature exactly — the solver
+    only trusts warm-start hints whose signature matches its own inputs."""
+    import hashlib
+    h = hashlib.md5()
+    for name in ("capabilities_rates.csv", "changeovers.csv",
+                 "demand_plan.csv", "downtimes.csv", "initial_states.csv",
+                 "line_cip_hrs.csv", "line_rates.csv", "sku_info.csv",
+                 "current_mo.csv", "trials.csv"):
+        p = Path(work) / name
+        if p.exists():
+            try:
+                h.update(name.encode())
+                h.update(p.read_bytes())
+            except OSError:
+                pass
+    return h.hexdigest()
+
+
+def _greedy_seed(work: Path) -> list[str]:
+    """Scenario F: construct a dense fill greedily and write it as the
+    solver's warm start (prev_schedule.csv + a matching prev_feasibility.json
+    so the hint gates accept it). Runs AFTER every input patch — the seed
+    sees exactly what the solver will see."""
+    import json as _json
+
+    import pandas as _pd
+
+    from helpers.greedy_fill import build_greedy_fill, free_segments
+
+    notes: list[str] = []
+    dem = _pd.read_csv(work / "demand_plan.csv", dtype={"sku": str})
+    dt = _pd.read_csv(work / "downtimes.csv") if (work / "downtimes.csv").exists()         else _pd.DataFrame(columns=["line_name", "start_hour", "end_hour"])
+    init = _pd.read_csv(work / "initial_states.csv")
+    import tomllib as _toml
+    cfg = _toml.loads((work / "flowstate.toml").read_text(encoding="utf-8"))
+    sched = cfg.get("scheduler", {})
+    H = float(sched.get("horizon_hours")
+              or (float(sched.get("horizon_weeks", 3) or 3) * 168.0))
+    min_run = int(sched.get("min_run_hours", 4))
+
+    # flat line rates (F runs with use_sku_rates off)
+    rates: dict[tuple[str, str], float] = {}
+    lr = _pd.read_csv(work / "line_rates.csv")
+    # bridge exports name this column inconsistently (Line vs line_name)
+    lr_name_col = next(c for c in ("line_name", "Line", "line") if c in lr.columns)
+    flat = {str(r[lr_name_col]).upper(): float(r.get("rate_kgph") or r.get("calc_rate_kgph") or 0)
+            for _, r in lr.iterrows()}
+    caps = _pd.read_csv(work / "capabilities_rates.csv", dtype={"sku": str})
+    for _, r in caps.iterrows():
+        if int(r.get("capable", 0) or 0) == 1:
+            ln = str(r["line_name"]).upper()
+            if flat.get(ln, 0) > 0:
+                rates[(ln, str(r["sku"]))] = flat[ln]
+
+    from solver.changeover_cache import load_changeover_setup_nested
+    setups = load_changeover_setup_nested(work / "changeovers.csv")
+
+    blocked: dict[str, list[tuple[float, float]]] = {}
+    for _, r in dt.iterrows():
+        blocked.setdefault(str(r["line_name"]).upper(), []).append(
+            (float(r["start_hour"]), float(r["end_hour"])))
+    line_segments: dict[str, list[tuple[float, float]]] = {}
+    line_ids: dict[str, int] = {}
+    init_sku: dict[str, str] = {}
+    for _, r in init.iterrows():
+        ln = str(r["line_name"]).upper()
+        gate = float(r.get("available_from_hour", 0) or 0)
+        line_segments[ln] = free_segments(gate, blocked.get(ln, []), H)
+        line_ids[ln] = int(r.get("line_id", 0) or 0)
+        init_sku[ln] = str(r.get("initial_sku", "") or "")
+
+    rows, summary = build_greedy_fill(
+        dem.to_dict("records"), rates, setups, line_segments, line_ids,
+        init_sku, min_run_hours=min_run, horizon_h=H)
+    if not rows:
+        return ["greedy seed: nothing to place"]
+    _pd.DataFrame(rows).to_csv(work / "prev_schedule.csv", index=False)
+    (work / "prev_feasibility.json").write_text(_json.dumps({
+        "relax_level": 0, "soft_demand": True,
+        "input_sig": _work_input_signature(work),
+        "note": "greedy construction seed (helpers/greedy_fill.py)",
+    }, indent=2), encoding="utf-8")
+    notes.append(
+        f"greedy seed: {summary['rows']} fill block(s), kg/week "
+        f"{summary['kg_by_week']} - handed to CP-SAT as a full warm start")
+    if summary["orders_short"]:
+        notes.append(f"greedy seed left {len(summary['orders_short'])} "
+                     "order(s) short (solver may still improve)")
+    return notes
+
+
 def normalize_overrides(overrides: dict[str, Any] | None) -> dict[str, Any]:
     """Keep only known weight keys with a real value; coerce to int.
 
@@ -1029,6 +1121,19 @@ def run_scenario(
             _cs_notes = _overlay_current_state(
                 work, data_dir, lock_current_mo=lock_current_mo)
     except Exception as _exc:  # noqa: BLE001
+        if fill_mode:
+            # Fill staging IS the scenario — a half-staged work dir would
+            # solve the wrong problem convincingly (measured: a dtype crash
+            # in demand subtraction left UNSUBTRACTED demand and the run
+            # 'succeeded'). Fail loudly instead.
+            import traceback as _tb
+            return {
+                "ok": False, "returncode": -1,
+                "log": "fill staging FAILED:\n" + _tb.format_exc(),
+                "calendar": None, "scorecard": None,
+                "feasibility": None, "relax_level": None,
+                "diag_blockages": "",
+            }
         _cs_notes = [f"current-state overlay FAILED: {_exc}"]
 
     # Downtime windows are stored as hour offsets, so they go stale whenever the
@@ -1045,6 +1150,14 @@ def run_scenario(
     if work_dir_patch is not None:
         _patch_notes = work_dir_patch(work)
         _cs_notes.extend(f"[input patch] {n}" for n in (_patch_notes or []))
+
+    # Scenario F: construct a dense greedy fill AFTER all input patching and
+    # hand it to the solver as a full warm start. Best-effort but loud.
+    if fill_mode:
+        try:
+            _cs_notes.extend(_greedy_seed(work))
+        except Exception as _exc:  # noqa: BLE001
+            _cs_notes.append(f"greedy seed FAILED (solving cold): {_exc}")
 
     scheduler = (Path(data_dir).resolve().parent / "code" / "solver" / "phase2_scheduler.py").resolve()
     toml = work / "flowstate.toml"

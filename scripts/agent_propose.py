@@ -79,6 +79,10 @@ def main() -> int:
         return 1
 
     proposal, prop_score = result["calendar"], result["scorecard"]
+    # First log line = the staging notes ([current state] ...): committed
+    # windows, demand subtraction, greedy seed totals. They belong IN the
+    # proposal's reasoning — a silent staging degradation must be visible.
+    staging_line = (result.get("log") or "").split("\n", 1)[0][:1500]
 
     # ── 4a. post-solve stock cross-check (belt and braces) ──────────────
     prod = proposal[proposal["block_type"] == "production"]
@@ -106,6 +110,7 @@ def main() -> int:
          "— capacity the components CAN support)." if len(flagged) else
          "Post-solve stock cross-check: clean — no proposed block uses a "
          "component-blocked SKU beyond its cap."),
+        f"STAGING: {staging_line}",
     ]
     for v in list_versions(DATA):
         if str(v.get("source", "")).startswith("agent:"):

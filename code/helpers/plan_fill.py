@@ -115,6 +115,11 @@ def subtract_committed(
             committed[(sku, wk)] = committed.get((sku, wk), 0.0) + float(kg)
 
     df = demand.copy()
+    # qty_target may arrive int64 from a fresh bridge export; writing a
+    # rounded float back into an int column raises since pandas 2.x — and
+    # that crash silently degraded F staging to UNSUBTRACTED demand
+    # (found 2026-08-14 via an in-process staging reproduction).
+    df["qty_target"] = pd.to_numeric(df["qty_target"], errors="coerce")         .astype(float)
     for sku, grp in df.groupby(df["sku"].astype(str)):
         carry = 0.0
         for idx in grp.sort_values("week_index").index:
