@@ -59,6 +59,32 @@ if not versions:
 # display_name() remaps legacy on-disk names (e.g. the azap_baseline slug)
 # without renaming anything under data/versions/.
 names = {v["slug"]: display_name(v["slug"], v.get("name")) for v in versions}
+
+# ── Version colors: every version's data is tinted with ITS OWN color
+# everywhere on this page; the official schedule stays default/white
+# (user request 2026-08-14: make it unmistakable WHOSE numbers you see).
+_PALETTE = [("blue", "#4da6ff"), ("orange", "#ffa421"), ("green", "#21c354"),
+            ("violet", "#a463f2"), ("red", "#ff4b4b")]
+
+
+def _vcolor(slug: str) -> tuple[str, str]:
+    """(streamlit-markdown-color, hex) — stable per slug."""
+    import hashlib as _hl
+    i = int(_hl.md5(slug.encode()).hexdigest(), 16) % len(_PALETTE)
+    return _PALETTE[i]
+
+
+def _cname(slug: str) -> str:
+    """Version name wrapped in its color for markdown surfaces."""
+    if slug == OFFICIAL_KEY:
+        return "Current schedule (official)"
+    md, _ = _vcolor(slug)
+    return f":{md}[{names.get(slug, slug)}]"
+
+
+st.markdown(
+    "Colors: **official = white** · "
+    + " · ".join(f":{_vcolor(sl)[0]}[● {nm}]" for sl, nm in names.items()))
 left_options = ([OFFICIAL_KEY] if baseline else []) + list(names.keys())
 
 def _fmt_left(s: str) -> str:
@@ -119,9 +145,9 @@ right_res = score_calendar(right_cal, week_label=right_label, data_dir=dd)
 right_stored = (right["metadata"].get("scorecard") or {}).get("composite")
 right_sc = right_res.to_dict()
 
-for _lbl, _cal_df, _stored, _res in (
-        (left_label, left_cal, left_stored, left_res),
-        (right_label, right_cal, right_stored, right_res)):
+for _slug_b, _lbl, _cal_df, _stored, _res in (
+        (left_slug, left_label, left_cal, left_stored, left_res),
+        (right_slug, right_label, right_cal, right_stored, right_res)):
     _bits = []
     if _stored is not None and _res is not None:
         _fresh_comp = _res.to_dict().get("composite")
@@ -131,12 +157,12 @@ for _lbl, _cal_df, _stored, _res in (
     if not official.empty and _blocks_signature(_cal_df) == _official_sig:
         _bits.append("this plan IS the current official calendar")
     if _bits:
-        st.info(f"**{_lbl}:** " + " · ".join(_bits))
+        st.info(f"**{_cname(_slug_b)}:** " + " · ".join(_bits))
 
 # ── Visual preview: SEE the proposed plan before promoting it ─────────────
 # (user request 2026-08-14: visual confirmation that a proposed schedule
 # actually looks right before it overwrites the official one.)
-with st.expander(f"📅 Preview '{right_label}' on a calendar (read-only)",
+with st.expander(f"📅 Preview {_cname(right_slug)} on a calendar (read-only)",
                  expanded=True):
     from components.gantt import gantt_calendar
     from helpers.calendar_io import calendar_to_gantt_payload, load_lines
@@ -220,10 +246,20 @@ for section, key, label, higher_better in sections:
         "vs baseline": verdict,
     })
 
-st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+_kpi_df = pd.DataFrame(rows)
+_styles = {}
+if left_slug != OFFICIAL_KEY:
+    _styles[left_label] = _vcolor(left_slug)[1]
+_styles[right_label] = _vcolor(right_slug)[1]
+_styled = _kpi_df.style.format(precision=2, na_rep="—")
+for _col, _hex in _styles.items():
+    if _col in _kpi_df.columns:
+        _styled = _styled.set_properties(subset=[_col], color=_hex)
+st.dataframe(_styled, use_container_width=True, hide_index=True)
 
 if left_res is not None:
-    render_delta_strip(left_res, right_res, title=f"Δ {right_label} vs {left_label}")
+    render_delta_strip(left_res, right_res,
+                       title=f"Δ {_cname(right_slug)} vs {_cname(left_slug)}")
 
 # Delta narrative
 deltas = delta_narrative(left_res, right_res) if left_res is not None else []
@@ -236,8 +272,9 @@ else:
 
 if baseline and left_slug != OFFICIAL_KEY:
     st.subheader("vs current schedule (official)")
-    for label, res in ((left_label, left_res), (right_label, right_res)):
-        with st.expander(f"{label} vs official"):
+    for _sl, label, res in ((left_slug, left_label, left_res),
+                            (right_slug, right_label, right_res)):
+        with st.expander(f"{_cname(_sl)} vs official"):
             for d in delta_narrative(baseline, res):
                 st.write(f"- {d}")
 
@@ -246,7 +283,7 @@ st.divider()
 st.subheader("Manage versions")
 for v in versions:
     slug = v["slug"]
-    with st.expander(f"{display_name(slug, v.get('name'))}  ·  composite={(v.get('scorecard') or {}).get('composite', '—')}  ·  {v.get('source', '')}"):
+    with st.expander(f"{_cname(slug)}  ·  composite at save={(v.get('scorecard') or {}).get('composite', '—')}  ·  {v.get('source', '')}"):
         st.caption(v.get("timestamp", ""))
         pros = st.text_area("Pros", value=v.get("pros", ""), key=f"pros_{slug}")
         cons = st.text_area("Cons", value=v.get("cons", ""), key=f"cons_{slug}")
