@@ -753,7 +753,7 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
     from helpers.plan_fill import (SOLVER_CIP_INTERVAL_STANDDOWN_H,
                                    coalesce_windows, committed_windows,
                                    last_sku_per_line, line_free_from,
-                                   subtract_committed)
+                                   rebase_demand, subtract_committed)
 
     notes: list[str] = []
     dd = Path(data_dir) if Path(data_dir).name == "data" else Path(_dd())
@@ -849,11 +849,45 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
             notes.append("solver CIP generation stood down "
                          "(layer-1 projected CIPs carry the cleans)")
 
-    # 4. demand minus committed production (carry-forward per SKU)
+    # 4. demand re-based into the staging frame, then minus committed
+    #    production (carry-forward per SKU). The demand import self-anchors
+    #    to the Monday of its earliest ISO week; the rolling horizon anchors
+    #    at TODAY — stage unshifted and every due window reads late by the
+    #    gap (a Friday anchor slid the whole grid +4 days: this week's
+    #    leftovers looked placeable through next Thursday).
     dem_path = work / "demand_plan.csv"
     if dem_path.exists():
+        import json as _json2
+        from datetime import datetime as _dt2
+        from datetime import timedelta as _td2
+
         dem = _pd.read_csv(dem_path, dtype={"sku": str})
-        dem2, sub_notes = subtract_committed(dem, blocks)
+        shift_h = 0.0
+        src_meta = dd / "reference" / "demand_plan.source.json"
+        if src_meta.exists():
+            try:
+                _da = str(_json2.loads(
+                    src_meta.read_text(encoding="utf-8")).get("anchor") or "")
+                if _da:
+                    shift_h = (hz.anchor - _dt2.strptime(
+                        _da, "%Y-%m-%d %H:%M:%S")).total_seconds() / 3600.0
+            except (OSError, ValueError):
+                shift_h = 0.0
+        if shift_h:
+            dem, rb_notes = rebase_demand(dem, shift_h, H)
+            notes.append(f"demand due windows re-based {shift_h:+.0f}h "
+                         "(demand anchor -> staging anchor)")
+            notes.extend(rb_notes)
+        # ISO week boundaries in the staging frame: bucket committed kg by
+        # the TRUE Monday marks, not a 168h grid off a mid-week anchor.
+        _mon0 = hz.anchor - _td2(days=hz.anchor.weekday())
+        _b = (_mon0 + _td2(days=7) - hz.anchor).total_seconds() / 3600.0
+        week_bounds = [0.0]
+        while _b < H:
+            week_bounds.append(_b)
+            _b += 168.0
+        dem2, sub_notes = subtract_committed(dem, blocks,
+                                             week_bounds=week_bounds)
         dem2.to_csv(dem_path, index=False)
         notes.append(f"demand reduced by committed production on "
                      f"{len(sub_notes)} order(s)")

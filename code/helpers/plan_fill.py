@@ -85,21 +85,77 @@ def line_free_from(blocks: pd.DataFrame, horizon_h: float) -> dict[str, float]:
     return out
 
 
+def rebase_demand(
+    demand: pd.DataFrame,
+    shift_h: float,
+    horizon_h: float,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Shift demand due windows from the demand file's anchor frame into the
+    staging frame (staging hour 0 = shift_h hours after the demand anchor).
+
+    The demand import is self-anchoring (Monday of its earliest ISO week),
+    but the rolling horizon anchors at TODAY. Staged unshifted, every due
+    window read late by the gap — with a Friday anchor the whole demand grid
+    slid +4 days, so "this week's" leftovers looked placeable through next
+    Thursday and next week's demand looked due a week out (user report
+    2026-08-14: holding buckets inverted vs reality).
+
+    Weeks whose shifted window ends at/before hour 0 are OVER — their unmet
+    tonnage is a miss, not a plan item — and are dropped with a note.
+    """
+    notes: list[str] = []
+    if demand is None or demand.empty or not shift_h:
+        return demand, notes
+    df = demand.copy()
+    df["due_start_hour"] = (
+        pd.to_numeric(df["due_start_hour"], errors="coerce") - shift_h
+    ).clip(lower=0)
+    df["due_end_hour"] = (
+        pd.to_numeric(df["due_end_hour"], errors="coerce") - shift_h)
+    past = df["due_end_hour"] <= 0
+    if past.any():
+        gone = df[past]
+        notes.append(
+            f"{int(past.sum())} order(s) dropped: their demand week ended "
+            f"before the horizon starts ({gone['qty_target'].sum():,.0f} kg "
+            "unmet is a MISS, not a plan item)")
+        df = df[~past].copy()
+    beyond = pd.to_numeric(df["due_start_hour"], errors="coerce") >= horizon_h
+    if beyond.any():
+        notes.append(f"{int(beyond.sum())} order(s) dropped: due week starts "
+                     "beyond the horizon")
+        df = df[~beyond].copy()
+    df["due_end_hour"] = df["due_end_hour"].clip(upper=horizon_h - 1)
+    return df, notes
+
+
 def subtract_committed(
     demand: pd.DataFrame,
     blocks: pd.DataFrame,
+    week_bounds: list[float] | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Reduce demand targets by what the committed plan already produces.
 
-    Committed production kg is bucketed into the ISO-horizon week of the
-    block's midpoint. Per SKU, weeks are consumed in order with surplus
-    carrying FORWARD (this week's extra production is next week's
-    inventory, never last week's). Targets never go below zero; the pct
-    bounds stay, so qty_min/qty_max scale with the reduced target.
+    Committed production kg is bucketed into the week of the block's
+    midpoint — via `week_bounds` (ascending hour marks; bucket k spans
+    [bounds[k], bounds[k+1])) when the staging frame is not 168h-aligned
+    (rolling anchor mid-week), else the legacy 168h grid. Per SKU, weeks
+    are consumed in order with surplus carrying FORWARD (this week's extra
+    production is next week's inventory, never last week's). Targets never
+    go below zero; the pct bounds stay, so qty_min/qty_max scale with the
+    reduced target.
     """
+    import bisect
+
     notes: list[str] = []
     if demand is None or demand.empty:
         return demand, notes
+
+    def _week_of(hour: float) -> int:
+        if week_bounds:
+            return max(0, bisect.bisect_right(week_bounds, hour) - 1)
+        return max(0, int(hour // 168))
+
     committed: dict[tuple[str, int], float] = {}
     if blocks is not None and len(blocks):
         prod = blocks[blocks["block_type"] == "production"]
@@ -108,7 +164,7 @@ def subtract_committed(
             if pd.isna(kg) or kg <= 0:
                 continue
             mid = (float(b["start_h"]) + float(b["end_h"])) / 2.0
-            wk = max(0, int(mid // 168))
+            wk = _week_of(mid)
             sku = str(b.get("sku") or "").strip()
             if not sku or sku.upper() in ("CIP", "TRIALS"):
                 continue

@@ -140,3 +140,64 @@ def test_coalesce_merges_overlapping_fixed_windows():
     p09 = sorted([(r["start_hour"], r["end_hour"]) for r in out
                   if r["line_name"] == "P09"])
     assert p09 == [(0, 16), (30, 40)]
+
+
+def test_rebase_demand_shifts_and_drops_past_weeks():
+    """Demand anchored Monday, staged into a Friday-anchored frame (+96h):
+    windows shift back 96h, and a week that ended before the horizon starts
+    is dropped as a miss (user report 2026-08-14: holding buckets inverted)."""
+    import pandas as pd
+    from helpers.plan_fill import rebase_demand
+
+    dem = pd.DataFrame([
+        # ended Sunday BEFORE a Friday anchor -> fully past
+        {"order_id": "A-W0", "sku": "1", "week_index": 0, "qty_target": 5000,
+         "due_start_hour": -100, "due_end_hour": 67},
+        {"order_id": "B-W0", "sku": "2", "week_index": 0, "qty_target": 9000,
+         "due_start_hour": 0, "due_end_hour": 167},
+        {"order_id": "C-W1", "sku": "3", "week_index": 1, "qty_target": 7000,
+         "due_start_hour": 168, "due_end_hour": 335},
+    ])
+    out, notes = rebase_demand(dem, 96.0, 504.0)
+    ids = set(out["order_id"])
+    assert "A-W0" not in ids and any("MISS" in n for n in notes)
+    b = out[out["order_id"] == "B-W0"].iloc[0]
+    assert b["due_start_hour"] == 0 and b["due_end_hour"] == 71
+    c = out[out["order_id"] == "C-W1"].iloc[0]
+    assert c["due_start_hour"] == 72 and c["due_end_hour"] == 239
+
+
+def test_rebase_demand_zero_shift_is_identity():
+    import pandas as pd
+    from helpers.plan_fill import rebase_demand
+
+    dem = pd.DataFrame([{"order_id": "B-W0", "sku": "2", "week_index": 0,
+                         "qty_target": 9000, "due_start_hour": 0,
+                         "due_end_hour": 167}])
+    out, notes = rebase_demand(dem, 0.0, 504.0)
+    assert out.equals(dem) and notes == []
+
+
+def test_subtract_committed_iso_week_bounds():
+    """With week_bounds [0, 72, 240], a committed block at hour 100 (past
+    the first Monday mark) credits week 1, not week 0."""
+    import pandas as pd
+    from helpers.plan_fill import subtract_committed
+
+    dem = pd.DataFrame([
+        {"order_id": "S-W0", "sku": "9", "week_index": 0, "qty_target": 10000,
+         "lower_pct": 0.9, "upper_pct": 1.1, "due_start_hour": 0,
+         "due_end_hour": 71},
+        {"order_id": "S-W1", "sku": "9", "week_index": 1, "qty_target": 10000,
+         "lower_pct": 0.9, "upper_pct": 1.1, "due_start_hour": 72,
+         "due_end_hour": 239},
+    ])
+    blocks = pd.DataFrame([
+        {"block_type": "production", "sku": "9", "qty_kg": 4000,
+         "start_h": 95.0, "end_h": 105.0},
+    ])
+    out, _ = subtract_committed(dem, blocks, week_bounds=[0.0, 72.0, 240.0])
+    w0 = out[out["order_id"] == "S-W0"].iloc[0]["qty_target"]
+    w1 = out[out["order_id"] == "S-W1"].iloc[0]["qty_target"]
+    assert w0 == 10000            # week 0 untouched
+    assert w1 == 6000             # committed kg landed on ISO week 1
