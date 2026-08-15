@@ -366,6 +366,7 @@ def build_model(
 
     # ── Produced quantity & demand bounds ──────────────────────────────────
     produced = {}
+    shortfall_terms = []  # soft-demand slack vars (Scenario F)
     for o_idx, o in enumerate(orders):
         prod = model.NewIntVar(0, 10**9, f"produced_{o['order_id']}")
         terms = []
@@ -411,11 +412,30 @@ def build_model(
                       f"{qmin} (window capacity: capable lines x usable "
                       f"hours in [{int(o['due_start'])},{int(o['due_end'])}+1])")
         qmax = int(o["qty_max"])
-        model.Add(prod >= qmin)
+        if (getattr(P, "soft_demand", False) and qmin > 0
+                and not o.get("is_current_mo") and not o.get("is_trial")):
+            # Soft demand (Scenario F): the solver may fall short of qty_min,
+            # but EVERY missing kg costs objective_shortfall_weight — filling
+            # W34/W35 always beats leaving them empty (the relax ladder's
+            # all-or-nothing qty_min=0 removed any incentive to produce, so
+            # later weeks stayed empty; measured 2026-08-14).
+            short_v = model.NewIntVar(0, qmin, f"short_{o['order_id']}")
+            model.Add(prod + short_v >= qmin)
+            shortfall_terms.append(short_v)
+        else:
+            model.Add(prod >= qmin)
         model.Add(prod <= qmax)
         # Trials are always pinned to exactly 1 line; skip mlpo constraint
         if not o.get("is_trial"):
             model.Add(sum(present[(l, o_idx)] for l in lines) <= mlpo)
+
+    # Soft-demand penalty (0 when the mode is off or nothing is short).
+    shortfall_pen = model.NewIntVar(0, 10**11, "shortfall_pen")
+    if shortfall_terms:
+        model.Add(shortfall_pen == sum(shortfall_terms)
+                  * int(getattr(P, "objective_shortfall_weight", 1)))
+    else:
+        model.Add(shortfall_pen == 0)
 
     # -- Line availability floor (ALWAYS enforced) -------------------------
     # initial_states.available_from_hour is when a line is genuinely free:
@@ -1340,6 +1360,7 @@ def build_model(
                 - cip_defer_total * W_cip
                 + late_total * W_late
                 + week_pen
+                + shortfall_pen
             )
         else:
             model.Add(
@@ -1349,6 +1370,7 @@ def build_model(
                 - cip_defer_total * W_cip
                 + late_total * W_late
                 + week_pen
+                + shortfall_pen
             )
         model.Minimize(obj)
     elif objective_mode == "spread-load":
@@ -1383,6 +1405,7 @@ def build_model(
                 - cip_defer_total * W_cip
                 + late_total * W_late
                 + week_pen
+                + shortfall_pen
             )
         else:
             model.Add(
@@ -1394,6 +1417,7 @@ def build_model(
                 - cip_defer_total * W_cip
                 + late_total * W_late
                 + week_pen
+                + shortfall_pen
             )
         model.Minimize(obj)
     else:  # balanced (default)
@@ -1410,6 +1434,7 @@ def build_model(
                 - cip_defer_total * W_cip
                 + late_total * W_late
                 + week_pen
+                + shortfall_pen
             )
         else:
             model.Add(
@@ -1419,6 +1444,7 @@ def build_model(
                 - cip_defer_total * W_cip
                 + late_total * W_late
                 + week_pen
+                + shortfall_pen
             )
         model.Minimize(obj)
 

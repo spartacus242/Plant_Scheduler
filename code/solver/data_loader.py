@@ -91,6 +91,11 @@ class Params:
     co_cinn_weight: int = 20
     # Per-added-flavor penalty (negative added_flavors = reward)
     co_flavor_weight: int = 5
+    # Soft demand (Scenario F): instead of hard qty_min (all-or-nothing via
+    # the relax ladder), every kg short of qty_min costs shortfall_weight in
+    # the objective. Filling always pays; shortage is reported, never hidden.
+    soft_demand: bool = False
+    objective_shortfall_weight: int = 1
 
 
 class Files:

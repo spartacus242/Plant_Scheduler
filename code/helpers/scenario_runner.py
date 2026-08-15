@@ -278,6 +278,9 @@ SCENARIOS = [
         # placement must see the whole horizon at once.
         "two_phase": False,
         "fill_mode": True,
+        # Soft demand: every kg short of qty_min is penalized, so filling
+        # W34/W35 always pays — no all-or-nothing relax ladder needed.
+        "soft_demand": True,
         # Pack tails: idle time between fill blocks is the enemy of the
         # user's "never leave large blocks of idle time" rule.
         "overrides": {"idle_weight": 3},
@@ -908,6 +911,23 @@ def _patch_work_toml(
                 pass
 
 
+def _set_work_scheduler_flag(toml: Path, key: str, value) -> None:
+    """Set one [scheduler] key in a work-dir flowstate.toml (best-effort)."""
+    try:
+        try:
+            import tomllib
+        except ImportError:  # pragma: no cover - py<3.11
+            import tomli as tomllib  # type: ignore
+        import tomli_w
+        with open(toml, "rb") as fh:
+            cfg = tomllib.load(fh)
+        cfg.setdefault("scheduler", {})[key] = value
+        with open(toml, "wb") as fh:
+            tomli_w.dump(cfg, fh)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _set_work_use_current_mo(toml: Path, value: bool) -> None:
     """Set scheduler.use_current_mo in a work-dir flowstate.toml.
 
@@ -994,6 +1014,8 @@ def run_scenario(
     if fill_mode:
         lock_current_mo = False
     _set_work_use_current_mo(work / "flowstate.toml", lock_current_mo)
+    if scenario.get("soft_demand"):
+        _set_work_scheduler_flag(work / "flowstate.toml", "soft_demand", True)
 
     # Inject the current plant state. Scenario F fixes the committed plan as
     # blocked line-time (fill mode); every other scenario uses the classic

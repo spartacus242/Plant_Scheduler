@@ -120,7 +120,14 @@ export const GanttChart: React.FC<Props> = ({
       <ZoomControls onZoomIn={onZoomIn} onZoomOut={onZoomOut} onResetZoom={onResetZoom} />
 
       {/* Single SVG containing time axis + rows + blocks */}
-      <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: 640, border: "1px solid #e0e0e5", borderRadius: 8 }}>
+      <style>{`
+        .gantt-scroll { scrollbar-width: auto; scrollbar-color: #90a4ae #eceff1; }
+        .gantt-scroll::-webkit-scrollbar { height: 12px; width: 12px; }
+        .gantt-scroll::-webkit-scrollbar-track { background: #eceff1; border-radius: 6px; }
+        .gantt-scroll::-webkit-scrollbar-thumb { background: #90a4ae; border-radius: 6px; border: 2px solid #eceff1; }
+        .gantt-scroll::-webkit-scrollbar-thumb:hover { background: #607d8b; }
+      `}</style>
+      <div className="gantt-scroll" style={{ overflowX: "auto", overflowY: "auto", maxHeight: 640, width: "100%", border: "1px solid #e0e0e5", borderRadius: 8 }}>
         <svg ref={svgRef as React.RefObject<SVGSVGElement>} width={svgWidth} height={svgHeight} style={{ display: "block" }}>
           {/* Time axis: day labels, shift lines, week boundary — all SVG */}
           <TimeAxisSvg

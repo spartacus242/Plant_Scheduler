@@ -1597,6 +1597,15 @@ def main() -> None:
             co_flavor_weight=P.co_flavor_weight,
             use_sku_rates=P.use_sku_rates,
         )
+
+    # Soft demand (Scenario F): set AFTER the Params reconstruction above so
+    # the flag can never be dropped by it.
+    P.soft_demand = bool(_CFG_SCHED.get("soft_demand", False))
+    if _CFG_SCHED.get("shortfall_weight") is not None:
+        P.objective_shortfall_weight = int(_CFG_SCHED["shortfall_weight"])
+    if P.soft_demand:
+        log(f"[soft-demand] every kg short of qty_min costs "
+            f"{P.objective_shortfall_weight} in the objective (Scenario F)")
     reset_err()
     log(
         f"[{datetime.now()}] START phase={PHASE} relax={RELAX_DEMAND} relax_due={RELAX_DUE} "

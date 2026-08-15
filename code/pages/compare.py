@@ -169,6 +169,9 @@ with st.expander(f"📅 Preview {_cname(right_slug)} on a calendar (read-only)",
     from helpers.config import load_toml as _lt
     from helpers.timefmt import planning_anchor as _pa
 
+    from helpers.lines_model import expand_caps_with_groups
+    from helpers.paths import reference_dir
+
     _cfg_prev = _lt()
     _anchor_prev = _pa(_cfg_prev)
     _sched_prev, _win_prev = calendar_to_gantt_payload(right_cal)
@@ -178,14 +181,39 @@ with st.expander(f"📅 Preview {_cname(right_slug)} on a calendar (read-only)",
     _lines_df = load_lines(dd / "lines.csv")
     _line_cols = [c for c in ("line_id", "line_name", "line_group", "side",
                               "is_double") if c in _lines_df.columns]
+    # REAL capabilities + demand: the KPI bar (adherence / orders met /
+    # changeovers) computes from these — empty inputs showed 0/0 nonsense
+    # (user report 2026-08-14).
+    _caps_prev: dict = {}
+    _caps_path = reference_dir(dd) / "capabilities_rates.csv"
+    if _caps_path.exists():
+        _cdf = pd.read_csv(_caps_path)
+        if "calc_rate_kgph" not in _cdf.columns and "rate_kgph" in _cdf.columns:
+            _cdf = _cdf.rename(columns={"rate_kgph": "calc_rate_kgph"})
+        for _, _r in _cdf.iterrows():
+            if int(_r.get("capable", 0) or 0) == 1:
+                _caps_prev.setdefault(str(_r["line_name"]), {})[str(_r["sku"])] =                     float(_r.get("calc_rate_kgph") or 0)
+    _caps_prev = expand_caps_with_groups(_caps_prev)
+    _dem_prev = []
+    _dem_path = reference_dir(dd) / "demand_plan.csv"
+    if _dem_path.exists():
+        for _, _r in pd.read_csv(_dem_path, dtype={"sku": str}).iterrows():
+            _t = float(_r.get("qty_target", 0) or 0)
+            _dem_prev.append({
+                "order_id": str(_r["order_id"]), "sku": str(_r["sku"]),
+                "qty_min": _t * float(_r.get("lower_pct", 0.9) or 0.9),
+                "qty_max": _t * float(_r.get("upper_pct", 1.1) or 1.1),
+                "due_start_hour": float(_r.get("due_start_hour", 0) or 0),
+                "due_end_hour": float(_r.get("due_end_hour", 0) or 0),
+            })
     st.caption("Preview only — blocks are locked; nothing here changes any "
                "saved plan. Promote below when it looks right.")
     gantt_calendar(
         schedule=_sched_prev,
         cip_windows=_win_prev,
-        capabilities={},
+        capabilities=_caps_prev,
         changeovers={},
-        demand_targets=[],
+        demand_targets=_dem_prev,
         lines=_lines_df[_line_cols].to_dict("records") if len(_lines_df) else [],
         holding_area=[],
         side_downtime={},

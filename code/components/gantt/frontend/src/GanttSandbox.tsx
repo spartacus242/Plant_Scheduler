@@ -68,8 +68,15 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   // duration maths for the Bossar double lines P17-P22.
   const downtime = useMemo(() => args.sideDowntime ?? {}, [args.sideDowntime]);
 
+  // A user zoom must survive resize events. The frame-height effect makes
+  // Streamlit resize the iframe on EVERY render, which fires window.resize
+  // INSIDE the iframe, which used to re-fit the chart — every zoom click was
+  // reverted within a frame, so nothing ever overflowed and the scrollbars
+  // never appeared (user report 2026-08-14: zoom + scroll both dead).
+  const userZoomed = useRef(false);
   useEffect(() => {
     const measure = () => {
+      if (userZoomed.current) return;  // never clobber a chosen zoom
       const w = containerRef.current?.offsetWidth ?? 1200;
       setHourWidth(fitToWidth(w, horizon));
       setViewStart(0);
@@ -596,9 +603,16 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     [schedule, args.demandTargets, args.capabilities],
   );
 
-  const zoomIn = useCallback(() => setHourWidth((w) => Math.min(w * 1.3, MAX_HOUR_WIDTH)), []);
-  const zoomOut = useCallback(() => setHourWidth((w) => Math.max(w / 1.3, MIN_HOUR_WIDTH)), []);
+  const zoomIn = useCallback(() => {
+    userZoomed.current = true;
+    setHourWidth((w) => Math.min(w * 1.3, MAX_HOUR_WIDTH));
+  }, []);
+  const zoomOut = useCallback(() => {
+    userZoomed.current = true;
+    setHourWidth((w) => Math.max(w / 1.3, MIN_HOUR_WIDTH));
+  }, []);
   const resetZoom = useCallback(() => {
+    userZoomed.current = false;
     const w = containerRef.current?.offsetWidth ?? 1200;
     setHourWidth(fitToWidth(w, horizon));
     setViewStart(0);
