@@ -538,14 +538,29 @@ class Data:
 
 
 def available_hours_line(P: Params, data: Data, l: int) -> int:
+    # Blocked time is the interval UNION of [0, available_from) and the
+    # line's downtime windows — NOT their sum. Scenario F stages the
+    # committed plan as downtime rows covering exactly [0, gate), so the
+    # naive sum counted every pre-gate hour twice and the per-line budget
+    # `total_run + CIP <= avail_h` silently zeroed 8 of 14 lines (proven
+    # 2026-08-14: solver capped total fill at 849t vs ~1.9t structural).
     H = P.horizon_h
-    avail_block = min(max(0, data.init_map.get(l, {}).get("available_from", 0)), H)
-    blocked = avail_block
+    gate = min(max(0, data.init_map.get(l, {}).get("available_from", 0)), H)
+    ivs = [(0, gate)] if gate > 0 else []
     for dt in data.downtimes:
         if dt["line_id"] != l:
             continue
         s = max(0, dt["start"])
         e = min(H, dt["end"])
         if e > s:
-            blocked += e - s
+            ivs.append((s, e))
+    blocked, cur_s, cur_e = 0, None, None
+    for s, e in sorted(ivs):
+        if cur_e is None or s > cur_e:
+            blocked += (cur_e - cur_s) if cur_e is not None else 0
+            cur_s, cur_e = s, e
+        else:
+            cur_e = max(cur_e, e)
+    if cur_e is not None:
+        blocked += cur_e - cur_s
     return max(0, H - blocked)
