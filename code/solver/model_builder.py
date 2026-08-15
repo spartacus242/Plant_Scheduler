@@ -1369,10 +1369,37 @@ def build_model(
         # solver places them first and trims demand instead. (10x — an MO
         # kg is worth ten demand kg, so dropping an MO is only worthwhile
         # when it frees enormous demand capacity.)
-        prod_sum = sum(
-            produced[o_idx] * (10 if orders[o_idx].get("is_current_mo") else 1)
-            for o_idx in range(len(orders))
-        )
+        over_sum = 0
+        if getattr(P, "soft_demand", False):
+            # Two-tier fill reward (Scenario F, user rule "target is
+            # 90-110%"): each kg up to qty_target pays full weight; kg
+            # between target and qty_max pay 5%. A flat reward drove every
+            # scheduled order to its 110% cap while other orders sat at 0
+            # (measured 2026-08-14 run 10) — meeting ALL targets must beat
+            # over-filling any one of them. qty_max stays the hard wall.
+            tier1 = []
+            over_terms = []
+            for o_idx, o in enumerate(orders):
+                if o.get("is_current_mo"):
+                    tier1.append(produced[o_idx] * 10)
+                    continue
+                tgt = int(o.get("qty_target") or 0)
+                if tgt <= 0 or tgt >= int(o["qty_max"]):
+                    tier1.append(produced[o_idx])
+                    continue
+                capped = model.NewIntVar(
+                    0, tgt, f"prodcap_{o['order_id']}")
+                model.AddMinEquality(capped, [produced[o_idx], tgt])
+                tier1.append(capped)
+                over_terms.append(produced[o_idx] - capped)
+            prod_sum = sum(tier1)
+            if over_terms:
+                over_sum = sum(over_terms)
+        else:
+            prod_sum = sum(
+                produced[o_idx] * (10 if orders[o_idx].get("is_current_mo") else 1)
+                for o_idx in range(len(orders))
+            )
         # Production is the primary objective.  Secondary terms from the
         # user's selected objective mode act as tiebreakers so the solver
         # honours changeover / idle / CIP preferences when production is
@@ -1405,7 +1432,8 @@ def build_model(
         # Max secondary is ~50k; prod_sum * 1000 puts production in the
         # hundreds-of-millions range, guaranteeing it is never sacrificed.
         model.Maximize(
-            prod_sum * 1000 - secondary - late_total * W_late - week_pen
+            prod_sum * 1000 + over_sum * 50
+            - secondary - late_total * W_late - week_pen
         )
     elif objective_mode == "min-changeovers":
         obj = model.NewIntVar(-(10**12), 10**12, "obj")

@@ -465,6 +465,7 @@ def _clip_prod_around_cips(
         s, e = float(b["start_h"]), float(b["end_h"])
         cursor = s
         placed_any = False
+        pieces: list[dict] = []
         for c in cips:
             cs_, ce_ = float(c["start_h"]), float(c["end_h"])
             if ce_ <= cursor or cs_ >= e:
@@ -476,7 +477,7 @@ def _clip_prod_around_cips(
                     f"({cs_:.0f}h–{ce_:.0f}h) covers MO {b.get('order_id')} "
                     "— keeping the MO, dropping the CIP window")
                 dropped_cip_ids.add(c.get("block_id"))
-                out.append(dict(b))  # MO survives whole; CIP dropped
+                pieces.append(dict(b))  # MO survives whole; CIP dropped
                 placed_any = True
                 cursor = e
                 break
@@ -485,7 +486,7 @@ def _clip_prod_around_cips(
                 piece["start_h"] = round(cursor, 3)
                 piece["end_h"] = round(cs_, 3)
                 piece["attrs"] = (b.get("attrs", "") + ";split").strip(";")
-                out.append(piece)
+                pieces.append(piece)
                 placed_any = True
             cursor = max(cursor, ce_)
             if cursor >= e:
@@ -496,6 +497,26 @@ def _clip_prod_around_cips(
             piece["end_h"] = round(e, 3)
             piece["attrs"] = (b.get("attrs", "") + ";split").strip(";") \
                 if placed_any else b.get("attrs", "")
-            out.append(piece)
+            pieces.append(piece)
+        # Pro-rate the MO's tonnage across its split pieces by duration.
+        # dict(b) used to copy the FULL MO qty into every fragment, so one
+        # MO split around a CIP counted twice in every adherence/coverage
+        # number downstream (measured 2026-08-14: 17 split MOs, 1,535t of
+        # phantom production; one SKU showed 1764% adherence).
+        qty = b.get("qty_kg")
+        if len(pieces) > 1 and isinstance(qty, (int, float)) and qty:
+            total_h = sum(
+                float(p["end_h"]) - float(p["start_h"]) for p in pieces)
+            if total_h > 0:
+                for p in pieces:
+                    frac = (float(p["end_h"]) - float(p["start_h"])) / total_h
+                    p["qty_kg"] = round(qty * frac, 2)
+                # keep the exact MO total: dump rounding drift on the largest
+                drift = round(qty - sum(p["qty_kg"] for p in pieces), 2)
+                if drift:
+                    big = max(pieces,
+                              key=lambda p: float(p["end_h"]) - float(p["start_h"]))
+                    big["qty_kg"] = round(big["qty_kg"] + drift, 2)
+        out.extend(pieces)
     kept = [c for c in cips if c.get("block_id") not in dropped_cip_ids]
     return out, kept

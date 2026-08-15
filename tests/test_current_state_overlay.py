@@ -83,3 +83,36 @@ def test_cip_carryover_never_exceeds_the_lines_max_interval(tmp_path):
         assert carry < limit, f"{ln}: carryover {carry} >= max interval {limit}"
         checked += 1
     assert checked > 0, "no line had a CIP limit to check"
+
+
+def test_split_mo_qty_prorated_across_cip_pieces():
+    """A committed MO split around a CIP must pro-rate its tonnage across
+    the pieces — copying the full MO qty into every fragment double-counted
+    1,535t on the 2026-08-14 board (one SKU read 1764% adherence)."""
+    from helpers.current_state import _clip_prod_around_cips
+
+    mo = {"block_id": "b1", "order_id": "30050", "start_h": 0.0,
+          "end_h": 100.0, "qty_kg": 50000.0, "attrs": ""}
+    cip = {"block_id": "c1", "label": "CIP", "start_h": 40.0, "end_h": 46.0}
+    warnings: list[str] = []
+    pieces, kept = _clip_prod_around_cips(
+        [dict(mo)], [dict(cip)], warnings=warnings, line="P09")
+    assert len(pieces) == 2 and len(kept) == 1
+    a, b = sorted(pieces, key=lambda p: p["start_h"])
+    # 40h + 54h pieces of a 94h productive window
+    assert abs(a["qty_kg"] - 50000.0 * 40 / 94) < 1.0
+    assert abs(b["qty_kg"] - 50000.0 * 54 / 94) < 1.0
+    # total is exactly the MO quantity — nothing invented, nothing lost
+    assert round(a["qty_kg"] + b["qty_kg"], 2) == 50000.0
+
+
+def test_unsplit_mo_qty_untouched():
+    from helpers.current_state import _clip_prod_around_cips
+
+    mo = {"block_id": "b1", "order_id": "30051", "start_h": 0.0,
+          "end_h": 30.0, "qty_kg": 21000.0, "attrs": ""}
+    cip = {"block_id": "c1", "label": "CIP", "start_h": 50.0, "end_h": 56.0}
+    pieces, kept = _clip_prod_around_cips(
+        [dict(mo)], [dict(cip)], warnings=[], line="P09")
+    assert len(pieces) == 1
+    assert pieces[0]["qty_kg"] == 21000.0

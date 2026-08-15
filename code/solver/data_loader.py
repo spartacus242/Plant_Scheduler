@@ -362,6 +362,12 @@ class Data:
                     due_end=num_or_default(r.get("due_end_hour"), 336 - 1),
                     qty_min=qmin,
                     qty_max=qmax,
+                    # 100%-of-demand point for the two-tier fill reward
+                    # (soft demand): production past this earns almost
+                    # nothing, so the solver meets every order's target
+                    # before pushing any order toward qty_max.
+                    qty_target=int(round(qty_target)) if qty_target > 0
+                    else (qmin + qmax) // 2,
                     priority=num_or_default(r.get("priority"), 999),
                 )
             )
