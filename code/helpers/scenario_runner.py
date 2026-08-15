@@ -926,6 +926,30 @@ def _greedy_seed(work: Path) -> list[str]:
     from solver.changeover_cache import load_changeover_setup_nested
     setups = load_changeover_setup_nested(work / "changeovers.csv")
 
+    # Format-aware transition costs: the same weighted machine economics the
+    # solver optimizes ([changeover] in the work toml, AFTER scenario
+    # overrides — the seed runs post-_patch_work_toml). FFS/topload swaps
+    # rank expensive, TTP cheap, so the greedy builds format-grouped
+    # campaigns instead of baking 70 topload changes into the warm start.
+    cw = cfg.get("changeover", {})
+    _w = {
+        "topload_change": float(cw.get("topload_weight", 50)),
+        "ffs_change": float(cw.get("ffs_weight", 75)),
+        "casepacker_change": float(cw.get("casepacker_weight", 20)),
+        "ttp_change": float(cw.get("ttp_weight", 5)),
+        "conv_to_org_change": float(cw.get("conv_org_weight", 30)),
+        "cinn_to_non": float(cw.get("cinn_weight", 30)),
+    }
+    _base_w = float(cw.get("base_changeover_weight", 5))
+    co_cost: dict[str, dict[str, float]] = {}
+    co_df = _pd.read_csv(work / "changeovers.csv",
+                         dtype={"from_sku": str, "to_sku": str})
+    for _r in co_df.itertuples(index=False):
+        _c = _base_w + sum(
+            w for col, w in _w.items()
+            if int(getattr(_r, col, 0) or 0) == 1)
+        co_cost.setdefault(str(_r.from_sku), {})[str(_r.to_sku)] = _c
+
     blocked: dict[str, list[tuple[float, float]]] = {}
     for _, r in dt.iterrows():
         blocked.setdefault(str(r["line_name"]).upper(), []).append(
@@ -942,7 +966,7 @@ def _greedy_seed(work: Path) -> list[str]:
 
     rows, summary = build_greedy_fill(
         dem.to_dict("records"), rates, setups, line_segments, line_ids,
-        init_sku, min_run_hours=min_run, horizon_h=H)
+        init_sku, co_cost=co_cost, min_run_hours=min_run, horizon_h=H)
     if not rows:
         return ["greedy seed: nothing to place"]
     _pd.DataFrame(rows).to_csv(work / "prev_schedule.csv", index=False)
@@ -1184,14 +1208,6 @@ def run_scenario(
         _patch_notes = work_dir_patch(work)
         _cs_notes.extend(f"[input patch] {n}" for n in (_patch_notes or []))
 
-    # Scenario F: construct a dense greedy fill AFTER all input patching and
-    # hand it to the solver as a full warm start. Best-effort but loud.
-    if fill_mode:
-        try:
-            _cs_notes.extend(_greedy_seed(work))
-        except Exception as _exc:  # noqa: BLE001
-            _cs_notes.append(f"greedy seed FAILED (solving cold): {_exc}")
-
     scheduler = (Path(data_dir).resolve().parent / "code" / "solver" / "phase2_scheduler.py").resolve()
     toml = work / "flowstate.toml"
     cmd = [
@@ -1213,6 +1229,17 @@ def run_scenario(
     # legacy reads time_limit + all weights from the toml; patch the work copy.
     eff_overrides = overrides if overrides is not None else scenario.get("overrides")
     _patch_work_toml(toml, time_limit, eff_overrides)
+
+    # Scenario F: construct a dense greedy fill AFTER all input patching —
+    # including the toml weight overrides above, which the format-aware
+    # candidate ranking reads — and hand it to the solver as a full warm
+    # start. Hours-hashed inputs are untouched by the toml patch, so the
+    # seed's input signature still matches the solver's. Best-effort but loud.
+    if fill_mode:
+        try:
+            _cs_notes.extend(_greedy_seed(work))
+        except Exception as _exc:  # noqa: BLE001
+            _cs_notes.append(f"greedy seed FAILED (solving cold): {_exc}")
 
     proc = subprocess.run(
         cmd,

@@ -103,3 +103,25 @@ def test_deterministic():
     b, _ = build_greedy_fill([_demand()], line_segments={
         "P09": [(168.0, 504.0)], "P10": [(168.0, 504.0)]}, **args)
     assert a == b
+
+
+def test_format_aware_tail_choice_beats_setup_hours():
+    """With co_cost given, the greedy chains a SKU onto the tail whose
+    transition is format-cheap (TTP-only) over one that needs a topload
+    change — even when the topload line is faster and its setup HOURS are
+    identical. Without co_cost both lines rank equal and rate wins."""
+    kw = dict(
+        rates={("P09", "222"): 1400.0, ("P10", "222"): 700.0},
+        setups={"111": {"222": 2.0}, "333": {"222": 2.0}},
+        line_segments={"P09": [(168.0, 504.0)], "P10": [(168.0, 504.0)]},
+        line_ids={"P09": 0, "P10": 1},
+        initial_sku={"P09": "111", "P10": "333"},  # P09 tail needs topload
+        horizon_h=504.0,
+    )
+    dem = [_demand(order_id="A-W1", sku="222", qty_target=7000)]
+    co = {"111": {"222": 155.0},   # topload swap — expensive
+          "333": {"222": 10.0}}    # ttp-only — cheap
+    rows, _ = build_greedy_fill(dem, co_cost=co, **kw)
+    assert rows[0]["line_name"] == "P10"   # format grouping wins over rate
+    rows2, _ = build_greedy_fill(dem, **kw)  # format-blind fallback
+    assert rows2[0]["line_name"] == "P09"  # same hours -> faster line wins

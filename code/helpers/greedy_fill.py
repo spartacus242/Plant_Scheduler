@@ -52,6 +52,7 @@ def build_greedy_fill(
     line_ids: dict[str, int],
     initial_sku: dict[str, str],
     *,
+    co_cost: dict[str, dict[str, float]] | None = None,
     min_run_hours: int = 4,
     min_run_pct: float = 0.5,
     horizon_h: float = 504.0,
@@ -61,10 +62,19 @@ def build_greedy_fill(
 
     demand rows: order_id, sku, week_index, qty_target, lower_pct, upper_pct,
     due_start_hour, due_end_hour. Orders are placed earliest week first,
-    largest first; per order the best lines are those already running the
-    SKU (zero setup), then smallest setup, then highest rate. A placement in
+    largest first; per order the best lines are those with the CHEAPEST
+    transition from their current tail SKU, then highest rate. A placement in
     a segment whose start was never used before needs no setup gap (segment
     boundaries are committed blocks/CIPs — the wash absorbs the changeover).
+
+    co_cost is the format-aware transition cost (from_sku -> to_sku ->
+    weighted machine cost: FFS/topload expensive, TTP cheap — mirroring the
+    solver's [changeover] weights). Ranking by it makes lines develop format
+    identities: a topload SKU chains onto a topload tail instead of splitting
+    an FFS campaign. Without it (None) the ranking falls back to setup hours,
+    which is format-BLIND — a topload swap and a TTP swap both read "2h"
+    (measured 2026-08-14: 67-72 topload changes survived the solver because
+    the seed baked them in). Physical gap time always comes from `setups`.
     """
     lines: dict[str, _LineState] = {}
     for ln, segs in line_segments.items():
@@ -78,6 +88,20 @@ def build_greedy_fill(
         if not frm or frm == to:
             return 0.0
         return float((setups.get(frm) or {}).get(to, 0) or 0)
+
+    def trans_cost(frm: str, to: str) -> float:
+        """Ranking cost of switching a line's tail from `frm` to `to`."""
+        if not frm or frm == to:
+            return 0.0
+        if co_cost is not None:
+            c = (co_cost.get(frm) or {}).get(to)
+            if c is not None:
+                return float(c)
+            # pair missing from the standards: assume worse than any known
+            # transition (F weights top out ~360 for ffs+extras) but not so
+            # absurd that rate ordering vanishes among several unknowns
+            return 500.0
+        return setup_h(frm, to)
 
     rows: list[dict] = []
     placed_kg_by_week: dict[int, float] = {}
@@ -100,9 +124,11 @@ def build_greedy_fill(
 
         cands = [(ln, rates.get((ln, sku), 0.0)) for ln in lines]
         cands = [(ln, r) for ln, r in cands if r > 0]
-        # zero-setup tails first, then cheapest setup, then fastest line
+        # cheapest tail transition first (format-aware when co_cost given:
+        # same SKU = 0, same format cheap, topload/FFS swaps expensive),
+        # then physical setup hours, then fastest line
         cands.sort(key=lambda t: (
-            0 if lines[t[0]].tail_sku == sku else 1,
+            trans_cost(lines[t[0]].tail_sku, sku),
             setup_h(lines[t[0]].tail_sku, sku),
             -t[1]))
 
