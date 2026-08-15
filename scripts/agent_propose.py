@@ -21,7 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -47,7 +47,7 @@ def main() -> int:
                     help="F = fill the tail (committed plan fixed, default); "
                          "E = full current-state re-optimization (diagnostic)")
     ap.add_argument("--time-limit", type=int, default=300)
-    ap.add_argument("--name", default=f"Agent proposal {date.today():%Y-%m-%d}")
+    ap.add_argument("--name", default=f"Agent proposal {datetime.now():%Y-%m-%d %H:%M}")
     ap.add_argument("--out", default=None, help="write the run report JSON here")
     args = ap.parse_args()
 
@@ -89,7 +89,7 @@ def main() -> int:
 
     # ── 4b. save the sandbox version with the reasoning ─────────────────
     reasons = [
-        f"AGENT PROPOSAL ({date.today():%Y-%m-%d}). Scenario "
+        f"AGENT PROPOSAL (generated {datetime.now():%Y-%m-%d %H:%M}). Scenario "
         f"{args.scenario.upper()} ({scenario['name']}), {args.time_limit}s, "
         f"relax level {result.get('relax_level')}.",
         f"Situational input: {counts.get(BLOCKING, 0)} blocking finding(s) "

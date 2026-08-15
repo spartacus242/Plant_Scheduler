@@ -88,23 +88,90 @@ with c2:
         key="cmp_right",
     )
 
+# Every side is scored FRESH against the SAME live data, in this pass.
+# Stored scorecards are fossils of the data at save time (live feeds move
+# every ~30 min), so mixing them with fresh numbers made the page disagree
+# with itself and with the Plant Calendar (user report 2026-08-14).
+def _blocks_signature(cal) -> str:
+    import hashlib
+    key = cal[["line_name", "block_type", "start_h", "end_h", "sku"]]         .sort_values(["line_name", "start_h"]).to_csv(index=False)
+    return hashlib.md5(key.encode()).hexdigest()
+
+_official_sig = _blocks_signature(official) if not official.empty else ""
+
 if left_slug == OFFICIAL_KEY:
     left_cal = official
-    left_sc = baseline.to_dict() if baseline else {}
     left_label = "Current schedule (official)"
     left_res = baseline
+    left_stored = None
 else:
     left = load_version(left_slug, dd)
     left_cal = left["calendar"]
-    left_sc = left["metadata"].get("scorecard") or score_calendar(left_cal, week_label=left_slug, data_dir=dd).to_dict()
     left_label = names[left_slug]
     left_res = score_calendar(left_cal, week_label=left_label, data_dir=dd)
+    left_stored = (left["metadata"].get("scorecard") or {}).get("composite")
+left_sc = left_res.to_dict() if left_res else {}
 
 right = load_version(right_slug, dd)
 right_cal = right["calendar"]
-right_sc = right["metadata"].get("scorecard") or score_calendar(right_cal, week_label=right_slug, data_dir=dd).to_dict()
 right_label = names[right_slug]
 right_res = score_calendar(right_cal, week_label=right_label, data_dir=dd)
+right_stored = (right["metadata"].get("scorecard") or {}).get("composite")
+right_sc = right_res.to_dict()
+
+for _lbl, _cal_df, _stored, _res in (
+        (left_label, left_cal, left_stored, left_res),
+        (right_label, right_cal, right_stored, right_res)):
+    _bits = []
+    if _stored is not None and _res is not None:
+        _fresh_comp = _res.to_dict().get("composite")
+        if _fresh_comp is not None and abs(float(_stored) - float(_fresh_comp)) >= 0.5:
+            _bits.append(f"scored {_fresh_comp} against TODAY's live data "
+                         f"(was {_stored} when saved)")
+    if not official.empty and _blocks_signature(_cal_df) == _official_sig:
+        _bits.append("this plan IS the current official calendar")
+    if _bits:
+        st.info(f"**{_lbl}:** " + " · ".join(_bits))
+
+# ── Visual preview: SEE the proposed plan before promoting it ─────────────
+# (user request 2026-08-14: visual confirmation that a proposed schedule
+# actually looks right before it overwrites the official one.)
+with st.expander(f"📅 Preview '{right_label}' on a calendar (read-only)",
+                 expanded=True):
+    from components.gantt import gantt_calendar
+    from helpers.calendar_io import calendar_to_gantt_payload, load_lines
+    from helpers.config import load_toml as _lt
+    from helpers.timefmt import planning_anchor as _pa
+
+    _cfg_prev = _lt()
+    _anchor_prev = _pa(_cfg_prev)
+    _sched_prev, _win_prev = calendar_to_gantt_payload(right_cal)
+    # read-only: every block locked, so drags/edits are rejected in place
+    for _b in _sched_prev + _win_prev:
+        _b["locked"] = True
+    _lines_df = load_lines(dd / "lines.csv")
+    _line_cols = [c for c in ("line_id", "line_name", "line_group", "side",
+                              "is_double") if c in _lines_df.columns]
+    st.caption("Preview only — blocks are locked; nothing here changes any "
+               "saved plan. Promote below when it looks right.")
+    gantt_calendar(
+        schedule=_sched_prev,
+        cip_windows=_win_prev,
+        capabilities={},
+        changeovers={},
+        demand_targets=[],
+        lines=_lines_df[_line_cols].to_dict("records") if len(_lines_df) else [],
+        holding_area=[],
+        side_downtime={},
+        config={
+            "planning_anchor": f"{_anchor_prev:%Y-%m-%d %H:%M:%S}",
+            "cip_duration_h": int((_cfg_prev.get("cip", {}) or {}).get("duration_h", 6)),
+            "min_run_hours": int((_cfg_prev.get("scheduler", {}) or {}).get("min_run_hours", 4)),
+            "horizon_hours": int((_cfg_prev.get("scheduler", {}) or {}).get("horizon_hours", 504)),
+        },
+        height=560,
+        key=f"preview_gantt_{right_slug}",
+    )
 
 # KPI comparison table with Δ
 rows = []
