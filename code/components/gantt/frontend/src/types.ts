@@ -72,6 +72,8 @@ export interface SandboxArgs {
   holdingArea: ScheduleBlock[];
   /** line/side name -> [startHour, endHour) windows where it is down. */
   sideDowntime?: Record<string, number[][]>;
+  /** sku -> pack format string (e.g. "6X12X90") from sku_info. */
+  skuFormats?: Record<string, string>;
   config: SandboxConfig;
 }
 

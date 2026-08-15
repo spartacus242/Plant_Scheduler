@@ -29,6 +29,7 @@ def gantt_calendar(
     holding_area: Optional[List[Dict[str, Any]]] = None,
     config: Optional[Dict[str, Any]] = None,
     side_downtime: Optional[Dict[str, List[List[float]]]] = None,
+    sku_formats: Optional[Dict[str, str]] = None,
     height: int = 800,
     key: str = "gantt_calendar",
 ) -> Optional[Dict[str, Any]]:
@@ -49,6 +50,7 @@ def gantt_calendar(
         lines=lines,
         holdingArea=holding_area or [],
         sideDowntime=side_downtime or {},
+        skuFormats=sku_formats or {},
         config=config or {
             "planning_anchor": "2026-02-15 00:00:00",
             "cip_duration_h": 6,

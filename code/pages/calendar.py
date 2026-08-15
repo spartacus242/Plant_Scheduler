@@ -438,6 +438,22 @@ if _lock_dt is not None:
             "blocks starting before then are committed to the plant "
             "(no drag/resize/edit).")
 
+# sku -> pack format (e.g. "6X12X90") for the holding-area card text
+_fmt_map: dict[str, str] = {}
+_sku_info_path = dd / "reference" / "sku_info.csv"
+if _sku_info_path.exists():
+    try:
+        _si = pd.read_csv(_sku_info_path, dtype={"sku": str})
+        if "format" in _si.columns:
+            _fmt_map = {
+                str(r["sku"]): str(r["format"]).strip()
+                for _, r in _si.iterrows()
+                if str(r.get("format", "")).strip()
+                and str(r.get("format", "")).lower() != "nan"
+            }
+    except Exception:
+        _fmt_map = {}
+
 state = gantt_calendar(
     schedule=schedule,
     cip_windows=windows,
@@ -447,6 +463,7 @@ state = gantt_calendar(
     lines=lines,
     holding_area=st.session_state.get("cal_holding", []),
     side_downtime=side_downtime,
+    sku_formats=_fmt_map,
     config={
         "planning_anchor": f"{_anchor:%Y-%m-%d %H:%M:%S}",
         "cip_duration_h": int(cip_cfg.get("duration_h", 6)),

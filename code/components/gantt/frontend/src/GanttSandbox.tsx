@@ -722,7 +722,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         />
 
         <div style={{ marginTop: 8 }}>
-          <HoldingArea blocks={holdingArea} />
+          <HoldingArea blocks={holdingArea} anchor={anchor} skuFormats={args.skuFormats ?? {}} />
         </div>
 
         <DragOverlay dropAnimation={null}>
