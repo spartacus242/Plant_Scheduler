@@ -34,6 +34,17 @@ st.caption(
     "Raw metrics drive 'show me why'; the composite is only a conversation starter."
 )
 
+def _demand_base_iso_week() -> int | None:
+    """ISO week of the demand anchor (demand_plan.source.json) — order-id
+    -W<k> suffixes label as W(base+k) in the Gantt."""
+    import json as _j
+    p = reference_dir() / "demand_plan.source.json"
+    try:
+        return int(_j.loads(p.read_text(encoding="utf-8"))["anchor_iso_week"])
+    except Exception:
+        return None
+
+
 dd = data_dir()
 versions = list_versions(dd)
 
@@ -219,6 +230,7 @@ with st.expander(f"📅 Preview {_cname(right_slug)} on a calendar (read-only)",
         side_downtime={},
         config={
             "planning_anchor": f"{_anchor_prev:%Y-%m-%d %H:%M:%S}",
+            "demand_base_iso_week": _demand_base_iso_week(),
             "cip_duration_h": int((_cfg_prev.get("cip", {}) or {}).get("duration_h", 6)),
             "min_run_hours": int((_cfg_prev.get("scheduler", {}) or {}).get("min_run_hours", 4)),
             "horizon_hours": int((_cfg_prev.get("scheduler", {}) or {}).get("horizon_hours", 504)),

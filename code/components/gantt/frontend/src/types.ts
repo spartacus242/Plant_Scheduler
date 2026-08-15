@@ -60,6 +60,9 @@ export interface SandboxConfig {
   /** Hour offset of the 2-week lock boundary; blocks starting before it are
    * committed to the plant and refuse drag/resize/edit. null/absent = no lock. */
   locked_through_h?: number | null;
+  /** ISO week of the demand file's anchor (demand_plan.source.json
+   * anchor_iso_week): order-id -W<k> labels read W(base+k). */
+  demand_base_iso_week?: number | null;
 }
 
 export interface SandboxArgs {

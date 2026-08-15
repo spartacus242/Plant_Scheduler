@@ -7,7 +7,7 @@ import React, { useState } from "react";
 import { useDroppable, useDraggable } from "@dnd-kit/core";
 import type { ScheduleBlock } from "../types";
 import { skuColor, skuTextColor } from "../utils/colors";
-import { displayOrderId, isoWeekAtHour } from "../utils/layout";
+import { displayOrderId, isoWeekLabel } from "../utils/layout";
 
 interface Props {
   blocks: ScheduleBlock[];
@@ -109,7 +109,7 @@ export const HoldingArea: React.FC<Props> = ({ blocks, anchor, skuFormats }) => 
           {weeks.map((wk) => (
             <div key={wk} style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 170 }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: "#455a64", borderBottom: "1px solid #cfd8dc", paddingBottom: 2 }}>
-                W{isoWeekAtHour(anchor, wk * 168 + 1)}
+                W{isoWeekLabel(wk, anchor)}
                 <span style={{ fontWeight: 400, color: "#90a4ae" }}> · {byWeek.get(wk)!.length}</span>
               </div>
               {byWeek.get(wk)!.sort(qtyDesc).map((b) => (

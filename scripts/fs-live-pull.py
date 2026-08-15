@@ -68,6 +68,34 @@ def pull_once(conf: dict) -> list[str]:
             continue
         shutil.copy2(src, dst)
         updated.append(fname)
+
+    # demand_plan.csv is DERIVED, never pulled: it is the summary exploded
+    # into per-week orders with due windows in the file's own anchor frame
+    # (staging re-bases at solve time). It used to be a manual Data-page
+    # import, which is how it sat 4 days stale while the summary refreshed
+    # underneath it (found 2026-08-15). Re-derive whenever the summary lands.
+    if "demand_plan_summary.csv" in updated:
+        try:
+            code_dir = Path(__file__).resolve().parent.parent / "code"
+            sys.path.insert(0, str(code_dir))
+            from helpers.demand_summary_import import import_summary
+
+            dem, meta = import_summary(ref_dir / "demand_plan_summary.csv")
+            dem.to_csv(ref_dir / "demand_plan.csv", index=False)
+            (ref_dir / "demand_plan.source.json").write_text(json.dumps({
+                "source": "demand_plan_summary.csv",
+                "imported": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "rows": meta.rows,
+                "weeks": [int(w) for w in meta.weeks],
+                "skus": len(meta.skus),
+                "anchor": meta.anchor.strftime("%Y-%m-%d %H:%M:%S")
+                if meta.anchor else None,
+                "anchor_iso_week": meta.anchor_iso_week,
+            }, indent=2), encoding="utf-8")
+            updated.append("demand_plan.csv (derived)")
+        except Exception as exc:  # noqa: BLE001 — pull must not die on this
+            print(f"[warn] demand_plan derive failed: {exc}", file=sys.stderr)
+
     # Report new HEAD only if we actually advanced
     changed = before != after
     return (updated, after[:7]) if changed else (updated, None)

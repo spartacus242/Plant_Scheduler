@@ -76,9 +76,28 @@ export function isoWeekAtHour(anchor: Date, hour: number): number {
   return isoWeek(new Date(anchor.getTime() + hour * 3600_000));
 }
 
+/** ISO week of the DEMAND anchor (demand_plan.source.json anchor_iso_week).
+ * Order-id week indexes count from the demand file's own anchor week, NOT
+ * the calendar anchor — converting k via anchor + k*168h mislabels every
+ * order as soon as the two anchors differ (found 2026-08-15: W32-anchored
+ * demand made a true-W33 order read "W34"). Set once per mount from config;
+ * null falls back to the legacy hour math. */
+let demandBaseWeek: number | null = null;
+export function setDemandBaseWeek(w: number | null | undefined): void {
+  demandBaseWeek = typeof w === "number" && w > 0 ? w : null;
+}
+
+/** Planner-facing ISO week for a demand week INDEX (0 = demand anchor week). */
+export function isoWeekLabel(weekIndex: number, anchor: Date): number {
+  if (demandBaseWeek !== null) {
+    return ((demandBaseWeek + weekIndex - 1) % 52) + 1; // 52-wrap approximation
+  }
+  return isoWeekAtHour(anchor, weekIndex * 168 + 1);
+}
+
 /** Planner-facing order id: the internal -W0/-W1/-W2 horizon suffix becomes
  * the ISO week (-W33/-W34/-W35). Display only - never stored. */
 export function displayOrderId(orderId: string, anchor: Date): string {
   return String(orderId ?? "").replace(/-W(\d+)$/, (_m, k) =>
-    `-W${isoWeekAtHour(anchor, parseInt(k, 10) * 168 + 1)}`);
+    `-W${isoWeekLabel(parseInt(k, 10), anchor)}`);
 }

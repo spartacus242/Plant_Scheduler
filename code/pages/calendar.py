@@ -43,6 +43,17 @@ st.caption(
     "Still no auto-scheduling — you're building trust in the model."
 )
 
+def _demand_base_iso_week() -> int | None:
+    """ISO week of the demand anchor (demand_plan.source.json) — order-id
+    -W<k> suffixes label as W(base+k) in the Gantt."""
+    import json as _j
+    p = reference_dir() / "demand_plan.source.json"
+    try:
+        return int(_j.loads(p.read_text(encoding="utf-8"))["anchor_iso_week"])
+    except Exception:
+        return None
+
+
 dd = data_dir()
 cal_path = dd / "calendar_blocks.csv"
 cfg = load_toml()
@@ -470,6 +481,7 @@ state = gantt_calendar(
         "min_run_hours": int(sched_cfg.get("min_run_hours", 4)),
         "horizon_hours": int(_horizon.hours),
         "locked_through_h": None if _lock_h is None else float(_lock_h),
+        "demand_base_iso_week": _demand_base_iso_week(),
     },
     height=820,
     key=f"gantt_calendar_{st.session_state['cal_reset_gen']}",

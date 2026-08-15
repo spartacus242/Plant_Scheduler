@@ -13,7 +13,7 @@ import { useBlockResize } from "./hooks/useBlockResize";
 import { useContextMenu } from "./hooks/useContextMenu";
 import { computeKpis, computeAdherence } from "./utils/kpi";
 import { isCapable, recalcDuration, findOverlapsOnLine } from "./utils/validation";
-import { LINE_HEIGHT, MIN_HOUR_WIDTH, MAX_HOUR_WIDTH, snapToHour, fitToWidth, xToHour, hourToStamp, displayOrderId } from "./utils/layout";
+import { LINE_HEIGHT, MIN_HOUR_WIDTH, MAX_HOUR_WIDTH, snapToHour, fitToWidth, xToHour, hourToStamp, displayOrderId, setDemandBaseWeek } from "./utils/layout";
 import { getRate } from "./utils/validation";
 import { computeDragPreview, computeInsertPlan, type DragPreview, type InsertContext } from "./utils/dragPreview";
 import { isDouble } from "./utils/abLines";
@@ -51,6 +51,9 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   const viewEnd = viewStart + horizon;
 
   const anchor = useMemo(() => new Date(args.config.planning_anchor), [args.config.planning_anchor]);
+  // Order-id week labels count from the DEMAND anchor's ISO week (see
+  // setDemandBaseWeek) — set before any child renders labels.
+  setDemandBaseWeek(args.config.demand_base_iso_week ?? null);
   const caps = args.capabilities;
   // The chart draws ONE row per group (a double line's A and B sides share a
   // row), so every index-based drag calculation must use the same collapsed
