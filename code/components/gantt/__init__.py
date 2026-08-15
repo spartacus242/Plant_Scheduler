@@ -29,6 +29,7 @@ def gantt_calendar(
     holding_area: Optional[List[Dict[str, Any]]] = None,
     config: Optional[Dict[str, Any]] = None,
     side_downtime: Optional[Dict[str, List[List[float]]]] = None,
+    kpis: Optional[Dict[str, Any]] = None,
     height: int = 800,
     key: str = "gantt_calendar",
 ) -> Optional[Dict[str, Any]]:
@@ -37,6 +38,10 @@ def gantt_calendar(
     `side_downtime` maps a line or double-line side name (e.g. "P17A") to a list
     of [start_hour, end_hour] windows, so the drag preview can stretch a block
     across the hours where a Bossar line runs one-sided at half rate.
+
+    `kpis` is the canonical KPI payload from helpers.scorecard_engine.gantt_kpis
+    (computed with scorecard rules). The frontend renders it verbatim until the
+    user edits, then recomputes live with the same rules via its co_pairs map.
 
     Returns None until interaction, then schedule / cipWindows / holdingArea / lastAction.
     """
@@ -49,6 +54,7 @@ def gantt_calendar(
         lines=lines,
         holdingArea=holding_area or [],
         sideDowntime=side_downtime or {},
+        kpis=kpis,
         config=config or {
             "planning_anchor": "2026-02-15 00:00:00",
             "cip_duration_h": 6,

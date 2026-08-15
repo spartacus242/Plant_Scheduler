@@ -11,7 +11,7 @@ import { isWindowBlock } from "./types";
 import { useScheduleState } from "./hooks/useScheduleState";
 import { useBlockResize } from "./hooks/useBlockResize";
 import { useContextMenu } from "./hooks/useContextMenu";
-import { computeKpis, computeAdherence } from "./utils/kpi";
+import { computeKpis, computeAdherence, checkOverlapsSimple, serverKpisToKpiData } from "./utils/kpi";
 import { isCapable, recalcDuration, findOverlapsOnLine } from "./utils/validation";
 import { LINE_HEIGHT, MIN_HOUR_WIDTH, MAX_HOUR_WIDTH, snapToHour, fitToWidth, xToHour, hourToStamp } from "./utils/layout";
 import { getRate } from "./utils/validation";
@@ -330,14 +330,30 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     [schedule, cipWindows],
   );
 
-  const kpis = useMemo(
-    () => computeKpis(schedule, cipWindows, args.demandTargets, args.capabilities),
-    [schedule, cipWindows, args.demandTargets, args.capabilities],
-  );
-  const adherenceRows = useMemo(
-    () => computeAdherence(schedule, args.demandTargets, args.capabilities),
-    [schedule, args.demandTargets, args.capabilities],
-  );
+  // Python (helpers/scorecard_engine.gantt_kpis) is the source of truth for
+  // KPI numbers: render the server payload verbatim until the user edits,
+  // then recompute live with the SAME rules (kpi.ts is an exact port driven
+  // by the server's co_pairs classification map). Overlaps are a client-side
+  // diagnostic in both paths.
+  const initialState = useRef({ schedule, cipWindows });
+  const edited =
+    schedule !== initialState.current.schedule ||
+    cipWindows !== initialState.current.cipWindows;
+
+  const kpis = useMemo(() => {
+    if (!edited && args.kpis) {
+      return serverKpisToKpiData(args.kpis, checkOverlapsSimple([...schedule, ...cipWindows]));
+    }
+    return computeKpis(
+      schedule, cipWindows, args.demandTargets, args.capabilities,
+      args.kpis?.co_pairs, args.kpis?.co_default,
+    );
+  }, [edited, args.kpis, schedule, cipWindows, args.demandTargets, args.capabilities]);
+
+  const adherenceRows = useMemo(() => {
+    if (!edited && args.kpis) return args.kpis.adherence;
+    return computeAdherence(schedule, args.demandTargets, args.capabilities);
+  }, [edited, args.kpis, schedule, args.demandTargets, args.capabilities]);
 
   const zoomIn = useCallback(() => setHourWidth((w) => Math.min(w * 1.3, MAX_HOUR_WIDTH)), []);
   const zoomOut = useCallback(() => setHourWidth((w) => Math.max(w / 1.3, MIN_HOUR_WIDTH)), []);
