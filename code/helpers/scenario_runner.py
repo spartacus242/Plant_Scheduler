@@ -798,6 +798,21 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
     if now_floor:
         notes.append(f"fill floor at now (t+{now_floor:.0f}h): no new block "
                      "may start in the past")
+    # Sync the solver's datetime origin to the staging frame. The committed
+    # windows above are staged in hz.anchor hours; a stale
+    # planning_start_date (e.g. Monday while anchor_mode="today") shifts
+    # every exported start_dt/end_dt stamp by the difference.
+    try:
+        import tomllib as _tl
+        import tomli_w as _tw
+        _tp = work / "flowstate.toml"
+        with open(_tp, "rb") as _fh:
+            _tcfg = _tl.load(_fh)
+        _tcfg["planning_start_date"] = hz.anchor.strftime("%Y-%m-%d %H:%M:%S")
+        with open(_tp, "wb") as _fh:
+            _tw.dump(_tcfg, _fh)
+    except Exception:  # noqa: BLE001 — stamp cosmetics must not kill a solve
+        pass
     free = line_free_from(blocks, H)
     last_sku = last_sku_per_line(blocks)
     init_path = work / "initial_states.csv"

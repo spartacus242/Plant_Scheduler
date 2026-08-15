@@ -1210,6 +1210,23 @@ def score_calendar(
     if demand is None:
         notes.append("No demand_plan.csv — Service metrics are n/a.")
 
+    # Normalize dtypes ONCE. In-memory calendars (scenario reassembly)
+    # concatenate committed + fill frames with mixed line_id types (int vs
+    # str) — groupby/== then split one line into two, so CIPs "vanish" from
+    # their line (90 phantom overdue events, forfeited kg doubled) and
+    # committed->fill transitions on the same line are missed. Float-parsed
+    # sku ("280323.0") likewise misses every changeover-standards row.
+    calendar = calendar.copy()
+    if "line_id" in calendar.columns:
+        calendar["line_id"] = calendar["line_id"].astype(str).str.replace(
+            r"\.0$", "", regex=True)
+    if "sku" in calendar.columns:
+        calendar["sku"] = calendar["sku"].astype(str).str.replace(
+            r"\.0$", "", regex=True)
+    for _c in ("start_h", "end_h", "qty_kg"):
+        if _c in calendar.columns:
+            calendar[_c] = pd.to_numeric(calendar[_c], errors="coerce")
+
     raw = {
         "changeovers": score_changeovers(calendar, cfg, co_map),
         "cip": score_cip(calendar, cfg, intervals, rates),
