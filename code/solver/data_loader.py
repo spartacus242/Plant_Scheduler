@@ -106,7 +106,6 @@ class Files:
         self.init = str(data_dir / "initial_states.csv")
         self.dem = str(data_dir / "demand_plan.csv")
         self.downtime = str(data_dir / "downtimes.csv")
-        self.last_run = str(data_dir / "line_sku_last_run.csv")
         self.current_mo = str(data_dir / "current_mo.csv")
         self.line_rates = str(data_dir / "line_rates.csv")
         self.line_cip_hrs = str(data_dir / "line_cip_hrs.csv")
@@ -131,7 +130,6 @@ class Data:
         self.init_map = {}
         self.downtimes = []
         self.orders = []
-        self.last_map = {}
 
     def load(self) -> None:
         # ── Capabilities (capable flags + fallback SKU-specific rates) ───
