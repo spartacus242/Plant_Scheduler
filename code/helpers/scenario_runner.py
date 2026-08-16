@@ -933,7 +933,7 @@ def _work_input_signature(work: Path) -> str:
     for name in ("capabilities_rates.csv", "changeovers.csv",
                  "demand_plan.csv", "downtimes.csv", "initial_states.csv",
                  "line_cip_hrs.csv", "line_rates.csv", "sku_info.csv",
-                 "current_mo.csv", "trials.csv"):
+                 "current_mo.csv"):
         p = Path(work) / name
         if p.exists():
             try:

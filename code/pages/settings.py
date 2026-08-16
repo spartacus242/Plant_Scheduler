@@ -34,7 +34,6 @@ vif = st.text_input("VIF export folder (ediact/jestkexp/azapart/rmpkitems)",
 manprg = st.text_input("manprg report files (two paths, ';'-separated)",
                        value=ds["manprg_files"],
                        help="e.g. C:\\...\\manprg.txt;C:\\...\\manprg2.txt")
-pdf = st.text_input("Production-schedule PDF folder", value=ds["schedule_pdf_folder"])
 cip = st.text_input("CIP info CSV", value=ds["cip_info_csv"])
 demand_summary = st.text_input(
     "Demand plan summary CSV (weekly AZAP baseline)",
@@ -77,7 +76,6 @@ if st.button("Save data sources", type="primary"):
     txt = _set_toml_section(txt, "datasources", {
         "vif_folder": vif,
         "manprg_files": manprg,
-        "schedule_pdf_folder": pdf,
         "cip_info_csv": cip,
         "demand_summary_csv": demand_summary,
         "sql_enabled": sql_enabled,

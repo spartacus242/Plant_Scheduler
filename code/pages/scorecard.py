@@ -20,7 +20,7 @@ from helpers.calendar_io import (
 )
 from helpers.config import load_toml
 from helpers.labels import display_label
-from helpers.manual_import_ui import (
+from helpers.versions_ui import (
     backup_file,
     snapshot_current_schedule,
 )

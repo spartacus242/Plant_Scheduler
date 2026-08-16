@@ -61,7 +61,6 @@ INPUTS = (
     "demand_plan.csv",
     "capabilities_rates.csv",
     "line_cip_hrs.csv",
-    "trials.csv",
     "sku_info.csv",
     "initial_states.csv",
 )

@@ -113,7 +113,7 @@ def _raw(calendar: pd.DataFrame, *, intervals=None, rates=None,
     return {
         "changeovers": score_changeovers(calendar, CFG, {}),
         "cip": score_cip(calendar, CFG, intervals or {}, rates or {}),
-        "trials": score_trials(calendar, {}, data_dir),
+        "trials": score_trials(calendar, {}),
         "campaigns": score_campaigns(calendar, CFG),
         "service": score_service(calendar, CFG, demand, data_dir, rates),
     }
@@ -187,7 +187,7 @@ def test_service_is_na_without_demand():
 # M4b -- Trials availability
 # --------------------------------------------------------------------------
 def test_trials_category_is_none_when_there_is_no_trial_input(tmp_path):
-    """No trial blocks AND no reference/trials.csv -> the category is n/a.
+    """No trial blocks in the calendar -> the category is n/a.
     The old behaviour scored this 100 and fed it into the composite."""
     cal = _calendar([_block(start_h=0, end_h=10, qty_kg=1000.0)])
     result = score_calendar(cal, week_label="t", data_dir=tmp_path, cfg=CFG)
@@ -201,41 +201,20 @@ def test_trials_category_is_none_when_there_is_no_trial_input(tmp_path):
                             if v == 100.0}
 
 
-def test_trials_category_is_scored_when_trials_csv_exists(tmp_path):
-    ref = tmp_path / "reference"
-    ref.mkdir(parents=True)
-    (ref / "trials.csv").write_text(
-        "trial_id,sku,line_name,hours\nT1,S1,P09,8\n", encoding="utf-8")
-
-    cal = _calendar([_block(start_h=0, end_h=10, qty_kg=1000.0)])
-    result = score_calendar(cal, week_label="t", data_dir=tmp_path, cfg=CFG)
-
-    assert result.trials["available"] is True
-    assert result.category_scores["trials"] == 100.0
-
-
 def test_trials_category_is_scored_when_the_calendar_has_trial_blocks():
-    """A trial block in the calendar is trial data even with no input file."""
+    """A trial block in the calendar is trial data — the only source since
+    reference/trials.csv was retired (manprg TRIALS pseudo-MOs became
+    blocked line time, 2026-08-14)."""
     cal = _calendar([
         _block(block_id="p1", start_h=0, end_h=10, qty_kg=1000.0),
         _block(block_id="t1", block_type="trial", start_h=12, end_h=36,
                order_id="", sku="TRIAL"),
     ])
-    tr = score_trials(cal, {}, None)
+    tr = score_trials(cal, {})
 
     assert tr["available"] is True
     assert tr["trial_hours"] == 24.0
     assert category_scores(_raw(cal), CFG)["trials"] is not None
-
-
-def test_empty_trials_csv_counts_as_absent(tmp_path):
-    """A header-only file is not trial data."""
-    ref = tmp_path / "reference"
-    ref.mkdir(parents=True)
-    (ref / "trials.csv").write_text("trial_id,sku,line_name,hours\n", encoding="utf-8")
-
-    cal = _calendar([_block(start_h=0, end_h=10, qty_kg=1000.0)])
-    assert score_trials(cal, {}, tmp_path)["available"] is False
 
 
 # --------------------------------------------------------------------------
