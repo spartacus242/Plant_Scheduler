@@ -1,4 +1,4 @@
-# tests/test_data_health.py — health engine + process flow (Command Center).
+# tests/test_data_health.py — health engine (Command Center).
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ import pytest
 
 from helpers import data_health as dh
 from helpers.config import datasources_config, load_toml
-from helpers.process_flow import STAGES, stage_state
 
 OK = dh.OK
 STALE = dh.STALE
@@ -435,31 +434,3 @@ def test_summary_counts(tmp_path):
     (dd / "reference" / "line_cip_hrs.csv").unlink()
     counts = dh.summary(dh.assess(dd, _cfg()))
     assert counts[MISSING] >= 1
-
-
-# ---------------------------------------------------------------------------
-# process flow
-# ---------------------------------------------------------------------------
-
-def test_stages_order():
-    assert [s.id for s in STAGES] == ["vif", "demand", "calendar", "score", "stock", "optimize", "promote"]
-
-
-def test_stage_state_worst_wins():
-    h = [
-        dh.HealthStatus(key="demand_plan", name="demand", state=OK, detail=""),
-        dh.HealthStatus(key="demand_week", name="week", state=STALE, detail=""),
-    ]
-    assert stage_state("demand", h) == STALE
-
-
-def test_stage_state_no_rule_ok():
-    assert stage_state("score", []) == OK
-
-
-def test_stage_state_missing_beats_stale():
-    h = [
-        dh.HealthStatus(key="calendar_blocks", name="cal", state=STALE, detail=""),
-        dh.HealthStatus(key="lines", name="lines", state=MISSING, detail=""),
-    ]
-    assert stage_state("calendar", h) == MISSING
