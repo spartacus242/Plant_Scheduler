@@ -795,7 +795,7 @@ def test_p9_no_sku_is_produced_beyond_its_total_demand(work, schedule, orders, r
        from the work-dir INPUTS (demand_plan qty_max + current_mo remaining_kg)
        rather than from produced_vs_bounds.csv, so the check does not lean on
        the artifact it is auditing. Trials are excluded from BOTH sides: a
-       trial is pinned production, not demand (data_loader._parse_trials).
+       trial is pinned production, not demand.
     b. Reported produced kg <= what the schedule can physically make
        (run_hours x rate_kgph), so tonnage cannot be claimed without hours
        behind it.

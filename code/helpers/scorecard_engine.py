@@ -852,26 +852,7 @@ def score_cip(
     }
 
 
-def _trials_input_present(data_dir: Path | None) -> bool:
-    """True when reference/trials.csv exists AND has at least one data row.
-
-    A header-only (or unreadable) trials.csv counts as absent: there is no
-    trial demand to schedule, so the trials category has nothing to measure.
-    """
-    if data_dir is None:
-        return False
-    path = reference_dir(data_dir) / "trials.csv"
-    if not path.exists():
-        return False
-    try:
-        return len(pd.read_csv(path)) > 0
-    except Exception:
-        return False
-
-
-def score_trials(
-    calendar: pd.DataFrame, co_map: dict, data_dir: Path | None = None
-) -> dict[str, Any]:
+def score_trials(calendar: pd.DataFrame, co_map: dict) -> dict[str, Any]:
     trials = _by_type(calendar, "trial")
     hours = float((trials["end_h"] - trials["start_h"]).clip(lower=0).sum()) if len(trials) else 0.0
     disruptions = 0
@@ -890,15 +871,17 @@ def score_trials(
                 disruptions += 1
         elif len(before) or len(after):
             disruptions += 1
-    # Availability, not performance. With no trial blocks in the calendar AND
-    # no reference/trials.csv there is nothing to score: trial_hours=0 then
-    # means "no trial data", not "a perfectly trial-free week", and scoring it
-    # 100 is a silent-100 on absent data. category_scores turns available=False
-    # into a None (n/a) category instead.
+    # Availability, not performance. With no trial blocks in the calendar
+    # there is nothing to score: trial_hours=0 then means "no trial data",
+    # not "a perfectly trial-free week", and scoring it 100 is a silent-100
+    # on absent data. category_scores turns available=False into a None (n/a)
+    # category instead. (Calendar block_type == "trial" is the only source;
+    # reference/trials.csv was retired 2026-08-14 — manprg TRIALS pseudo-MOs
+    # became blocked line time.)
     return {
         "trial_hours": round(hours, 2),
         "trial_disruptions": int(disruptions),
-        "available": bool(len(trials)) or _trials_input_present(data_dir),
+        "available": bool(len(trials)),
     }
 
 
@@ -1096,8 +1079,8 @@ def category_scores(raw: dict[str, dict], cfg: dict) -> dict[str, float | None]:
             cip.get("cip_overdue"), float(cfg.get("cap_cip_overdue") or 1)
         ),
     ]
-    # Trials score only when there IS trial data (calendar blocks or a
-    # non-empty reference/trials.csv). Without it the category is None -- the
+    # Trials score only when there IS trial data (calendar trial blocks).
+    # Without it the category is None -- the
     # composite drops it and the page greys it out -- because a 0-hour, 0-
     # disruption week with no trial input is absence of data, not a 100.
     if tr.get("available", True):
@@ -1259,7 +1242,7 @@ def score_calendar(
     raw = {
         "changeovers": score_changeovers(calendar, cfg, co_map),
         "cip": score_cip(calendar, cfg, intervals, rates),
-        "trials": score_trials(calendar, co_map, data_dir),
+        "trials": score_trials(calendar, co_map),
         "campaigns": score_campaigns(calendar, cfg),
         "service": score_service(calendar, cfg, demand, data_dir, rates),
     }

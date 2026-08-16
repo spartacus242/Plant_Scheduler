@@ -111,8 +111,7 @@ def test_missing_catalog_file(tmp_path):
 def test_corrupt_catalog_file(tmp_path):
     dd = _empty_data_dir(tmp_path)
     _min_catalog(dd)
-    (dd / "reference" / "trials.csv").write_text("not,a,valid\n1,2", encoding="utf-8")
-    # trials.csv with one data column -> still reads; force an ERROR via empty rows file
+    # force an ERROR via an empty-rows file
     empty = dd / "reference" / "downtimes.csv"
     empty.write_text("line_id,start_hour,end_hour\n", encoding="utf-8")
     health = dh.assess(dd, _cfg())
