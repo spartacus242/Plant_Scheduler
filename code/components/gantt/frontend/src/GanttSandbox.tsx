@@ -120,9 +120,13 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   // no drag, no resize, no typed edit — and nothing may be moved INTO the
   // frozen zone either (that would silently change the committed plan).
   const lockedThroughH = args.config.locked_through_h ?? null;
+  // Planner-pinned blocks are immovable like MOs — the solver plans around
+  // them — but unlike locked blocks the PLANNER can free them again via the
+  // popup's unpin toggle, so the reason says how.
   const isBlockLocked = useCallback(
     (b: ScheduleBlock): boolean =>
       Boolean(b.locked) ||
+      Boolean(b.pinned) ||
       (lockedThroughH != null && b.start_hour < lockedThroughH - 1e-9),
     [lockedThroughH],
   );
@@ -130,7 +134,9 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     (b: ScheduleBlock): string =>
       b.locked
         ? "Block is locked"
-        : `Inside the locked window (committed through ${hourToStamp(lockedThroughH ?? 0, anchor)})`,
+        : b.pinned
+          ? "📌 Pinned for the solver — unpin it in the block popup to move it"
+          : `Inside the locked window (committed through ${hourToStamp(lockedThroughH ?? 0, anchor)})`,
     [lockedThroughH, anchor],
   );
   const intoLockedZone = useCallback(
@@ -540,6 +546,28 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     [schedule, cipWindows, actions, reject, anchor, args.config.min_run_hours, isBlockLocked, lockReason, intoLockedZone, lockedThroughH],
   );
 
+  // Pin toggle (popup): a pinned demand block becomes committed line-time —
+  // the solver must plan around it (Scenario F stages it as a blocked window
+  // and credits its kg against demand). The block also refuses drag/resize/
+  // edits until unpinned, so the board can't silently disagree with what the
+  // solve was told.
+  const handleTogglePin = useCallback(
+    (blockId: string, pinned: boolean) => {
+      const block = schedule.find((b) => b.id === blockId);
+      if (!block) return;
+      actions.updateBlock(blockId, { pinned });
+      actions.reportAction(
+        pinned
+          ? `📌 Pinned ${block.order_id || block.sku} — the solver will plan around it`
+          : `Unpinned ${block.order_id || block.sku} — it can move again`,
+      );
+      setPopover((p) =>
+        p && p.block.id === blockId ? { ...p, block: { ...p.block, pinned } } : p,
+      );
+    },
+    [schedule, actions],
+  );
+
   // Snap flush against the neighbouring block, leaving EXACTLY the setup
   // time between the two SKUs (user request 2026-08-14). Returns null on
   // success or the reason it could not snap.
@@ -806,6 +834,17 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           onClose={() => setPopover(null)}
           onApply={isBlockLocked(popover.block) ? undefined : handleApplyEdit}
           onSnap={isBlockLocked(popover.block) ? undefined : handleSnap}
+          onTogglePin={
+            popover.block.block_type === "sku" &&
+            !popover.block.locked &&
+            !popover.block.completed &&
+            // committed manprg MOs are already fixed — pinning would
+            // double-commit them in the solver staging
+            !(popover.block.attrs ?? "").includes("current_state:") &&
+            !(lockedThroughH != null && popover.block.start_hour < lockedThroughH - 1e-9)
+              ? handleTogglePin
+              : undefined
+          }
         />
       )}
 

@@ -35,6 +35,9 @@ interface Props {
   /** Snap flush against the neighbouring block (setup hours respected).
    * Same contract as onApply: null = done, string = why not. */
   onSnap?: (blockId: string, dir: "left" | "right") => string | null;
+  /** Pin/unpin for the solver. Present only on production blocks the planner
+   * may pin (not locked, not completed, not inside the frozen window). */
+  onTogglePin?: (blockId: string, pinned: boolean) => void;
 }
 
 const LABEL: React.CSSProperties = { color: "#888", paddingRight: 12 };
@@ -61,7 +64,7 @@ function fromLocalInput(anchor: Date, value: string): number | null {
 
 const round1 = (v: number) => Math.round(v * 10) / 10;
 
-export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClose, onApply, onSnap }) => {
+export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClose, onApply, onSnap, onTogglePin }) => {
   // Draft field state, (re)seeded whenever a different block is opened.
   const [draft, setDraft] = useState<{ id: string; start: string; dur: string; qty: string } | null>(null);
   const [applyError, setApplyError] = useState<string | null>(null);
@@ -241,6 +244,12 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClo
           {block.locked && (
             <tr><td style={LABEL}>Locked</td><td>yes — not editable</td></tr>
           )}
+          {block.pinned && (
+            <tr>
+              <td style={LABEL}>Fixed for solver</td>
+              <td>📌 yes — the solver plans around it</td>
+            </tr>
+          )}
         </tbody>
       </table>
       {editable && applyError && (
@@ -257,6 +266,34 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClo
           }}
         >
           {applyError} — the change was NOT applied.
+        </div>
+      )}
+      {onTogglePin && (
+        <div style={{ marginTop: 8 }}>
+          <button
+            title={
+              block.pinned
+                ? "Let this block move again — drags, edits and the solver may reshuffle it"
+                : "Fix this block: it becomes immovable like an MO and the solver must plan the remaining demand around it"
+            }
+            style={{
+              fontSize: 12,
+              padding: "4px 10px",
+              borderRadius: 4,
+              border: block.pinned ? "1px solid #8d6e00" : "1px solid #37474f",
+              background: block.pinned ? "#fff8e1" : "#eceff1",
+              cursor: "pointer",
+              fontWeight: 600,
+            }}
+            onClick={() => onTogglePin(block.id, !block.pinned)}
+          >
+            {block.pinned ? "Unpin — let it move" : "📌 Fix for solver"}
+          </button>
+          <div style={{ fontSize: 11, color: "#888", marginTop: 4, maxWidth: 260 }}>
+            {block.pinned
+              ? "Pinned: immovable like an MO. The solver treats it as committed line-time and its kg counts toward the demand plan."
+              : "Pin when this SKU must run exactly here — the solver fills the rest of the demand around it."}
+          </div>
         </div>
       )}
       {editable && onSnap && (

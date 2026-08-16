@@ -93,8 +93,12 @@ export const GanttBlock: React.FC<Props> = ({
   // blocks placed by the seed/solver (user request 2026-08-14).
   const isCommittedMo = (block.attrs ?? "").includes("current_state:")
     && block.block_type === "sku";
+  const isPinned = Boolean(block.pinned);
   const baseLabel0 = blockLabel(block.block_type, block.sku, block.label);
-  const baseLabel = isCommittedMo ? `MO ${baseLabel0}` : baseLabel0;
+  // 📌 prefix: pinned blocks read as fixed at a glance, like "MO " does for
+  // committed manprg work.
+  const baseLabel = (isPinned ? "📌 " : "")
+    + (isCommittedMo ? `MO ${baseLabel0}` : baseLabel0);
   const hoursTxt = (Number.isFinite(block.run_hours) ? block.run_hours : 0).toFixed(1);
 
   // Estimate available characters from pixel width (~6.5px per char at 11px font)
@@ -127,10 +131,12 @@ export const GanttBlock: React.FC<Props> = ({
     typeof block.completion_pct === "number"
       ? `Completion: ${block.completion_pct.toFixed(1)}%${typeof block.cases_left === "number" ? ` · ${block.cases_left.toLocaleString()} cases left` : ""}`
       : "",
+    isPinned ? "Pinned for the solver — unpin in the block popup to move it" : "",
   ].filter(Boolean).join("\n");
 
-  const strokeColor = isDragging ? "#333" : "none";
-  const strokeW = isDragging ? 2 : 0;
+  // Pinned: a firm dark outline so fixed blocks read distinct from free ones.
+  const strokeColor = isDragging ? "#333" : isPinned ? "#37474f" : "none";
+  const strokeW = isDragging ? 2 : isPinned ? 1.8 : 0;
 
   return (
     <g

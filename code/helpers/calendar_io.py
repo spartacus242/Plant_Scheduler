@@ -236,6 +236,10 @@ def calendar_to_gantt_payload(df: pd.DataFrame) -> tuple[list[dict], list[dict]]
             # survive a save; `completed` drives the greyed render.
             "attrs": _txt(r.get("attrs")),
             "completed": "current_state:completed" in _txt(r.get("attrs")),
+            # Planner-pinned: fixed for the solver (attrs token 'pinned',
+            # toggled in the block popup). Exact-token check — never a
+            # substring match, so future tokens like 'unpinned' can't lie.
+            "pinned": "pinned" in _txt(r.get("attrs")).split(";"),
         }
         if btype in ("production", "trial"):
             schedule.append(block)
@@ -279,6 +283,12 @@ def gantt_payload_to_calendar(schedule: list[dict], windows: list[dict]) -> pd.D
 def _block_row(b: dict, btype: str) -> dict:
     start = float(b.get("start_hour", 0))
     end = float(b.get("end_hour", start))
+    # The pin toggle edits the payload BOOL; the CSV stores the attrs token.
+    # Reconcile here so a toggle survives the save and an unpin removes it.
+    tokens = [t for t in str(b.get("attrs") or "").split(";")
+              if t and t != "pinned"]
+    if b.get("pinned"):
+        tokens.append("pinned")
     return {
         "block_id": str(b.get("id") or _new_id()),
         "block_type": btype,
@@ -292,7 +302,7 @@ def _block_row(b: dict, btype: str) -> dict:
         "sku_description": str(b.get("sku_description") or ""),
         "qty_kg": _opt_kg(b.get("qty_kg")),
         "locked": bool(b.get("locked", False)),
-        "attrs": str(b.get("attrs") or ""),
+        "attrs": ";".join(tokens),
     }
 
 

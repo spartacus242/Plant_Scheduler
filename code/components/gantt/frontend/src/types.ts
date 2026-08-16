@@ -29,6 +29,9 @@ export interface ScheduleBlock {
   attrs?: string;
   /** Completed manprg history: greyed, immovable, no drag. */
   completed?: boolean;
+  /** Planner-pinned: fixed for the solver (attrs token 'pinned'). Immovable
+   * like an MO until unpinned in the block popup. */
+  pinned?: boolean;
 }
 
 export interface DemandTarget {

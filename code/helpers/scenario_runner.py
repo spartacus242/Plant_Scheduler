@@ -811,7 +811,7 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
     from helpers.plan_fill import (SOLVER_CIP_INTERVAL_STANDDOWN_H,
                                    coalesce_windows, committed_windows,
                                    last_sku_per_line, line_free_from,
-                                   subtract_committed)
+                                   pinned_blocks, subtract_committed)
 
     notes: list[str] = []
     dd = Path(data_dir) if Path(data_dir).name == "data" else Path(_dd())
@@ -829,11 +829,30 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
               lines=_ll(dd / "lines.csv"), cfg=cfg)
     blocks = cs.blocks
 
+    # Planner-pinned demand blocks (Plant Calendar popup: "Fix for solver").
+    # A pinned block is committed line-time exactly like a manprg MO — a
+    # blocked window the solver plans around, its kg crediting the demand
+    # targets, and part of the proposal calendar. It deliberately does NOT
+    # join `blocks` for line_free_from / last_sku_per_line: a block pinned
+    # deep in the fill region must not gate the whole line before it, and
+    # the changeover base belongs to the committed TAIL, not to a mid-
+    # horizon pin.
+    from helpers.calendar_io import load_calendar as _lcal
+    cal_path = dd / "calendar_blocks.csv"
+    pinned = pinned_blocks(_lcal(cal_path)) if cal_path.exists() else None
+    if pinned is not None and len(pinned):
+        blocks_all = _pd.concat([blocks, pinned], ignore_index=True)
+        notes.append(
+            f"{len(pinned)} planner-pinned block(s) held FIXED "
+            "(blocked windows + demand credit); the solver fills around them")
+    else:
+        blocks_all = blocks
+
     # 1. committed windows -> downtimes (existing line-downs kept). The
     # TRUE committed blocks are stashed alongside so the proposal calendar
     # can show them as production/trial/CIP instead of fake maintenance.
-    windows = committed_windows(blocks, H)
-    blocks.to_csv(work / "committed_blocks.csv", index=False)
+    windows = committed_windows(blocks_all, H)
+    blocks_all.to_csv(work / "committed_blocks.csv", index=False)
     dt_path = work / "downtimes.csv"
     dt = _pd.read_csv(dt_path) if dt_path.exists() else _pd.DataFrame(
         columns=["line_id", "line_name", "start_hour", "end_hour", "reason"])
@@ -917,7 +936,7 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
         while _b < H:
             week_bounds.append(_b)
             _b += 168.0
-        dem2, sub_notes = subtract_committed(dem, blocks,
+        dem2, sub_notes = subtract_committed(dem, blocks_all,
                                              week_bounds=week_bounds)
         dem2.to_csv(dem_path, index=False)
         notes.append(f"demand reduced by committed production on "

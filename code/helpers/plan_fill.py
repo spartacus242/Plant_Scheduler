@@ -24,6 +24,34 @@ import pandas as pd
 SOLVER_CIP_INTERVAL_STANDDOWN_H = 100_000
 
 
+def pinned_blocks(calendar: pd.DataFrame) -> pd.DataFrame:
+    """Planner-pinned production blocks: demand orders fixed to a line/time
+    on the Plant Calendar (attrs token 'pinned', toggled in the block popup).
+
+    They join the committed layer — blocked windows the solver must plan
+    around, and their kg credits the demand targets — but they must NEVER
+    move the fill gate or the changeover base: a block pinned deep in W35
+    would otherwise block fill of the whole line before it (the same trap
+    projected CIPs hit; see line_free_from).
+
+    Exact-token match on the ';'-separated attrs — a substring test would
+    also match future tokens like 'unpinned'. Blocks carrying a
+    current_state:* token are EXCLUDED even if pinned: they ARE manprg MOs,
+    already committed via build_current_state — staging them again would
+    double-block the window and double-credit their kg against demand.
+    """
+    if calendar is None or calendar.empty or "attrs" not in calendar.columns:
+        return (calendar.iloc[0:0] if calendar is not None
+                else pd.DataFrame())
+    attrs = calendar["attrs"].astype(str)
+    mask = (
+        attrs.str.split(";").apply(lambda ts: "pinned" in ts)
+        & ~attrs.str.contains("current_state:", regex=False)
+        & (calendar["block_type"].astype(str) == "production")
+    )
+    return calendar[mask]
+
+
 def committed_windows(blocks: pd.DataFrame, horizon_h: float) -> list[dict]:
     """Every committed block (production, trial, cip) as a blocked window.
 
