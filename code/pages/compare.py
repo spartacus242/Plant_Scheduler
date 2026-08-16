@@ -170,6 +170,48 @@ for _slug_b, _lbl, _cal_df, _stored, _res in (
     if _bits:
         st.info(f"**{_cname(_slug_b)}:** " + " · ".join(_bits))
 
+# ── Fill-window verdict (Scenario F proposals) ────────────────────────────
+# An F proposal shares its committed layer (manprg MOs, trials, projected
+# CIPs) with the official board BY CONSTRUCTION — the solver only decided
+# the fill region after each line's committed tail. Scoring whole calendars
+# against each other charged the proposal for changeovers/CIP the fill
+# necessarily costs while comparing unequal scopes (~2-week board vs 3-week
+# plan). The honest headline is both sides windowed to the fill region with
+# the SAME gates the solve was staged with (design doc
+# scenario-f-fill-the-tail-2026-08-14: honesty rules). Full-horizon numbers
+# remain below for the whole-board picture.
+_fill_gates = (right.get("metadata") or {}).get("fill_gates")
+if _fill_gates:
+    _lw = score_calendar(left_cal, week_label=f"{left_label} (fill window)",
+                         data_dir=dd, fill_gates=_fill_gates)
+    _rw = score_calendar(right_cal, week_label=f"{right_label} (fill window)",
+                         data_dir=dd, fill_gates=_fill_gates)
+    st.subheader("Fill-window verdict — what the solver actually decided")
+    st.caption(
+        "Both plans are cut to the fill region (after each line's committed "
+        "tail, same gates the solve was staged with) and judged against the "
+        "residual demand left after committed production. The committed "
+        "layer is identical on both sides and cancels out.")
+    _c1, _c2, _c3 = st.columns(3)
+    _lc = _lw.composite
+    _rc = _rw.composite
+    _c1.metric(f"{left_label} — fill window",
+               "n/a" if _lc is None else f"{_lc:g}")
+    _c2.metric(f"{right_label} — fill window",
+               "n/a" if _rc is None else f"{_rc:g}")
+    if _lc is not None and _rc is not None:
+        _c3.metric("Δ composite (fill window)", f"{_rc - _lc:+.1f}")
+    render_delta_strip(_lw, _rw,
+                       title=f"Δ fill window: {_cname(right_slug)} vs "
+                             f"{_cname(left_slug)}")
+    with st.expander("Show me why (fill window)"):
+        _wdeltas = delta_narrative(_lw, _rw)
+        if _wdeltas:
+            for _d in _wdeltas:
+                st.write(f"- {_d}")
+        else:
+            st.caption("No material differences inside the fill window.")
+
 # ── Visual preview: SEE the proposed plan before promoting it ─────────────
 # (user request 2026-08-14: visual confirmation that a proposed schedule
 # actually looks right before it overwrites the official one.)
@@ -240,6 +282,12 @@ with st.expander(f"📅 Preview {_cname(right_slug)} on a calendar (read-only)",
     )
 
 # KPI comparison table with Δ
+if _fill_gates:
+    st.subheader("Full horizon (committed layer + fill)")
+    st.caption(
+        "Whole-board numbers — includes the committed layer both plans "
+        "share, so deltas here mix the plant's own plan with the solver's "
+        "fill decisions. The fill-window verdict above isolates the latter.")
 rows = []
 sections = [
     ("composite", None, "Composite", True),

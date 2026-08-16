@@ -1196,12 +1196,105 @@ def load_demand(ref: Path) -> pd.DataFrame | None:
     return df
 
 
+def _apply_fill_window(
+    calendar: pd.DataFrame,
+    gates: dict[str, float],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Reduce a fill-mode calendar to the region the solver actually decided.
+
+    Scenario F fixes the committed plan (manprg MOs, trials, projected CIPs)
+    and only places fill after each line's committed WORK tail — the gate.
+    Scoring the whole calendar charges a proposal for a committed layer it
+    cannot touch, and compares unequal scopes (a ~2-week board vs a 3-week
+    plan). The window keeps, per line:
+      - every block past the gate (the fill region),
+      - every CIP block regardless of side (the clean history — dropping
+        pre-gate CIPs corrupts clock-since-last-clean for the fill region),
+      - the LAST pre-gate production block (the changeover base, so the
+        committed→fill boundary changeover is charged to the proposal).
+    Applied with the SAME gates to the official board, the shared committed
+    parts cancel in any delta — what remains is the fill decision itself.
+
+    Returns (windowed calendar, pre-gate committed production) — the latter
+    feeds the residual-demand subtraction.
+    """
+    if calendar.empty:
+        return calendar, calendar.iloc[0:0]
+    g = {str(k).strip().upper(): float(v) for k, v in (gates or {}).items()}
+    ln = calendar["line_name"].astype(str).str.strip().str.upper()
+    gate = ln.map(g).fillna(0.0)
+    end_h = pd.to_numeric(calendar["end_h"], errors="coerce").fillna(0.0)
+    pre = end_h <= gate + 1e-6
+    btype = calendar["block_type"].astype(str).str.lower()
+    committed_prod = calendar[pre & (btype == "production")]
+    keep = (~pre) | (btype == "cip")
+    if len(committed_prod):
+        base_idx = (
+            pd.to_numeric(committed_prod["end_h"], errors="coerce")
+            .groupby(ln[committed_prod.index])
+            .idxmax()
+        )
+        keep.loc[base_idx.dropna()] = True
+    return calendar[keep].copy(), committed_prod
+
+
+def _residual_fill_demand(
+    demand: pd.DataFrame,
+    committed_prod: pd.DataFrame,
+) -> tuple[pd.DataFrame, int]:
+    """Demand minus committed production — what the fill was ASKED to make.
+
+    Mirrors the staging subtraction (_overlay_fill step 4): committed kg
+    bucketed on TRUE ISO-Monday bounds in the resolved planning frame,
+    consumed per SKU with surplus carrying forward. qty_min/qty_max are
+    re-derived from the reduced target, and orders fully covered by the
+    committed plan are DROPPED — they are the plant's work, and counting
+    them "late" against the fill was the core unfairness this view fixes.
+
+    Returns (residual demand, number of fully-covered orders dropped).
+    """
+    from helpers.plan_fill import subtract_committed
+
+    if (demand is None or demand.empty
+            or "week_index" not in demand.columns
+            or "qty_target" not in demand.columns):
+        return demand, 0
+    week_bounds: list[float] | None = None
+    try:
+        from datetime import timedelta as _td
+
+        from helpers import horizon as _hz
+        from helpers.config import load_toml as _lt
+
+        hres = _hz.resolve(_lt())
+        mon0 = hres.anchor - _td(days=hres.anchor.weekday())
+        b = (mon0 + _td(days=7) - hres.anchor).total_seconds() / 3600.0
+        week_bounds = [0.0]
+        while b < float(hres.hours):
+            week_bounds.append(b)
+            b += 168.0
+    except Exception:  # noqa: BLE001 — scoring must not die on frame meta
+        week_bounds = None  # subtract_committed falls back to the 168h grid
+    residual, _notes = subtract_committed(
+        demand, committed_prod, week_bounds=week_bounds)
+    tgt = pd.to_numeric(residual["qty_target"], errors="coerce").fillna(0.0)
+    if "upper_pct" in residual.columns:
+        residual["qty_max"] = tgt * pd.to_numeric(
+            residual["upper_pct"], errors="coerce")
+    if "lower_pct" in residual.columns:
+        residual["qty_min"] = tgt * pd.to_numeric(
+            residual["lower_pct"], errors="coerce")
+    covered = tgt <= 0.5
+    return residual[~covered].copy(), int(covered.sum())
+
+
 def score_calendar(
     calendar: pd.DataFrame,
     *,
     week_label: str = "current",
     data_dir: Path | None = None,
     cfg: dict | None = None,
+    fill_gates: dict[str, float] | None = None,
 ) -> ScorecardResult:
     cfg = cfg or scorecard_config()
     ref = reference_dir(data_dir) if data_dir else reference_dir()
@@ -1238,6 +1331,17 @@ def score_calendar(
     for _c in ("start_h", "end_h", "qty_kg"):
         if _c in calendar.columns:
             calendar[_c] = pd.to_numeric(calendar[_c], errors="coerce")
+
+    if fill_gates is not None:
+        calendar, _committed_prod = _apply_fill_window(calendar, fill_gates)
+        n_covered = 0
+        if demand is not None:
+            demand, n_covered = _residual_fill_demand(demand, _committed_prod)
+        notes.append(
+            "Fill-window view: committed blocks before each line's gate are "
+            "excluded (changeover base + CIP history kept); demand reduced "
+            f"by committed production ({n_covered} fully-covered order(s) "
+            "left to the plant's own plan).")
 
     raw = {
         "changeovers": score_changeovers(calendar, cfg, co_map),

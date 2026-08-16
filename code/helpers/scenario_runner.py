@@ -869,8 +869,10 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
     if init_path.exists():
         init = _pd.read_csv(init_path)
         n_gated = 0
+        gates: dict[str, float] = {}
         for idx, row in init.iterrows():
             ln = str(row.get("line_name", "")).strip().upper()
+            gates[ln] = float(_math.ceil(max(free.get(ln, 0.0), now_floor)))
             if ln in free or now_floor:
                 gate = max(free.get(ln, 0.0), now_floor)
                 init.at[idx, "available_from_hour"] = int(_math.ceil(gate))
@@ -880,6 +882,12 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
             if "carryover_run_hours_since_last_cip_at_t0" in init.columns:
                 init.at[idx, "carryover_run_hours_since_last_cip_at_t0"] = 0
         init.to_csv(init_path, index=False)
+        # The per-line fill boundary, persisted for fill-window scoring:
+        # the scorecard needs the SAME gates the solver was staged with to
+        # window a proposal (and the official board) to the fill region.
+        import json as _json
+        (work / "fill_gates.json").write_text(
+            _json.dumps({"gates": gates}, indent=1), encoding="utf-8")
         notes.append(f"{n_gated} line(s) gated to their committed tail; "
                      f"{len(last_sku)} changeover base SKU(s) set")
 
@@ -1353,6 +1361,17 @@ def run_scenario(
             work / "downtimes.csv" if (work / "downtimes.csv").exists() else None,
         )
     score = score_calendar(calendar, week_label=scenario["name"], data_dir=data_dir)
+    fill_gates = None
+    if fill_mode:
+        gates_path = work / "fill_gates.json"
+        if gates_path.exists():
+            try:
+                import json as _json
+
+                fill_gates = _json.loads(
+                    gates_path.read_text(encoding="utf-8")).get("gates") or None
+            except Exception:  # noqa: BLE001 — gates are an enhancement, not a gate
+                fill_gates = None
     return {
         "ok": True,
         "returncode": proc.returncode,
@@ -1362,6 +1381,7 @@ def run_scenario(
         "feasibility": feas,
         "relax_level": relax_level,
         "diag_blockages": diag_blockages,
+        "fill_gates": fill_gates,
     }
 
 
@@ -1396,6 +1416,11 @@ def save_scenario_version(
         raise ValueError("Version slots full (5). Delete a version before generating scenarios.")
 
     sc = result["scorecard"]
+    extra = {}
+    if result.get("fill_gates"):
+        # Fill-window scoring (Compare page) needs the staging gates saved
+        # WITH the proposal — they cannot be re-derived from the calendar.
+        extra["fill_gates"] = result["fill_gates"]
     return save_version(
         scenario["name"],
         result["calendar"],
@@ -1405,4 +1430,5 @@ def save_scenario_version(
         source=source,
         pros="",
         cons="",
+        extra_meta=extra or None,
     )

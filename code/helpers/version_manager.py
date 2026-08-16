@@ -71,6 +71,7 @@ def save_version(
     cons: str = "",
     notes: str = "",
     source: str = "manual",
+    extra_meta: dict[str, Any] | None = None,
 ) -> str:
     existing = list_versions(data_dir)
     if len(existing) >= MAX_VERSIONS:
@@ -90,6 +91,10 @@ def save_version(
         "notes": notes,
         "scorecard": scorecard,
     }
+    # Structured extras (e.g. Scenario F fill_gates) ride alongside the core
+    # keys; they must never shadow them.
+    for k, v in (extra_meta or {}).items():
+        meta.setdefault(k, v)
     safe_write_json(meta, dest / "metadata.json")
     return slug
 

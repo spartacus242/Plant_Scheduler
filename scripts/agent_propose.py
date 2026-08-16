@@ -122,6 +122,8 @@ def main() -> int:
         pros="Runnable as-is: current MOs preserved, downtimes + CIP intervals hard, component-blocked demand capped at achievable.",
         cons="Review the DNS trims and the composite trade-offs ('show me why') before promoting.",
         notes="\n\n".join(reasons), source="agent:propose",
+        extra_meta={"fill_gates": result["fill_gates"]}
+        if result.get("fill_gates") else None,
     )
 
     report = {
@@ -137,6 +139,19 @@ def main() -> int:
         "dns_blocks_in_proposal": int(len(flagged)),
         "dns_kg_in_proposal": flagged_kg,
     }
+    # Fill-window verdict (Scenario F): the committed layer cancels out —
+    # this is the honest headline for an F proposal (see Compare page).
+    if result.get("fill_gates"):
+        gates = result["fill_gates"]
+        base_w = score_calendar(official, week_label="official (fill window)",
+                                data_dir=DATA, fill_gates=gates)
+        prop_w = score_calendar(proposal, week_label="proposal (fill window)",
+                                data_dir=DATA, fill_gates=gates)
+        report["fill_window"] = {
+            "composite_official": base_w.composite,
+            "composite_proposal": prop_w.composite,
+            "narrative": delta_narrative(base_w, prop_w)[:10],
+        }
     out = json.dumps(report, indent=2)
     if args.out:
         Path(args.out).write_text(out, encoding="utf-8")
