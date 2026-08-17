@@ -161,6 +161,193 @@ else:
 
 st.divider()
 
+def _feasibility_summary(feas: dict) -> str:
+    """One-line human summary of a solver feasibility_report."""
+    lvl = feas.get("relax_level", 0)
+    mode = feas.get("relax_mode", "hard")
+    status = feas.get("status", "?")
+    if status == "INFEASIBLE":
+        return f"INFEASIBLE at max relax level {lvl} ({mode}) — see report below."
+    if lvl == 0:
+        base = "Solved at relax level 0 (hard constraints)"
+    else:
+        base = f"Solved at relax level {lvl} ({mode})"
+    late = feas.get("late_orders") or []
+    short = feas.get("orders_short_of_qmin") or []
+    extras = []
+    if late:
+        ids = ", ".join(str(o.get("order_id")) for o in late[:4])
+        extras.append(f"{len(late)} order(s) late ({ids})")
+    if short:
+        ids = ", ".join(str(o.get("order_id")) for o in short[:4])
+        extras.append(f"{len(short)} order(s) short of min ({ids})")
+    moved = feas.get("week_moved_orders") or []
+    if moved:
+        ids = ", ".join(str(o.get("order_id")) for o in moved[:4])
+        extras.append(f"{len(moved)} order(s) moved out of AZAP's week ({ids})")
+    elif feas.get("cross_week"):
+        extras.append("cross-week on, no order left its AZAP week")
+    return " — ".join([base] + extras) if extras else base
+
+
+def _generate_one(
+    scenario: dict,
+    time_limit: int,
+    overrides: dict | None = None,
+    *,
+    cross_week: bool = False,
+    cip_flex: bool = False,
+    work_dir_patch=None,
+) -> bool:
+    """Solve one scenario, render its result, and save it as a version."""
+    scenario = dict(scenario)
+    scenario["cross_week"] = bool(cross_week)
+    scenario["cip_flex"] = bool(cip_flex)
+    with st.status(f"Solving {scenario['name']}...", expanded=True) as status:
+        st.write(scenario["intent"])
+        if cross_week or cip_flex:
+            modes = []
+            if cross_week:
+                modes.append("cross-week (AZAP week is a preference)")
+            if cip_flex:
+                modes.append("flexible CIP timing (earlier only)")
+            st.caption("Flexibility: " + "; ".join(modes))
+        try:
+            result = run_scenario(scenario, dd, time_limit=int(time_limit),
+                                  overrides=overrides,
+                                  work_dir_patch=work_dir_patch)
+        except Exception as e:
+            status.update(label=f"{scenario['name']} failed", state="error")
+            st.exception(e)
+            return False
+        if not result["ok"]:
+            feas = result.get("feasibility")
+            summary = _feasibility_summary(feas) if feas else "no schedule"
+            status.update(label=f"{scenario['name']} — {summary}", state="error")
+            with st.expander("Solver log"):
+                if feas:
+                    st.markdown("**Feasibility report**")
+                    st.json(feas)
+                blockages = (result.get("diag_blockages") or "").strip()
+                if blockages:
+                    st.markdown("**Blockages diagnostic**")
+                    st.code(blockages, language="text")
+                st.code(result.get("log") or "(empty)", language="text")
+            return False
+        try:
+            slug = save_scenario_version(scenario, result, dd)
+        except ValueError as e:
+            st.error(str(e))
+            status.update(label=str(e), state="error")
+            return False
+        status.update(label=f"{scenario['name']} → `{slug}`", state="complete")
+        feas = result.get("feasibility")
+        if feas:
+            st.caption("Solver: " + _feasibility_summary(feas))
+        sc = result["scorecard"]
+        st.metric("Composite", f"{sc.composite:.0f}" if sc.composite is not None else "n/a")
+        st.markdown("**vs baseline**")
+        for d in delta_narrative(baseline, sc):
+            st.write(f"- {d}")
+
+        # Preview the generated schedule as a Gantt WITHOUT promoting it to the
+        # official calendar. Read-only view of the solver's calendar.
+        cal = result.get("calendar")
+        if cal is not None and not cal.empty:
+            with st.expander(f"Preview {scenario['name']} schedule (Gantt — not the official calendar)", expanded=True):
+                try:
+                    from components.gantt import gantt_calendar
+                    from helpers.calendar_io import calendar_to_gantt_payload
+                    from helpers.scorecard_engine import gantt_kpis
+                    _sched, _win = calendar_to_gantt_payload(cal)
+                    gantt_calendar(
+                        schedule=_sched,
+                        cip_windows=_win,
+                        capabilities=caps,
+                        changeovers=changeovers,
+                        demand_targets=demand_targets,
+                        lines=lines,
+                        holding_area=[],
+                        side_downtime={},
+                        kpis=gantt_kpis(cal, demand_targets, caps, data_dir=dd),
+                        config={
+                            "planning_anchor": sched_cfg.get("planning_start_date", "2026-02-15 00:00:00"),
+                            "cip_duration_h": int(cip_cfg.get("duration_h", 6)),
+                            "min_run_hours": int(sched_cfg.get("min_run_hours", 4)),
+                            "horizon_hours": int(sched_cfg.get("horizon_hours", 336)),
+                            "read_only": True,
+                        },
+                        height=600,
+                        key=f"gantt_preview_{scenario['id']}",
+                    )
+                except Exception as _e:
+                    st.warning(f"Gantt preview unavailable: {_e}")
+        with st.expander("Raw solver log"):
+            st.code((result.get("log") or "")[-4000:], language="text")
+        return True
+
+
+
+# ═══ The daily driver: Fill the tail (Scenario F) ════════════════════════
+st.subheader("▶ Fill the tail — the daily run (Scenario F)")
+st.caption(
+    "The committed plan (manprg + cip_info) stays FIXED; the solver only "
+    "fills the remaining line-time with netted demand. Pipeline: live "
+    "staging → netting (committed MOs credited) → format-aware greedy seed "
+    "→ pass 1 (maximize fill, nearest week first) → pass 2 (minimize "
+    "FFS/topload changeovers, fill held ≥ 99%). Identical engine and stock "
+    "policy to the agent's proposals — running it here IS the manual process."
+)
+_fc1, _fc2 = st.columns([1, 2])
+with _fc1:
+    _f_tl = st.selectbox(
+        "Solve budget", [300, 600, 1200], index=1,
+        format_func=lambda s: f"{s // 60} min per pass", key="f_budget",
+        help="Two passes each get this budget (plus a short anchor step).")
+with _fc2:
+    _f_dns = st.checkbox(
+        "Cap component-blocked SKUs (stock policy)", value=True, key="f_dns",
+        help="The approved agent policy: DO-NOT-SCHEDULE SKUs get qty_min→0 "
+             "and qty_max capped at what components actually support.")
+if st.button("Run Fill the tail", type="primary", key="run_fill_tail"):
+    _f_patch = None
+    if _f_dns:
+        try:
+            from helpers.agent_policy import dns_ratios as _dnsr
+            from helpers.agent_policy import trim_dns_demand as _trim
+            from stockcheck.api import stock_check_report as _stockrep
+            _dns_map = _dnsr(_stockrep(dd, dd / "reference"))
+
+            def _f_patch(work):
+                _dp = work / "demand_plan.csv"
+                _dm = _pd.read_csv(_dp, dtype={"sku": str})
+                _tr, _pnotes = _trim(_dm, _dns_map)
+                _tr.to_csv(_dp, index=False)
+                return [f"DNS trim: {len(_pnotes)} order(s) adjusted "
+                        f"({len(_dns_map)} component-blocked SKU(s))"] + _pnotes[:5]
+        except Exception as _pe:  # noqa: BLE001
+            st.warning(f"Stock policy unavailable — solving without it: {_pe}")
+            _f_patch = None
+    _f_scn = next(_s for _s in SCENARIOS if _s["id"] == "F")
+    _generate_one(_f_scn, int(_f_tl), work_dir_patch=_f_patch)
+
+st.divider()
+st.subheader("Saved versions")
+for v in list_versions(dd):
+    sc = (v.get("scorecard") or {}).get("composite")
+    st.write(f"- **{display_name(v['slug'], v.get('name'))}** (`{v['slug']}`) · composite={sc} · {v.get('source', '')}")
+
+
+st.divider()
+_show_diag = st.toggle(
+    "Show diagnostics & experiments (A–E scenarios, rough draft, custom weights)",
+    value=False, key="show_diag",
+    help="Everything below is for digging into solver behavior — the daily "
+         "process is the Fill-the-tail run above.")
+if not _show_diag:
+    st.stop()
+
+
 # -- Rough-draft schedule straight from the demand plan (no solver) --------
 st.subheader("Rough draft schedule from the demand plan (no solver)")
 st.caption(
@@ -356,129 +543,6 @@ if single_phase_run:
 st.caption(f"Versions in use: {len(list_versions(dd))} / 5. Generating will replace prior Scenario X slots when needed.")
 
 
-def _feasibility_summary(feas: dict) -> str:
-    """One-line human summary of a solver feasibility_report."""
-    lvl = feas.get("relax_level", 0)
-    mode = feas.get("relax_mode", "hard")
-    status = feas.get("status", "?")
-    if status == "INFEASIBLE":
-        return f"INFEASIBLE at max relax level {lvl} ({mode}) — see report below."
-    if lvl == 0:
-        base = "Solved at relax level 0 (hard constraints)"
-    else:
-        base = f"Solved at relax level {lvl} ({mode})"
-    late = feas.get("late_orders") or []
-    short = feas.get("orders_short_of_qmin") or []
-    extras = []
-    if late:
-        ids = ", ".join(str(o.get("order_id")) for o in late[:4])
-        extras.append(f"{len(late)} order(s) late ({ids})")
-    if short:
-        ids = ", ".join(str(o.get("order_id")) for o in short[:4])
-        extras.append(f"{len(short)} order(s) short of min ({ids})")
-    moved = feas.get("week_moved_orders") or []
-    if moved:
-        ids = ", ".join(str(o.get("order_id")) for o in moved[:4])
-        extras.append(f"{len(moved)} order(s) moved out of AZAP's week ({ids})")
-    elif feas.get("cross_week"):
-        extras.append("cross-week on, no order left its AZAP week")
-    return " — ".join([base] + extras) if extras else base
-
-
-def _generate_one(
-    scenario: dict,
-    time_limit: int,
-    overrides: dict | None = None,
-    *,
-    cross_week: bool = False,
-    cip_flex: bool = False,
-) -> bool:
-    """Solve one scenario, render its result, and save it as a version."""
-    scenario = dict(scenario)
-    scenario["cross_week"] = bool(cross_week)
-    scenario["cip_flex"] = bool(cip_flex)
-    with st.status(f"Solving {scenario['name']}...", expanded=True) as status:
-        st.write(scenario["intent"])
-        if cross_week or cip_flex:
-            modes = []
-            if cross_week:
-                modes.append("cross-week (AZAP week is a preference)")
-            if cip_flex:
-                modes.append("flexible CIP timing (earlier only)")
-            st.caption("Flexibility: " + "; ".join(modes))
-        try:
-            result = run_scenario(scenario, dd, time_limit=int(time_limit), overrides=overrides)
-        except Exception as e:
-            status.update(label=f"{scenario['name']} failed", state="error")
-            st.exception(e)
-            return False
-        if not result["ok"]:
-            feas = result.get("feasibility")
-            summary = _feasibility_summary(feas) if feas else "no schedule"
-            status.update(label=f"{scenario['name']} — {summary}", state="error")
-            with st.expander("Solver log"):
-                if feas:
-                    st.markdown("**Feasibility report**")
-                    st.json(feas)
-                blockages = (result.get("diag_blockages") or "").strip()
-                if blockages:
-                    st.markdown("**Blockages diagnostic**")
-                    st.code(blockages, language="text")
-                st.code(result.get("log") or "(empty)", language="text")
-            return False
-        try:
-            slug = save_scenario_version(scenario, result, dd)
-        except ValueError as e:
-            st.error(str(e))
-            status.update(label=str(e), state="error")
-            return False
-        status.update(label=f"{scenario['name']} → `{slug}`", state="complete")
-        feas = result.get("feasibility")
-        if feas:
-            st.caption("Solver: " + _feasibility_summary(feas))
-        sc = result["scorecard"]
-        st.metric("Composite", f"{sc.composite:.0f}" if sc.composite is not None else "n/a")
-        st.markdown("**vs baseline**")
-        for d in delta_narrative(baseline, sc):
-            st.write(f"- {d}")
-
-        # Preview the generated schedule as a Gantt WITHOUT promoting it to the
-        # official calendar. Read-only view of the solver's calendar.
-        cal = result.get("calendar")
-        if cal is not None and not cal.empty:
-            with st.expander(f"Preview {scenario['name']} schedule (Gantt — not the official calendar)", expanded=True):
-                try:
-                    from components.gantt import gantt_calendar
-                    from helpers.calendar_io import calendar_to_gantt_payload
-                    from helpers.scorecard_engine import gantt_kpis
-                    _sched, _win = calendar_to_gantt_payload(cal)
-                    gantt_calendar(
-                        schedule=_sched,
-                        cip_windows=_win,
-                        capabilities=caps,
-                        changeovers=changeovers,
-                        demand_targets=demand_targets,
-                        lines=lines,
-                        holding_area=[],
-                        side_downtime={},
-                        kpis=gantt_kpis(cal, demand_targets, caps, data_dir=dd),
-                        config={
-                            "planning_anchor": sched_cfg.get("planning_start_date", "2026-02-15 00:00:00"),
-                            "cip_duration_h": int(cip_cfg.get("duration_h", 6)),
-                            "min_run_hours": int(sched_cfg.get("min_run_hours", 4)),
-                            "horizon_hours": int(sched_cfg.get("horizon_hours", 336)),
-                            "read_only": True,
-                        },
-                        height=600,
-                        key=f"gantt_preview_{scenario['id']}",
-                    )
-                except Exception as _e:
-                    st.warning(f"Gantt preview unavailable: {_e}")
-        with st.expander("Raw solver log"):
-            st.code((result.get("log") or "")[-4000:], language="text")
-        return True
-
-
 if st.button("Generate selected scenarios", type="primary", disabled=not selected):
     if baseline_cal.empty:
         st.error("Need a baseline calendar first.")
@@ -612,9 +676,3 @@ if st.button("Generate custom scenario", type="primary"):
         cross_week=cross_week_on, cip_flex=cip_flex_on,
     ):
         st.success("Done. Open **Version Compare** to inspect side-by-side and add pros/cons.")
-
-st.divider()
-st.subheader("Saved versions")
-for v in list_versions(dd):
-    sc = (v.get("scorecard") or {}).get("composite")
-    st.write(f"- **{display_name(v['slug'], v.get('name'))}** (`{v['slug']}`) · composite={sc} · {v.get('source', '')}")
