@@ -23,7 +23,12 @@ class HoldingBlock:
     run_hours: float
     line_name: str = ""
     line_id: int = 0
-    block_type: str = "production"
+    # FRONTEND vocabulary ("sku", not "production"): this dataclass exists
+    # solely to build Gantt payloads. A "production"-typed card dragged onto
+    # a line dodged the pin button's block_type === "sku" gate and the KPI
+    # counters' isProduction check (user report 2026-08-17: no pin option on
+    # a holding-placed 280478-W35). The save path maps sku -> production.
+    block_type: str = "sku"
     sku_description: str = ""
     start_hour: float = 0.0
     end_hour: float = 0.0

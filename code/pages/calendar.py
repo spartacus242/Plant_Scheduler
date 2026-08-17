@@ -452,6 +452,35 @@ for _hb in st.session_state.get("cal_holding_from_solve", []):
     if _hb.get("id") not in _existing_ids:
         st.session_state.setdefault("cal_holding", []).append(_hb)
         _existing_ids.add(_hb.get("id"))
+
+# Past demand weeks never belong in holding (user rule 2026-08-17): a week
+# that is over cannot be scheduled — its unmet tonnage is a MISS, tracked by
+# Reconcile/netting, not a card to drag. Ages out stale cards that persisted
+# in the session from earlier solves too. Cards without a -W suffix (blocks
+# dragged off the board) are kept — they carry no week claim.
+def _holding_is_current(entry: dict) -> bool:
+    import re as _re
+    _m = _re.search(r"-W(\d+)$", str(entry.get("order_id", "")))
+    if not _m:
+        return True
+    _base = _demand_base_iso_week()
+    if _base is None:
+        return True
+    from datetime import date as _date
+    return _base + int(_m.group(1)) >= _date.today().isocalendar()[1]
+
+_before = len(st.session_state.get("cal_holding", []))
+st.session_state["cal_holding"] = [
+    b for b in st.session_state.get("cal_holding", []) if _holding_is_current(b)]
+# Legacy cards persisted with the Python-side type; the Gantt vocabulary is
+# "sku" — anything else hides the pin button once the card lands on a line.
+for _b in st.session_state["cal_holding"]:
+    if _b.get("block_type") == "production":
+        _b["block_type"] = "sku"
+_aged_out = _before - len(st.session_state["cal_holding"])
+if _aged_out:
+    st.caption(f"🗑️ {_aged_out} past-week card(s) removed from holding "
+               "(their demand week is over — misses live on the Reconcile page).")
 _auto_held = len(st.session_state.get("cal_holding_from_solve", []))
 if _auto_held:
     st.caption(

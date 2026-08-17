@@ -89,3 +89,15 @@ def test_holding_block_payload_shape():
     payload = blocks[0].to_payload()
     for key in ("id", "order_id", "sku", "qty_kg", "run_hours", "block_type"):
         assert key in payload
+
+
+def test_payload_block_type_is_frontend_vocabulary():
+    """Holding payloads speak the Gantt's vocabulary: "sku", never
+    "production" — a production-typed card dragged onto a line dodged the
+    pin gate and the KPI production checks (user report 2026-08-17)."""
+    from helpers.holding_builder import HoldingBlock
+
+    hb = HoldingBlock(id="h1", line_id=0, line_name="P09", order_id="X-W1",
+                      sku="111", sku_description="", start_hour=0.0,
+                      end_hour=1.0, run_hours=1.0, qty_kg=100.0)
+    assert hb.to_payload()["block_type"] == "sku"
