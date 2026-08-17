@@ -70,6 +70,7 @@ if not versions:
 # display_name() remaps legacy on-disk names (e.g. the azap_baseline slug)
 # without renaming anything under data/versions/.
 names = {v["slug"]: display_name(v["slug"], v.get("name")) for v in versions}
+names_meta = {v["slug"]: v for v in versions}
 
 # ── Version colors: every version's data is tinted with ITS OWN color
 # everywhere on this page; the official schedule stays default/white
@@ -227,6 +228,19 @@ with st.expander(f"📅 Preview {_cname(right_slug)} on a calendar (read-only)",
 
     _cfg_prev = _lt()
     _anchor_prev = _pa(_cfg_prev)
+    # Render the preview in the VERSION'S OWN frame: a version solved on a
+    # newer rolling anchor than the un-rolled board would otherwise draw a
+    # week early (frame-shift bug, 2026-08-17).
+    if right_slug != OFFICIAL_KEY:
+        try:
+            from datetime import datetime as _dtf
+
+            _va = str((names_meta.get(right_slug) or {}).get(
+                "planning_anchor") or "").strip()
+            if _va:
+                _anchor_prev = _dtf.strptime(_va, "%Y-%m-%d %H:%M:%S")
+        except (ValueError, TypeError, AttributeError, NameError):
+            pass
     _sched_prev, _win_prev = calendar_to_gantt_payload(right_cal)
     # read-only: every block locked, so drags/edits are rejected in place
     for _b in _sched_prev + _win_prev:
@@ -450,9 +464,14 @@ for v in versions:
             rename_version(slug, new_name, dd)
             st.rerun()
         if b.button("Load into calendar", key=f"load_{slug}"):
+            from helpers.version_manager import calendar_in_board_frame
             data = load_version(slug, dd)
-            save_calendar(data["calendar"], dd / "calendar_blocks.csv")
-            st.success("Loaded into official calendar_blocks.csv")
+            _cal_bf, _shift = calendar_in_board_frame(
+                data["calendar"], slug, dd)
+            save_calendar(_cal_bf, dd / "calendar_blocks.csv")
+            _note = (f" (hours re-based {_shift:+.0f}h into the board's "
+                     "frame)" if _shift else "")
+            st.success(f"Loaded into official calendar_blocks.csv{_note}")
         if c.button("Promote to official", key=f"promo_{slug}"):
             promote_version(slug, dd)
             st.success("Promoted")

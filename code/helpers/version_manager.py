@@ -91,6 +91,18 @@ def save_version(
         "notes": notes,
         "scorecard": scorecard,
     }
+    # Stamp the TIME FRAME the hours are in (audit 2026-08-17): with a
+    # rolling anchor a version solved today and a board anchored last
+    # Monday disagree by whole days — promoting hours verbatim rendered a
+    # Monday solve one week in the past (fill "back-filled W33", committed
+    # MOs "shifted"). Frame reconciliation happens at promote/load.
+    try:
+        from helpers import horizon as _hzm
+        from helpers.config import load_toml as _ltm
+        meta["planning_anchor"] = (
+            f"{_hzm.resolve(_ltm()).anchor:%Y-%m-%d %H:%M:%S}")
+    except Exception:  # noqa: BLE001
+        pass
     # Structured extras (e.g. Scenario F fill_gates) ride alongside the core
     # keys; they must never shadow them.
     for k, v in (extra_meta or {}).items():
@@ -132,6 +144,18 @@ def upsert_version(
         "notes": notes,
         "scorecard": scorecard,
     }
+    # Stamp the TIME FRAME the hours are in (audit 2026-08-17): with a
+    # rolling anchor a version solved today and a board anchored last
+    # Monday disagree by whole days — promoting hours verbatim rendered a
+    # Monday solve one week in the past (fill "back-filled W33", committed
+    # MOs "shifted"). Frame reconciliation happens at promote/load.
+    try:
+        from helpers import horizon as _hzm
+        from helpers.config import load_toml as _ltm
+        meta["planning_anchor"] = (
+            f"{_hzm.resolve(_ltm()).anchor:%Y-%m-%d %H:%M:%S}")
+    except Exception:  # noqa: BLE001
+        pass
     safe_write_json(meta, dest / "metadata.json")
     return slug
 
@@ -187,13 +211,72 @@ def delete_all_versions(data_dir: Path) -> None:
         vd.mkdir(parents=True, exist_ok=True)
 
 
+def _read_meta(vdir: Path) -> dict:
+    import json
+    p = vdir / "metadata.json"
+    try:
+        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def board_frame_shift_h(slug: str, data_dir: Path) -> float:
+    """Hours to ADD to this version's block hours so they land in the
+    official board's frame (toml planning_start_date). 0 when the frames
+    match or the version predates frame stamping (assume board frame)."""
+    from datetime import datetime as _dt
+
+    meta = _read_meta(versions_dir(data_dir) / slug)
+    va = str(meta.get("planning_anchor") or "").strip()
+    if not va:
+        return 0.0
+    try:
+        v_anchor = _dt.strptime(va, "%Y-%m-%d %H:%M:%S")
+        b_anchor = planning_anchor()
+        return (v_anchor - b_anchor).total_seconds() / 3600.0
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def calendar_in_board_frame(
+    calendar: pd.DataFrame, slug: str, data_dir: Path
+) -> tuple[pd.DataFrame, float]:
+    """Re-base a version's calendar into the official board's frame.
+
+    Returns (calendar, shift_h). A version solved on a newer rolling anchor
+    than the (un-rolled) board shifts FORWARD by the gap so wall-clock
+    positions are preserved; after the board rolls, older versions shift
+    back the same way. Hours-only transform — nothing else changes.
+    """
+    shift = board_frame_shift_h(slug, data_dir)
+    if abs(shift) < 1e-9:
+        return calendar, 0.0
+    cal = calendar.copy()
+    for col in ("start_h", "end_h"):
+        if col in cal.columns:
+            cal[col] = pd.to_numeric(cal[col], errors="coerce") + shift
+    return cal, shift
+
+
 def promote_version(slug: str, data_dir: Path) -> None:
-    """Copy version calendar to official calendar_blocks.csv."""
+    """Version calendar becomes the official calendar_blocks.csv — hours
+    re-based into the board's frame (see calendar_in_board_frame)."""
     _validate_slug(slug)
     vdir = versions_dir(data_dir) / slug
     src = vdir / "calendar_blocks.csv"
-    if src.exists():
-        shutil.copy2(src, Path(data_dir) / "calendar_blocks.csv")
+    if not src.exists():
+        return
+    from helpers.calendar_io import load_calendar
+    official = Path(data_dir) / "calendar_blocks.csv"
+    if official.exists():
+        bdir = Path(data_dir) / "_backups"
+        bdir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(official, bdir / (
+            f"calendar_blocks.pre-promote."
+            f"{datetime.now():%Y%m%d-%H%M%S}.csv"))
+    cal = load_calendar(src)
+    cal, _shift = calendar_in_board_frame(cal, slug, data_dir)
+    save_calendar(cal, official)
 
 
 def export_version_excel(slug: str, data_dir: Path) -> bytes:
