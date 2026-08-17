@@ -1851,8 +1851,11 @@ def main() -> None:
                         _sta = _s2a.Solve(m2)
                         if _sta in (cp_model.FEASIBLE, cp_model.OPTIMAL):
                             _resp = _s2a.ResponseProto()
+                            # ortools 9.15's proto wrapper has no ClearField;
+                            # ClearHints() empties the hint, then the proto's
+                            # repeated fields accept the full assignment.
+                            m2.ClearHints()
                             _proto = m2.Proto()
-                            _proto.ClearField("solution_hint")
                             _proto.solution_hint.vars.extend(
                                 range(len(_resp.solution)))
                             _proto.solution_hint.values.extend(_resp.solution)
