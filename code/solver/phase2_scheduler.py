@@ -1822,8 +1822,9 @@ def main() -> None:
                         )
                         _hinted = 0
                         for _grp in ("present", "seg_b_present", "run_h",
-                                     "seg_a_start", "seg_a_run",
-                                     "seg_b_start", "seg_b_run"):
+                                     "seg_a_start", "seg_a_run", "seg_a_end",
+                                     "seg_b_start", "seg_b_run", "seg_b_end",
+                                     "eff_end"):
                             for _key, _var in vars_dict[_grp].items():
                                 m2.AddHint(v2[_grp][_key],
                                            solver.Value(_var))
@@ -1833,9 +1834,38 @@ def main() -> None:
                             DATA_DIR, "solving", "active",
                             f"pass 2: min changeovers, fill floored "
                             f"({int(tl)}s)")
+                        # The floor excludes ~99% of the feasible space, so
+                        # pass 2 lives or dies on starting FROM pass 1's
+                        # solution. A partial hint is not enough: CP-SAT's
+                        # hint repair abandoned completing the ~60k derived
+                        # vars and went UNKNOWN in 600s (run 20), yet pinning
+                        # the hinted vars solves OPTIMAL in seconds. So:
+                        # anchor-solve with the hinted vars FIXED to
+                        # materialize a complete solution, then install that
+                        # full assignment as the hint for the real solve —
+                        # complete hints are adopted as the incumbent.
+                        _s2a = cp_model.CpSolver()
+                        _s2a.parameters.num_search_workers = 8
+                        _s2a.parameters.max_time_in_seconds = min(120.0, tl)
+                        _s2a.parameters.fix_variables_to_their_hinted_value = True
+                        _sta = _s2a.Solve(m2)
+                        if _sta in (cp_model.FEASIBLE, cp_model.OPTIMAL):
+                            _resp = _s2a.ResponseProto()
+                            _proto = m2.Proto()
+                            _proto.ClearField("solution_hint")
+                            _proto.solution_hint.vars.extend(
+                                range(len(_resp.solution)))
+                            _proto.solution_hint.values.extend(_resp.solution)
+                            log(f"[two-pass] anchor {_s2a.StatusName(_sta)}: "
+                                f"complete {len(_resp.solution):,}-var hint "
+                                "installed (pass 1's plan as incumbent)")
+                        else:
+                            log(f"[two-pass] anchor {_s2a.StatusName(_sta)} — "
+                                "falling back to the partial hint")
                         _s2 = cp_model.CpSolver()
                         _s2.parameters.num_search_workers = 8
                         _s2.parameters.max_time_in_seconds = tl
+                        _s2.parameters.repair_hint = True
                         _cb2 = _ProgressCallback(DATA_DIR, label_prefix="P2co: ")
                         _st2 = _s2.Solve(m2, _cb2)
                         if _st2 in (cp_model.FEASIBLE, cp_model.OPTIMAL):
