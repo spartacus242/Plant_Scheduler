@@ -1242,6 +1242,7 @@ def run_scenario(
     python_exe: str | None = None,
     overrides: dict[str, Any] | None = None,
     work_dir_patch: Any | None = None,
+    progress_cb: Any | None = None,
 ) -> dict[str, Any]:
     """Run one scenario. Returns {ok, calendar, scorecard, log, returncode,
     feasibility, relax_level}.
@@ -1353,14 +1354,60 @@ def run_scenario(
         except Exception as _exc:  # noqa: BLE001
             _cs_notes.append(f"greedy seed FAILED (solving cold): {_exc}")
 
-    proc = subprocess.run(
-        cmd,
-        cwd=str((Path(data_dir).resolve().parent / "code" / "solver").resolve()),
-        capture_output=True,
-        text=True,
-        timeout=max(120, (time_limit or 60) * 4 + 60),
-    )
-    log = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    _solver_cwd = str(
+        (Path(data_dir).resolve().parent / "code" / "solver").resolve())
+    _timeout_s = max(120, (time_limit or 60) * 4 + 60)
+    if progress_cb is None:
+        proc = subprocess.run(
+            cmd, cwd=_solver_cwd, capture_output=True, text=True,
+            timeout=_timeout_s,
+        )
+        _stdout, _stderr = proc.stdout, proc.stderr
+    else:
+        # Live-progress launch: the solver streams telemetry into the work
+        # dir (solver_progress.json — stages, incumbents, gap); poll it
+        # every couple of seconds and hand it to the caller's callback so a
+        # UI can show a real progress bar instead of a frozen spinner.
+        # stdout/stderr go to files (PIPE would deadlock on the big logs).
+        import json as _pj
+        import time as _time
+
+        _so_p = work / "_solver_stdout.txt"
+        _se_p = work / "_solver_stderr.txt"
+        with open(_so_p, "w", encoding="utf-8") as _so, \
+                open(_se_p, "w", encoding="utf-8") as _se:
+            _p = subprocess.Popen(cmd, cwd=_solver_cwd, stdout=_so,
+                                  stderr=_se, text=True)
+            _t0 = _time.monotonic()
+            while True:
+                _rc = _p.poll()
+                _elapsed = _time.monotonic() - _t0
+                _prog = None
+                try:
+                    _pp = work / "solver_progress.json"
+                    if _pp.exists():
+                        _prog = _pj.loads(_pp.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    _prog = None
+                try:
+                    progress_cb(_prog, _elapsed)
+                except Exception:  # noqa: BLE001 — UI must not kill a solve
+                    pass
+                if _rc is not None:
+                    break
+                if _elapsed > _timeout_s:
+                    _p.kill()
+                    _p.wait(timeout=30)
+                    break
+                _time.sleep(2.0)
+
+        class _P:  # duck-typed result matching subprocess.run's fields
+            returncode = _p.returncode if _p.returncode is not None else -9
+
+        proc = _P()
+        _stdout = _so_p.read_text(encoding="utf-8", errors="replace")
+        _stderr = _se_p.read_text(encoding="utf-8", errors="replace")
+    log = (_stdout or "") + "\n" + (_stderr or "")
     err_file = work / "solver_error.txt"
     if err_file.exists():
         log += "\n" + err_file.read_text(encoding="utf-8")

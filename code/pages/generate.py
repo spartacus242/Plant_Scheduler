@@ -212,10 +212,48 @@ def _generate_one(
             if cip_flex:
                 modes.append("flexible CIP timing (earlier only)")
             st.caption("Flexibility: " + "; ".join(modes))
+        from datetime import datetime as _dtnow
+
+        _started = _dtnow.now()
+        st.caption(f"🕐 Solver started **{_started:%H:%M:%S}**")
+        _bar = st.progress(0.0)
+        _live = st.empty()
+        # Expected wall time: two-pass F runs pass 1 + anchor + pass 2 (each
+        # bounded by the budget); single-pass scenarios may climb the relax
+        # ladder. The bar is wall-clock vs this estimate (clamped at 99% —
+        # the caption carries the REAL stage/gap telemetry).
+        _expected = float(time_limit) * (
+            2.2 if scenario.get("two_pass_co") else 1.3) + 60.0
+
+        def _on_progress(prog, elapsed):
+            _bar.progress(min(0.99, elapsed / _expected))
+            bits = [f"{int(elapsed // 60)}m {int(elapsed % 60):02d}s elapsed"]
+            if prog:
+                stages = prog.get("stages") or []
+                act = next((s for s in stages
+                            if s.get("status") == "active"), None)
+                if act:
+                    _d = act.get("detail", "")
+                    bits.append(act.get("label", "")
+                                + (f" — {_d}" if _d else ""))
+                stats = prog.get("solver_stats") or {}
+                if stats.get("gap_pct") is not None:
+                    bits.append(f"gap {stats['gap_pct']}%")
+                sols = prog.get("solutions") or []
+                if sols:
+                    bits.append(str(sols[-1].get("label", "")))
+            _live.caption(" · ".join(b for b in bits if b))
+
         try:
             result = run_scenario(scenario, dd, time_limit=int(time_limit),
                                   overrides=overrides,
-                                  work_dir_patch=work_dir_patch)
+                                  work_dir_patch=work_dir_patch,
+                                  progress_cb=_on_progress)
+            _bar.progress(1.0)
+            _live.caption(
+                f"Done in {(_dtnow.now() - _started).seconds // 60}m "
+                f"{(_dtnow.now() - _started).seconds % 60:02d}s "
+                f"(started {_started:%H:%M:%S})")
         except Exception as e:
             status.update(label=f"{scenario['name']} failed", state="error")
             st.exception(e)
