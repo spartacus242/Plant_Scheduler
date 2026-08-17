@@ -1693,4 +1693,205 @@ def contribution_breakdown(
             "cap_saturation": "; ".join(sat_notes) if sat_notes else "",
         })
     return rows
+# ---------------------------------------------------------------------------
+# Weekly breakdown — every headline metric split by TRUE ISO week, so a
+# version can be argued per week: "better for W35 because topload drops 9".
+# ---------------------------------------------------------------------------
+
+
+def _iso_week_bounds(anchor, horizon_h: float) -> list[tuple[float, int]]:
+    """[(start_hour, iso_week_number), ...] — Monday marks in the anchor
+    frame. bounds[0] is hour 0 (the anchor's own, possibly partial, week)."""
+    from datetime import timedelta
+
+    out = [(0.0, anchor.isocalendar()[1])]
+    mon0 = anchor - timedelta(days=anchor.weekday())
+    b = (mon0 + timedelta(days=7) - anchor).total_seconds() / 3600.0
+    while b < horizon_h:
+        wk_dt = anchor + timedelta(hours=b + 1)
+        out.append((b, wk_dt.isocalendar()[1]))
+        b += 168.0
+    return out
+
+
+def weekly_breakdown(
+    calendar: pd.DataFrame,
+    *,
+    data_dir: Path | None = None,
+    cfg: dict | None = None,
+) -> pd.DataFrame:
+    """One row per ISO week: fill kg, fulfillment vs the demand due that
+    week, orders met, changeovers by machine type, CO hours, CIP count/
+    hours, avg run length, short runs.
+
+    Weeks are TRUE ISO weeks in the resolved planning frame (Monday marks
+    from the rolling anchor). Blocks bucket by midpoint; a changeover
+    buckets into the week the incoming block STARTS (the swap happens at
+    that boundary); demand orders bucket by due-window midpoint after the
+    load_demand frame shift. NOTE: a calendar saved in an older anchor
+    frame (un-rolled board) will read shifted — roll first.
+    """
+    import bisect
+
+    from helpers import horizon as _hzmod
+    from helpers.config import load_toml as _lt
+
+    cfg = cfg or scorecard_config()
+    ref = reference_dir(data_dir) if data_dir else reference_dir()
+    co_map = _co_lookup(_load_changeovers(ref))
+    demand = load_demand(ref)
+    hz = _hzmod.resolve(_lt())
+    bounds = _iso_week_bounds(hz.anchor, float(hz.hours))
+    marks = [b for b, _ in bounds]
+    labels = {i: f"W{wk}" for i, (_, wk) in enumerate(bounds)}
+
+    def _wk_of(hour: float) -> int:
+        return max(0, bisect.bisect_right(marks, hour) - 1)
+
+    # normalize exactly like score_calendar
+    cal = calendar.copy()
+    if "line_id" in cal.columns:
+        cal["line_id"] = cal["line_id"].astype(str).str.replace(
+            r"\.0$", "", regex=True)
+    if "sku" in cal.columns:
+        cal["sku"] = cal["sku"].astype(str).str.replace(
+            r"\.0$", "", regex=True)
+    for _c in ("start_h", "end_h", "qty_kg"):
+        if _c in cal.columns:
+            cal[_c] = pd.to_numeric(cal[_c], errors="coerce")
+
+    idx = list(labels)
+    agg = {i: {"week": labels[i], "prod_kg": 0.0, "run_h": 0.0, "blocks": 0,
+               "short_runs": 0, "topload": 0, "ffs": 0, "casepacker": 0,
+               "ttp": 0, "recipe_only": 0, "weighted_co": 0.0,
+               "co_hours": 0.0, "cip_count": 0, "cip_hours": 0.0,
+               "demand_kg": 0.0, "scheduled_kg": 0.0, "orders": 0,
+               "orders_met": 0} for i in idx}
+
+    prod = _production(cal)
+    short_h = float(cfg.get("short_run_h", 4.0))
+    for _, b in prod.iterrows():
+        dur = max(0.0, float(b["end_h"]) - float(b["start_h"]))
+        wk = _wk_of((float(b["start_h"]) + float(b["end_h"])) / 2.0)
+        if wk not in agg:
+            continue
+        kg = pd.to_numeric(pd.Series([b.get("qty_kg")]), errors="coerce").iloc[0]
+        agg[wk]["prod_kg"] += 0.0 if pd.isna(kg) else float(kg)
+        agg[wk]["run_h"] += dur
+        agg[wk]["blocks"] += 1
+        if dur < short_h:
+            agg[wk]["short_runs"] += 1
+
+    w_top = float(cfg.get("co_weight_topload", 3.0))
+    w_ffs = float(cfg.get("co_weight_ffs", 3.0))
+    w_cp = float(cfg.get("co_weight_casepacker", 2.0))
+    w_ttp = float(cfg.get("co_weight_ttp", 1.0))
+    w_ro = float(cfg.get("co_weight_recipe_only", 1.0))
+    for _, grp in prod.sort_values(["line_id", "start_h"]).groupby("line_id"):
+        rows = grp.to_dict("records")
+        for i in range(1, len(rows)):
+            a, b = rows[i - 1], rows[i]
+            f_sku, t_sku = str(a.get("sku", "")), str(b.get("sku", ""))
+            if f_sku == t_sku:
+                continue
+            wk = _wk_of(float(b["start_h"]))
+            if wk not in agg:
+                continue
+            flags = co_map.get((f_sku, t_sku))
+            touched = False
+            for key, name, w in (("topload_change", "topload", w_top),
+                                 ("ffs_change", "ffs", w_ffs),
+                                 ("casepacker_change", "casepacker", w_cp),
+                                 ("ttp_change", "ttp", w_ttp)):
+                if flags and int(flags.get(key, 0) or 0) == 1:
+                    agg[wk][name] += 1
+                    agg[wk]["weighted_co"] += w
+                    touched = True
+            if not touched:
+                agg[wk]["recipe_only"] += 1
+                agg[wk]["weighted_co"] += w_ro
+            agg[wk]["co_hours"] += _co_transition_hours(flags, f_sku, t_sku, cfg)
+
+    cips = _by_type(cal, "cip")
+    for _, c in cips.iterrows():
+        wk = _wk_of((float(c["start_h"]) + float(c["end_h"])) / 2.0)
+        if wk in agg:
+            agg[wk]["cip_count"] += 1
+            agg[wk]["cip_hours"] += max(
+                0.0, float(c["end_h"]) - float(c["start_h"]))
+
+    if demand is not None and len(demand):
+        caps: dict[str, dict[str, float]] = {}
+        caps_p = ref / "capabilities_rates.csv"
+        if caps_p.exists():
+            _cdf = pd.read_csv(caps_p, dtype={"sku": str})
+            rate_col = ("calc_rate_kgph" if "calc_rate_kgph" in _cdf.columns
+                        else "rate_kgph" if "rate_kgph" in _cdf.columns
+                        else None)
+            if rate_col:
+                for _, r in _cdf.iterrows():
+                    if int(pd.to_numeric(r.get("capable"), errors="coerce")
+                           or 0) == 1:
+                        caps.setdefault(str(r.get("line_name", "")), {})[
+                            str(r["sku"])] = float(
+                            pd.to_numeric(r.get(rate_col), errors="coerce")
+                            or 0)
+        targets = []
+        for _, d in demand.iterrows():
+            t = float(pd.to_numeric(d.get("qty_target"), errors="coerce") or 0)
+            lo = float(pd.to_numeric(d.get("lower_pct"), errors="coerce") or 0.9)
+            hi = float(pd.to_numeric(d.get("upper_pct"), errors="coerce") or 1.1)
+            qmin = d.get("qty_min")
+            qmax = d.get("qty_max")
+            targets.append({
+                "order_id": str(d.get("order_id", "")),
+                "sku": str(d.get("sku", "")),
+                "qty_min": float(pd.to_numeric(qmin, errors="coerce")
+                                 if qmin is not None else t * lo) or t * lo,
+                "qty_max": float(pd.to_numeric(qmax, errors="coerce")
+                                 if qmax is not None else t * hi) or t * hi,
+                "due_start_hour": float(pd.to_numeric(
+                    d.get("due_start_hour"), errors="coerce") or 0),
+                "due_end_hour": float(pd.to_numeric(
+                    d.get("due_end_hour"), errors="coerce") or 0),
+            })
+        rows_adh = compute_adherence(cal, targets, caps)
+        by_order = {r["order_id"]: r for r in rows_adh}
+        for t in targets:
+            _mid = (t["due_start_hour"] + t["due_end_hour"]) / 2.0
+            if _mid >= float(hz.hours):
+                continue  # due beyond the horizon — not this plan's problem
+            wk = _wk_of(_mid)
+            if wk not in agg:
+                continue
+            r = by_order.get(t["order_id"])
+            tgt = ((t["qty_min"] + t["qty_max"]) / 2.0
+                   if t["qty_min"] > 0 and t["qty_max"] >= t["qty_min"]
+                   else max(t["qty_min"], t["qty_max"]))
+            agg[wk]["demand_kg"] += tgt
+            agg[wk]["orders"] += 1
+            if r:
+                agg[wk]["scheduled_kg"] += float(r["scheduled_qty"])
+                if r["status"] == "MET":
+                    agg[wk]["orders_met"] += 1
+
+    out_rows = []
+    for i in idx:
+        a = agg[i]
+        if a["blocks"] == 0 and a["orders"] == 0 and a["cip_count"] == 0:
+            continue  # empty tail week — noise, not signal
+        a["fulfilled_pct"] = (round(100.0 * a["scheduled_kg"] / a["demand_kg"], 1)
+                              if a["demand_kg"] > 0 else None)
+        a["avg_run_h"] = (round(a["run_h"] / a["blocks"], 1)
+                          if a["blocks"] else 0.0)
+        for k in ("prod_kg", "demand_kg", "scheduled_kg"):
+            a[k] = round(a[k])
+        for k in ("co_hours", "cip_hours", "weighted_co", "run_h"):
+            a[k] = round(a[k], 1)
+        out_rows.append(a)
+    cols = ["week", "prod_kg", "demand_kg", "scheduled_kg", "fulfilled_pct",
+            "orders_met", "orders", "topload", "ffs", "casepacker", "ttp",
+            "recipe_only", "weighted_co", "co_hours", "cip_count",
+            "cip_hours", "avg_run_h", "short_runs", "blocks"]
+    return pd.DataFrame(out_rows, columns=cols)
 

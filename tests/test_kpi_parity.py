@@ -232,3 +232,32 @@ def test_ts_matches_python(py_result, tmp_path):
         assert tr["pct_adherence"] == pytest.approx(pr["pct_adherence"], abs=1e-9)
         assert tr["qty_min"] == pytest.approx(pr["qty_min"], abs=1e-9)
         assert tr["qty_max"] == pytest.approx(pr["qty_max"], abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Weekly breakdown — ISO-week bucketing of the same fixture rules.
+# ---------------------------------------------------------------------------
+
+
+def test_iso_week_bounds_midweek_anchor():
+    """A Friday anchor's first bucket is its own partial ISO week; the next
+    Monday mark starts the following ISO week."""
+    from datetime import datetime
+
+    from helpers.scorecard_engine import _iso_week_bounds
+
+    bounds = _iso_week_bounds(datetime(2026, 8, 14), 504.0)  # Fri W33
+    assert bounds[0] == (0.0, 33)
+    assert bounds[1] == (72.0, 34)      # Mon Aug 17, 72h after Fri 00:00
+    assert bounds[2] == (240.0, 35)
+
+
+def test_iso_week_bounds_monday_anchor():
+    from datetime import datetime
+
+    from helpers.scorecard_engine import _iso_week_bounds
+
+    bounds = _iso_week_bounds(datetime(2026, 8, 17), 504.0)  # Mon W34
+    assert bounds[0] == (0.0, 34)
+    assert bounds[1] == (168.0, 35)
+    assert bounds[2] == (336.0, 36)

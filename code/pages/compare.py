@@ -349,6 +349,66 @@ if left_res is not None:
     render_delta_strip(left_res, right_res,
                        title=f"Δ {_cname(right_slug)} vs {_cname(left_slug)}")
 
+# ── Weekly breakdown: argue the version PER WEEK ─────────────────────────
+# "This version is better for W35 because topload drops 9" — every headline
+# metric split by TRUE ISO week for both sides, plus the per-week delta.
+st.subheader("Weekly breakdown")
+try:
+    from helpers.scorecard_engine import weekly_breakdown as _wb
+
+    _wk_left = _wb(left_cal, data_dir=dd) if left_cal is not None else None
+    _wk_right = _wb(right_cal, data_dir=dd)
+    _wk_cols = ["week", "fulfilled_pct", "scheduled_kg", "demand_kg",
+                "orders_met", "orders", "topload", "ffs", "casepacker",
+                "ttp", "weighted_co", "co_hours", "cip_hours", "avg_run_h",
+                "short_runs"]
+
+    if _wk_left is not None and len(_wk_left) and len(_wk_right):
+        _dl = _wk_left.set_index("week")
+        _dr = _wk_right.set_index("week")
+        _weeks = [w for w in _dr.index if w in _dl.index]
+        _rows = []
+        for _w in _weeks:
+            _row = {"week": _w}
+            for _m, _lbl2, _better_low in (
+                    ("fulfilled_pct", "fulfilled %", False),
+                    ("orders_met", "orders met", False),
+                    ("topload", "topload", True),
+                    ("ffs", "FFS", True),
+                    ("casepacker", "casepacker", True),
+                    ("ttp", "TTP", True),
+                    ("weighted_co", "weighted CO", True),
+                    ("co_hours", "CO hours", True),
+                    ("short_runs", "short runs", True)):
+                _a = _dl.at[_w, _m] if _m in _dl.columns else None
+                _b = _dr.at[_w, _m] if _m in _dr.columns else None
+                if _a is None or _b is None or pd.isna(_a) or pd.isna(_b):
+                    _row[_lbl2] = "—"
+                    continue
+                _d = round(float(_b) - float(_a), 1)
+                _mark = ""
+                if _d != 0:
+                    _good = (_d < 0) if _better_low else (_d > 0)
+                    _mark = " ✅" if _good else " ⚠️"
+                _row[_lbl2] = f"{_a:g} → {_b:g} ({_d:+g}){_mark}"
+            _rows.append(_row)
+        st.caption(f"{_cname(left_slug)} → {_cname(right_slug)} per ISO week "
+                   "(✅ = right side better on that metric)")
+        st.dataframe(pd.DataFrame(_rows), use_container_width=True,
+                     hide_index=True)
+
+    with st.expander("Full weekly tables (both sides)"):
+        if _wk_left is not None and len(_wk_left):
+            st.markdown(f"**{_cname(left_slug)}**")
+            st.dataframe(_wk_left[_wk_cols], use_container_width=True,
+                         hide_index=True)
+        if len(_wk_right):
+            st.markdown(f"**{_cname(right_slug)}**")
+            st.dataframe(_wk_right[_wk_cols], use_container_width=True,
+                         hide_index=True)
+except Exception as _wbe:  # noqa: BLE001
+    st.caption(f"Weekly breakdown unavailable: {_wbe}")
+
 # Delta narrative
 deltas = delta_narrative(left_res, right_res) if left_res is not None else []
 st.subheader("Show me why")
