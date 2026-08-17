@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -684,6 +685,41 @@ def _is_recipe_change(flags: dict | None, from_sku: str, to_sku: str) -> bool:
     return True
 
 
+def _round_half_up(x: float, ndigits: int = 0) -> float:
+    """Round half AWAY from zero (for x >= 0), matching JS Math.round.
+
+    The Gantt KPI numbers are recomputed client-side after edits; Python's
+    banker's rounding would let e.g. 6.25% display as 6.2 here and 6.3 there.
+    """
+    m = 10.0 ** ndigits
+    return math.floor(x * m + 0.5) / m
+
+
+def _co_transition_hours(flags: dict | None, from_sku: str, to_sku: str, cfg: dict) -> float:
+    """Estimated hours for one SKU transition — the ONLY place this rule lives.
+
+    Both score_changeovers and the Gantt KPI payload (gantt_kpis / kpi.ts via
+    co_pairs) price a transition through here, so the scorecard and the
+    calendar KPI bar cannot disagree on changeover hours.
+    """
+    if flags and "setup_hours" in flags:
+        h = float(flags.get("setup_hours") or 0)
+        if h <= 0:
+            h = 0.0
+            if _is_format_change(flags):
+                h += float(cfg["default_co_hours_format"])
+            if _is_recipe_change(flags, from_sku, to_sku):
+                h += float(cfg["default_co_hours_recipe"])
+            if h == 0:
+                h = float(cfg["default_co_hours_base"])
+        return h
+    h = float(cfg["default_co_hours_base"])
+    if _is_format_change(flags):
+        h += float(cfg["default_co_hours_format"]) - float(cfg["default_co_hours_base"])
+    h += float(cfg["default_co_hours_recipe"])
+    return h
+
+
 def score_changeovers(calendar: pd.DataFrame, cfg: dict, co_map: dict) -> dict[str, Any]:
     prod = _production(calendar)
     recipe = 0
@@ -696,14 +732,18 @@ def score_changeovers(calendar: pd.DataFrame, cfg: dict, co_map: dict) -> dict[s
     # is the WEIGHTED count, so 100 TTP swaps can beat 30 topload swaps.
     machine = {"topload": 0, "ffs": 0, "casepacker": 0, "ttp": 0}
     recipe_only = 0
+    per_line: dict[str, int] = {}
     for _, grp in prod.sort_values(["line_id", "start_h"]).groupby("line_id"):
         rows = grp.to_dict("records")
+        line_name = str(rows[0].get("line_name", "") or "")
+        line_count = 0
         for i in range(1, len(rows)):
             a, b = rows[i - 1], rows[i]
             from_sku, to_sku = str(a.get("sku", "")), str(b.get("sku", ""))
             if from_sku == to_sku:
                 continue
             transitions += 1
+            line_count += 1
             flags = co_map.get((from_sku, to_sku))
             if _is_recipe_change(flags, from_sku, to_sku):
                 recipe += 1
@@ -719,25 +759,8 @@ def score_changeovers(calendar: pd.DataFrame, cfg: dict, co_map: dict) -> dict[s
                     touched = True
             if not touched:
                 recipe_only += 1
-            elif flags is None:
-                # no standards row — assume format unknown; count base hours only
-                pass
-            if flags and "setup_hours" in flags:
-                h = float(flags.get("setup_hours") or 0)
-                if h <= 0:
-                    h = 0.0
-                    if _is_format_change(flags):
-                        h += float(cfg["default_co_hours_format"])
-                    if _is_recipe_change(flags, from_sku, to_sku):
-                        h += float(cfg["default_co_hours_recipe"])
-                    if h == 0:
-                        h = float(cfg["default_co_hours_base"])
-                hours += h
-            else:
-                hours += float(cfg["default_co_hours_base"])
-                if _is_format_change(flags):
-                    hours += float(cfg["default_co_hours_format"]) - float(cfg["default_co_hours_base"])
-                hours += float(cfg["default_co_hours_recipe"])
+            hours += _co_transition_hours(flags, from_sku, to_sku, cfg)
+        per_line[line_name] = per_line.get(line_name, 0) + line_count
     weighted = (
         float(cfg.get("co_weight_topload", 3.0)) * machine["topload"]
         + float(cfg.get("co_weight_ffs", 3.0)) * machine["ffs"]
@@ -754,8 +777,11 @@ def score_changeovers(calendar: pd.DataFrame, cfg: dict, co_map: dict) -> dict[s
         "ttp_changes": machine["ttp"],
         "recipe_only_changes": recipe_only,
         "weighted_co": round(weighted, 1),
-        "total_co_hours": round(hours, 2),
+        # Half-up so the client-side recompute (JS Math.round) shows the same
+        # number after an edit that changes nothing.
+        "total_co_hours": _round_half_up(hours, 2),
         "sku_transitions": transitions,
+        "per_line_transitions": per_line,
     }
 
 
@@ -1286,6 +1312,167 @@ def _residual_fill_demand(
             residual["lower_pct"], errors="coerce")
     covered = tgt <= 0.5
     return residual[~covered].copy(), int(covered.sum())
+
+
+# ---------------------------------------------------------------------------
+# Gantt KPI payload — single source of truth for the calendar KPI bar.
+#
+# The React Gantt (components/gantt) renders this payload verbatim until the
+# user edits the schedule; after an edit its kpi.ts recomputes LIVE with the
+# SAME rules, using the co_pairs classification map below so the changeover
+# severity/hour rules never have to be re-implemented client-side.
+# tests/test_kpi_parity.py holds a golden fixture asserting Python and the
+# built TypeScript agree; change rules here and there together.
+# ---------------------------------------------------------------------------
+
+
+def compute_adherence(
+    calendar: pd.DataFrame,
+    demand_targets: list[dict[str, Any]],
+    caps: dict[str, dict[str, float]],
+) -> list[dict[str, Any]]:
+    """Qty-based order adherence rows for the Gantt adherence table.
+
+    Canonical rules (mirrored exactly by kpi.ts computeAdherence; change
+    both or neither — tests/test_kpi_parity.py holds the golden fixture):
+      - production blocks only — trials are blocked hours, never tonnage
+        (user rule 2026-08-14)
+      - the block's own qty_kg (the solver's real decomposition) wins over
+        rate x duration; rate x duration is the fallback for unknown kg
+      - blocks whose order_id matches no demand order (committed manprg
+        MOs) waterfall onto that SKU's orders earliest-due first, each
+        order taking at most its qty_max — surplus beyond every open order
+        stays uncredited (serves weeks not on the board; the old
+        last-order-takes-remainder rule read 1764% once)
+      - pct is % of TARGET, the (qty_min+qty_max)/2 midpoint — the
+        planner's band is 90-110 of target, not of qty_min
+      - MET when qty_min <= scheduled <= qty_max (qty_max <= 0 = unbounded)
+    """
+    prod = _production(calendar)
+    sched: dict[str, float] = {}
+    unmatched_by_sku: dict[str, float] = {}
+    demand_ids = {str(d.get("order_id", "")) for d in demand_targets}
+    for _, b in prod.iterrows():
+        line = str(b.get("line_name", "") or "")
+        sku = str(b.get("sku", "") or "")
+        kg = pd.to_numeric(pd.Series([b.get("qty_kg")]), errors="coerce").iloc[0]
+        if pd.isna(kg) or kg <= 0:
+            rate = float((caps.get(line) or {}).get(sku, 0) or 0)
+            kg = rate * max(0.0, float(b["end_h"]) - float(b["start_h"]))
+        oid = str(b.get("order_id", "") or "")
+        if oid in demand_ids:
+            sched[oid] = sched.get(oid, 0.0) + float(kg)
+        else:
+            unmatched_by_sku[sku] = unmatched_by_sku.get(sku, 0.0) + float(kg)
+
+    by_sku: dict[str, list[dict[str, Any]]] = {}
+    for d in demand_targets:
+        by_sku.setdefault(str(d.get("sku", "")), []).append(d)
+    for orders in by_sku.values():
+        orders.sort(key=lambda d: float(d.get("due_start_hour", 0) or 0))
+    for sku, kg in unmatched_by_sku.items():
+        for d in by_sku.get(sku, []):
+            if kg <= 1e-9:
+                break
+            oid = str(d.get("order_id", ""))
+            have = sched.get(oid, 0.0)
+            cap = max(float(d.get("qty_max", 0) or 0),
+                      float(d.get("qty_min", 0) or 0))
+            take = min(kg, max(0.0, cap - have))
+            if take > 0:
+                sched[oid] = have + take
+                kg -= take
+
+    rows: list[dict[str, Any]] = []
+    for d in demand_targets:
+        oid = str(d.get("order_id", ""))
+        qty_min = float(d.get("qty_min", 0) or 0)
+        qty_max = float(d.get("qty_max", 0) or 0)
+        sq = sched.get(oid, 0.0)
+        target = ((qty_min + qty_max) / 2.0
+                  if qty_min > 0 and qty_max >= qty_min
+                  else max(qty_min, qty_max))
+        pct = (sq / target) * 100.0 if target > 0 else (999.0 if sq > 0 else 100.0)
+        status = "MET"
+        if sq < qty_min:
+            status = "UNDER"
+        elif qty_max > 0 and sq > qty_max:
+            status = "OVER"
+        rows.append({
+            "order_id": oid,
+            "sku": str(d.get("sku", "")),
+            "qty_min": qty_min,
+            "qty_max": qty_max,
+            "scheduled_qty": int(_round_half_up(sq)),
+            "pct_adherence": _round_half_up(pct, 1),
+            "status": status,
+        })
+    rows.sort(key=lambda r: str(r["sku"]))
+    return rows
+
+
+def gantt_kpis(
+    calendar: pd.DataFrame,
+    demand_targets: list[dict[str, Any]],
+    caps: dict[str, dict[str, float]],
+    *,
+    cfg: dict | None = None,
+    co_map: dict | None = None,
+    data_dir: Path | None = None,
+) -> dict[str, Any]:
+    """KPI payload for gantt_calendar(kpis=...) — computed with scorecard rules.
+
+    `demand_targets` and `caps` must be the SAME objects handed to the Gantt
+    component, so the live client-side recompute sees identical inputs.
+    Changeover numbers come from score_changeovers, so the KPI bar and the
+    scorecard below it are definitionally the same numbers.
+    """
+    cfg = cfg or scorecard_config()
+    if co_map is None:
+        ref = reference_dir(data_dir) if data_dir else reference_dir()
+        co_map = _co_lookup(_load_changeovers(ref))
+
+    adherence = compute_adherence(calendar, demand_targets, caps)
+    met = sum(1 for r in adherence if r["status"] == "MET")
+    total = len(adherence)
+    pct = _round_half_up(met / total * 100.0, 1) if total else 100.0
+
+    co = score_changeovers(calendar, cfg, co_map)
+
+    # Per-pair classification so the frontend can price/classify a transition
+    # by lookup instead of re-implementing the severity rules.
+    co_pairs: dict[str, dict[str, Any]] = {}
+    for (from_sku, to_sku), flags in co_map.items():
+        if from_sku == to_sku:
+            continue
+        co_pairs[f"{from_sku}|{to_sku}"] = {
+            "recipe": 1 if _is_recipe_change(flags, from_sku, to_sku) else 0,
+            "format": 1 if _is_format_change(flags) else 0,
+            "hours": _round_half_up(_co_transition_hours(flags, from_sku, to_sku, cfg), 4),
+        }
+    # A pair with no standards row: recipe by definition, unknown format,
+    # base + recipe default hours (exactly the score_changeovers fallback).
+    co_default = {
+        "recipe": 1,
+        "format": 0,
+        "hours": _round_half_up(_co_transition_hours(None, "_from", "_to", cfg), 4),
+    }
+
+    return {
+        "adherence": adherence,
+        "pct_adherence": pct,
+        "orders_met": met,
+        "orders_total": total,
+        "changeovers": {
+            "recipe_changes": co["recipe_changes"],
+            "format_changes": co["format_changes"],
+            "total_co_hours": co["total_co_hours"],
+            "sku_transitions": co["sku_transitions"],
+        },
+        "per_line_changeovers": co["per_line_transitions"],
+        "co_pairs": co_pairs,
+        "co_default": co_default,
+    }
 
 
 def score_calendar(

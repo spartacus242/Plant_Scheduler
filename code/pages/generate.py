@@ -450,6 +450,7 @@ def _generate_one(
                 try:
                     from components.gantt import gantt_calendar
                     from helpers.calendar_io import calendar_to_gantt_payload
+                    from helpers.scorecard_engine import gantt_kpis
                     _sched, _win = calendar_to_gantt_payload(cal)
                     gantt_calendar(
                         schedule=_sched,
@@ -460,6 +461,7 @@ def _generate_one(
                         lines=lines,
                         holding_area=[],
                         side_downtime={},
+                        kpis=gantt_kpis(cal, demand_targets, caps, data_dir=dd),
                         config={
                             "planning_anchor": sched_cfg.get("planning_start_date", "2026-02-15 00:00:00"),
                             "cip_duration_h": int(cip_cfg.get("duration_h", 6)),

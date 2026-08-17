@@ -31,6 +31,12 @@ const valueStyle: React.CSSProperties = {
   marginTop: 2,
 };
 
+const subStyle: React.CSSProperties = {
+  fontSize: 10,
+  color: "#888",
+  marginTop: 1,
+};
+
 export const KpiBar: React.FC<Props> = ({ kpis }) => {
   const adhColor = kpis.pctAdherence >= 100 ? "#00CC96" : kpis.pctAdherence >= 80 ? "#FFA15A" : "#EF553B";
   const overlapColor = kpis.overlaps.length > 0 ? "#EF553B" : "#00CC96";
@@ -47,9 +53,12 @@ export const KpiBar: React.FC<Props> = ({ kpis }) => {
           {kpis.ordersMet}/{kpis.ordersTotal}
         </span>
       </div>
-      <div style={cardStyle}>
+      <div style={cardStyle} title="SKU transitions (scorecard rules): recipe / format severity and estimated hours">
         <span style={labelStyle}>Changeovers</span>
         <span style={valueStyle}>{kpis.totalChangeovers}</span>
+        <span style={subStyle}>
+          {kpis.recipeChanges} recipe · {kpis.formatChanges} format · {kpis.totalCoHours}h
+        </span>
       </div>
       <div style={cardStyle}>
         <span style={labelStyle}>Overlaps</span>

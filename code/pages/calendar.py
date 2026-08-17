@@ -28,12 +28,17 @@ from helpers.week_lock import (
     read_lock,
     write_lock,
 )
-from helpers.config import load_toml
+from helpers.config import load_toml, scorecard_config
 from helpers.downtime_ui import downtime_map_for_calendar, render_side_downtime_editor
 from helpers.lines_model import expand_caps_with_groups, is_double, side_of, sides_of
 from helpers.paths import data_dir, reference_dir
 from solver.changeover_cache import load_changeover_setup_nested
-from helpers.scorecard_engine import ScorecardResult, delta_narrative, score_calendar
+from helpers.scorecard_engine import (
+    ScorecardResult,
+    delta_narrative,
+    gantt_kpis,
+    score_calendar,
+)
 from helpers.scorecard_ui import render_delta_strip, render_scorecard
 from helpers.version_manager import list_versions, save_version
 
@@ -477,6 +482,12 @@ if _sku_info_path.exists():
     except Exception:
         _fmt_map = {}
 
+# Canonical KPI payload — same engine (scorecard_engine) as the scorecard
+# rendered below, so the Gantt KPI bar and the scorecard cannot disagree.
+server_kpis = gantt_kpis(
+    cal, demand_targets, caps, cfg=scorecard_config(cfg), data_dir=dd
+)
+
 state = gantt_calendar(
     schedule=schedule,
     cip_windows=windows,
@@ -487,6 +498,7 @@ state = gantt_calendar(
     holding_area=st.session_state.get("cal_holding", []),
     side_downtime=side_downtime,
     sku_formats=_fmt_map,
+    kpis=server_kpis,
     config={
         "planning_anchor": f"{_anchor:%Y-%m-%d %H:%M:%S}",
         "cip_duration_h": int(cip_cfg.get("duration_h", 6)),

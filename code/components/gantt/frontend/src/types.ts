@@ -68,6 +68,34 @@ export interface SandboxConfig {
   demand_base_iso_week?: number | null;
 }
 
+/** One SKU-pair changeover classification, precomputed server-side by
+ * helpers/scorecard_engine.gantt_kpis so severity/hour rules live in Python
+ * only. Key format in ServerKpis.co_pairs: "FROM|TO". */
+export interface CoPairInfo {
+  recipe: number;
+  format: number;
+  hours: number;
+}
+
+/** Canonical KPI payload from helpers/scorecard_engine.gantt_kpis (Python is
+ * the source of truth). Rendered verbatim until the user edits, then kpi.ts
+ * recomputes live with the same rules via co_pairs/co_default. */
+export interface ServerKpis {
+  adherence: AdherenceRow[];
+  pct_adherence: number;
+  orders_met: number;
+  orders_total: number;
+  changeovers: {
+    recipe_changes: number;
+    format_changes: number;
+    total_co_hours: number;
+    sku_transitions: number;
+  };
+  per_line_changeovers: Record<string, number>;
+  co_pairs: Record<string, CoPairInfo>;
+  co_default: CoPairInfo;
+}
+
 export interface SandboxArgs {
   schedule: ScheduleBlock[];
   cipWindows: ScheduleBlock[];
@@ -80,6 +108,9 @@ export interface SandboxArgs {
   sideDowntime?: Record<string, number[][]>;
   /** sku -> pack format string (e.g. "6X12X90") from sku_info. */
   skuFormats?: Record<string, string>;
+  /** Canonical KPI payload from helpers.scorecard_engine.gantt_kpis —
+   * rendered verbatim until the user edits, then kpi.ts recomputes live. */
+  kpis?: ServerKpis | null;
   config: SandboxConfig;
 }
 
@@ -106,7 +137,11 @@ export interface KpiData {
   pctAdherence: number;
   ordersMet: number;
   ordersTotal: number;
+  /** Flat SKU transitions — same number as the scorecard's sku_transitions. */
   totalChangeovers: number;
+  recipeChanges: number;
+  formatChanges: number;
+  totalCoHours: number;
   perLineChangeovers: Record<string, number>;
   overlaps: string[];
 }
