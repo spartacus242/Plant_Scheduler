@@ -184,6 +184,9 @@ def classify_rows(frame: pd.DataFrame | None) -> list[dict]:
             "made_cas": made,
             "left_cas": left,
             "qty_kg": _num(r.get("fct_kg")),
+            # actuals — the coverage ledger nets ALREADY-MADE kg out of the
+            # demand plan; a completed MO's truth is what it made, not Fct
+            "made_kg": _num(r.get("made_kg")),
             "completion_pct": pct,
             "kind": kind,
             "started": started,

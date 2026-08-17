@@ -424,7 +424,19 @@ if "cal_holding_from_solve" not in st.session_state:
                 _prod = load_produced(_latest / "produced_vs_bounds.csv")
                 _rates = average_rate_per_sku(
                     load_capabilities(dd / "reference" / "capabilities_rates.csv"))
-                _blocks = build_holding(_dem, _prod, rates=_rates)
+                # Committed MOs (+ kg already made) credit the cards — a
+                # demand week the plant's own plan covers must not sit in
+                # holding as if it still needed scheduling (280480-W34).
+                _covered: dict = {}
+                try:
+                    from helpers.demand_coverage import build_ledger_from_data
+                    _led = build_ledger_from_data(dd, cfg)
+                    if _led is not None:
+                        _covered = _led.applied_by_order()
+                except Exception:  # noqa: BLE001 — cards degrade to gross
+                    _covered = {}
+                _blocks = build_holding(_dem, _prod, rates=_rates,
+                                        committed_by_order=_covered)
                 _held = [b.to_payload() for b in _blocks]
             except Exception as _e:  # noqa: BLE001
                 st.caption(f"Holding auto-populate skipped: {_e}")

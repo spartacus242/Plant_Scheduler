@@ -161,67 +161,32 @@ def subtract_committed(
     demand: pd.DataFrame,
     blocks: pd.DataFrame,
     week_bounds: list[float] | None = None,
+    *,
+    anchor=None,
+    completed: list[dict] | None = None,
+    history_demand: dict[tuple[str, int], float] | None = None,
+    lookback_weeks: int = 4,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Reduce demand targets by what the committed plan already produces.
 
-    Committed production kg is bucketed into the week of the block's
-    midpoint — via `week_bounds` (ascending hour marks; bucket k spans
-    [bounds[k], bounds[k+1])) when the staging frame is not 168h-aligned
-    (rolling anchor mid-week), else the legacy 168h grid. Per SKU, weeks
-    are consumed in order with surplus carrying FORWARD (this week's extra
-    production is next week's inventory, never last week's). Targets never
-    go below zero; the pct bounds stay, so qty_min/qty_max scale with the
-    reduced target.
+    Thin wrapper over helpers.demand_coverage — the SKU×week ledger is the
+    single netting engine (Reconcile and the holding cards read the same
+    math). Pass `anchor` (the frame of the block/demand hour offsets) to
+    key by TRUE ISO weeks; `week_bounds` / the 168h grid are the anchorless
+    fallback. `completed` (current_state's dropped completed-MO rows) adds
+    kg already MADE; `history_demand` lets past production settle against
+    its own week's demand first. Targets never go below zero; the pct
+    bounds stay, so qty_min/qty_max scale with the reduced target.
     """
-    import bisect
-
-    notes: list[str] = []
     if demand is None or demand.empty:
-        return demand, notes
+        return demand, []
+    from helpers.demand_coverage import apply_ledger, build_ledger
 
-    def _week_of(hour: float) -> int:
-        if week_bounds:
-            return max(0, bisect.bisect_right(week_bounds, hour) - 1)
-        return max(0, int(hour // 168))
-
-    committed: dict[tuple[str, int], float] = {}
-    if blocks is not None and len(blocks):
-        prod = blocks[blocks["block_type"] == "production"]
-        for _, b in prod.iterrows():
-            kg = pd.to_numeric(pd.Series([b.get("qty_kg")]), errors="coerce").iloc[0]
-            if pd.isna(kg) or kg <= 0:
-                continue
-            mid = (float(b["start_h"]) + float(b["end_h"])) / 2.0
-            wk = _week_of(mid)
-            sku = str(b.get("sku") or "").strip()
-            if not sku or sku.upper() in ("CIP", "TRIALS"):
-                continue
-            committed[(sku, wk)] = committed.get((sku, wk), 0.0) + float(kg)
-
-    df = demand.copy()
-    # qty_target may arrive int64 from a fresh bridge export; writing a
-    # rounded float back into an int column raises since pandas 2.x — and
-    # that crash silently degraded F staging to UNSUBTRACTED demand
-    # (found 2026-08-14 via an in-process staging reproduction).
-    df["qty_target"] = pd.to_numeric(df["qty_target"], errors="coerce")         .astype(float)
-    for sku, grp in df.groupby(df["sku"].astype(str)):
-        carry = 0.0
-        for idx in grp.sort_values("week_index").index:
-            wk = int(df.at[idx, "week_index"])
-            avail = committed.pop((sku, wk), 0.0) + carry
-            if avail <= 0:
-                carry = 0.0
-                continue
-            target = float(df.at[idx, "qty_target"] or 0)
-            consumed = min(target, avail)
-            carry = avail - consumed
-            if consumed > 0:
-                df.at[idx, "qty_target"] = round(target - consumed, 1)
-                notes.append(
-                    f"{df.at[idx, 'order_id']}: committed plan already makes "
-                    f"{consumed:,.0f} kg - fill target {target:,.0f}->"
-                    f"{target - consumed:,.0f} kg")
-    return df, notes
+    ledger = build_ledger(
+        demand, blocks, completed=completed, anchor=anchor,
+        week_bounds=week_bounds, history_demand=history_demand,
+        lookback_weeks=lookback_weeks)
+    return apply_ledger(demand, ledger)
 
 
 def coalesce_windows(rows: list[dict]) -> list[dict]:

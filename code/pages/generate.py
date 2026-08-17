@@ -99,6 +99,52 @@ if _lp.exists():
         _l["side"] = side_of(_nm) or str(_l.get("side") or "")
         _l["is_double"] = bool(is_double(_nm))
 
+# -- Netting preview: what the solver will actually be asked to plan ------
+# Same ledger Scenario F stages with (helpers.demand_coverage) — a demand
+# week already covered by committed MOs is NOT re-planned.
+try:
+    from helpers.demand_coverage import build_ledger_from_data
+    _ledger = build_ledger_from_data(dd, cfg)
+except Exception as _lexc:  # noqa: BLE001
+    _ledger = None
+    st.caption(f"Netting preview unavailable: {_lexc}")
+if _ledger is not None and _ledger.rows:
+    _ldf = _ledger.to_frame()
+    _cur = _ledger.anchor_week_key
+    if _cur is not None:
+        _ldf = _ldf[_ldf["week_key"] >= _cur]
+    if len(_ldf):
+        st.subheader("Demand after netting (committed MOs credited)")
+        _wk = _ldf.groupby("week_label", sort=False).agg(
+            demand_kg=("gross_kg", "sum"),
+            covered_kg=("applied_kg", "sum"),
+            net_kg=("net_kg", "sum"),
+            orders=("order_id", "count"),
+            covered_orders=("status", lambda s: int((s == "COVERED").sum())),
+        ).reset_index()
+        st.dataframe(
+            _wk.rename(columns={
+                "week_label": "Week", "demand_kg": "Demand kg",
+                "covered_kg": "Covered by committed MOs",
+                "net_kg": "Net for the solver", "orders": "Orders",
+                "covered_orders": "Fully covered"}),
+            use_container_width=True, hide_index=True)
+        st.caption(
+            f"{_wk['covered_kg'].sum():,.0f} kg of "
+            f"{_wk['demand_kg'].sum():,.0f} kg is already in committed MOs "
+            "— Scenario F subtracts it before solving, so covered weeks are "
+            "never re-planned. Full per-order detail: Reconcile → Demand "
+            "coverage.")
+        with st.expander("Per-order detail"):
+            st.dataframe(
+                _ldf.drop(columns=["week_key"]).rename(columns={
+                    "week_label": "Week", "order_id": "Order", "sku": "SKU",
+                    "gross_kg": "Demand kg", "committed_kg": "Committed kg",
+                    "produced_kg": "Made kg", "carry_in_kg": "Carry-in kg",
+                    "applied_kg": "Covered kg", "net_kg": "Net to plan",
+                    "status": "Status"}),
+                use_container_width=True, hide_index=True)
+
 baseline_cal = load_calendar(dd / "calendar_blocks.csv")
 if baseline_cal.empty:
     st.info(

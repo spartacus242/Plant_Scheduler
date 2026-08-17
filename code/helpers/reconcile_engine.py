@@ -243,6 +243,80 @@ def coverage_findings(
 
 
 # ---------------------------------------------------------------------------
+# Rule: COVERAGE (ledger) — demand vs COMMITTED MOs, before any planning
+# ---------------------------------------------------------------------------
+
+def demand_ledger_findings(ledger) -> list[Finding]:
+    """Findings from the SKU×week coverage ledger (helpers.demand_coverage).
+
+    coverage_findings above asks "does the SAVED CALENDAR cover demand";
+    this rule asks the pre-planning question: which demand weeks are
+    already covered by the plant's committed MOs (+ kg already made this
+    window), and where do committed MOs and the demand plan disagree so
+    badly that a human must look (the murky cases — flagged, never guessed).
+    """
+    out: list[Finding] = []
+    if ledger is None or not getattr(ledger, "rows", None):
+        return out
+
+    covered = [r for r in ledger.rows
+               if r.status == "COVERED" and r.gross_kg > 0]
+    if covered:
+        total = sum(r.applied_kg for r in covered)
+        worst = sorted(covered, key=lambda r: -r.applied_kg)[:5]
+        out.append(Finding(
+            key="coverage_committed", category=COVERAGE, severity=INFO,
+            title=(f"{len(covered)} demand order(s) already covered by "
+                   f"committed MOs ({total:,.0f} kg) — planning nets them out"),
+            detail=", ".join(f"{r.order_id} ({r.applied_kg:,.0f} kg)"
+                             for r in worst)
+                   + ("…" if len(covered) > 5 else ""),
+            action="Nothing to do — Scenario F subtracts these before solving",
+            page="pages/generate.py",
+            context={"orders": [
+                {"order_id": r.order_id, "week": r.week_label,
+                 "covered_kg": round(r.applied_kg, 1)} for r in covered]},
+        ))
+
+    if ledger.overcommitted:
+        items = sorted(ledger.overcommitted.items(),
+                       key=lambda kv: -kv[1]["surplus_kg"])
+        out.append(Finding(
+            key="coverage_overcommitted", category=COVERAGE, severity=WARN,
+            title=(f"Committed MOs outrun the demand plan for "
+                   f"{len(items)} SKU(s)"),
+            detail="; ".join(
+                f"{sku}: {d['surplus_kg']:,.0f} kg surplus no demand week "
+                f"absorbs (supply {d['total_supply_kg']:,.0f} vs demand "
+                f"{d['total_gross_kg']:,.0f} through {d['last_week_label']})"
+                for sku, d in items[:6])
+                + ("…" if len(items) > 6 else ""),
+            action=("Murky case — the MOs either pre-build weeks beyond the "
+                    "demand file, arrive too late for the weeks they were "
+                    "meant for, or the plan was already netted by hand. "
+                    "Never hand-net the demand CSV."),
+            page="pages/data.py",
+            context={"skus": {s: d for s, d in items}},
+        ))
+
+    if ledger.no_demand:
+        items = sorted(ledger.no_demand.items(), key=lambda kv: -kv[1])
+        total = sum(kg for _, kg in items)
+        out.append(Finding(
+            key="coverage_no_demand", category=COVERAGE, severity=INFO,
+            title=(f"{len(items)} committed SKU(s) absent from the demand "
+                   f"plan ({total:,.0f} kg)"),
+            detail=", ".join(f"{s} ({kg:,.0f} kg)" for s, kg in items[:6])
+                   + ("…" if len(items) > 6 else ""),
+            action=("Confirm these MOs serve demand beyond the plan horizon "
+                    "or add the SKUs to the demand plan"),
+            page="pages/data.py",
+            context={"skus": dict(items)},
+        ))
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Rule: CIP — cleaning overdue now, or coming due with nothing scheduled
 # ---------------------------------------------------------------------------
 
@@ -483,6 +557,7 @@ def assess_plan(
     cfg: dict | None = None,
     *,
     stock_report: dict | None = None,
+    coverage_ledger=None,
 ) -> list[Finding]:
     from helpers.config import datasources_config, load_toml
     from helpers.paths import data_dir as _dd
@@ -523,6 +598,16 @@ def assess_plan(
         return coverage_findings(
             calendar, pd.read_csv(dem_path, dtype={"sku": str}))
     guard("coverage", _coverage)
+
+    # COVERAGE ledger — committed MOs vs the demand plan (pre-planning view).
+    # The page passes its cached ledger; headless callers build one here.
+    def _ledger():
+        led = coverage_ledger
+        if led is None:
+            from helpers.demand_coverage import build_ledger_from_data
+            led = build_ledger_from_data(dd, cfg)
+        return demand_ledger_findings(led)
+    guard("demand_ledger", _ledger)
 
     # CIP
     def _cip():

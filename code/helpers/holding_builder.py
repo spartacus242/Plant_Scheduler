@@ -65,6 +65,7 @@ def build_holding(
     *,
     rates: dict[str, float] | None = None,
     sku_desc: dict[str, str] | None = None,
+    committed_by_order: dict[str, float] | None = None,
 ) -> list[HoldingBlock]:
     """Build holding blocks for demand orders under qmin or with zero qty.
 
@@ -74,6 +75,13 @@ def build_holding(
       -> one holding block per order, qty = qty_min − produced, run_hours
          derived from the average capable-line rate for that SKU.
     Current-state MO rows (order_id ending in '|CUR') are never holding.
+
+    `committed_by_order` (coverage ledger, order_id -> covered kg) credits
+    the plant's committed MOs + already-made kg alongside the solver's fill
+    — without it every gross demand card sat in holding even when the MOs
+    for that week were fully planned (the 280480-W34 screenshot,
+    2026-08-16). No double count: fill targets were netted before solving,
+    so fill + covered ≤ gross by construction.
     """
     produced_by = produced.set_index("order_id")["produced"].to_dict()
     min_by = produced.set_index("order_id")["qty_min"].to_dict()
@@ -97,6 +105,7 @@ def build_holding(
         if qty_min <= 0:
             continue
         prod = float(produced_by.get(oid, 0.0) or 0.0)
+        prod += float((committed_by_order or {}).get(oid, 0.0) or 0.0)
         if prod >= qty_min:
             continue  # met or exceeded — nothing to hold
         missing = qty_min - prod

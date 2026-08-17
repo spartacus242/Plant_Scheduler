@@ -79,7 +79,16 @@ else:
     st.caption(f"Stock check skipped — VIF folder not reachable (`{_vif}`). "
                "Set it on the Stock Check page.")
 
-findings = rec.assess_plan(dd, cfg, stock_report=stock_report)
+# --- Coverage ledger: demand plan vs committed MOs (built once, shared) ---
+try:
+    from helpers.demand_coverage import build_ledger_from_data
+    ledger = build_ledger_from_data(dd, cfg)
+except Exception as _exc:  # noqa: BLE001 — a broken feed must not kill the page
+    ledger = None
+    st.caption(f"Demand coverage ledger unavailable: {_exc}")
+
+findings = rec.assess_plan(dd, cfg, stock_report=stock_report,
+                           coverage_ledger=ledger)
 counts = rec.summary(findings)
 
 # --- Summary strip --------------------------------------------------------
@@ -90,6 +99,41 @@ c3.metric("Info", counts.get(rec.INFO, 0))
 with c4:
     st.page_link("pages/calendar.py", label="Go plan →",
                  icon=":material/drag_indicator:")
+
+# --- Demand coverage table (committed MOs + made kg vs the demand plan) ---
+if ledger is not None and ledger.rows:
+    ldf = ledger.to_frame()
+    # default view: this ISO week onward; the past is history, not a plan item
+    _cur = ledger.anchor_week_key
+    with st.expander("Demand coverage — committed MOs vs the demand plan",
+                     expanded=False):
+        st.caption(
+            "The demand plan is **gross** — Flowstate subtracts committed MO "
+            "kg (and kg already made this window) per SKU per ISO week; "
+            "surplus carries **forward** only. This is exactly the netting "
+            "Scenario F stages with, so a COVERED week will not be re-planned."
+        )
+        show_past = st.checkbox("Show past weeks", value=False,
+                                key="rec_ledger_past")
+        view = ldf if (show_past or _cur is None) else \
+            ldf[ldf["week_key"] >= _cur]
+        n_cov = int((view["status"] == "COVERED").sum())
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Demand kg (shown weeks)", f"{view['gross_kg'].sum():,.0f}")
+        m2.metric("Already covered", f"{view['applied_kg'].sum():,.0f}")
+        m3.metric("Net still to plan", f"{view['net_kg'].sum():,.0f}")
+        st.caption(f"{n_cov} of {len(view)} order(s) fully covered."
+                   + (f" {ledger.unknown_kg_blocks} committed block(s) have "
+                      "unknown kg and credit nothing."
+                      if ledger.unknown_kg_blocks else ""))
+        st.dataframe(
+            view.drop(columns=["week_key"]).rename(columns={
+                "week_label": "Week", "order_id": "Order", "sku": "SKU",
+                "gross_kg": "Demand kg", "committed_kg": "Committed kg",
+                "produced_kg": "Made kg", "carry_in_kg": "Carry-in kg",
+                "applied_kg": "Covered kg", "net_kg": "Net to plan",
+                "status": "Status"}),
+            use_container_width=True, hide_index=True)
 
 if not findings:
     st.success("Nothing needs attention — the plan is clean. Go plan.")

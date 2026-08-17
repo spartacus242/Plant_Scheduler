@@ -811,7 +811,7 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
     from helpers.plan_fill import (SOLVER_CIP_INTERVAL_STANDDOWN_H,
                                    coalesce_windows, committed_windows,
                                    last_sku_per_line, line_free_from,
-                                   pinned_blocks, subtract_committed)
+                                   pinned_blocks)
 
     notes: list[str] = []
     dd = Path(data_dir) if Path(data_dir).name == "data" else Path(_dd())
@@ -922,26 +922,48 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
 
     # 4. demand minus committed production (carry-forward per SKU). The due
     #    windows were already re-based into the staging frame by
-    #    _stage_time_frame (called at the top of this overlay).
+    #    _stage_time_frame (called at the top of this overlay). The ledger
+    #    keys by TRUE ISO weeks (anchor=hz.anchor) — week_index keying
+    #    silently no-opped when the demand file anchored at an older week
+    #    than the staging frame (live: W32 file vs W33 anchor, 2026-08-16).
     dem_path = work / "demand_plan.csv"
     if dem_path.exists():
-        from datetime import timedelta as _td2
+        from helpers.demand_coverage import (apply_ledger, build_ledger,
+                                             demand_source_anchor,
+                                             demand_week_grid)
 
         dem = _pd.read_csv(dem_path, dtype={"sku": str})
-        # ISO week boundaries in the staging frame: bucket committed kg by
-        # the TRUE Monday marks, not a 168h grid off a mid-week anchor.
-        _mon0 = hz.anchor - _td2(days=hz.anchor.weekday())
-        _b = (_mon0 + _td2(days=7) - hz.anchor).total_seconds() / 3600.0
-        week_bounds = [0.0]
-        while _b < H:
-            week_bounds.append(_b)
-            _b += 168.0
-        dem2, sub_notes = subtract_committed(dem, blocks_all,
-                                             week_bounds=week_bounds)
+        # History: past demand weeks were dropped from the staged frame as
+        # misses, but completed production from those weeks must settle
+        # against ITS OWN week first — otherwise a finished pre-build MO
+        # double-credits the surviving weeks. The reference demand file
+        # still carries the past weeks; colliding live weeks are skipped
+        # inside build_ledger.
+        hist: dict = {}
+        _ref_dem = dd / "reference" / "demand_plan.csv"
+        _dem_anchor = demand_source_anchor(dd)
+        if _ref_dem.exists() and _dem_anchor is not None:
+            hist = demand_week_grid(
+                _pd.read_csv(_ref_dem, dtype={"sku": str}), _dem_anchor)
+        ledger = build_ledger(dem, blocks_all, completed=cs.completed,
+                              anchor=hz.anchor, history_demand=hist)
+        dem2, sub_notes = apply_ledger(dem, ledger)
         dem2.to_csv(dem_path, index=False)
+        ledger.to_frame().to_csv(work / "coverage_ledger.csv", index=False)
         notes.append(f"demand reduced by committed production on "
-                     f"{len(sub_notes)} order(s)")
+                     f"{len(sub_notes)} order(s) "
+                     "(SKU-week ledger: coverage_ledger.csv)")
+        notes.extend(ledger.notes[:2])
         notes.extend(sub_notes[:5])
+        if ledger.overcommitted:
+            _oc = sorted(ledger.overcommitted.items(),
+                         key=lambda kv: -kv[1]["surplus_kg"])[:3]
+            notes.append(
+                "committed MOs outrun the demand plan for "
+                + ", ".join(f"{s} (+{d['surplus_kg']:,.0f} kg through "
+                            f"{d['last_week_label']})" for s, d in _oc)
+                + " — surplus no demand week absorbs; check whether the plan "
+                  "was already netted or the MOs pre-build beyond the file")
 
     # 5. never a committed order in F
     cmo = work / "current_mo.csv"

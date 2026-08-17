@@ -95,9 +95,12 @@ def test_committed_surplus_carries_forward_never_backward():
     blocks = _blocks([{"sku": "111", "qty_kg": 80000.0,
                        "start_h": 180, "end_h": 220}])  # midpoint week 1
     dem = _demand([
-        {"order_id": "111-W0", "sku": "111", "week_index": 0, "qty_target": 50000},
-        {"order_id": "111-W1", "sku": "111", "week_index": 1, "qty_target": 50000},
-        {"order_id": "111-W2", "sku": "111", "week_index": 2, "qty_target": 50000},
+        {"order_id": "111-W0", "sku": "111", "week_index": 0, "qty_target": 50000,
+         "due_start_hour": 0, "due_end_hour": 167},
+        {"order_id": "111-W1", "sku": "111", "week_index": 1, "qty_target": 50000,
+         "due_start_hour": 168, "due_end_hour": 335},
+        {"order_id": "111-W2", "sku": "111", "week_index": 2, "qty_target": 50000,
+         "due_start_hour": 336, "due_end_hour": 503},
     ])
     out, _ = subtract_committed(dem, blocks)
     by = {r["order_id"]: r["qty_target"] for _, r in out.iterrows()}
