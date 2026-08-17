@@ -88,7 +88,14 @@ def build_model(
     relax_due: bool = False,
     cross_week: bool = False,
     cip_flex: bool = False,
+    min_prod_score: Optional[int] = None,
 ) -> Tuple[cp_model.CpModel, Dict[str, Any]]:
+    """min_prod_score (two-pass CO minimization, 2026-08-17): when set —
+    soft-demand + maximize_production only — the weighted fill score
+    (tier-1 production incl. week gradient) becomes a HARD floor and the
+    objective flips to MINIMIZING the weighted changeover load. Pass 1
+    maximizes fill; pass 2 re-solves holding >= (1-eps) of that fill and
+    buys back changeovers the flat trade never could."""
     model = cp_model.CpModel()
     orders = data.orders
     lines = data.lines
@@ -1362,6 +1369,7 @@ def build_model(
     W_week = P.objective_week_deviation_weight
     week_pen = week_dev_total * W_week if week_dev else 0
 
+    prod_score = None  # set in the soft-demand maximize branch only
     if maximize_production:
         # Current-state MOs are already-committed work (in VIF, on a locked
         # line). They must win over brand-new demand when capacity is tight:
@@ -1416,7 +1424,13 @@ def build_model(
             prod_sum = sum(tier1)
             if over_terms:
                 over_sum = sum(over_terms)
+            # Exposed so a two-pass caller can read pass 1's fill score and
+            # floor pass 2 on it (includes week gradient + target caps —
+            # holding this scalar holds both total fill and week allocation).
+            prod_score = model.NewIntVar(0, 10**12, "prod_score")
+            model.Add(prod_score == prod_sum)
         else:
+            prod_score = None
             prod_sum = sum(
                 produced[o_idx] * (10 if orders[o_idx].get("is_current_mo") else 1)
                 for o_idx in range(len(orders))
@@ -1452,10 +1466,23 @@ def build_model(
         # Scale production so it always dominates secondary terms.
         # Max secondary is ~50k; prod_sum * 1000 puts production in the
         # hundreds-of-millions range, guaranteeing it is never sacrificed.
-        model.Maximize(
-            prod_sum * 1000 + over_sum * 50
-            - secondary - late_total * W_late - week_pen
-        )
+        if min_prod_score is not None and prod_score is not None:
+            # PASS 2 (two-pass CO minimization): fill quality is a FLOOR,
+            # changeover load is the objective. co_term already carries the
+            # per-machine weights (FFS/topload >> TTP) times W2; the x100
+            # keeps it above idle/makespan tiebreakers.
+            model.Add(prod_score >= int(min_prod_score))
+            co_min = (weighted_co_total if use_weighted_co
+                      else flat_co_total * 100)
+            model.Minimize(
+                co_min * 100 + makespan + total_idle * W_idle
+                - cip_defer_total * W_cip + late_total * W_late + week_pen
+            )
+        else:
+            model.Maximize(
+                prod_sum * 1000 + over_sum * 50
+                - secondary - late_total * W_late - week_pen
+            )
     elif objective_mode == "min-changeovers":
         obj = model.NewIntVar(-(10**12), 10**12, "obj")
         if use_weighted_co:
@@ -1570,5 +1597,8 @@ def build_model(
         "cip_vars": cip_model_vars,
         "lateness": lateness,
         "week_dev": week_dev,
+        # soft-demand fill score (None otherwise) — pass 1 reads it, pass 2
+        # floors on it (two-pass CO minimization)
+        "prod_score": prod_score,
     }
     return model, vars_dict

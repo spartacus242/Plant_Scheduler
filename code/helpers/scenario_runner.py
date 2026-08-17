@@ -281,6 +281,10 @@ SCENARIOS = [
         # Soft demand: every kg short of qty_min is penalized, so filling
         # W34/W35 always pays — no all-or-nothing relax ladder needed.
         "soft_demand": True,
+        # Two-pass: after the fill-maximizing solve, a second full-budget
+        # pass minimizes the weighted changeover load holding fill >= pass1
+        # minus 1% (measured: price pressure alone never cut topload count).
+        "two_pass_co": True,
         # Pack tails: idle time between fill blocks is the enemy of the
         # user's "never leave large blocks of idle time" rule.
         # Changeover pressure (user, 2026-08-14): FFS & topload swaps are
@@ -1271,6 +1275,8 @@ def run_scenario(
     _set_work_use_current_mo(work / "flowstate.toml", lock_current_mo)
     if scenario.get("soft_demand"):
         _set_work_scheduler_flag(work / "flowstate.toml", "soft_demand", True)
+    if scenario.get("two_pass_co"):
+        _set_work_scheduler_flag(work / "flowstate.toml", "two_pass_co", True)
 
     # Inject the current plant state. Scenario F fixes the committed plan as
     # blocked line-time (fill mode); every other scenario uses the classic

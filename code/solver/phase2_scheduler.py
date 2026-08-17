@@ -1614,6 +1614,16 @@ def main() -> None:
     if P.soft_demand:
         log(f"[soft-demand] every kg short of qty_min costs "
             f"{P.objective_shortfall_weight} in the objective (Scenario F)")
+    # Two-pass CO minimization (Scenario F): pass 1 maximizes fill, pass 2
+    # re-solves with that fill score as a hard floor (minus epsilon) and
+    # MINIMIZES the weighted changeover load. Measured 2026-08-14: price
+    # pressure alone couldn't cut topload count at equal tonnage — a
+    # dedicated minimization pass is the lever.
+    TWO_PASS_CO = bool(_CFG_SCHED.get("two_pass_co", False))
+    TWO_PASS_EPS = float(_CFG_SCHED.get("two_pass_epsilon_pct", 1.0))
+    if TWO_PASS_CO and P.soft_demand:
+        log(f"[two-pass] enabled: pass 2 minimizes changeovers holding fill "
+            f">= pass 1 - {TWO_PASS_EPS}%")
     reset_err()
     log(
         f"[{datetime.now()}] START phase={PHASE} relax={RELAX_DEMAND} relax_due={RELAX_DUE} "
@@ -1786,6 +1796,60 @@ def main() -> None:
                         break
 
                 status_name = solver.StatusName(status)
+
+                # ── Two-pass CO minimization (Scenario F, level 0 only) ──
+                # Level 0 = changeovers enforced; at level 3 (ignore_co) a
+                # CO-minimizing pass is meaningless. Pass 2 gets its own full
+                # time budget (the runner's subprocess ceiling is 4x tl).
+                if (status in (cp_model.FEASIBLE, cp_model.OPTIMAL)
+                        and level == 0 and _SOFT_DEMAND_ACTIVE and TWO_PASS_CO
+                        and vars_dict.get("prod_score") is not None):
+                    try:
+                        _score1 = solver.Value(vars_dict["prod_score"])
+                        _floor = int(_score1 * (1.0 - TWO_PASS_EPS / 100.0))
+                        log(f"[two-pass] pass 1 fill score {_score1:,} -> "
+                            f"pass 2 floor {_floor:,} ({TWO_PASS_EPS}% give), "
+                            "objective = weighted changeover load")
+                        m2, v2 = build_model(
+                            P, data, PHASE,
+                            flags["relax_demand"], flags["ignore_co"],
+                            max_lines_per_order_override=MAX_LINES_PER_ORDER,
+                            maximize_production=True,
+                            objective_mode=OBJECTIVE_MODE,
+                            relax_due=flags["relax_due"],
+                            cross_week=CROSS_WEEK, cip_flex=CIP_FLEX,
+                            min_prod_score=_floor,
+                        )
+                        _hinted = 0
+                        for _grp in ("present", "seg_b_present", "run_h",
+                                     "seg_a_start", "seg_a_run",
+                                     "seg_b_start", "seg_b_run"):
+                            for _key, _var in vars_dict[_grp].items():
+                                m2.AddHint(v2[_grp][_key],
+                                           solver.Value(_var))
+                                _hinted += 1
+                        log(f"[two-pass] hinted {_hinted} vars from pass 1")
+                        update_stage(
+                            DATA_DIR, "solving", "active",
+                            f"pass 2: min changeovers, fill floored "
+                            f"({int(tl)}s)")
+                        _s2 = cp_model.CpSolver()
+                        _s2.parameters.num_search_workers = 8
+                        _s2.parameters.max_time_in_seconds = tl
+                        _cb2 = _ProgressCallback(DATA_DIR, label_prefix="P2co: ")
+                        _st2 = _s2.Solve(m2, _cb2)
+                        if _st2 in (cp_model.FEASIBLE, cp_model.OPTIMAL):
+                            log(f"[two-pass] pass 2 {_s2.StatusName(_st2)}: "
+                                f"fill score {_s2.Value(v2['prod_score']):,} "
+                                f"(floor {_floor:,}) — adopting pass 2")
+                            solver, vars_dict = _s2, v2
+                            status_name = _s2.StatusName(_st2)
+                        else:
+                            log(f"[two-pass] pass 2 {_s2.StatusName(_st2)} — "
+                                "keeping pass 1 unchanged")
+                    except Exception as _tp_exc:  # noqa: BLE001
+                        log(f"[two-pass] FAILED, keeping pass 1: {_tp_exc}")
+
                 if status in (cp_model.FEASIBLE, cp_model.OPTIMAL):
                     update_stage(DATA_DIR, "solving", "done", status_name)
 
