@@ -9,6 +9,7 @@
 // golden fixture; change the rules in both places or not at all.
 
 import type { ScheduleBlock, DemandTarget, AdherenceRow, KpiData, CoPairInfo } from "../types";
+import { isWindowBlock } from "../types";
 
 /** Fallback when no co_pairs/co_default were passed (e.g. dev harness):
  * mirrors scorecard_config defaults base 0.5 + recipe 1.0. */
@@ -206,16 +207,27 @@ export function computeKpis(
 }
 
 /** Client-only diagnostic — not part of the Python payload (the scorecard has
- * its own conflict metrics); flags physically impossible drops immediately. */
+ * its own conflict metrics); flags physically impossible drops immediately.
+ * Only pairs involving PRODUCTION (or a trial) count: two windows lying on
+ * top of each other — a projected CIP inside a line-down span, overlapping
+ * maintenance — is a display fact, not a scheduling error (user report
+ * 2026-08-18: "2 overlaps on P11 but P11 is down" — the CIP markers). */
 export function checkOverlapsSimple(blocks: ScheduleBlock[]): string[] {
   const byLine: Record<string, ScheduleBlock[]> = {};
   for (const b of blocks) (byLine[b.line_name] ??= []).push(b);
   const issues: string[] = [];
   for (const [ln, lb] of Object.entries(byLine)) {
     const sorted = [...lb].sort((a, b) => a.start_hour - b.start_hour);
-    for (let i = 1; i < sorted.length; i++) {
-      if (sorted[i].start_hour < sorted[i - 1].end_hour) {
-        issues.push(`${ln}: overlap at h${sorted[i].start_hour}`);
+    for (let i = 0; i < sorted.length; i++) {
+      for (let j = i + 1; j < sorted.length; j++) {
+        const a = sorted[i];
+        const b = sorted[j];
+        if (b.start_hour >= a.end_hour - 1e-9) break; // sorted: no later hit
+        if (isWindowBlock(a.block_type) && isWindowBlock(b.block_type)) {
+          continue; // window-on-window: harmless
+        }
+        const nm = (x: ScheduleBlock) => x.sku || x.label || x.block_type;
+        issues.push(`${ln}: ${nm(b)} overlaps ${nm(a)} at h${Math.round(b.start_hour)}`);
       }
     }
   }
