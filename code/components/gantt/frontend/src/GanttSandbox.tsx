@@ -224,6 +224,61 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     return Math.max(0, Math.min(horizon - 1, snapToHour(xToHour(xInSvg, viewStart, hourWidth))));
   }, [horizon, viewStart, hourWidth]);
 
+  // ── Auto-scroll the PARENT page while dragging near the viewport edge ──
+  // The holding area lives below the chart; dragging a card up to a line
+  // needs the page to scroll mid-drag (user request 2026-08-18). The iframe
+  // never scrolls itself — the parent document does. Same-origin, so we can
+  // read our frame position and drive whichever parent element scrolls.
+  const autoScrollRaf = useRef(0);
+  const dragPointerY = useRef<number | null>(null);
+  const dragPointerTracker = useRef((e: PointerEvent) => {
+    dragPointerY.current = e.clientY;
+  });
+  const startAutoScroll = useCallback(() => {
+    window.addEventListener("pointermove", dragPointerTracker.current);
+    const step = () => {
+      try {
+        const fe = window.frameElement as HTMLElement | null;
+        const pw = window.parent && window.parent !== window ? window.parent : null;
+        if (fe && pw && dragPointerY.current !== null) {
+          const py = fe.getBoundingClientRect().top + dragPointerY.current;
+          const vh = pw.innerHeight;
+          const topZone = 140;   // below Streamlit's fixed toolbar
+          const bottomZone = 90;
+          let dy = 0;
+          if (py < topZone) dy = -Math.min(28, Math.max(6, (topZone - py) / 3));
+          else if (py > vh - bottomZone) dy = Math.min(28, Math.max(6, (py - (vh - bottomZone)) / 3));
+          if (dy !== 0) {
+            const cands: (Element | null)[] = [
+              pw.document.scrollingElement,
+              pw.document.querySelector('[data-testid="stAppViewContainer"]'),
+              pw.document.querySelector('[data-testid="stMain"]'),
+              pw.document.querySelector("section.main"),
+            ];
+            for (const c of cands) {
+              const el = c as HTMLElement | null;
+              if (el && el.scrollHeight > el.clientHeight + 4) {
+                el.scrollTop += dy;
+                break;
+              }
+            }
+          }
+        }
+      } catch {
+        /* cross-origin embed: no page auto-scroll */
+      }
+      autoScrollRaf.current = requestAnimationFrame(step);
+    };
+    cancelAnimationFrame(autoScrollRaf.current);
+    autoScrollRaf.current = requestAnimationFrame(step);
+  }, []);
+  const stopAutoScroll = useCallback(() => {
+    cancelAnimationFrame(autoScrollRaf.current);
+    autoScrollRaf.current = 0;
+    dragPointerY.current = null;
+    window.removeEventListener("pointermove", dragPointerTracker.current);
+  }, []);
+
   const onDragStart = useCallback(
     (event: DragStartEvent) => {
       setErrorMsg(null);
@@ -235,8 +290,9 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           setActiveDragSku(blockData.sku);
         }
       }
+      startAutoScroll();
     },
-    [],
+    [startAutoScroll],
   );
 
   // Live, rate-aware preview of the placement the drop would produce.
@@ -276,13 +332,15 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   );
 
   const onDragCancel = useCallback(() => {
+    stopAutoScroll();
     setActiveDragSku(null);
     setActiveDragBlock(null);
     setDragPreview(null);
-  }, []);
+  }, [stopAutoScroll]);
 
   const onDragEnd = useCallback(
     (event: DragEndEvent) => {
+      stopAutoScroll();
       setActiveDragSku(null);
       setActiveDragBlock(null);
       setDragPreview(null);
@@ -459,7 +517,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         setWarnMsg(setupWarning(block.id, targetLine.line_name, newStart, newEnd));
       }
     },
-    [schedule, cipWindows, holdingArea, actions, hourWidth, caps, lines, hourFromPointer, reject, anchor, downtime, isBlockLocked, lockReason, intoLockedZone, lockedThroughH, insertCtx],
+    [schedule, cipWindows, holdingArea, actions, hourWidth, caps, lines, hourFromPointer, reject, anchor, downtime, isBlockLocked, lockReason, intoLockedZone, lockedThroughH, insertCtx, stopAutoScroll],
   );
 
   const onResizeCommit = useCallback(
