@@ -13,7 +13,7 @@ import { useBlockResize } from "./hooks/useBlockResize";
 import { useContextMenu } from "./hooks/useContextMenu";
 import { computeKpis, computeAdherence, checkOverlapsSimple, serverKpisToKpiData } from "./utils/kpi";
 import { isCapable, recalcDuration, findOverlapsOnLine } from "./utils/validation";
-import { LINE_HEIGHT, MIN_HOUR_WIDTH, MAX_HOUR_WIDTH, snapToHour, fitToWidth, xToHour, hourToStamp, displayOrderId, setDemandBaseWeek } from "./utils/layout";
+import { LINE_HEIGHT, MIN_HOUR_WIDTH, MAX_HOUR_WIDTH, snapToHour, fitToWidth, xToHour, hourToStamp, displayOrderId, setDemandBaseWeek, isoWeekLabel, isoWeekAtHour } from "./utils/layout";
 import { getRate } from "./utils/validation";
 import { computeDragPreview, computeInsertPlan, type DragPreview, type InsertContext } from "./utils/dragPreview";
 import { isDouble } from "./utils/abLines";
@@ -123,12 +123,21 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   // Planner-pinned blocks are immovable like MOs — the solver plans around
   // them — but unlike locked blocks the PLANNER can free them again via the
   // popup's unpin toggle, so the reason says how.
+  // Committed manprg MOs are plant fact — never movable on the board
+  // (user report 2026-08-18: MOs could be dragged and slid apart by
+  // insert-between). The solver plans AROUND them; so does the planner.
+  const isCommittedMo = useCallback(
+    (b: ScheduleBlock): boolean =>
+      (b.attrs ?? "").includes("current_state:"),
+    [],
+  );
   const isBlockLocked = useCallback(
     (b: ScheduleBlock): boolean =>
       Boolean(b.locked) ||
       Boolean(b.pinned) ||
+      isCommittedMo(b) ||
       (lockedThroughH != null && b.start_hour < lockedThroughH - 1e-9),
-    [lockedThroughH],
+    [lockedThroughH, isCommittedMo],
   );
   const lockReason = useCallback(
     (b: ScheduleBlock): string =>
@@ -136,8 +145,10 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         ? "Block is locked"
         : b.pinned
           ? "📌 Pinned for the solver — unpin it in the block popup to move it"
-          : `Inside the locked window (committed through ${hourToStamp(lockedThroughH ?? 0, anchor)})`,
-    [lockedThroughH, anchor],
+          : isCommittedMo(b)
+            ? "Committed manprg MO — the plant is already running this plan"
+            : `Inside the locked window (committed through ${hourToStamp(lockedThroughH ?? 0, anchor)})`,
+    [lockedThroughH, anchor, isCommittedMo],
   );
   const intoLockedZone = useCallback(
     (startHour: number): boolean =>
@@ -375,12 +386,16 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           const plan = computeInsertPlan(block, block.line_name, newStart, dur, allBlocks, insertCtx);
           const nextBlk = plan ? allBlocks.find((n) => n.id === plan.nextId) : undefined;
           if (plan && nextBlk && !plan.blockedReason) {
-            setErrorMsg(null);
-            const shiftIds = allBlocks
+            const shifted = allBlocks
               .filter((b) => b.id !== block.id && b.line_name === block.line_name)
-              .filter((b) => b.start_hour >= nextBlk.start_hour - 1e-9)
-              .map((b) => b.id);
-            actions.insertShift(block.id, block.line_name, block.line_id, plan.insStart, dur, shiftIds, plan.deltaH);
+              .filter((b) => b.start_hour >= nextBlk.start_hour - 1e-9);
+            const lockedHit = shifted.find(isBlockLocked);
+            if (lockedHit) {
+              reject(`Cannot insert: would slide ${lockedHit.sku || lockedHit.label} — ${lockReason(lockedHit)}`);
+              return;
+            }
+            setErrorMsg(null);
+            actions.insertShift(block.id, block.line_name, block.line_id, plan.insStart, dur, shifted.map((b) => b.id), plan.deltaH);
             return;
           }
           reject(plan && plan.blockedReason
@@ -417,12 +432,16 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           const plan = computeInsertPlan(block, targetLine.line_name, newStart, dur, allBlocks, insertCtx);
           const nextBlk = plan ? allBlocks.find((n) => n.id === plan.nextId) : undefined;
           if (plan && nextBlk && !plan.blockedReason) {
-            setErrorMsg(null);
-            const shiftIds = allBlocks
+            const shifted = allBlocks
               .filter((b) => b.id !== block.id && b.line_name === targetLine.line_name)
-              .filter((b) => b.start_hour >= nextBlk.start_hour - 1e-9)
-              .map((b) => b.id);
-            actions.insertShift(block.id, targetLine.line_name, targetLine.line_id, plan.insStart, dur, shiftIds, plan.deltaH);
+              .filter((b) => b.start_hour >= nextBlk.start_hour - 1e-9);
+            const lockedHit = shifted.find(isBlockLocked);
+            if (lockedHit) {
+              reject(`Cannot insert: would slide ${lockedHit.sku || lockedHit.label} — ${lockReason(lockedHit)}`);
+              return;
+            }
+            setErrorMsg(null);
+            actions.insertShift(block.id, targetLine.line_name, targetLine.line_id, plan.insStart, dur, shifted.map((b) => b.id), plan.deltaH);
             return;
           }
           reject(plan && plan.blockedReason
@@ -625,6 +644,99 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     [schedule, cipWindows, actions, isBlockLocked, lockReason, intoLockedZone, lockedThroughH, anchor, setupBetween],
   );
 
+  // Fill the empty space next to a block (user request 2026-08-18): extend
+  // the block's edge to the neighbouring block minus the required setup
+  // time (from_sku -> to_sku), or to the horizon/lock boundary when the
+  // line is open. Resize semantics — qty scales with duration.
+  const handleFill = useCallback(
+    (blockId: string, dir: "left" | "right" | "both"): string | null => {
+      const block =
+        schedule.find((b) => b.id === blockId) ?? cipWindows.find((b) => b.id === blockId);
+      if (!block) return "Block no longer exists";
+      if (isBlockLocked(block)) return lockReason(block);
+      const others = [...schedule, ...cipWindows].filter(
+        (b) => b.id !== blockId && b.line_name === block.line_name,
+      );
+      let newStart = block.start_hour;
+      let newEnd = block.end_hour;
+      const notes: string[] = [];
+      if (dir === "left" || dir === "both") {
+        const left = others
+          .filter((b) => b.end_hour <= block.start_hour + 1e-9)
+          .sort((a, b) => b.end_hour - a.end_hour)[0];
+        const setup = left ? setupBetween(left, block) : 0;
+        const floor = Math.max(
+          0,
+          lockedThroughH ?? 0,
+          left ? left.end_hour + setup : 0,
+        );
+        if (floor < block.start_hour - 1e-9) {
+          newStart = floor;
+          notes.push(
+            left
+              ? `left to ${left.sku || left.label}${setup > 0 ? ` +${setup}h setup` : ""}`
+              : "left to the line start",
+          );
+        }
+      }
+      if (dir === "right" || dir === "both") {
+        const right = others
+          .filter((b) => b.start_hour >= block.end_hour - 1e-9)
+          .sort((a, b) => a.start_hour - b.start_hour)[0];
+        const setup = right ? setupBetween(block, right) : 0;
+        const ceil = right ? right.start_hour - setup : horizon;
+        if (ceil > block.end_hour + 1e-9) {
+          newEnd = ceil;
+          notes.push(
+            right
+              ? `right to ${right.sku || right.label}${setup > 0 ? ` -${setup}h setup` : ""}`
+              : "right to the horizon",
+          );
+        }
+      }
+      if (newStart === block.start_hour && newEnd === block.end_hour) {
+        return "Nothing to fill — the block already touches its neighbours";
+      }
+      const clash = others.find(
+        (b) => b.start_hour < newEnd - 1e-9 && b.end_hour > newStart + 1e-9,
+      );
+      if (clash) {
+        return `No room: would overlap ${clash.sku || clash.label}`;
+      }
+      setErrorMsg(null);
+      actions.resizeBlock(blockId, newStart, newEnd);
+      actions.reportAction(
+        `Filled ${block.order_id || block.sku} ${notes.join(" and ")}`,
+      );
+      return null;
+    },
+    [schedule, cipWindows, actions, isBlockLocked, lockReason, lockedThroughH, horizon, setupBetween],
+  );
+
+  // Remaining demand for a SKU by week (popup helper): target minus what
+  // the CURRENT board schedules per order, from the same adherence rules.
+  const demandLeftForSku = useCallback(
+    (sku: string): { week: string; left_kg: number; total_kg: number }[] => {
+      const rows = computeAdherence(schedule, args.demandTargets, args.capabilities);
+      const bySku = rows.filter((r) => r.sku === sku);
+      const out: { week: string; left_kg: number; total_kg: number }[] = [];
+      for (const r of bySku) {
+        const m = /-W(\d+)$/.exec(r.order_id);
+        const wk = m ? `W${isoWeekLabel(parseInt(m[1], 10), anchor)}` : "—";
+        const target = r.qty_min > 0 && r.qty_max >= r.qty_min
+          ? (r.qty_min + r.qty_max) / 2
+          : Math.max(r.qty_min, r.qty_max);
+        out.push({
+          week: wk,
+          left_kg: Math.max(0, Math.round(target - r.scheduled_qty)),
+          total_kg: Math.round(target),
+        });
+      }
+      return out;
+    },
+    [schedule, args.demandTargets, args.capabilities, anchor],
+  );
+
   // Python (helpers/scorecard_engine.gantt_kpis) is the source of truth for
   // KPI numbers: render the server payload verbatim until the user edits,
   // then recompute live with the SAME rules (kpi.ts is an exact port driven
@@ -650,6 +762,52 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     return computeAdherence(schedule, args.demandTargets, args.capabilities);
   }, [edited, args.kpis, schedule, args.demandTargets, args.capabilities]);
 
+  // Per-week chips (user request 2026-08-18): fulfillment vs the demand due
+  // that ISO week + changeovers by machine, recomputed live client-side.
+  const weekStats = useMemo(() => {
+    const stats: Record<string, { pct: number | null; tl: number; ffs: number; cp: number; ttp: number }> = {};
+    const rows = computeAdherence(schedule, args.demandTargets, args.capabilities);
+    const dem: Record<string, { sched: number; target: number }> = {};
+    for (const r of rows) {
+      const m = /-W(\d+)$/.exec(r.order_id);
+      if (!m) continue;
+      const wk = `W${isoWeekLabel(parseInt(m[1], 10), anchor)}`;
+      const target = r.qty_min > 0 && r.qty_max >= r.qty_min
+        ? (r.qty_min + r.qty_max) / 2
+        : Math.max(r.qty_min, r.qty_max);
+      const d = (dem[wk] ??= { sched: 0, target: 0 });
+      d.sched += r.scheduled_qty;
+      d.target += target;
+    }
+    const byLine: Record<string, ScheduleBlock[]> = {};
+    for (const b of schedule) {
+      if (b.block_type !== "sku") continue;
+      (byLine[b.line_name] ??= []).push(b);
+    }
+    const pairs = args.kpis?.co_pairs ?? {};
+    const dflt = args.kpis?.co_default ?? { recipe: 1, format: 0, hours: 1.5 };
+    for (const blocks of Object.values(byLine)) {
+      const sorted = [...blocks].sort((a, b) => a.start_hour - b.start_hour);
+      for (let i = 1; i < sorted.length; i++) {
+        const from = sorted[i - 1].sku;
+        const to = sorted[i].sku;
+        if (from === to) continue;
+        const wk = `W${isoWeekAtHour(anchor, sorted[i].start_hour)}`;
+        const st = (stats[wk] ??= { pct: null, tl: 0, ffs: 0, cp: 0, ttp: 0 });
+        const pi = pairs[`${from}|${to}`] ?? dflt;
+        st.tl += pi.tl ?? 0;
+        st.ffs += pi.ffs ?? 0;
+        st.cp += pi.cp ?? 0;
+        st.ttp += pi.ttp ?? 0;
+      }
+    }
+    for (const [wk, d] of Object.entries(dem)) {
+      const st = (stats[wk] ??= { pct: null, tl: 0, ffs: 0, cp: 0, ttp: 0 });
+      st.pct = d.target > 0 ? Math.round((d.sched / d.target) * 1000) / 10 : null;
+    }
+    return stats;
+  }, [schedule, args.demandTargets, args.capabilities, args.kpis, anchor]);
+
   const zoomIn = useCallback(() => {
     userZoomed.current = true;
     setHourWidth((w) => Math.min(w * 1.3, MAX_HOUR_WIDTH));
@@ -665,13 +823,25 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     setViewStart(0);
   }, [horizon]);
 
+  // Buffered sync (user request 2026-08-18): edits stay CLIENT-SIDE — the
+  // KPI bar, overlap banner and per-week chips recompute live in kpi.ts —
+  // and nothing reruns the Streamlit page until the planner clicks
+  // "Refresh checks". That click pushes the state up, where Python
+  // rescoring, holding rebuild and the full scorecard run once.
   const lastPushed = useRef("");
+  const [dirty, setDirty] = useState(false);
   useEffect(() => {
     const key = JSON.stringify({ schedule, cipWindows, holdingArea, lastAction });
-    if (key !== lastPushed.current) {
-      lastPushed.current = key;
-      setComponentValue({ schedule, cipWindows, holdingArea, lastAction });
+    if (lastPushed.current === "") {
+      lastPushed.current = key; // initial mount is not an edit
+      return;
     }
+    if (key !== lastPushed.current) setDirty(true);
+  }, [schedule, cipWindows, holdingArea, lastAction]);
+  const pushRefresh = useCallback(() => {
+    lastPushed.current = JSON.stringify({ schedule, cipWindows, holdingArea, lastAction });
+    setDirty(false);
+    setComponentValue({ schedule, cipWindows, holdingArea, lastAction });
   }, [schedule, cipWindows, holdingArea, lastAction]);
 
   useEffect(() => {
@@ -705,7 +875,22 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}
       onClick={() => { closeMenu(); setPopover(null); }}
     >
-      <KpiBar kpis={kpis} />
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ flex: 1 }}><KpiBar kpis={kpis} /></div>
+        <button
+          onClick={pushRefresh}
+          title="Push your edits up: rescore, rebuild holding, rerun all checks"
+          style={{
+            padding: "8px 16px", borderRadius: 8, fontWeight: 700,
+            fontSize: 13, cursor: "pointer",
+            border: dirty ? "2px solid #f57c00" : "1px solid #ccc",
+            background: dirty ? "#fff3e0" : "#fff",
+            color: dirty ? "#e65100" : "#666",
+          }}
+        >
+          {dirty ? "⟳ Refresh checks • unsaved edits" : "⟳ Refresh checks"}
+        </button>
+      </div>
 
       {errorMsg && (
         <div
@@ -759,6 +944,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           capableLines={capableLines}
           lockedThroughH={lockedThroughH}
           insertPreview={dragPreview && dragPreview.insert && !dragPreview.insert.blockedReason ? dragPreview.insert : null}
+          weekStats={weekStats}
           svgRef={chartSvgRef}
           onResizeStart={guardedStartResize}
           onContextMenu={handleContextMenu}
@@ -850,6 +1036,9 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           onClose={() => setPopover(null)}
           onApply={isBlockLocked(popover.block) ? undefined : handleApplyEdit}
           onSnap={isBlockLocked(popover.block) ? undefined : handleSnap}
+          onFill={isBlockLocked(popover.block) ? undefined : handleFill}
+          demandLeft={popover.block.block_type === "sku"
+            ? demandLeftForSku(popover.block.sku) : undefined}
           onTogglePin={
             popover.block.block_type === "sku" &&
             !popover.block.locked &&

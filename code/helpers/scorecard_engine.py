@@ -1449,6 +1449,11 @@ def gantt_kpis(
             "recipe": 1 if _is_recipe_change(flags, from_sku, to_sku) else 0,
             "format": 1 if _is_format_change(flags) else 0,
             "hours": _round_half_up(_co_transition_hours(flags, from_sku, to_sku, cfg), 4),
+            # machine touched (per-week chips + severity display client-side)
+            "tl": 1 if int(flags.get("topload_change", 0) or 0) == 1 else 0,
+            "ffs": 1 if int(flags.get("ffs_change", 0) or 0) == 1 else 0,
+            "cp": 1 if int(flags.get("casepacker_change", 0) or 0) == 1 else 0,
+            "ttp": 1 if int(flags.get("ttp_change", 0) or 0) == 1 else 0,
         }
     # A pair with no standards row: recipe by definition, unknown format,
     # base + recipe default hours (exactly the score_changeovers fallback).
@@ -1456,6 +1461,7 @@ def gantt_kpis(
         "recipe": 1,
         "format": 0,
         "hours": _round_half_up(_co_transition_hours(None, "_from", "_to", cfg), 4),
+        "tl": 0, "ffs": 0, "cp": 0, "ttp": 0,
     }
 
     return {

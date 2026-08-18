@@ -17,11 +17,14 @@ interface SvgProps {
    *  "header" = the label band only (kept sticky by GanttChart);
    *  "all" = legacy single-layer rendering. */
   layer?: "all" | "body" | "header";
+  /** Per-ISO-week live metrics ("W35" -> fulfillment % + machine CO counts)
+   * rendered as a chips row inside each week band. */
+  weekStats?: Record<string, { pct: number | null; tl: number; ffs: number; cp: number; ttp: number }>;
 }
 
 /** SVG group rendered INSIDE the <svg> element. */
 export const TimeAxisSvg: React.FC<SvgProps> = ({
-  viewStart, viewEnd, hourWidth, anchor, svgWidth, svgHeight, layer = "all",
+  viewStart, viewEnd, hourWidth, anchor, svgWidth, svgHeight, layer = "all", weekStats,
 }) => {
   const showBody = layer !== "header";
   const showHeader = layer !== "body";
@@ -80,6 +83,20 @@ export const TimeAxisSvg: React.FC<SvgProps> = ({
                       y={11} fontSize={11} fontWeight={700} fill="#455a64">
                   {t.label}
                 </text>
+                {weekStats && weekStats[t.label] && (() => {
+                  const ws = weekStats[t.label];
+                  const parts: string[] = [];
+                  if (ws.pct !== null && ws.pct !== undefined) parts.push(`${ws.pct}% filled`);
+                  parts.push(`TL ${ws.tl}`, `FFS ${ws.ffs}`, `CP ${ws.cp}`, `TTP ${ws.ttp}`);
+                  const wsPct = ws.pct;
+                  return (
+                    <text x={Math.max(wx0, hourToX(viewStart, viewStart, hourWidth)) + 6}
+                          y={25} fontSize={9.5} fontWeight={600}
+                          fill={wsPct !== null && wsPct !== undefined && wsPct < 90 ? "#c62828" : "#2e7d32"}>
+                      {parts.join("  ·  ")}
+                    </text>
+                  );
+                })()}
               </>
             )}
           </g>
@@ -103,7 +120,7 @@ export const TimeAxisSvg: React.FC<SvgProps> = ({
             {showHeader && dayPixels > 30 && (
               <text
                 x={x + colW / 2}
-                y={HEADER_HEIGHT / 2 + 1}
+                y={HEADER_HEIGHT - 14}
                 textAnchor="middle"
                 dominantBaseline="middle"
                 fontSize={dayPixels >= 55 ? 11 : 9}

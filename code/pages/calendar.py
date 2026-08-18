@@ -414,7 +414,9 @@ if _active:
 #     NOT counted here because the coverage ledger already credits them
 #     (counting both would double-credit).
 # Rebuilds whenever the board file changes (promote/save/roll).
-_board_stamp = cal_path.stat().st_mtime if cal_path.exists() else 0.0
+_board_stamp = st.session_state.get(
+    "cal_board_sig",
+    cal_path.stat().st_mtime if cal_path.exists() else 0.0)
 if st.session_state.get("cal_holding_stamp") != _board_stamp:
     _held: list[dict] = []
     try:
@@ -427,7 +429,12 @@ if st.session_state.get("cal_holding_stamp") != _board_stamp:
         _dem = load_demand(dd / "reference" / "demand_plan.csv")
         _dem_ids = set(_dem["order_id"].astype(str))
         _board_kg: dict[str, float] = {}
-        _bprod = cal[cal["block_type"] == "production"]
+        # last pushed what-if state (the Refresh button) wins over disk, so
+        # tonnage edits move cards in/out of holding without a Save
+        _wrk_recs = st.session_state.get("cal_working_records")
+        _bsrc = (pd.DataFrame(_wrk_recs)
+                 if _wrk_recs else cal)
+        _bprod = _bsrc[_bsrc["block_type"] == "production"]
         for _, _r in _bprod.iterrows():
             _oid = str(_r.get("order_id", "") or "")
             if _oid in _dem_ids:
@@ -577,6 +584,25 @@ if state and state.get("schedule") is not None:
     st.session_state["cal_holding"] = holding
     if state.get("lastAction"):
         st.caption(f"Last action: {state['lastAction']}")
+
+# Fingerprint the pushed board state (order_id + kg of production rows).
+# When it changes — the planner clicked "Refresh checks" after edits —
+# store it and rerun ONCE so the holding area re-derives from the new
+# tonnage (cards clear when an order is now fulfilled, reappear when
+# tonnage was cut).
+try:
+    _wp = working[working["block_type"] == "production"]
+    _sig = hash(tuple(sorted(
+        (str(r.get("order_id", "")),
+         round(float(pd.to_numeric(pd.Series([r.get("qty_kg")]),
+                                   errors="coerce").iloc[0] or 0), 1))
+        for _, r in _wp.iterrows())))
+except Exception:  # noqa: BLE001
+    _sig = None
+if _sig is not None and st.session_state.get("cal_board_sig") != _sig:
+    st.session_state["cal_board_sig"] = _sig
+    st.session_state["cal_working_records"] = working.to_dict("records")
+    st.rerun()
 
 n_holding = len(holding)
 if n_holding:

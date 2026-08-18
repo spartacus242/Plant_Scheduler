@@ -75,6 +75,11 @@ export interface CoPairInfo {
   recipe: number;
   format: number;
   hours: number;
+  /** machine touched by this transition (0/1) — per-week chips */
+  tl?: number;
+  ffs?: number;
+  cp?: number;
+  ttp?: number;
 }
 
 /** Canonical KPI payload from helpers/scorecard_engine.gantt_kpis (Python is

@@ -133,9 +133,15 @@ def test_python_golden_values(py_result):
     assert by_order["O6"]["status"] == "MET" and by_order["O6"]["pct_adherence"] == 100.0
 
     # co_pairs classification map the frontend consumes
-    assert py_result["co_pairs"]["SKU_A|SKU_B"] == {"recipe": 1, "format": 1, "hours": 3.0}
-    assert py_result["co_pairs"]["SKU_B|SKU_A"] == {"recipe": 1, "format": 1, "hours": 3.0}
-    assert py_result["co_default"] == {"recipe": 1, "format": 0, "hours": 1.5}
+    assert py_result["co_pairs"]["SKU_A|SKU_B"] == {
+        "recipe": 1, "format": 1, "hours": 3.0,
+        "tl": 0, "ffs": 1, "cp": 0, "ttp": 0}
+    assert py_result["co_pairs"]["SKU_B|SKU_A"] == {
+        "recipe": 1, "format": 1, "hours": 3.0,
+        "tl": 0, "ffs": 1, "cp": 0, "ttp": 0}
+    assert py_result["co_default"] == {
+        "recipe": 1, "format": 0, "hours": 1.5,
+        "tl": 0, "ffs": 0, "cp": 0, "ttp": 0}
 
     # trial qty must NOT count: O2 scheduled is 800 (10h * 80), not 800 + trial
     assert by_order["O2"]["scheduled_qty"] == 800

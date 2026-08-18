@@ -38,6 +38,12 @@ interface Props {
   /** Pin/unpin for the solver. Present only on production blocks the planner
    * may pin (not locked, not completed, not inside the frozen window). */
   onTogglePin?: (blockId: string, pinned: boolean) => void;
+  /** Fill the empty space next to the block (setup hours respected).
+   * Same contract as onSnap: null = done, string = why not. */
+  onFill?: (blockId: string, dir: "left" | "right" | "both") => string | null;
+  /** Remaining demand for this SKU by ISO week (target - board-scheduled),
+   * so tonnage edits are made knowing what still needs filling. */
+  demandLeft?: { week: string; left_kg: number; total_kg: number }[];
 }
 
 const LABEL: React.CSSProperties = { color: "#888", paddingRight: 12 };
@@ -64,7 +70,7 @@ function fromLocalInput(anchor: Date, value: string): number | null {
 
 const round1 = (v: number) => Math.round(v * 10) / 10;
 
-export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClose, onApply, onSnap, onTogglePin }) => {
+export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClose, onApply, onSnap, onTogglePin, onFill, demandLeft }) => {
   // Draft field state, (re)seeded whenever a different block is opened.
   const [draft, setDraft] = useState<{ id: string; start: string; dur: string; qty: string } | null>(null);
   const [applyError, setApplyError] = useState<string | null>(null);
@@ -294,6 +300,58 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClo
               ? "Pinned: immovable like an MO. The solver treats it as committed line-time and its kg counts toward the demand plan."
               : "Pin when this SKU must run exactly here — the solver fills the rest of the demand around it."}
           </div>
+        </div>
+      )}
+      {editable && onFill && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            {(["left", "both", "right"] as const).map((d) => (
+              <button
+                key={d}
+                title={
+                  d === "both"
+                    ? "Grow this block into the empty space on BOTH sides (setup hours respected)"
+                    : `Grow this block ${d} into the empty space (setup hours respected)`
+                }
+                style={{ fontSize: 12, padding: "4px 10px", borderRadius: 4,
+                         border: "1px solid #2e7d32", background: "#e8f5e9",
+                         cursor: "pointer", fontWeight: 600 }}
+                onClick={() => {
+                  const err = onFill(block.id, d);
+                  setApplyError(err);
+                  if (!err) onClose();
+                }}
+              >
+                {d === "left" ? "⬅ Fill left" : d === "right" ? "Fill right ➡" : "↔ Fill both"}
+              </button>
+            ))}
+          </div>
+          <div style={{ fontSize: 11, color: "#888", marginTop: 4, maxWidth: 280 }}>
+            Fills to the neighbouring block minus the required changeover
+            setup; tonnage scales with the new duration.
+          </div>
+        </div>
+      )}
+      {demandLeft && demandLeft.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#555" }}>
+            Demand plan — {block.sku} still needs:
+          </div>
+          <table style={{ fontSize: 11, marginTop: 2, borderCollapse: "collapse" }}>
+            <tbody>
+              {demandLeft.map((r) => (
+                <tr key={r.week}>
+                  <td style={{ paddingRight: 10, color: "#888" }}>{r.week}</td>
+                  <td style={{ textAlign: "right", paddingRight: 6,
+                               fontWeight: 600,
+                               color: r.left_kg > 0 ? "#b71c1c" : "#2e7d32" }}>
+                    {r.left_kg > 0 ? `${r.left_kg.toLocaleString()} kg left` : "covered"}
+                  </td>
+                  <td style={{ color: "#aaa" }}>of {r.total_kg.toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
       {editable && onSnap && (
