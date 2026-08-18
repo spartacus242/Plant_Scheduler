@@ -405,47 +405,76 @@ if _active:
 # qmin / at zero qty belong in the holding area for manual placement. We
 # read the newest scenario work-dir's produced_vs_bounds.csv once per session
 # and merge those blocks into cal_holding (skipping ones already there).
-if "cal_holding_from_solve" not in st.session_state:
+# Holding reflects the OFFICIAL BOARD, not the latest solve (user report
+# 2026-08-18: "why only 1 item for W35?" — Monday's un-promoted proposal
+# covered W35, so holding said 'done' while the board sat empty). A card
+# exists when board-scheduled kg + committed/made credit < qty_min:
+#   - board credit: production blocks whose order_id matches the demand
+#     order (promoted fill / manually placed) — committed MO blocks are
+#     NOT counted here because the coverage ledger already credits them
+#     (counting both would double-credit).
+# Rebuilds whenever the board file changes (promote/save/roll).
+_board_stamp = cal_path.stat().st_mtime if cal_path.exists() else 0.0
+if st.session_state.get("cal_holding_stamp") != _board_stamp:
     _held: list[dict] = []
-    _scen_root = dd / "_scenario_work"
-    if _scen_root.exists():
-        _cands = sorted(
-            [p for p in _scen_root.iterdir()
-             if (p / "produced_vs_bounds.csv").exists()],
-            key=lambda p: (p / "produced_vs_bounds.csv").stat().st_mtime,
-            reverse=True,
+    try:
+        from helpers.holding_builder import (
+            average_rate_per_sku,
+            build_holding,
+            load_capabilities,
+            load_demand,
         )
-        if _cands:
-            try:
-                from helpers.holding_builder import (
-                    average_rate_per_sku,
-                    build_holding,
-                    load_capabilities,
-                    load_demand,
-                    load_produced,
-                )
-                _latest = _cands[0]
-                _dem = load_demand(dd / "reference" / "demand_plan.csv")
-                _prod = load_produced(_latest / "produced_vs_bounds.csv")
-                _rates = average_rate_per_sku(
-                    load_capabilities(dd / "reference" / "capabilities_rates.csv"))
-                # Committed MOs (+ kg already made) credit the cards — a
-                # demand week the plant's own plan covers must not sit in
-                # holding as if it still needed scheduling (280480-W34).
-                _covered: dict = {}
-                try:
-                    from helpers.demand_coverage import build_ledger_from_data
-                    _led = build_ledger_from_data(dd, cfg)
-                    if _led is not None:
-                        _covered = _led.applied_by_order()
-                except Exception:  # noqa: BLE001 — cards degrade to gross
-                    _covered = {}
-                _blocks = build_holding(_dem, _prod, rates=_rates,
-                                        committed_by_order=_covered)
-                _held = [b.to_payload() for b in _blocks]
-            except Exception as _e:  # noqa: BLE001
-                st.caption(f"Holding auto-populate skipped: {_e}")
+        _dem = load_demand(dd / "reference" / "demand_plan.csv")
+        _dem_ids = set(_dem["order_id"].astype(str))
+        _board_kg: dict[str, float] = {}
+        _bprod = cal[cal["block_type"] == "production"]
+        for _, _r in _bprod.iterrows():
+            _oid = str(_r.get("order_id", "") or "")
+            if _oid in _dem_ids:
+                _kg = pd.to_numeric(
+                    pd.Series([_r.get("qty_kg")]), errors="coerce").iloc[0]
+                if not pd.isna(_kg) and _kg > 0:
+                    _board_kg[_oid] = _board_kg.get(_oid, 0.0) + float(_kg)
+        _t = pd.to_numeric(_dem["qty_target"], errors="coerce").fillna(0)
+        _lo = pd.to_numeric(_dem.get("lower_pct", 0.9),
+                            errors="coerce").fillna(0.9)
+        _hi = pd.to_numeric(_dem.get("upper_pct", 1.1),
+                            errors="coerce").fillna(1.1)
+        _prod = pd.DataFrame({
+            "order_id": _dem["order_id"].astype(str),
+            "sku": _dem["sku"].astype(str),
+            "qty_min": _t * _lo,
+            "qty_max": _t * _hi,
+            "produced": [_board_kg.get(str(o), 0.0)
+                         for o in _dem["order_id"]],
+        })
+        _rates = average_rate_per_sku(
+            load_capabilities(dd / "reference" / "capabilities_rates.csv"))
+        # Committed MOs (+ kg already made) credit the cards — a demand
+        # week the plant's own plan covers must not sit in holding as if
+        # it still needed scheduling (280480-W34).
+        _covered: dict = {}
+        try:
+            from helpers.demand_coverage import build_ledger_from_data
+            _led = build_ledger_from_data(dd, cfg)
+            if _led is not None:
+                _covered = _led.applied_by_order()
+        except Exception:  # noqa: BLE001 — cards degrade to gross
+            _covered = {}
+        _blocks = build_holding(_dem, _prod, rates=_rates,
+                                committed_by_order=_covered)
+        _held = [b.to_payload() for b in _blocks]
+    except Exception as _e:  # noqa: BLE001
+        st.caption(f"Holding auto-populate skipped: {_e}")
     st.session_state["cal_holding_from_solve"] = _held
+    st.session_state["cal_holding_stamp"] = _board_stamp
+    # The board changed: drop stale AUTO cards (hold_*) so demand covered
+    # by a promote disappears instead of lingering — but keep blocks the
+    # planner parked here by dragging them off the board (their intent,
+    # not derived state).
+    st.session_state["cal_holding"] = [
+        b for b in st.session_state.get("cal_holding", [])
+        if not str(b.get("id", "")).startswith("hold_")]
 
 _existing_ids = {b.get("id") for b in st.session_state.get("cal_holding", [])}
 for _hb in st.session_state.get("cal_holding_from_solve", []):
