@@ -604,6 +604,35 @@ def fit_findings(
 
 
 # ---------------------------------------------------------------------------
+# Stock-report inputs — one resolver for every consumer
+# ---------------------------------------------------------------------------
+
+def stock_report_inputs(data_dir: Path | str) -> tuple[str, dict]:
+    """(vif_folder, toggles) resolved exactly like the Stock Check page.
+
+    Source order: saved stockcheck settings → bridge-refreshed
+    data/reference/ (P1 live link) → bundled dev fixtures. Home and the
+    Reconcile page must feed assess_plan the SAME stock report, or their
+    finding counts disagree (walkthrough 2026-08-17: Home said 2 blocking
+    while Reconcile said 3 at the same moment).
+    """
+    import json
+    dd = Path(data_dir)
+    settings = dd / "stockcheck" / "settings.json"
+    try:
+        sc = json.loads(settings.read_text(encoding="utf-8")) \
+            if settings.exists() else {}
+    except Exception:  # noqa: BLE001 — unreadable settings = defaults
+        sc = {}
+    vif = str(sc.get("vif_folder", "")).strip()
+    if not vif:
+        ref = dd / "reference"
+        vif = str(ref) if (ref / "ediact 3.csv").exists() else \
+            str(dd / "stockcheck" / "dev_vif")
+    return vif, dict(sc.get("toggles", {}) or {})
+
+
+# ---------------------------------------------------------------------------
 # assess_plan — the IO shell. Never raises; broken inputs become findings.
 # ---------------------------------------------------------------------------
 

@@ -36,13 +36,25 @@ def _health(data_dir_str: str) -> list[dict]:
     return [vars(h) for h in dh.assess(Path(data_dir_str), cfg)]
 
 
-# Reconcile findings are cheap (CSV reads, no VIF snapshot) but not free —
-# same TTL as health so the two read consistently.
+# Reconcile counts must match the Reconcile page's headline numbers, so the
+# stock report is built with the SAME inputs (walkthrough 2026-08-17: Home
+# said "2 blocking, 3 attention" while Reconcile said 3/7/1). Building the
+# VIF snapshot can be slow or fail — then Home falls back to the no-stock
+# counts and SAYS so instead of silently under-counting.
 @st.cache_data(ttl=60, show_spinner=False)
-def _reconcile_counts(data_dir_str: str) -> dict[int, int]:
+def _reconcile_counts(data_dir_str: str) -> tuple[dict[int, int], bool]:
     from helpers import reconcile_engine as rec
-    findings = rec.assess_plan(Path(data_dir_str), cfg)
-    return rec.summary(findings)
+    dd_ = Path(data_dir_str)
+    stock = None
+    try:
+        vif, toggles = rec.stock_report_inputs(dd_)
+        if Path(vif).exists():
+            from stockcheck.api import stock_check_report
+            stock = stock_check_report(dd_, vif, toggles=toggles or None)
+    except Exception:  # noqa: BLE001 — a broken VIF share must not take Home down
+        stock = None
+    findings = rec.assess_plan(dd_, cfg, stock_report=stock)
+    return rec.summary(findings), stock is None
 
 
 health = [dh.HealthStatus(**h) for h in _health(str(dd))]
@@ -76,28 +88,33 @@ def _worst(states: list[str]) -> str:
 
 
 def _step_connect() -> tuple[str, str]:
-    live = [h for h in health if h.source in ("catalog", "live_feed")]
-    state = _worst([h.state for h in live])
-    stale = [h.name for h in live if h.state == dh.STALE]
-    bad = [h.name for h in live if h.state in (dh.MISSING, dh.ERROR)]
+    # Judge the SAME rows the banner counts (walkthrough 2026-08-17: the
+    # banner said "3 stale" over an "all fresh" Connect chip because this
+    # step filtered out the semantic rules).
+    state = _worst([h.state for h in health])
+    stale = [h.name for h in health if h.state == dh.STALE]
+    bad = [h.name for h in health if h.state in (dh.MISSING, dh.ERROR)]
     if bad:
-        return state, "missing/unreadable: " + ", ".join(bad[:3])
+        more = f" (+{len(bad) - 3} more)" if len(bad) > 3 else ""
+        return state, "missing/unreadable: " + ", ".join(bad[:3]) + more
     if stale:
-        return state, "stale: " + ", ".join(stale[:3])
+        more = f" (+{len(stale) - 3} more)" if len(stale) > 3 else ""
+        return state, "stale: " + ", ".join(stale[:3]) + more
     return state, "all inputs present and fresh"
 
 
 def _step_reconcile() -> tuple[str, str]:
     try:
-        rc = _reconcile_counts(str(dd))
+        rc, no_stock = _reconcile_counts(str(dd))
     except Exception as exc:  # noqa: BLE001
         return "warn", f"could not assess: {exc}"
+    suffix = " (without stock findings)" if no_stock else ""
     blocking, warn = rc.get(2, 0), rc.get(1, 0)
     if blocking:
-        return "bad", f"{blocking} blocking, {warn} needing attention"
+        return "bad", f"{blocking} blocking, {warn} needing attention{suffix}"
     if warn:
-        return "warn", f"{warn} finding(s) need attention"
-    return "ok", "nothing needs attention"
+        return "warn", f"{warn} finding(s) need attention{suffix}"
+    return "ok", f"nothing needs attention{suffix}"
 
 
 def _step_plan() -> tuple[str, str]:
@@ -171,11 +188,14 @@ with st.expander("Data status (every source, age and cadence)", expanded=False):
         rows.append({
             "Status": h.state,
             "Source": h.name,
-            "Detail": h.detail,
             "Age": dh._fmt_age(h.age_h) if h.age_h is not None else "—",
             "Cadence": f"{h.cadence_h:g} h" if h.cadence_h is not None else "—",
+            "Detail": h.detail,
         })
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    # st.table, not st.dataframe: the glide data grid never mounts inside an
+    # initially-collapsed expander (verified live 2026-08-18 — the expander
+    # opened onto an empty 400px box), a static table always renders.
+    st.table(pd.DataFrame(rows).set_index("Source"))
     st.page_link("pages/data.py", label="Upload / edit data files", icon=":material/upload_file:")
 
 with st.expander("About Flowstate"):

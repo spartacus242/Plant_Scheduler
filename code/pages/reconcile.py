@@ -46,9 +46,6 @@ elif _stale:
                + "; ".join(f"{h.name} — {h.detail}" for h in _stale))
 
 # --- Stock report: reuse the Stock Check page's settings + cache ----------
-SC_SETTINGS = Path(dd) / "stockcheck" / "settings.json"
-
-
 @st.cache_data(ttl=300, show_spinner="Checking component stock…")
 def _stock_report(vif_folder: str, toggles_json: str) -> dict | None:
     try:
@@ -60,21 +57,11 @@ def _stock_report(vif_folder: str, toggles_json: str) -> dict | None:
 
 
 stock_report = None
-try:
-    _sc = json.loads(SC_SETTINGS.read_text(encoding="utf-8")) \
-        if SC_SETTINGS.exists() else {}
-except Exception:  # noqa: BLE001
-    _sc = {}
-# Source order mirrors the Stock Check page: saved setting → bridge-refreshed
-# data/reference/ (P1 live link) → bundled dev fixtures.
-_vif = str(_sc.get("vif_folder", "")).strip()
-if not _vif:
-    _ref = Path(dd) / "reference"
-    _vif = str(_ref) if (_ref / "ediact 3.csv").exists() else str(
-        Path(dd) / "stockcheck" / "dev_vif")
+# Folder + toggles come from the shared resolver so Home's counts see the
+# SAME stock report (walkthrough 2026-08-17: the two pages disagreed).
+_vif, _toggles = rec.stock_report_inputs(dd)
 if Path(_vif).exists():
-    stock_report = _stock_report(_vif, json.dumps(_sc.get("toggles", {}),
-                                                  sort_keys=True))
+    stock_report = _stock_report(_vif, json.dumps(_toggles, sort_keys=True))
 else:
     st.caption(f"Stock check skipped — VIF folder not reachable (`{_vif}`). "
                "Set it on the Stock Check page.")
