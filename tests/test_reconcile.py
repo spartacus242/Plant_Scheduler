@@ -102,6 +102,61 @@ def test_coverage_met_orders_are_silent():
     assert coverage_findings(cal, dem) == []
 
 
+def test_coverage_excludes_past_iso_weeks_and_labels_survivors():
+    # Demand file self-anchored to Monday of ISO W33 (2026-08-10); "now" is
+    # Tuesday of W34. The W33 order is a miss for the netting summary, not a
+    # "plan me now" item (walkthrough 2026-08-17: W32 orders flagged urgent
+    # in W34); survivors carry their TRUE ISO week, not the raw -W<k> suffix.
+    anchor = datetime(2026, 8, 10)          # ISO W33 Monday
+    now = datetime(2026, 8, 18, 9, 0)       # ISO W34 Tuesday
+    dem = _demand([
+        {"order_id": "111-W0", "sku": "111", "qty_target": 50000,
+         "due_start_hour": 0, "due_end_hour": 167},      # W33 — past
+        {"order_id": "222-W1", "sku": "222", "qty_target": 9000,
+         "due_start_hour": 168, "due_end_hour": 335},    # W34 — this week
+        {"order_id": "333-W2", "sku": "333", "qty_target": 9000,
+         "due_start_hour": 336, "due_end_hour": 503},    # W35 — next week
+    ])
+    f = coverage_findings(_cal([]), dem, demand_anchor=anchor, now=now)
+    blk = [x for x in f if x.severity == BLOCKING]
+    assert len(blk) == 1
+    assert "this week (W34)" in blk[0].title
+    assert "222-W34" in blk[0].detail        # ISO label, not "222-W1"
+    assert "111" not in blk[0].detail        # past order excluded
+    warns = [x for x in f if x.severity == WARN]
+    assert len(warns) == 1 and "333-W35" in warns[0].detail
+    past = [x for x in f if x.key == "coverage_past_weeks"]
+    assert len(past) == 1 and past[0].severity == INFO
+    assert "1 unmet" in past[0].title
+
+
+def test_coverage_week_key_falls_back_to_week_index():
+    anchor = datetime(2026, 8, 10)          # ISO W33 Monday
+    now = datetime(2026, 8, 18, 9, 0)       # ISO W34
+    dem = pd.DataFrame([  # no due window columns at all
+        {"order_id": "111-W0", "sku": "111", "week_index": 0,
+         "qty_target": 50000, "lower_pct": 0.9},
+        {"order_id": "222-W1", "sku": "222", "week_index": 1,
+         "qty_target": 9000, "lower_pct": 0.9},
+    ])
+    f = coverage_findings(_cal([]), dem, demand_anchor=anchor, now=now)
+    blk = [x for x in f if x.severity == BLOCKING]
+    assert len(blk) == 1 and "222-W34" in blk[0].detail
+    assert not any("111" in x.detail for x in blk)
+
+
+def test_coverage_without_anchor_keeps_legacy_hour_window_behavior():
+    # Pure-frame callers (staging tests) pass no anchor: nothing is excluded
+    # and the raw order ids stay untouched.
+    dem = _demand([{"order_id": "111-W0", "sku": "111", "qty_target": 50000,
+                    "due_start_hour": 0}])
+    f = coverage_findings(_cal([]), dem)
+    blk = [x for x in f if x.severity == BLOCKING]
+    assert len(blk) == 1 and "111-W0" in blk[0].detail
+    assert "week 1" in blk[0].title
+    assert not any(x.key == "coverage_past_weeks" for x in f)
+
+
 def test_coverage_unknown_kg_is_reported_not_counted():
     cal = _cal([{"order_id": "111-W0", "sku": "111", "qty_kg": None}])
     dem = _demand([{"order_id": "111-W0", "sku": "111", "qty_target": 50000}])
@@ -346,3 +401,36 @@ def test_assess_plan_runs_on_a_self_contained_dir(tmp_path):
     assert any(f.category == COVERAGE for f in findings)
     # sorted: first finding is blocking
     assert findings[0].severity == BLOCKING
+
+
+def test_assess_plan_excludes_past_demand_weeks_via_source_json(tmp_path):
+    """The engine learns the demand file's own anchor from source.json."""
+    import json as _json
+
+    dd = tmp_path / "data"
+    (dd / "reference").mkdir(parents=True)
+    _cal([]).to_csv(dd / "calendar_blocks.csv", index=False)
+    now = datetime.now()
+    monday = (now - timedelta(days=now.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    anchor = monday - timedelta(weeks=2)   # file anchored 2 ISO weeks back
+    _demand([
+        {"order_id": "111-W0", "sku": "111", "qty_target": 50000,
+         "due_start_hour": 0, "due_end_hour": 167},      # 2 weeks ago
+        {"order_id": "222-W2", "sku": "222", "qty_target": 9000,
+         "due_start_hour": 336, "due_end_hour": 503},    # this week
+    ]).to_csv(dd / "reference" / "demand_plan.csv", index=False)
+    (dd / "reference" / "demand_plan.source.json").write_text(_json.dumps({
+        "anchor": anchor.strftime("%Y-%m-%d %H:%M:%S"),
+        "anchor_iso_week": anchor.isocalendar()[1],
+    }), encoding="utf-8")
+
+    from helpers.reconcile_engine import assess_plan
+    findings = assess_plan(dd, {"scheduler": {"horizon_weeks": 3}})
+
+    blk = [f for f in findings if f.key == "coverage_zero_week1"]
+    assert len(blk) == 1
+    iso_now = now.isocalendar()[1]
+    assert f"222-W{iso_now:02d}" in blk[0].detail   # relabelled to ISO week
+    assert "111" not in blk[0].detail               # past week excluded
+    assert any(f.key == "coverage_past_weeks" for f in findings)
