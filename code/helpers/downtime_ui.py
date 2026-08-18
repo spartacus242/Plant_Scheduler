@@ -199,6 +199,14 @@ def render_side_downtime_editor(dd: Path, *, key_prefix: str = "dt") -> None:
     disp["end"] = disp["end_hour"].apply(lambda h: hour_to_datetime(h, anchor).strftime("%m/%d %H:%M"))
     disp = disp[["line_name", "group", "side", "start", "end", "reason"]]
     st.caption("Scheduled downtime on record (edit or delete rows, then Save):")
+    # The glide grid (st.data_editor, same widget as st.dataframe) never
+    # mounts when first drawn inside a collapsed expander — the calendar's
+    # "Start of day" strip renders this collapsed (see helpers/st_compat).
+    # Static read-only view by default; the toggle click happens with the
+    # expander open, so the editor mounts visible.
+    if not st.toggle("Edit the downtime table", key=f"{key_prefix}_edit_grid"):
+        st.table(disp.set_index("line_name"))
+        return
     edited = st.data_editor(
         disp,
         num_rows="dynamic",

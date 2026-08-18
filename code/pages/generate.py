@@ -32,6 +32,7 @@ from helpers.scenario_runner import (
 )
 from helpers.scorecard_engine import delta_narrative, score_calendar
 from helpers.scorecard_ui import render_scorecard
+from helpers.st_compat import deferred_dataframe
 from helpers.version_manager import list_versions, upsert_version
 from solver.changeover_cache import load_changeover_setup_nested
 
@@ -136,13 +137,16 @@ if _ledger is not None and _ledger.rows:
             "never re-planned. Full per-order detail: Reconcile → Demand "
             "coverage.")
         with st.expander("Per-order detail"):
-            st.dataframe(
+            # deferred: a plain st.dataframe here mounts an empty grid because
+            # this expander starts collapsed (see helpers/st_compat).
+            deferred_dataframe(
                 _ldf.drop(columns=["week_key"]).rename(columns={
                     "week_label": "Week", "order_id": "Order", "sku": "SKU",
                     "gross_kg": "Demand kg", "committed_kg": "Committed kg",
                     "produced_kg": "Made kg", "carry_in_kg": "Carry-in kg",
                     "applied_kg": "Covered kg", "net_kg": "Net to plan",
                     "status": "Status"}),
+                key="gen_netting_detail", label="Load the per-order table",
                 use_container_width=True, hide_index=True)
 
 baseline_cal = load_calendar(dd / "calendar_blocks.csv")
@@ -448,7 +452,10 @@ if st.button("Generate rough draft schedule", key="gen_naive"):
             st.warning(f"{len(nres.unplaced)} order(s) could not be placed:")
             st.dataframe(pd.DataFrame(nres.unplaced), use_container_width=True, hide_index=True)
         with st.expander("Naive placement detail"):
-            st.dataframe(pd.DataFrame(nres.placed), use_container_width=True, hide_index=True)
+            # st.table: st.dataframe never mounts inside this initially-
+            # collapsed expander, and a toggle would drop the whole
+            # button-gated section on rerun (helpers/st_compat).
+            st.table(pd.DataFrame(nres.placed))
         with st.expander("Naive scorecard"):
             render_scorecard(nsc, show_formulas=False)
 
@@ -476,11 +483,9 @@ def _render_knobs(scenario: dict, overrides: dict | None = None) -> None:
         st.markdown("**Objective the solver minimizes**")
         st.code(scenario.get("objective_formula", "(not documented)"), language="text")
         st.markdown("**Knobs**")
-        st.dataframe(
-            scenario_knobs(scenario, cfg, overrides),
-            hide_index=True,
-            use_container_width=True,
-        )
+        # st.table: st.dataframe never mounts inside this initially-collapsed
+        # expander (helpers/st_compat); a dozen knob rows, so static is fine.
+        st.table(pd.DataFrame(scenario_knobs(scenario, cfg, overrides)))
         st.caption(
             "Values come from flowstate.toml. Rows without a config path are hard-coded "
             "multipliers inside the objective branch in code/solver/model_builder.py."
