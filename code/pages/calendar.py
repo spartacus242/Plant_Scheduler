@@ -405,6 +405,19 @@ if _active:
 # qmin / at zero qty belong in the holding area for manual placement. We
 # read the newest scenario work-dir's produced_vs_bounds.csv once per session
 # and merge those blocks into cal_holding (skipping ones already there).
+# ── Coverage ledger (committed MOs + kg already made) — built once per
+# run, shared by the holding cards, the server KPI payload and (via that
+# payload) the client's live per-week fulfillment. Finished blocks are
+# hidden from the board but their kg still filled the week.
+_covered_map: dict = {}
+try:
+    from helpers.demand_coverage import build_ledger_from_data as _blfd
+    _led0 = _blfd(dd, cfg)
+    if _led0 is not None:
+        _covered_map = _led0.applied_by_order()
+except Exception:  # noqa: BLE001 — numbers degrade to gross
+    _covered_map = {}
+
 # Holding reflects the OFFICIAL BOARD, not the latest solve (user report
 # 2026-08-18: "why only 1 item for W35?" — Monday's un-promoted proposal
 # covered W35, so holding said 'done' while the board sat empty). A card
@@ -460,16 +473,8 @@ if st.session_state.get("cal_holding_stamp") != _board_stamp:
         # Committed MOs (+ kg already made) credit the cards — a demand
         # week the plant's own plan covers must not sit in holding as if
         # it still needed scheduling (280480-W34).
-        _covered: dict = {}
-        try:
-            from helpers.demand_coverage import build_ledger_from_data
-            _led = build_ledger_from_data(dd, cfg)
-            if _led is not None:
-                _covered = _led.applied_by_order()
-        except Exception:  # noqa: BLE001 — cards degrade to gross
-            _covered = {}
         _blocks = build_holding(_dem, _prod, rates=_rates,
-                                committed_by_order=_covered)
+                                committed_by_order=_covered_map)
         _held = [b.to_payload() for b in _blocks]
     except Exception as _e:  # noqa: BLE001
         st.caption(f"Holding auto-populate skipped: {_e}")
@@ -550,7 +555,8 @@ if _sku_info_path.exists():
 # Canonical KPI payload — same engine (scorecard_engine) as the scorecard
 # rendered below, so the Gantt KPI bar and the scorecard cannot disagree.
 server_kpis = gantt_kpis(
-    cal, demand_targets, caps, cfg=scorecard_config(cfg), data_dir=dd
+    cal, demand_targets, caps, cfg=scorecard_config(cfg), data_dir=dd,
+    covered_by_order=_covered_map,
 )
 
 state = gantt_calendar(

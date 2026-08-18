@@ -99,6 +99,8 @@ export interface ServerKpis {
   per_line_changeovers: Record<string, number>;
   co_pairs: Record<string, CoPairInfo>;
   co_default: CoPairInfo;
+  /** coverage-ledger credit per order: committed MOs + kg already made */
+  covered_by_order?: Record<string, number>;
 }
 
 export interface SandboxArgs {

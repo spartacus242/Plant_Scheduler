@@ -1330,6 +1330,7 @@ def compute_adherence(
     calendar: pd.DataFrame,
     demand_targets: list[dict[str, Any]],
     caps: dict[str, dict[str, float]],
+    covered_by_order: dict[str, float] | None = None,
 ) -> list[dict[str, Any]]:
     """Qty-based order adherence rows for the Gantt adherence table.
 
@@ -1344,6 +1345,14 @@ def compute_adherence(
         order taking at most its qty_max — surplus beyond every open order
         stays uncredited (serves weeks not on the board; the old
         last-order-takes-remainder rule read 1764% once)
+      - covered_by_order (coverage ledger, order_id -> kg): committed MOs
+        PLUS kg already made by hidden completed blocks. When provided the
+        SKU waterfall is DISABLED (the ledger already credits committed
+        MOs — crediting their board blocks too would double-count) and the
+        ledger kg is the per-order baseline. This is what makes a
+        mid-week board read honestly: finished blocks are hidden from the
+        schedule, but their kg still filled the week (user report
+        2026-08-18: W34 showed 20.8% while physically full)
       - pct is % of TARGET, the (qty_min+qty_max)/2 midpoint — the
         planner's band is 90-110 of target, not of qty_min
       - MET when qty_min <= scheduled <= qty_max (qty_max <= 0 = unbounded)
@@ -1362,8 +1371,13 @@ def compute_adherence(
         oid = str(b.get("order_id", "") or "")
         if oid in demand_ids:
             sched[oid] = sched.get(oid, 0.0) + float(kg)
-        else:
+        elif covered_by_order is None:
             unmatched_by_sku[sku] = unmatched_by_sku.get(sku, 0.0) + float(kg)
+
+    if covered_by_order is not None:
+        for oid, kg in covered_by_order.items():
+            if str(oid) in demand_ids and kg and kg > 0:
+                sched[str(oid)] = sched.get(str(oid), 0.0) + float(kg)
 
     by_sku: dict[str, list[dict[str, Any]]] = {}
     for d in demand_targets:
@@ -1419,6 +1433,7 @@ def gantt_kpis(
     cfg: dict | None = None,
     co_map: dict | None = None,
     data_dir: Path | None = None,
+    covered_by_order: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """KPI payload for gantt_calendar(kpis=...) — computed with scorecard rules.
 
@@ -1432,7 +1447,8 @@ def gantt_kpis(
         ref = reference_dir(data_dir) if data_dir else reference_dir()
         co_map = _co_lookup(_load_changeovers(ref))
 
-    adherence = compute_adherence(calendar, demand_targets, caps)
+    adherence = compute_adherence(calendar, demand_targets, caps,
+                                  covered_by_order=covered_by_order)
     met = sum(1 for r in adherence if r["status"] == "MET")
     total = len(adherence)
     pct = _round_half_up(met / total * 100.0, 1) if total else 100.0
@@ -1478,6 +1494,9 @@ def gantt_kpis(
         "per_line_changeovers": co["per_line_transitions"],
         "co_pairs": co_pairs,
         "co_default": co_default,
+        # ledger credit forwarded so the client's LIVE recompute (kpi.ts)
+        # uses the same baseline — committed + already-made kg
+        "covered_by_order": covered_by_order or {},
     }
 
 

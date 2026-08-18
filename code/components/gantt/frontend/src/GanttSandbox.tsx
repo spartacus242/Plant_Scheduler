@@ -21,7 +21,6 @@ import { buildRows } from "./utils/ganttRows";
 import { skuColor, skuTextColor, blockLabel } from "./utils/colors";
 import { setComponentValue, setFrameHeight } from "./streamlit";
 
-import { KpiBar } from "./components/KpiBar";
 import { GanttChart } from "./components/GanttChart";
 import { HoldingArea } from "./components/HoldingArea";
 import { Palette } from "./components/Palette";
@@ -51,6 +50,12 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   const viewEnd = viewStart + horizon;
 
   const anchor = useMemo(() => new Date(args.config.planning_anchor), [args.config.planning_anchor]);
+  // Coverage-ledger credit (committed MOs + kg already made) — baseline for
+  // every live fulfillment computation in this component.
+  const coveredByOrder = useMemo(
+    () => args.kpis?.covered_by_order ?? undefined,
+    [args.kpis],
+  );
   // Order-id week labels count from the DEMAND anchor's ISO week (see
   // setDemandBaseWeek) — set before any child renders labels.
   setDemandBaseWeek(args.config.demand_base_iso_week ?? null);
@@ -717,7 +722,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   // the CURRENT board schedules per order, from the same adherence rules.
   const demandLeftForSku = useCallback(
     (sku: string): { week: string; left_kg: number; total_kg: number }[] => {
-      const rows = computeAdherence(schedule, args.demandTargets, args.capabilities);
+      const rows = computeAdherence(schedule, args.demandTargets, args.capabilities, coveredByOrder);
       const bySku = rows.filter((r) => r.sku === sku);
       const out: { week: string; left_kg: number; total_kg: number }[] = [];
       const nowIso = isoWeekAtHour(new Date(), 0);
@@ -737,7 +742,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       }
       return out;
     },
-    [schedule, args.demandTargets, args.capabilities, anchor],
+    [schedule, args.demandTargets, args.capabilities, anchor, coveredByOrder],
   );
 
   // Python (helpers/scorecard_engine.gantt_kpis) is the source of truth for
@@ -756,20 +761,20 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     }
     return computeKpis(
       schedule, cipWindows, args.demandTargets, args.capabilities,
-      args.kpis?.co_pairs, args.kpis?.co_default,
+      args.kpis?.co_pairs, args.kpis?.co_default, coveredByOrder,
     );
-  }, [edited, args.kpis, schedule, cipWindows, args.demandTargets, args.capabilities]);
+  }, [edited, args.kpis, schedule, cipWindows, args.demandTargets, args.capabilities, coveredByOrder]);
 
   const adherenceRows = useMemo(() => {
     if (!edited && args.kpis) return args.kpis.adherence;
-    return computeAdherence(schedule, args.demandTargets, args.capabilities);
-  }, [edited, args.kpis, schedule, args.demandTargets, args.capabilities]);
+    return computeAdherence(schedule, args.demandTargets, args.capabilities, coveredByOrder);
+  }, [edited, args.kpis, schedule, args.demandTargets, args.capabilities, coveredByOrder]);
 
   // Per-week chips (user request 2026-08-18): fulfillment vs the demand due
   // that ISO week + changeovers by machine, recomputed live client-side.
   const weekStats = useMemo(() => {
     const stats: Record<string, { pct: number | null; tl: number; ffs: number; cp: number; ttp: number }> = {};
-    const rows = computeAdherence(schedule, args.demandTargets, args.capabilities);
+    const rows = computeAdherence(schedule, args.demandTargets, args.capabilities, coveredByOrder);
     const dem: Record<string, { sched: number; target: number }> = {};
     const nowIsoWk = isoWeekAtHour(new Date(), 0);
     for (const r of rows) {
@@ -812,7 +817,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       st.pct = d.target > 0 ? Math.round((d.sched / d.target) * 1000) / 10 : null;
     }
     return stats;
-  }, [schedule, args.demandTargets, args.capabilities, args.kpis, anchor]);
+  }, [schedule, args.demandTargets, args.capabilities, args.kpis, anchor, coveredByOrder]);
 
   const zoomIn = useCallback(() => {
     userZoomed.current = true;
@@ -882,7 +887,13 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       onClick={() => { closeMenu(); setPopover(null); }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <div style={{ flex: 1 }}><KpiBar kpis={kpis} /></div>
+        <div style={{ flex: 1 }}>
+          {kpis.overlaps.length > 0 && (
+            <span style={{ color: "#b71c1c", fontWeight: 700, fontSize: 13 }}>
+              ⚠ {kpis.overlaps.length} overlap(s): {kpis.overlaps[0]}
+            </span>
+          )}
+        </div>
         <button
           onClick={pushRefresh}
           title="Push your edits up: rescore, rebuild holding, rerun all checks"
