@@ -186,6 +186,21 @@ def test_projected_cips_stay_inside_the_horizon():
         assert when < hz.end
 
 
+def test_projected_cip_straddling_the_horizon_end_is_clipped():
+    # previous at h21, interval 120 -> projections at 141/261/381/501; the
+    # last one would end at h507 on a 504h horizon (walkthrough finding
+    # 2026-08-17: cip_projected blocks with end_h=509 > horizon 504).
+    cips = CipInfoResult(by_line={"P09": CipInfo(
+        line="P09", previous_cip=pd.Timestamp(ANCHOR) + timedelta(hours=21),
+        max_hours_between=120, scheduled_cip=None, notes="")})
+    st = _state([], cips=cips, cfg={"cip": {"duration_h": 6}})
+    cip = st.blocks[st.blocks["block_type"] == "cip"]
+    assert (cip["end_h"] <= 504.0).all(), "no CIP may outrun the horizon"
+    straddler = cip[cip["start_h"] == 501.0]
+    assert len(straddler) == 1, "the straddling CIP must be kept, clipped"
+    assert float(straddler.iloc[0]["end_h"]) == 504.0
+
+
 # --------------------------------------------------------------- plumbing
 
 def test_line_id_resolves_from_lines_csv_then_falls_back():
