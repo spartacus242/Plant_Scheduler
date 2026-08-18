@@ -32,7 +32,6 @@ interface Props {
   /** Live insert preview: dashed ghost of the displaced block at its slid
    * position, so the user SEES the right block moving over before dropping. */
   insertPreview?: InsertPlan | null;
-  weekStats?: Record<string, { pct: number | null; tl: number; ffs: number; cp: number; ttp: number }>;
   svgRef?: React.RefObject<SVGSVGElement | null>;
   onResizeStart: (blockId: string, edge: "left" | "right", startH: number, endH: number, clientX: number, hourWidth: number) => void;
   onContextMenu: (e: React.MouseEvent, blockId: string) => void;
@@ -124,7 +123,7 @@ const LineLabelsOverlay: React.FC<{ rows: GanttRow[]; svgHeight: number }> = ({ 
 
 export const GanttChart: React.FC<Props> = ({
   schedule, cipWindows, lines, viewStart, viewEnd, hourWidth, anchor,
-  resizing, highlightSku, capableLines, lockedThroughH, insertPreview, weekStats, svgRef: externalSvgRef,
+  resizing, highlightSku, capableLines, lockedThroughH, insertPreview, svgRef: externalSvgRef,
   onResizeStart, onContextMenu, onBlockClick, onZoomIn, onZoomOut, onResetZoom,
 }) => {
   const localSvgRef = useRef<SVGSVGElement>(null);
@@ -320,6 +319,10 @@ export const GanttChart: React.FC<Props> = ({
                   previewEnd={isThisResizing ? resizing.previewEnd : undefined}
                   isHighlighted={isHighlighted}
                   isDimmed={isDimmed}
+                  immovable={Boolean(block.locked) || Boolean(block.pinned)
+                    || (block.attrs ?? "").includes("current_state:")
+                    || (lockedThroughH != null
+                        && block.start_hour < lockedThroughH - 1e-9)}
                   slotY={slot.y}
                   slotHeight={slot.height}
                   side={slot.side}
@@ -346,7 +349,6 @@ export const GanttChart: React.FC<Props> = ({
               svgWidth={svgWidth}
               svgHeight={svgHeight}
               layer="header"
-              weekStats={weekStats}
             />
           </g>
         </svg>

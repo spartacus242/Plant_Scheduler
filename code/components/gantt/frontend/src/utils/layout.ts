@@ -1,7 +1,7 @@
 // layout.ts — Hour-to-pixel conversions and snap-to-grid utilities.
 
 export const LINE_HEIGHT = 40;
-export const HEADER_HEIGHT = 64; // three rows: week label, per-week metric chips, day labels
+export const HEADER_HEIGHT = 48; // two rows: week label, day labels
 export const LINE_LABEL_WIDTH = 50;
 export const MIN_HOUR_WIDTH = 1;
 export const MAX_HOUR_WIDTH = 30;

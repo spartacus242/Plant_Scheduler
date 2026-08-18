@@ -38,15 +38,10 @@ const subStyle: React.CSSProperties = {
 };
 
 export const KpiBar: React.FC<Props> = ({ kpis }) => {
-  const adhColor = kpis.pctAdherence >= 100 ? "#00CC96" : kpis.pctAdherence >= 80 ? "#FFA15A" : "#EF553B";
   const overlapColor = kpis.overlaps.length > 0 ? "#EF553B" : "#00CC96";
 
   return (
     <div style={{ display: "flex", gap: 12, padding: "8px 0", flexWrap: "wrap" }}>
-      <div style={cardStyle}>
-        <span style={labelStyle}>Adherence</span>
-        <span style={{ ...valueStyle, color: adhColor }}>{kpis.pctAdherence}%</span>
-      </div>
       <div style={cardStyle}>
         <span style={labelStyle}>Orders Met</span>
         <span style={valueStyle}>

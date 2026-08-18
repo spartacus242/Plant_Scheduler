@@ -29,15 +29,20 @@ interface Props {
   onResizeStart: (blockId: string, edge: "left" | "right", startH: number, endH: number, clientX: number, hourWidth: number) => void;
   onContextMenu: (e: React.MouseEvent, blockId: string) => void;
   onClick: (blockId: string) => void;
+  /** Committed MO / pinned / locked-window: click opens the popup, but the
+   * block cannot be picked up at all (cursor shows not-allowed). */
+  immovable?: boolean;
 }
 
 export const GanttBlock: React.FC<Props> = ({
   block, lineIndex, viewStart, hourWidth, anchor, isResizing, previewStart, previewEnd,
   isHighlighted, isDimmed = false, slotY = 0, slotHeight, side = null, onResizeStart, onContextMenu, onClick,
+  immovable = false,
 }) => {
   const { attributes, listeners, setNodeRef: setDragRef, transform, isDragging } = useDraggable({
     id: block.id,
     data: { block },
+    disabled: immovable,
   });
   const setNodeRef = setDragRef as unknown as React.Ref<SVGGElement>;
 
@@ -145,7 +150,7 @@ export const GanttBlock: React.FC<Props> = ({
       {...attributes}
       transform={`translate(${dragX}, ${dragY})`}
       style={{
-        cursor: isDragging ? "grabbing" : "grab",
+        cursor: immovable ? "not-allowed" : isDragging ? "grabbing" : "grab",
         opacity: isDragging ? 0.6 : isDimmed ? 0.25 : 1,
         // committed manprg MOs: muted so new (seed/solver/planner) blocks pop
         filter: isCommittedMo && !isDragging && !isDimmed
@@ -217,7 +222,7 @@ export const GanttBlock: React.FC<Props> = ({
       {/* Resize handles: adaptive width — generous on wide blocks (easier to
           grab than a fixed 8px sliver), but never more than a third of a
           narrow block so its body stays draggable. */}
-      {(() => {
+      {!immovable && (() => {
         const hw = Math.min(14, Math.max(5, Math.max(w, 2) / 3));
         return (
           <>

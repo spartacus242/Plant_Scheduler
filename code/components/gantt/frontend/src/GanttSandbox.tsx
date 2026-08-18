@@ -720,9 +720,12 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       const rows = computeAdherence(schedule, args.demandTargets, args.capabilities);
       const bySku = rows.filter((r) => r.sku === sku);
       const out: { week: string; left_kg: number; total_kg: number }[] = [];
+      const nowIso = isoWeekAtHour(new Date(), 0);
       for (const r of bySku) {
         const m = /-W(\d+)$/.exec(r.order_id);
-        const wk = m ? `W${isoWeekLabel(parseInt(m[1], 10), anchor)}` : "—";
+        const wkNum = m ? isoWeekLabel(parseInt(m[1], 10), anchor) : null;
+        if (wkNum !== null && wkNum < nowIso) continue; // past weeks are misses, not plan items
+        const wk = wkNum !== null ? `W${wkNum}` : "—";
         const target = r.qty_min > 0 && r.qty_max >= r.qty_min
           ? (r.qty_min + r.qty_max) / 2
           : Math.max(r.qty_min, r.qty_max);
@@ -768,10 +771,13 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     const stats: Record<string, { pct: number | null; tl: number; ffs: number; cp: number; ttp: number }> = {};
     const rows = computeAdherence(schedule, args.demandTargets, args.capabilities);
     const dem: Record<string, { sched: number; target: number }> = {};
+    const nowIsoWk = isoWeekAtHour(new Date(), 0);
     for (const r of rows) {
       const m = /-W(\d+)$/.exec(r.order_id);
       if (!m) continue;
-      const wk = `W${isoWeekLabel(parseInt(m[1], 10), anchor)}`;
+      const wkNum = isoWeekLabel(parseInt(m[1], 10), anchor);
+      if (wkNum < nowIsoWk) continue; // past weeks are misses, not plan
+      const wk = `W${wkNum}`;
       const target = r.qty_min > 0 && r.qty_max >= r.qty_min
         ? (r.qty_min + r.qty_max) / 2
         : Math.max(r.qty_min, r.qty_max);
@@ -931,6 +937,32 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         onDragEnd={onDragEnd}
         onDragCancel={onDragCancel}
       >
+        {/* Per-week stats OUTSIDE the chart (user 2026-08-18): a simple
+            row that roughly aligns with the 3-week window; live-updating. */}
+        {Object.keys(weekStats).length > 0 && (
+          <div style={{ display: "flex", gap: 8, margin: "6px 0 4px 50px" }}>
+            {Object.entries(weekStats)
+              .sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }))
+              .map(([wk, ws]) => (
+                <div key={wk} style={{
+                  flex: 1, padding: "6px 12px", borderRadius: 8,
+                  background: "#f7f7fa", border: "1px solid #e0e0e5",
+                  display: "flex", alignItems: "baseline", gap: 12,
+                }}>
+                  <span style={{ fontWeight: 800, fontSize: 14, color: "#455a64" }}>{wk}</span>
+                  {ws.pct !== null && (
+                    <span style={{ fontWeight: 800, fontSize: 16,
+                                   color: ws.pct < 90 ? "#c62828" : "#2e7d32" }}>
+                      {ws.pct}%<span style={{ fontSize: 10, fontWeight: 600, color: "#888" }}> filled</span>
+                    </span>
+                  )}
+                  <span style={{ fontSize: 11.5, color: "#555", fontWeight: 600 }}>
+                    TL {ws.tl} · FFS {ws.ffs} · CP {ws.cp} · TTP {ws.ttp}
+                  </span>
+                </div>
+              ))}
+          </div>
+        )}
         <GanttChart
           schedule={schedule}
           cipWindows={cipWindows}
@@ -944,7 +976,6 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           capableLines={capableLines}
           lockedThroughH={lockedThroughH}
           insertPreview={dragPreview && dragPreview.insert && !dragPreview.insert.blockedReason ? dragPreview.insert : null}
-          weekStats={weekStats}
           svgRef={chartSvgRef}
           onResizeStart={guardedStartResize}
           onContextMenu={handleContextMenu}
