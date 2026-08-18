@@ -23,6 +23,23 @@ st.set_page_config(
     layout="wide",
 )
 
+# Force TRUE full-width regardless of the browser-stored "wide mode"
+# preference (newer Streamlit lets that override layout="wide", which left
+# the calendar in a centered ~900px column on a full monitor — user report
+# 2026-08-18). The Gantt is the product; it gets the whole screen.
+st.markdown(
+    """<style>
+    .block-container,
+    [data-testid="stMainBlockContainer"],
+    section.main .block-container {
+        max-width: 100% !important;
+        padding-left: 1.25rem !important;
+        padding-right: 1.25rem !important;
+    }
+    </style>""",
+    unsafe_allow_html=True,
+)
+
 # Navigation IS the daily loop (charter §2.2): Connect → Reconcile → Plan →
 # Lock & Export → Track, then weekly roll. The planner walks the sidebar top
 # to bottom every morning; reference/setup pages sit below the loop.
