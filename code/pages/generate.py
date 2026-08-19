@@ -34,7 +34,11 @@ from helpers.scenario_runner import (
     save_scenario_version,
     scenario_knobs,
 )
-from helpers.scorecard_engine import delta_narrative, score_calendar
+from helpers.scorecard_engine import (
+    delta_narrative,
+    score_calendar,
+    scoring_inputs_signature,
+)
 from helpers.scorecard_ui import render_scorecard
 from helpers.version_manager import MAX_VERSIONS, list_versions, upsert_version
 from solver.changeover_cache import load_changeover_setup_nested
@@ -150,6 +154,25 @@ if _ledger is not None and _ledger.rows:
                 use_container_width=True, hide_index=True)
 
 baseline_cal = load_calendar(dd / "calendar_blocks.csv")
+
+
+# Rerun speed (2026-08-19): scoring the whole board on every Streamlit rerun
+# cost seconds per widget click. Keyed by the board file's mtime plus the
+# live scoring inputs — never recomputed until one of them changes.
+@st.cache_data(show_spinner=False)
+def _board_score_cached(dd_str: str, cal_mtime: float, live_sig: tuple,
+                        _cal: pd.DataFrame):
+    return score_calendar(_cal, week_label="current schedule",
+                          data_dir=Path(dd_str))
+
+
+def _board_mtime() -> float:
+    try:
+        return (dd / "calendar_blocks.csv").stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 if baseline_cal.empty:
     st.info(
         "**No current schedule.** That's the normal starting point now — AZAP is "
@@ -157,7 +180,8 @@ if baseline_cal.empty:
         "below to get a working base, then refine it in the Plant Calendar or let "
         "the solver improve it.")
 else:
-    baseline = score_calendar(baseline_cal, week_label="current schedule", data_dir=dd)
+    baseline = _board_score_cached(
+        str(dd), _board_mtime(), scoring_inputs_signature(dd), baseline_cal)
     st.subheader("Current schedule (baseline)")
     st.metric("Composite", f"{baseline.composite:.0f}" if baseline.composite is not None else "n/a")
     with st.expander("Baseline scorecard"):
@@ -287,12 +311,18 @@ def _generate_one(
                 st.code(result.get("log") or "(empty)", language="text")
             return False
         try:
-            slug = save_scenario_version(scenario, result, dd)
+            saved = save_scenario_version(scenario, result, dd)
         except ValueError as e:
             st.error(str(e))
             status.update(label=str(e), state="error")
             return False
-        status.update(label=f"{scenario['name']} → `{slug}`", state="complete")
+        if saved.get("evicted"):
+            st.info(
+                "Version slots were full — auto-evicted the oldest scenario "
+                "save(s): " + ", ".join(f"`{s}`" for s in saved["evicted"])
+                + ". User-named versions are never evicted.")
+        status.update(label=f"{saved['name']} → `{saved['slug']}`",
+                      state="complete")
         feas = result.get("feasibility")
         if feas:
             st.caption("Solver: " + _feasibility_summary(feas))
@@ -619,7 +649,10 @@ if single_phase_run:
             f"Recommended minimum is {SINGLE_PHASE_TL}s."
         )
 
-st.caption(f"Versions in use: {len(list_versions(dd))} / {MAX_VERSIONS}. Generating will replace prior Scenario X slots when needed.")
+st.caption(
+    f"Versions in use: {len(list_versions(dd))} / {MAX_VERSIONS}. Every run "
+    "saves a new timestamped version; when full, the oldest auto-saved "
+    "scenario version is evicted (user-named versions never are).")
 
 
 if st.button("Generate selected scenarios", type="primary", disabled=not selected):

@@ -241,6 +241,48 @@ def test_cip_category_collapses_to_0_on_a_single_overdue_line():
 
 
 # --------------------------------------------------------------------------
+# cip_count is REPORTED ONLY (2026-08-19): every CIP is mandated by cip_info,
+# so the count is the same on any compliant schedule and scores nothing.
+# --------------------------------------------------------------------------
+def test_cip_count_does_not_move_the_cip_score():
+    cal = _calendar([_block(start_h=0, end_h=100, qty_kg=1000.0)])
+    raw = _raw(cal)
+    raw["cip"]["cip_count"] = 999  # would zero the old count-scored category
+
+    assert category_scores(raw, CFG)["cip"] == 100.0
+
+
+def test_cip_count_has_no_cap_wiring():
+    from helpers.scorecard_engine import contribution_breakdown, metric_docs
+
+    assert "cap_cip_count" not in CFG
+    docs = metric_docs(CFG)
+    assert docs["cip_count"]["cap_key"] is None
+    assert docs["cip_count"]["cap_label"] == "n/a"
+
+    data = {
+        "category_scores": {"cip": 100.0},
+        "cip": {"cip_count": 999, "cip_hours": 6.0, "cip_forfeited_kg": 0.0},
+    }
+    rows = contribution_breakdown(data, CFG)
+    cip_row = next(r for r in rows if r["category"] == "cip")
+    assert "cip_count" not in cip_row["cap_saturation"]
+
+
+def test_cip_no_data_gate_keys_off_hours_and_kg_not_count():
+    """Zero CIP blocks must still gray the category out on the scorecard —
+    the gate now reads cip_hours / cip_forfeited_kg, not the retired count."""
+    from helpers.scorecard_ui import _category_has_data
+
+    assert not _category_has_data(
+        "cip", {"cip": {"cip_count": 0, "cip_hours": 0,
+                        "cip_forfeited_kg": 0}})
+    assert _category_has_data("cip", {"cip": {"cip_hours": 6.0}})
+    assert _category_has_data(
+        "cip", {"cip": {"cip_hours": 0, "cip_forfeited_kg": 120.0}})
+
+
+# --------------------------------------------------------------------------
 # M4c -- the loader must not invent kg
 # --------------------------------------------------------------------------
 def test_load_calendar_keeps_missing_qty_kg_as_nan(tmp_path):

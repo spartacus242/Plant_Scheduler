@@ -14,8 +14,13 @@ if str(BASE_DIR) not in sys.path:
 
 from helpers.calendar_io import load_calendar, save_calendar
 from helpers.labels import display_name
-from helpers.paths import data_dir
-from helpers.scorecard_engine import ScorecardResult, delta_narrative, score_calendar
+from helpers.paths import data_dir, versions_dir
+from helpers.scorecard_engine import (
+    ScorecardResult,
+    delta_narrative,
+    score_calendar,
+    scoring_inputs_signature,
+)
 from helpers.scorecard_ui import render_delta_strip, render_scorecard
 from helpers.version_manager import (
     MAX_VERSIONS,
@@ -47,6 +52,73 @@ def _demand_base_iso_week() -> int | None:
 
 
 dd = data_dir()
+
+# ── Rerun speed (2026-08-19): scoring every version and rebuilding every
+# Excel export on EVERY Streamlit rerun made this page take 10-20 s per
+# widget click. Everything expensive is cached below, keyed by the files it
+# actually reads: (slug, metadata.json mtime, calendar_blocks.csv mtime) for
+# versions, the board file's mtime for the official calendar — plus the live
+# scoring inputs' signature, because scores are computed against TODAY's
+# feeds and must refresh when they move. NOTHING is keyed by slug alone.
+
+
+def _mtime(p: Path) -> float:
+    try:
+        return p.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+_LIVE_SIG = scoring_inputs_signature(dd)
+_OFFICIAL_PATH = dd / "calendar_blocks.csv"
+
+
+def _vkey(slug: str) -> tuple[str, float, float]:
+    vdir = versions_dir(dd) / slug
+    return (slug, _mtime(vdir / "metadata.json"),
+            _mtime(vdir / "calendar_blocks.csv"))
+
+
+@st.cache_data(show_spinner=False)
+def _board_cached(dd_str: str, cal_mtime: float, live_sig: tuple):
+    """(calendar, ScorecardResult|None) for the on-disk official board."""
+    cal = load_calendar(Path(dd_str) / "calendar_blocks.csv")
+    if cal.empty:
+        return cal, None
+    return cal, score_calendar(cal, week_label="official", data_dir=Path(dd_str))
+
+
+@st.cache_data(show_spinner=False)
+def _version_cached(dd_str: str, slug: str, meta_mtime: float,
+                    cal_mtime: float, live_sig: tuple, week_label: str):
+    """(calendar, metadata, ScorecardResult) for one saved version."""
+    data = load_version(slug, Path(dd_str))
+    res = score_calendar(data["calendar"], week_label=week_label,
+                         data_dir=Path(dd_str))
+    return data["calendar"], data["metadata"], res
+
+
+@st.cache_data(show_spinner=False)
+def _window_score_cached(dd_str: str, cache_key: tuple, week_label: str,
+                         fill_gates: dict, live_sig: tuple,
+                         _cal: pd.DataFrame):
+    return score_calendar(_cal, week_label=week_label, data_dir=Path(dd_str),
+                          fill_gates=fill_gates)
+
+
+@st.cache_data(show_spinner=False)
+def _weekly_cached(dd_str: str, cache_key: tuple, live_sig: tuple,
+                   _cal: pd.DataFrame):
+    from helpers.scorecard_engine import weekly_breakdown as _wb
+    return _wb(_cal, data_dir=Path(dd_str))
+
+
+@st.cache_data(show_spinner=False)
+def _excel_cached(dd_str: str, slug: str, meta_mtime: float,
+                  cal_mtime: float) -> bytes:
+    return export_version_excel(slug, Path(dd_str))
+
+
 _all_versions = list_versions(dd)
 # Orphans (folders without readable metadata) hold a slot but have nothing to
 # compare — they only appear in the cleanup section below.
@@ -70,9 +142,8 @@ def _render_orphans() -> None:
             st.rerun()
 
 
-# Official baseline score for reference
-official = load_calendar(dd / "calendar_blocks.csv")
-baseline = score_calendar(official, week_label="official", data_dir=dd) if not official.empty else None
+# Official baseline score for reference (cached by board mtime + live inputs)
+official, baseline = _board_cached(str(dd), _mtime(_OFFICIAL_PATH), _LIVE_SIG)
 
 OFFICIAL_KEY = "__official__"
 
@@ -166,19 +237,20 @@ if left_slug == OFFICIAL_KEY:
     left_label = "Current schedule (official)"
     left_res = baseline
     left_stored = None
+    _left_key: tuple = (OFFICIAL_KEY, _mtime(_OFFICIAL_PATH))
 else:
-    left = load_version(left_slug, dd)
-    left_cal = left["calendar"]
     left_label = names[left_slug]
-    left_res = score_calendar(left_cal, week_label=left_label, data_dir=dd)
-    left_stored = (left["metadata"].get("scorecard") or {}).get("composite")
+    left_cal, _left_meta, left_res = _version_cached(
+        str(dd), *_vkey(left_slug), _LIVE_SIG, left_label)
+    left_stored = (_left_meta.get("scorecard") or {}).get("composite")
+    _left_key = _vkey(left_slug)
 left_sc = left_res.to_dict() if left_res else {}
 
-right = load_version(right_slug, dd)
-right_cal = right["calendar"]
 right_label = names[right_slug]
-right_res = score_calendar(right_cal, week_label=right_label, data_dir=dd)
-right_stored = (right["metadata"].get("scorecard") or {}).get("composite")
+_right_key = _vkey(right_slug)
+right_cal, right_meta, right_res = _version_cached(
+    str(dd), *_right_key, _LIVE_SIG, right_label)
+right_stored = (right_meta.get("scorecard") or {}).get("composite")
 right_sc = right_res.to_dict()
 
 for _slug_b, _lbl, _cal_df, _stored, _res in (
@@ -205,12 +277,14 @@ for _slug_b, _lbl, _cal_df, _stored, _res in (
 # the SAME gates the solve was staged with (design doc
 # scenario-f-fill-the-tail-2026-08-14: honesty rules). Full-horizon numbers
 # remain below for the whole-board picture.
-_fill_gates = (right.get("metadata") or {}).get("fill_gates")
+_fill_gates = (right_meta or {}).get("fill_gates")
 if _fill_gates:
-    _lw = score_calendar(left_cal, week_label=f"{left_label} (fill window)",
-                         data_dir=dd, fill_gates=_fill_gates)
-    _rw = score_calendar(right_cal, week_label=f"{right_label} (fill window)",
-                         data_dir=dd, fill_gates=_fill_gates)
+    _lw = _window_score_cached(str(dd), _left_key,
+                               f"{left_label} (fill window)", _fill_gates,
+                               _LIVE_SIG, left_cal)
+    _rw = _window_score_cached(str(dd), _right_key,
+                               f"{right_label} (fill window)", _fill_gates,
+                               _LIVE_SIG, right_cal)
     st.subheader("Fill-window verdict — what the solver actually decided")
     st.caption(
         "Both plans are cut to the fill region (after each line's committed "
@@ -332,7 +406,6 @@ sections = [
     ("changeovers", "recipe_changes", "Recipe COs", False),
     ("changeovers", "format_changes", "Format COs", False),
     ("changeovers", "total_co_hours", "CO hours", False),
-    ("cip", "cip_count", "CIP count", False),
     ("cip", "cip_hours", "CIP hours", False),
     ("cip", "cip_forfeited_h", "CIP forfeited h", False),
     ("cip", "cip_forfeited_kg", "CIP forfeited kg", False),
@@ -392,10 +465,9 @@ if left_res is not None:
 # metric split by TRUE ISO week for both sides, plus the per-week delta.
 st.subheader("Weekly breakdown")
 try:
-    from helpers.scorecard_engine import weekly_breakdown as _wb
-
-    _wk_left = _wb(left_cal, data_dir=dd) if left_cal is not None else None
-    _wk_right = _wb(right_cal, data_dir=dd)
+    _wk_left = (_weekly_cached(str(dd), _left_key, _LIVE_SIG, left_cal)
+                if left_cal is not None else None)
+    _wk_right = _weekly_cached(str(dd), _right_key, _LIVE_SIG, right_cal)
     _wk_cols = ["week", "fulfilled_pct", "scheduled_kg", "demand_kg",
                 "orders_met", "orders", "topload", "ffs", "casepacker",
                 "ttp", "weighted_co", "co_hours", "cip_hours", "avg_run_h",
@@ -502,7 +574,7 @@ for v in versions:
         if d.button("Delete", key=f"del_{slug}"):
             delete_version(slug, dd)
             st.rerun()
-        xbytes = export_version_excel(slug, dd)
+        xbytes = _excel_cached(str(dd), *_vkey(slug))
         st.download_button("Export Excel", data=xbytes, file_name=f"{slug}.xlsx", key=f"xl_{slug}")
 
 _render_orphans()

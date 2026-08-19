@@ -13,7 +13,7 @@ from typing import Any
 
 from helpers.calendar_io import import_solver_schedule
 from helpers.scorecard_engine import score_calendar
-from helpers.version_manager import MAX_VERSIONS, list_versions, save_version
+from helpers.version_manager import list_versions, save_version
 
 # ---------------------------------------------------------------------------
 # Solver knob documentation
@@ -1259,12 +1259,16 @@ def _write_pending_manifest(
     timeout_s: float,
     pid: int,
     cs_notes: list[str] | None,
+    started_at: str | None = None,
 ) -> None:
     from datetime import datetime as _dt
 
     from helpers.safe_io import safe_write_json
     safe_write_json({
-        "started_at": _dt.now().isoformat(timespec="seconds"),
+        # started_at also names the saved version (scenario_version_name):
+        # a reattached run must reproduce the SAME name the attended save
+        # would have produced.
+        "started_at": started_at or _dt.now().isoformat(timespec="seconds"),
         "scenario": scenario,
         "time_limit": time_limit,
         "timeout_s": timeout_s,
@@ -1377,8 +1381,9 @@ def resume_scenario(
 
     work = (Path(data_dir) / "_scenario_work" / str(scenario["id"])).resolve()
     m = read_pending_manifest(work) or {}
+    started_at = m.get("started_at")
     try:
-        t0 = _dt.fromisoformat(str(m.get("started_at")))
+        t0 = _dt.fromisoformat(str(started_at))
     except (TypeError, ValueError):
         t0 = None
     timeout_s = float(m.get("timeout_s") or 0) or max(
@@ -1409,6 +1414,9 @@ def resume_scenario(
     result = _collect_result(
         scenario, work, data_dir, rc, stdout, stderr,
         [str(n) for n in (m.get("cs_notes") or [])])
+    # The save path names the version from the run's start time — carry the
+    # manifest's so a reattached save reproduces the attended run's name.
+    result["started_at"] = started_at
     if not result["ok"]:
         clear_pending_manifest(work)  # nothing to save — stop reattaching
     return result
@@ -1525,6 +1533,8 @@ def run_scenario(
     and returns human-readable notes that are prepended to the run log so
     every input mutation is visible in the record.
     """
+    from datetime import datetime as _dt_run
+    _started_at = _dt_run.now().isoformat(timespec="seconds")
     work = (Path(data_dir) / "_scenario_work" / scenario["id"]).resolve()
     _prepare_work_dir(Path(data_dir).resolve(), work)
 
@@ -1651,7 +1661,8 @@ def run_scenario(
             try:
                 _write_pending_manifest(
                     work, scenario, time_limit=time_limit,
-                    timeout_s=_timeout_s, pid=_p.pid, cs_notes=_cs_notes)
+                    timeout_s=_timeout_s, pid=_p.pid, cs_notes=_cs_notes,
+                    started_at=_started_at)
             except Exception:  # noqa: BLE001 — bookkeeping must not kill a solve
                 pass
             _t0 = _time.monotonic()
@@ -1685,46 +1696,69 @@ def run_scenario(
         _stderr = _se_p.read_text(encoding="utf-8", errors="replace")
     result = _collect_result(scenario, work, data_dir, proc.returncode,
                              _stdout, _stderr, _cs_notes)
+    result["started_at"] = _started_at
     if progress_cb is not None and not result["ok"]:
         clear_pending_manifest(work)  # nothing to save — no reattach needed
     return result
+
+
+def scenario_version_name(
+    scenario: dict[str, Any], started_at: Any = None
+) -> str:
+    """Honest display name for a scenario run: what the solver actually did
+    plus the run's start timestamp (user request 2026-08-19), e.g. a two-pass
+    F run -> 'Scenario: Pass 1 - Seed & Fill, Pass 2 - CO Optimized
+    26-08-19 10:36'. Every run gets a distinct name (and thus slug) instead
+    of silently overwriting the previous run's fixed slot."""
+    from datetime import datetime as _dt
+
+    if isinstance(started_at, str):
+        try:
+            started_at = _dt.fromisoformat(started_at)
+        except ValueError:
+            started_at = None
+    ts = (started_at or _dt.now()).strftime("%y-%m-%d %H:%M")
+    if scenario.get("fill_mode"):
+        core = ("Pass 1 - Seed & Fill, Pass 2 - CO Optimized"
+                if scenario.get("two_pass_co")
+                else "Max Fill (committed plan fixed)")
+    else:
+        raw = str(scenario.get("name") or "Scenario").strip()
+        sid = str(scenario.get("id") or "").strip()
+        # "Scenario A — Minimum changeovers" -> "Minimum changeovers (A)";
+        # custom/planner names pass through untouched (plus their id).
+        desc = raw
+        head, _, tail = raw.partition("—")
+        if tail and head.strip().lower().startswith("scenario"):
+            desc = tail.strip()
+        core = f"{desc} ({sid})" if sid else desc
+    return f"Scenario: {core} {ts}"
 
 
 def save_scenario_version(
     scenario: dict[str, Any],
     result: dict[str, Any],
     data_dir: Path,
-) -> str:
-    """Persist scenario as a named version (may delete oldest if at capacity — caller should manage slots)."""
+) -> dict[str, Any]:
+    """Persist a scenario run as a NEW timestamped version.
+
+    Every run gets its own slot — the name (and slug) carry the run's start
+    time, so runs never silently overwrite each other. At capacity the oldest
+    AUTO-SAVED version (metadata source solver:/agent:) is evicted; a user-
+    named version is never touched, and with nothing evictable the capacity
+    error raises. Returns {"slug", "name", "evicted": [evicted slugs]}.
+    """
     # A save ATTEMPT retires the reattach manifest either way: the result has
     # reached a screen, so it is no longer silently at risk (a failed save is
     # reported to the user, not retried on every page load).
     clear_pending_manifest(Path(data_dir) / "_scenario_work" / str(scenario.get("id", "")))
     if not result.get("ok") or result.get("calendar") is None:
         raise ValueError("Scenario did not produce a calendar")
-    # If full, delete a previous scenario occupying the same slot
-    existing = list_versions(data_dir)
     is_custom = bool(scenario.get("custom"))
     source = (
         f"solver-custom:{scenario['objective']}" if is_custom else f"solver:{scenario['objective']}"
     )
-    slug_hint = f"scenario_{scenario['id'].lower()}"
-    for v in existing:
-        if is_custom:
-            match = str(v.get("source", "")).startswith("solver-custom:")
-        else:
-            match = v.get("slug", "").startswith(slug_hint) or v.get("name", "").startswith(
-                f"Scenario {scenario['id']}"
-            )
-        if match:
-            from helpers.version_manager import delete_version
-            delete_version(v["slug"], data_dir)
-            break
-    # Still at max? raise (orphaned folders count — see list_versions)
-    if len(list_versions(data_dir)) >= MAX_VERSIONS:
-        raise ValueError(
-            f"Version slots full ({MAX_VERSIONS}). Delete a version in "
-            "Version Compare before generating scenarios.")
+    name = scenario_version_name(scenario, started_at=result.get("started_at"))
 
     sc = result["scorecard"]
     extra = {}
@@ -1732,8 +1766,9 @@ def save_scenario_version(
         # Fill-window scoring (Compare page) needs the staging gates saved
         # WITH the proposal — they cannot be re-derived from the calendar.
         extra["fill_gates"] = result["fill_gates"]
-    return save_version(
-        scenario["name"],
+    before = {v["slug"] for v in list_versions(data_dir)}
+    slug = save_version(
+        name,
         result["calendar"],
         sc.to_dict() if hasattr(sc, "to_dict") else sc,
         data_dir,
@@ -1742,4 +1777,8 @@ def save_scenario_version(
         pros="",
         cons="",
         extra_meta=extra or None,
+        auto_evict=True,
     )
+    after = {v["slug"] for v in list_versions(data_dir)}
+    return {"slug": slug, "name": name,
+            "evicted": sorted(before - after)}

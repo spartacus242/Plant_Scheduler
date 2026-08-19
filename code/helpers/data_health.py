@@ -498,8 +498,9 @@ def _version_slots(dd: Path, cfg: dict) -> list[HealthStatus]:
         if n >= MAX_VERSIONS:
             return [HealthStatus(
                 key="versions", name="Version slots", state=STALE,
-                detail=f"{n} / {MAX_VERSIONS} version slots used. Saving a new version "
-                       "will auto-delete the old scenario slot without asking.",
+                detail=f"{n} / {MAX_VERSIONS} version slots used. A scenario run "
+                       "will auto-evict the oldest auto-saved scenario version "
+                       "(never a user-named one); manual saves need a free slot.",
                 actions=("Delete an old version in Version Compare to free a slot",),
                 source="semantic",
             )]

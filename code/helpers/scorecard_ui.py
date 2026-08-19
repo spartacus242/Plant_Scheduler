@@ -52,7 +52,6 @@ def render_scorecard(
         st.write(f"**Total CO hours:** {co.get('total_co_hours', '—')}")
         st.subheader("CIP")
         cip = data.get("cip") or {}
-        st.write(f"**Count:** {cip.get('cip_count', '—')}")
         st.write(f"**Hours:** {cip.get('cip_hours', '—')}")
         st.write(f"**Forfeited CIP (kg lost):** {cip.get('cip_forfeited_kg', '—')}")
         st.write(f"**Forfeited CIP hours:** {cip.get('cip_forfeited_h', '—')}")
@@ -97,7 +96,9 @@ def render_scorecard(
 # the category score is NOT evidence of good performance — it is absence of data.
 _NO_DATA_KEYS: dict[str, tuple[str, ...]] = {
     "trials": ("trial_hours",),
-    "cip": ("cip_count",),
+    # cip_count is no longer displayed/scored (every CIP is mandated by
+    # cip_info) — zero CIP blocks shows as zero hours and zero forfeited kg.
+    "cip": ("cip_hours", "cip_forfeited_kg"),
     "service": ("orders_late",),
 }
 
@@ -347,7 +348,7 @@ def scorecard_table(
             "recipe_co": (r.get("changeovers") or {}).get("recipe_changes"),
             "format_co": (r.get("changeovers") or {}).get("format_changes"),
             "co_hours": (r.get("changeovers") or {}).get("total_co_hours"),
-            "cip_count": (r.get("cip") or {}).get("cip_count"),
+            "cip_hours": (r.get("cip") or {}).get("cip_hours"),
             "cip_forfeited_kg": (r.get("cip") or {}).get("cip_forfeited_kg"),
             "short_runs": (r.get("campaigns") or {}).get("short_run_count"),
             "late": (r.get("service") or {}).get("orders_late"),

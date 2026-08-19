@@ -100,6 +100,67 @@ def test_max_reached_without_orphans_keeps_plain_message(tmp_path):
     assert f"Maximum of {MAX_VERSIONS}" in str(exc.value)
 
 
+# ---------------------------------------------------------------------------
+# Auto-eviction (2026-08-19): scenario runs save NEW timestamped versions, so
+# at capacity the OLDEST auto-saved version (source solver:/agent:) makes way.
+# User-named versions (digital_twin, manual, imports) are never evicted.
+# ---------------------------------------------------------------------------
+
+def _save_with(dd: Path, name: str, source: str, timestamp: str) -> str:
+    import json
+    slug = save_version(name, empty_calendar(), {"composite": None}, dd,
+                        source=source)
+    meta_p = dd / "versions" / slug / "metadata.json"
+    meta = json.loads(meta_p.read_text(encoding="utf-8"))
+    meta["timestamp"] = timestamp
+    meta_p.write_text(json.dumps(meta), encoding="utf-8")
+    return slug
+
+
+def test_auto_evict_removes_oldest_auto_saved_first(tmp_path):
+    dd = _dd(tmp_path)
+    u1 = _save_with(dd, "user keep 1", "digital_twin", "2026-08-10T08:00:00")
+    a1 = _save_with(dd, "auto old", "solver:balanced", "2026-08-11T08:00:00")
+    a2 = _save_with(dd, "auto mid", "solver-custom:balanced", "2026-08-12T08:00:00")
+    a3 = _save_with(dd, "auto new", "agent:proposal", "2026-08-13T08:00:00")
+    u2 = _save_with(dd, "user keep 2", "manual", "2026-08-14T08:00:00")
+    assert len(list_versions(dd)) == MAX_VERSIONS
+
+    s1 = save_version("run 1", empty_calendar(), {"composite": None}, dd,
+                      source="solver:balanced", auto_evict=True)
+    slugs = {v["slug"] for v in list_versions(dd)}
+    assert a1 not in slugs                      # oldest auto-saved went
+    assert {u1, u2, a2, a3, s1} <= slugs
+    assert len(slugs) == MAX_VERSIONS
+
+    s2 = save_version("run 2", empty_calendar(), {"composite": None}, dd,
+                      source="solver:balanced", auto_evict=True)
+    slugs = {v["slug"] for v in list_versions(dd)}
+    assert a2 not in slugs                      # oldest-first, one per save
+    assert {u1, u2, a3, s1, s2} <= slugs
+
+
+def test_auto_evict_never_touches_user_named(tmp_path):
+    dd = _dd(tmp_path)
+    for i in range(MAX_VERSIONS):
+        _save_with(dd, f"user {i}", "digital_twin", f"2026-08-1{i}T08:00:00")
+    with pytest.raises(ValueError, match=f"Maximum of {MAX_VERSIONS}"):
+        save_version("scenario run", empty_calendar(), {"composite": None},
+                     dd, source="solver:balanced", auto_evict=True)
+    assert len(list_versions(dd)) == MAX_VERSIONS  # nothing was deleted
+
+
+def test_manual_save_never_auto_evicts(tmp_path):
+    """Only the runner path passes auto_evict — a manual save at capacity
+    still refuses even when auto-saved versions exist."""
+    dd = _dd(tmp_path)
+    for i in range(MAX_VERSIONS):
+        _save_with(dd, f"auto {i}", "solver:balanced", f"2026-08-1{i}T08:00:00")
+    with pytest.raises(ValueError, match=f"Maximum of {MAX_VERSIONS}"):
+        save_version("manual", empty_calendar(), {"composite": None}, dd)
+    assert len(list_versions(dd)) == MAX_VERSIONS
+
+
 def test_delete_clears_windows_readonly_orphan(tmp_path):
     # Walkthrough follow-up: real orphans carried the R attribute, so
     # shutil.rmtree died with WinError 5 (Access is denied) from the UI.

@@ -119,16 +119,26 @@ def test_resume_finished_run_collects_and_save_clears_manifest(
     monkeypatch.setattr(sr, "score_calendar",
                         lambda cal, **kw: {"composite": 42.0})
     scenario = dict(SCN, intent="test")
+    manifest_started = sr.read_pending_manifest(work)["started_at"]
     result = sr.resume_scenario(scenario, dd)
     assert result["ok"] is True
     assert len(result["calendar"]) == 1
     assert "gates staged" in result["log"]
+    # the reattached result carries the ORIGINAL start time so the saved
+    # version reproduces the name the attended save would have produced
+    assert result["started_at"] == manifest_started
     # finished-but-unsaved: manifest survives until the save attempt
     assert sr.read_pending_manifest(work) is not None
-    slug = sr.save_scenario_version(scenario, result, dd)
+    saved = sr.save_scenario_version(scenario, result, dd)
     assert sr.read_pending_manifest(work) is None
+    from datetime import datetime as _dt
+
     from helpers.version_manager import list_versions
-    assert any(v["slug"] == slug for v in list_versions(dd))
+    v = next(v for v in list_versions(dd) if v["slug"] == saved["slug"])
+    ts = _dt.fromisoformat(manifest_started).strftime("%y-%m-%d %H:%M")
+    assert v["name"] == saved["name"]
+    assert v["name"] == f"Scenario: Max Fill (committed plan fixed) {ts}"
+    assert saved["evicted"] == []
 
 
 def test_resume_failed_run_clears_manifest(tmp_path):

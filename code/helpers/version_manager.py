@@ -32,7 +32,9 @@ def _validate_slug(slug: str) -> None:
 
 def _slugify(name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
-    return slug or "version"
+    # _validate_slug caps slugs at 64 chars; leave room for _unique_slug's
+    # numeric suffix (timestamped scenario names got long, 2026-08-19).
+    return slug[:60].rstrip("_") or "version"
 
 
 def _unique_slug(name: str, data_dir: Path) -> str:
@@ -93,6 +95,27 @@ def _check_capacity(existing: list[dict[str, Any]]) -> None:
     raise ValueError(msg)
 
 
+# Sources stamped by unattended save paths (scenario runner / agent). Only
+# these are ever auto-evicted; anything a user named and saved by hand
+# ("digital_twin", "manual", imports, the naive strawman) is never touched.
+AUTO_SOURCE_PREFIXES = ("solver:", "solver-custom:", "agent:")
+
+
+def is_auto_saved(meta: dict[str, Any]) -> bool:
+    return str(meta.get("source") or "").startswith(AUTO_SOURCE_PREFIXES)
+
+
+def _evict_oldest_auto(existing: list[dict[str, Any]], data_dir: Path) -> bool:
+    """Delete the OLDEST auto-saved version. False when nothing is evictable
+    (all slots hold user-named versions or orphans)."""
+    autos = [v for v in existing if is_auto_saved(v) and not v.get("orphan")]
+    if not autos:
+        return False
+    autos.sort(key=lambda v: str(v.get("timestamp") or ""))
+    delete_version(autos[0]["slug"], data_dir)
+    return True
+
+
 def save_version(
     name: str,
     calendar: pd.DataFrame,
@@ -104,8 +127,17 @@ def save_version(
     notes: str = "",
     source: str = "manual",
     extra_meta: dict[str, Any] | None = None,
+    auto_evict: bool = False,
 ) -> str:
-    _check_capacity(list_versions(data_dir))
+    """Save a NEW version. ``auto_evict`` (scenario-runner path only): when
+    the slots are full, delete the oldest AUTO-SAVED version (source
+    solver:/agent:) to make room — never a user-named one. With nothing
+    evictable (or auto_evict off) the friendly capacity error raises."""
+    existing = list_versions(data_dir)
+    if auto_evict:
+        while len(existing) >= MAX_VERSIONS and _evict_oldest_auto(existing, data_dir):
+            existing = list_versions(data_dir)
+    _check_capacity(existing)
     slug = _unique_slug(name, data_dir)
     dest = versions_dir(data_dir) / slug
     dest.mkdir(parents=True, exist_ok=True)

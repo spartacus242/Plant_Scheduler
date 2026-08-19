@@ -70,7 +70,6 @@ def scorecard_config(cfg: dict | None = None) -> dict[str, Any]:
         "co_weight_ttp": 1.0,
         "co_weight_recipe_only": 1.0,
         "cap_weighted_co": 150.0,
-        "cap_cip_count": 30,
         "cap_cip_hours": 120,
         "cap_cip_forfeited": 200,
         # Forfeited CIP is scored in kg of lost production (hours x line avg
