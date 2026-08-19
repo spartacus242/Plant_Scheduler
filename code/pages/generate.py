@@ -287,12 +287,18 @@ def _generate_one(
                 st.code(result.get("log") or "(empty)", language="text")
             return False
         try:
-            slug = save_scenario_version(scenario, result, dd)
+            saved = save_scenario_version(scenario, result, dd)
         except ValueError as e:
             st.error(str(e))
             status.update(label=str(e), state="error")
             return False
-        status.update(label=f"{scenario['name']} → `{slug}`", state="complete")
+        if saved.get("evicted"):
+            st.info(
+                "Version slots were full — auto-evicted the oldest scenario "
+                "save(s): " + ", ".join(f"`{s}`" for s in saved["evicted"])
+                + ". User-named versions are never evicted.")
+        status.update(label=f"{saved['name']} → `{saved['slug']}`",
+                      state="complete")
         feas = result.get("feasibility")
         if feas:
             st.caption("Solver: " + _feasibility_summary(feas))
@@ -619,7 +625,10 @@ if single_phase_run:
             f"Recommended minimum is {SINGLE_PHASE_TL}s."
         )
 
-st.caption(f"Versions in use: {len(list_versions(dd))} / {MAX_VERSIONS}. Generating will replace prior Scenario X slots when needed.")
+st.caption(
+    f"Versions in use: {len(list_versions(dd))} / {MAX_VERSIONS}. Every run "
+    "saves a new timestamped version; when full, the oldest auto-saved "
+    "scenario version is evicted (user-named versions never are).")
 
 
 if st.button("Generate selected scenarios", type="primary", disabled=not selected):
