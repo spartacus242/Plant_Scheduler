@@ -574,6 +574,13 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   const [picker, setPicker] = useState<{
     lineName: string; lineId: number; hour: number; x: number; y: number;
   } | null>(null);
+  // Read-only mounts (compare / generate previews) send none of the picker
+  // payloads: without lineCapableSkus the picker would offer placements with
+  // zero setup and all-clean chips, and place unlocked blocks on a board
+  // whose blocks are locked. Only the calendar page sends the payload.
+  const pickerEnabled = Boolean(
+    args.lineCapableSkus && Object.keys(args.lineCapableSkus).length > 0,
+  );
   const handleEmptyContextMenu = useCallback(
     (e: React.MouseEvent, lineName: string, lineId: number, hour: number) => {
       closeMenu();
@@ -588,7 +595,8 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     const adh = computeAdherence(schedule, args.demandTargets, args.capabilities, coveredByOrder);
     const remaining = remainingDemandBySku(adh, anchor);
     // Candidates: server list (capable==1 ∩ demand plan); derived from the
-    // caps map when the mounting page sent none (generate / compare).
+    // caps map for a line the server list happens to miss (the picker only
+    // opens at all when the payload is present — see pickerEnabled).
     let cands = args.lineCapableSkus?.[picker.lineName];
     if (!cands || cands.length === 0) {
       const demSkus = [...new Set(args.demandTargets.map((d) => d.sku))];
@@ -1197,16 +1205,18 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           svgRef={chartSvgRef}
           onResizeStart={guardedStartResize}
           onContextMenu={handleContextMenu}
-          onEmptyContextMenu={handleEmptyContextMenu}
+          onEmptyContextMenu={pickerEnabled ? handleEmptyContextMenu : undefined}
           onBlockClick={handleBlockClick}
           onZoomIn={zoomIn}
           onZoomOut={zoomOut}
           onResetZoom={resetZoom}
         />
-        <div style={{ fontSize: 11, color: "#8a94a0", marginTop: 2 }}>
-          Right-click an empty gap on a line to add a demand-plan SKU there
-          (snaps left, changeover setup respected).
-        </div>
+        {pickerEnabled && (
+          <div style={{ fontSize: 11, color: "#8a94a0", marginTop: 2 }}>
+            Right-click an empty gap on a line to add a demand-plan SKU there
+            (snaps left, changeover setup respected).
+          </div>
+        )}
 
         <div style={{ marginTop: 8 }}>
           <HoldingArea blocks={holdingArea} anchor={anchor} skuFormats={args.skuFormats ?? {}} />
