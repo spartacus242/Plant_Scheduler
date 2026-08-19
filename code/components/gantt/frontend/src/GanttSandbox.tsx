@@ -1036,12 +1036,23 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   // holdingArea arg — WITHOUT remounting, so client state must adopt it or
   // the cards on screen stay stale. Never adopt over unpushed edits: the
   // planner's in-flight drags win and the next push re-derives anyway.
-  const lastServerHolding = useRef(JSON.stringify(args.holdingArea ?? []));
+  //
+  // lastSeenServerHolding records every server holding we SAW, adopted or
+  // not — recording only on adoption replays stale args after a Refresh:
+  //   1. edits pending (dirty), page reruns with holding H1: skip adopt,
+  //      but remember H1 as seen;
+  //   2. "⟳ Refresh checks" flips dirty false — this effect re-fires with
+  //      args.holdingArea STILL H1 (pre-push); H1 == last seen, so the
+  //      just-pushed holding is not clobbered by the old one;
+  //   3. Python's rerun arrives with the rebuilt H2: differs from last
+  //      seen and not dirty -> adopt.
+  const lastSeenServerHolding = useRef(JSON.stringify(args.holdingArea ?? []));
   useEffect(() => {
     const incoming = JSON.stringify(args.holdingArea ?? []);
-    if (incoming === lastServerHolding.current) return;
+    const changed = incoming !== lastSeenServerHolding.current;
+    lastSeenServerHolding.current = incoming;
+    if (!changed) return;
     if (dirty) return; // retry once the edits are pushed
-    lastServerHolding.current = incoming;
     adoptingHolding.current = true;
     actions.setHoldingFromServer(args.holdingArea ?? []);
   }, [args.holdingArea, dirty, actions]);
