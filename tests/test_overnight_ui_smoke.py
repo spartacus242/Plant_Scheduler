@@ -1,0 +1,84 @@
+# tests/test_overnight_ui_smoke.py — Home + Generate render the overnight
+# surfaces without exceptions, with and without data/optimizer/ present.
+#
+# Pattern: AppTest boots the REAL entrypoint (code/app.py) so st.navigation
+# registers every page and st.page_link resolves (running a page script
+# directly dies in page_link with KeyError: 'url_pathname'), then
+# switch_page() onto the page under test. data_dir is seeded into
+# session_state BEFORE the first run — app.py only sets it when absent.
+
+from __future__ import annotations
+
+import shutil
+from pathlib import Path
+
+import pytest
+from streamlit.testing.v1 import AppTest
+
+ROOT = Path(__file__).resolve().parent.parent
+FIXTURE = Path(__file__).parent / "fixtures" / "optimizer"
+PAGES = ["pages/home.py", "pages/generate.py"]
+
+
+def _boot(page: str, data_dir: Path) -> AppTest:
+    at = AppTest.from_file(str(ROOT / "code" / "app.py"), default_timeout=180)
+    at.session_state["data_dir"] = str(data_dir)
+    at.switch_page(page)
+    at.run()
+    return at
+
+
+def _texts(at: AppTest) -> str:
+    parts = [str(getattr(el, "value", "")) for el in at.markdown]
+    parts += [str(getattr(el, "value", "")) for el in at.caption]
+    parts += [str(getattr(el, "body", "")) for el in at.subheader]
+    return "\n".join(parts)
+
+
+@pytest.mark.parametrize("page", PAGES)
+def test_pages_render_without_optimizer_dir(page, tmp_path):
+    at = _boot(page, tmp_path)
+    assert not at.exception
+
+
+@pytest.mark.parametrize("page", PAGES)
+def test_pages_render_with_overnight_fixture(page, tmp_path):
+    shutil.copytree(FIXTURE, tmp_path / "optimizer")
+    at = _boot(page, tmp_path)
+    assert not at.exception
+
+
+def test_home_chip_not_set_without_fixture(tmp_path):
+    at = _boot("pages/home.py", tmp_path)
+    text = _texts(at)
+    assert "Overnight optimizer" in text
+    assert "no overnight generation yet" in text
+
+
+def test_home_chip_reads_the_fixture(tmp_path):
+    shutil.copytree(FIXTURE, tmp_path / "optimizer")
+    at = _boot("pages/home.py", tmp_path)
+    text = _texts(at)
+    # fixture created 2026-08-19 → stale by wall clock; the stats still show
+    assert "7 runs" in text
+    assert "best 84.2" in text
+    assert "+12.8 vs board" in text
+    assert "Overnight brief" in text  # brief.md expander content
+
+
+def test_generate_section_absent_without_fixture(tmp_path):
+    at = _boot("pages/generate.py", tmp_path)
+    assert "Overnight results" not in _texts(at)
+
+
+def test_generate_section_renders_the_leaderboard(tmp_path):
+    shutil.copytree(FIXTURE, tmp_path / "optimizer")
+    at = _boot("pages/generate.py", tmp_path)
+    text = _texts(at)
+    assert "Overnight results" in text
+    assert "Noise floor" in text
+    assert "71.4" in text  # board baseline delta line
+    assert "overnight-20260819-best" in text  # published caption → Compare
+    assert "overnight-20260819-runner" in text
+    frames = [df for df in at.dataframe]
+    assert any("Composite" in df.value.columns for df in frames)

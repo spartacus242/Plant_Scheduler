@@ -20,6 +20,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from helpers import data_health as dh
+from helpers import overnight_results as onr
 from helpers.config import load_toml
 from helpers.paths import data_dir
 from helpers.week_lock import read_lock
@@ -168,6 +169,22 @@ for title, page, fn in _STEPS:
     c3.caption(detail)
     with c4:
         st.page_link(page, label="Open", icon=":material/arrow_forward:")
+
+# Overnight optimizer — not a numbered step (the batch runs while nobody is
+# here), but the same row grammar so the morning scan stays one pass:
+# NOT SET (no generation yet) / OK (< 26h) / STALE (older).
+_ov = onr.summarize(dd)
+c1, c2, c3, c4 = st.columns([2, 2, 6, 1.5])
+c1.markdown("**☾ Overnight optimizer**")
+c2.markdown(_CHIP[{onr.OK: "ok", onr.STALE: "warn"}.get(_ov.state, "off")])
+c3.caption(_ov.detail)
+with c4:
+    st.page_link("pages/generate.py", label="Review",
+                 icon=":material/arrow_forward:")
+_brief = onr.load_brief(dd) if _ov.state != onr.NOT_SET else None
+if _brief:
+    with st.expander("Morning brief (data/optimizer/brief.md)"):
+        st.markdown(_brief)
 
 # ---------------------------------------------------------------------------
 # What you need to do next
