@@ -163,7 +163,8 @@ with st.expander("🏭 Rebuild calendar from current plant state (manprg + cip_i
         str(dd / "reference" / "cip_info.csv")
     try:
         _cs = _build_cs(_horizon, manprg_paths=_mp_paths0, cip_path=_cip_path0,
-                        lines=load_lines(dd / "lines.csv"), cfg=cfg)
+                        lines=load_lines(dd / "lines.csv"), cfg=cfg,
+                        caps_path=dd / "reference" / "capabilities_rates.csv")
     except Exception as _exc:  # noqa: BLE001
         _cs = None
         st.error(f"Could not read the live feeds: {_exc}")
