@@ -93,6 +93,23 @@ _COMMON_KNOBS = [
         "config": "objective.week_deviation_weight",
         "effect": "Cross-week mode only: penalty per hour an order runs outside AZAP's requested week. Lower = more willing to move a SKU between week 1 and week 2 to build a longer run.",
     },
+    # Hard-rule overrides (custom builder 2026-08-19) — shown here so the
+    # "What this scenario tunes" table matches every knob the UI exposes.
+    {
+        "param": "scheduler.min_run_hours",
+        "config": "scheduler.min_run_hours",
+        "effect": "HARD floor: no new production run shorter than this many hours (committed MOs exempt).",
+    },
+    {
+        "param": "scheduler.min_run_pct_of_qty",
+        "config": "scheduler.min_run_pct_of_qty",
+        "effect": "HARD floor on multi-line splits: each line's share of an order runs at least this fraction of the order's minimum quantity.",
+    },
+    {
+        "param": "scheduler.max_lines_per_order",
+        "config": "scheduler.max_lines_per_order",
+        "effect": "HARD cap: how many lines may run the same ORDER (SKU-week row) simultaneously. Per order, not per SKU.",
+    },
     {
         "param": "objective.cip_flex_weight",
         "config": "objective.cip_flex_weight",

@@ -176,3 +176,52 @@ def test_delete_clears_windows_readonly_orphan(tmp_path):
     os.chmod(orphan, stat.S_IREAD)
     delete_version("readonly_leftover", dd)
     assert not orphan.exists()
+
+
+def test_renamed_or_annotated_auto_save_is_never_evicted(tmp_path):
+    # Review 2026-08-19: a solver run the user renamed ("KEEP - week 35
+    # plan") or annotated kept source=solver:* and was silently deleted by
+    # auto-evict. Curation must protect the slot.
+    from helpers.version_manager import rename_version, update_notes
+
+    dd = _dd(tmp_path)
+    kept = _save_with(dd, "auto oldest", "solver:balanced",
+                      "2026-08-10T08:00:00")
+    rename_version(kept, "KEEP - week 35 plan", dd)
+    noted = _save_with(dd, "auto notes", "agent:propose",
+                       "2026-08-11T08:00:00")
+    update_notes(noted, dd, pros="good W35 fill")
+    evictable = _save_with(dd, "auto plain", "solver:balanced",
+                           "2026-08-12T08:00:00")
+    for i in range(MAX_VERSIONS - 3):
+        _save_with(dd, f"user {i}", "digital_twin", f"2026-08-1{3 + i}T08:00:00")
+
+    save_version("new run", empty_calendar(), {"composite": None}, dd,
+                 source="solver:balanced", auto_evict=True)
+    slugs = {v["slug"] for v in list_versions(dd)}
+    assert kept in slugs and noted in slugs      # curated: protected
+    assert evictable not in slugs                # plain auto: evicted
+
+
+def test_evict_skips_invalid_slug_dirs_instead_of_wedging(tmp_path):
+    # A hand-copied folder with solver metadata but a non-slug name must not
+    # wedge every future auto-save (delete_version validates slugs).
+    import json as _json
+
+    dd = _dd(tmp_path)
+    bad = dd / "versions" / "Hand-Copied Run"
+    bad.mkdir()
+    (bad / "metadata.json").write_text(_json.dumps({
+        "name": "hand copy", "source": "solver:balanced",
+        "timestamp": "2026-08-01T08:00:00", "scorecard": {}}),
+        encoding="utf-8")
+    evictable = _save_with(dd, "auto ok", "solver:balanced",
+                           "2026-08-11T08:00:00")
+    for i in range(MAX_VERSIONS - 2):
+        _save_with(dd, f"user {i}", "digital_twin", f"2026-08-1{2 + i}T08:00:00")
+
+    save_version("new run", empty_calendar(), {"composite": None}, dd,
+                 source="solver:balanced", auto_evict=True)
+    slugs = {v["slug"] for v in list_versions(dd)}
+    assert evictable not in slugs        # the valid auto save was evicted
+    assert bad.exists()                  # the odd folder was skipped, not fatal

@@ -102,18 +102,27 @@ AUTO_SOURCE_PREFIXES = ("solver:", "solver-custom:", "agent:")
 
 
 def is_auto_saved(meta: dict[str, Any]) -> bool:
+    # A rename or a pros/cons edit stamps user_touched — curation protects a
+    # version from eviction even though its source stays solver:/agent:.
+    if meta.get("user_touched"):
+        return False
     return str(meta.get("source") or "").startswith(AUTO_SOURCE_PREFIXES)
 
 
 def _evict_oldest_auto(existing: list[dict[str, Any]], data_dir: Path) -> bool:
     """Delete the OLDEST auto-saved version. False when nothing is evictable
-    (all slots hold user-named versions or orphans)."""
+    (all slots hold user-named/curated versions or orphans)."""
     autos = [v for v in existing if is_auto_saved(v) and not v.get("orphan")]
-    if not autos:
-        return False
     autos.sort(key=lambda v: str(v.get("timestamp") or ""))
-    delete_version(autos[0]["slug"], data_dir)
-    return True
+    for cand in autos:
+        try:
+            delete_version(cand["slug"], data_dir)
+            return True
+        except ValueError:
+            # Hand-copied dir whose name is not a valid slug: skip it rather
+            # than wedge every future auto-save (review 2026-08-19).
+            continue
+    return False
 
 
 def save_version(
@@ -230,11 +239,15 @@ def load_version(slug: str, data_dir: Path) -> dict[str, Any]:
 
 
 def rename_version(slug: str, new_name: str, data_dir: Path) -> None:
+    # Renaming is a curation act: the planner marked this version as theirs,
+    # so auto-evict must never reclaim its slot (review 2026-08-19 — a
+    # renamed solver run kept source=solver:* and was silently deleted).
     _validate_slug(slug)
     meta_path = versions_dir(data_dir) / slug / "metadata.json"
     if meta_path.exists():
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         meta["name"] = new_name
+        meta["user_touched"] = True
         safe_write_json(meta, meta_path)
 
 
@@ -250,6 +263,8 @@ def update_notes(slug: str, data_dir: Path, *, pros: str | None = None, cons: st
         meta["cons"] = cons
     if notes is not None:
         meta["notes"] = notes
+    # Annotating = curating, same protection as a rename.
+    meta["user_touched"] = True
     safe_write_json(meta, meta_path)
 
 

@@ -40,6 +40,7 @@ from helpers.scorecard_engine import (
     delta_narrative,
     gantt_kpis,
     score_calendar,
+    scoring_inputs_signature,
 )
 from helpers.scorecard_ui import render_delta_strip, render_scorecard
 from helpers.version_manager import (
@@ -574,8 +575,16 @@ if _sku_info_path.exists():
 
 # Blank-space SKU picker payloads: demand-plan SKUs each line can run and the
 # changeover-type bitmask per SKU pair (setup hours ride in `changeovers`).
+# Pair universe includes board SKUs so committed-MO/trial neighbours get
+# honest chips instead of reading as clean (review 2026-08-19).
 _line_capable = build_line_capable_skus(caps_path, _dem_skus)
-_co_flags = build_co_flags(co_path, _dem_skus)
+_board_skus = {
+    s[:-2] if s.endswith(".0") else s  # float-formatted CSV skus ("280212.0")
+    for s in cal.loc[
+        cal["block_type"] == "production", "sku"].dropna().astype(str)
+    if s and s.lower() != "nan"
+}
+_co_flags = build_co_flags(co_path, _dem_skus, _board_skus)
 
 # Canonical KPI payload — same engine (scorecard_engine) as the scorecard
 # rendered below, so the Gantt KPI bar and the scorecard cannot disagree.
@@ -649,13 +658,19 @@ st.divider()
 st.subheader("Live scorecard (same engine as Phase 0)")
 # Re-scoring an unchanged board wastes ~1-2s on every page visit / widget
 # click. Fingerprint the board (positions matter — cal_board_sig above only
-# covers order+qty, which is NOT enough for a score key) and reuse.
+# covers order+qty, which is NOT enough for a score key) PLUS every off-board
+# scoring input (demand plan, rates, CIP intervals, toml — review 2026-08-19:
+# a feed sync must invalidate this cache exactly like the Compare/Generate
+# caches, or the scorecard and the freshly-computed KPI bar disagree).
 _score_cols = [c for c in (
     "order_id", "sku", "line_name", "block_type", "start_h", "end_h",
     "start_hour", "end_hour", "qty_kg", "attrs") if c in working.columns]
 try:
-    _live_sig = int(pd.util.hash_pandas_object(
-        working[_score_cols].astype(str), index=False).sum())
+    _live_sig = hash((
+        int(pd.util.hash_pandas_object(
+            working[_score_cols].astype(str), index=False).sum()),
+        scoring_inputs_signature(dd),
+    ))
 except Exception:  # noqa: BLE001 — cache key failure just means recompute
     _live_sig = None
 if (_live_sig is not None
@@ -741,11 +756,20 @@ with _lc3:
 # (unsaved edits included), Calendar + Scorecard sheets. The VIF write-back
 # (mo_changes.csv) stays on Compare & Promote — it is per solver run.
 from datetime import datetime as _dtnow
+# Workbook bytes ride the live-score signature (board + every scoring input
+# incl. the toml anchor) — rebuilding a full openpyxl workbook per rerun is
+# exactly the waste the score cache above exists to avoid (review 2026-08-19).
+if (_live_sig is None
+        or st.session_state.get("cal_export_sig") != _live_sig
+        or "cal_export_bytes" not in st.session_state):
+    st.session_state["cal_export_bytes"] = export_calendar_excel(
+        drop_display_overlays(working), live.to_dict())
+    st.session_state["cal_export_sig"] = _live_sig
 _xc1, _xc2 = st.columns([1, 2])
 with _xc1:
     st.download_button(
         "⬇ Export schedule (Excel)",
-        data=export_calendar_excel(drop_display_overlays(working), live.to_dict()),
+        data=st.session_state["cal_export_bytes"],
         file_name=f"flowstate_schedule_{_dtnow.now():%Y%m%d_%H%M}.xlsx",
         use_container_width=True,
     )

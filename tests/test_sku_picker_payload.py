@@ -3,9 +3,10 @@
 # The Plant Calendar page feeds the picker two lean payloads built in
 # helpers/calendar_io: lineCapableSkus (demand-plan SKUs each line can run,
 # capable==1) and coFlags ("FROM|TO" -> changeover-type bitmask, bit i =
-# CO_FLAG_COLUMNS[i], zero masks omitted, both sides restricted to the demand
-# plan). The frontend mirror of the bit order lives in utils/skuPicker.ts
-# CO_FLAG_BITS — change both or neither.
+# CO_FLAG_COLUMNS[i]). Pair universe = demand ∪ board SKUs; zero masks are
+# EXPLICIT (0 = clean) so the client can read a MISSING pair as "unknown"
+# (review 2026-08-19). The frontend mirror of the bit order lives in
+# utils/skuPicker.ts CO_FLAG_BITS — change both or neither.
 
 from __future__ import annotations
 
@@ -42,9 +43,10 @@ def co_csv(tmp_path):
         _co_row("A", "B", ttp_change=1),                     # bit 0 -> 1
         _co_row("B", "A", ffs_change=1, topload_change=1),   # bits 1+2 -> 6
         _co_row("A", "C", **{c: 1 for c in CO_FLAG_COLUMNS}),  # all six -> 63
-        _co_row("C", "A"),                                   # zero mask: omitted
-        _co_row("A", "X", ttp_change=1),                     # X not in demand: dropped
+        _co_row("C", "A"),                                   # zero mask: explicit 0
+        _co_row("A", "X", ttp_change=1),                     # X off-plan: board-only
         _co_row("X", "B", ttp_change=1),
+        _co_row("A", "Y", ttp_change=1),                     # Y nowhere: dropped
     ]
     p = tmp_path / "changeovers.csv"
     pd.DataFrame(rows).to_csv(p, index=False)
@@ -53,7 +55,16 @@ def co_csv(tmp_path):
 
 def test_co_flags_bitmask(co_csv):
     flags = build_co_flags(co_csv, DEMAND_SKUS)
-    assert flags == {"A|B": 1, "B|A": 6, "A|C": 63}
+    assert flags == {"A|B": 1, "B|A": 6, "A|C": 63, "C|A": 0}
+
+
+def test_co_flags_include_board_neighbours(co_csv):
+    # A committed-MO neighbour of a rolled-off SKU (X) must get honest chips:
+    # pairs against board SKUs are kept, truly unknown SKUs (Y) stay absent.
+    flags = build_co_flags(co_csv, DEMAND_SKUS, board_skus={"X"})
+    assert flags["A|X"] == 1 and flags["X|B"] == 1
+    assert "A|Y" not in flags
+    assert flags["C|A"] == 0  # explicit zero = clean, missing = unknown
 
 
 def test_co_flags_missing_file_or_empty_demand(tmp_path, co_csv):

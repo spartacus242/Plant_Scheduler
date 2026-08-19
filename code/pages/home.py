@@ -152,7 +152,10 @@ _STEPS = [
     ("1 · Connect", "pages/data.py", _step_connect),
     ("2 · Reconcile", "pages/reconcile.py", _step_reconcile),
     ("3 · Plan", "pages/calendar.py", _step_plan),
-    ("4 · Lock & Export", "pages/compare.py", _step_lock),
+    # Lock & Export moved onto the Plant Calendar (2026-08-19); step 4 is the
+    # compare/promote gate, still chipped with the lock state — "locked
+    # through X" IS the ready-to-ship signal.
+    ("4 · Compare & Promote", "pages/compare.py", _step_lock),
     ("5 · Track", "pages/scorecard.py", _step_track),
 ]
 
@@ -205,8 +208,9 @@ The optimizer is maybe 20-30% of the project. The hard part is the **operational
 that scores a schedule the same way every week.
 
 The daily loop (the sidebar walks it): **Connect** live data → **Reconcile** what needs
-attention → **Plan** (solver ↔ drag & drop) → **Lock & Export** (2 weeks committed,
-changes back to VIF) → **Track** the honest scorecard. Each week the lock rolls forward.
+attention → **Plan** (solver ↔ drag & drop; lock 2 weeks and export the final schedule
+right on the calendar) → **Compare & Promote** (versions side by side, MO changes back
+to VIF) → **Track** the honest scorecard. Each week the lock rolls forward.
 
 AZAP (`data/reference/demand_plan.csv`) is the corporate **demand plan**: which SKUs,
 how many kg, which week. It never assigns lines. The line schedule

@@ -1590,6 +1590,9 @@ def score_calendar(
 SCORING_INPUT_FILES = (
     "demand_plan.csv", "demand_plan.source.json", "line_cip_hrs.csv",
     "capabilities_rates.csv", "changeovers.csv",
+    # line_rates.csv is the rate source when use_sku_rates = false (the live
+    # config) — it prices cip_forfeited_kg, a scored metric (review 2026-08-19).
+    "line_rates.csv",
 )
 
 

@@ -318,18 +318,29 @@ CO_FLAG_COLUMNS = (
 )
 
 
-def build_co_flags(changeovers_csv: Path, demand_skus: set[str]) -> dict[str, int]:
-    """{"FROM|TO": bitmask} of changeover-type flags for SKU pairs where both
-    sides appear in the demand plan — data for the blank-space SKU picker.
+def build_co_flags(
+    changeovers_csv: Path,
+    demand_skus: set[str],
+    board_skus: set[str] | None = None,
+) -> dict[str, int]:
+    """{"FROM|TO": bitmask} of changeover-type flags for SKU pairs — data for
+    the blank-space SKU picker.
 
-    Setup hours are NOT duplicated here: the Gantt already receives the full
-    setup matrix (`changeovers`). Zero-mask pairs are omitted — the client
-    reads a missing pair as "no machine touched".
+    The pair universe is demand ∪ board SKUs: a picker candidate is always a
+    demand SKU, but its NEIGHBOUR on the line can be any board block (a
+    committed manprg MO of a rolled-off SKU, a trial) — dropping those pairs
+    made unknown transitions render as clean (review 2026-08-19).
+
+    Zero-mask pairs are kept EXPLICITLY: the client reads value 0 as "no
+    machine touched" and a MISSING pair as "unknown — no changeover data".
+    Setup hours are not duplicated here: the Gantt already receives the full
+    setup matrix (`changeovers`).
     """
     if not changeovers_csv.exists() or not demand_skus:
         return {}
+    universe = demand_skus | (board_skus or set())
     df = pd.read_csv(changeovers_csv, dtype={"from_sku": str, "to_sku": str})
-    df = df[df["from_sku"].isin(demand_skus) & df["to_sku"].isin(demand_skus)]
+    df = df[df["from_sku"].isin(universe) & df["to_sku"].isin(universe)]
     for col in CO_FLAG_COLUMNS:
         if col not in df.columns:
             df[col] = 0
@@ -340,8 +351,7 @@ def build_co_flags(changeovers_csv: Path, demand_skus: set[str]) -> dict[str, in
         for i, col in enumerate(CO_FLAG_COLUMNS):
             if getattr(r, col):
                 mask |= 1 << i
-        if mask:
-            out[f"{r.from_sku}|{r.to_sku}"] = mask
+        out[f"{r.from_sku}|{r.to_sku}"] = mask
     return out
 
 

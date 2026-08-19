@@ -115,7 +115,10 @@ def _weekly_cached(dd_str: str, cache_key: tuple, live_sig: tuple,
 
 @st.cache_data(show_spinner=False)
 def _excel_cached(dd_str: str, slug: str, meta_mtime: float,
-                  cal_mtime: float) -> bytes:
+                  cal_mtime: float, live_sig: tuple) -> bytes:
+    # live_sig carries the toml mtime: the workbook bakes in the LIVE planning
+    # anchor for its human start/end columns, so the daily roll must
+    # invalidate these bytes too (review 2026-08-19).
     return export_version_excel(slug, Path(dd_str))
 
 
@@ -574,7 +577,7 @@ for v in versions:
         if d.button("Delete", key=f"del_{slug}"):
             delete_version(slug, dd)
             st.rerun()
-        xbytes = _excel_cached(str(dd), *_vkey(slug))
+        xbytes = _excel_cached(str(dd), *_vkey(slug), _LIVE_SIG)
         st.download_button("Export Excel", data=xbytes, file_name=f"{slug}.xlsx", key=f"xl_{slug}")
 
 _render_orphans()
