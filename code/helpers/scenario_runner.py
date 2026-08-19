@@ -13,7 +13,7 @@ from typing import Any
 
 from helpers.calendar_io import import_solver_schedule
 from helpers.scorecard_engine import score_calendar
-from helpers.version_manager import list_versions, save_version
+from helpers.version_manager import MAX_VERSIONS, list_versions, save_version
 
 # ---------------------------------------------------------------------------
 # Solver knob documentation
@@ -1505,9 +1505,11 @@ def save_scenario_version(
             from helpers.version_manager import delete_version
             delete_version(v["slug"], data_dir)
             break
-    # Still at max? raise
-    if len(list_versions(data_dir)) >= 5:
-        raise ValueError("Version slots full (5). Delete a version before generating scenarios.")
+    # Still at max? raise (orphaned folders count — see list_versions)
+    if len(list_versions(data_dir)) >= MAX_VERSIONS:
+        raise ValueError(
+            f"Version slots full ({MAX_VERSIONS}). Delete a version in "
+            "Version Compare before generating scenarios.")
 
     sc = result["scorecard"]
     extra = {}

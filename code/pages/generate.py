@@ -32,7 +32,7 @@ from helpers.scenario_runner import (
 )
 from helpers.scorecard_engine import delta_narrative, score_calendar
 from helpers.scorecard_ui import render_scorecard
-from helpers.version_manager import list_versions, upsert_version
+from helpers.version_manager import MAX_VERSIONS, list_versions, upsert_version
 from solver.changeover_cache import load_changeover_setup_nested
 
 st.header("Generate Scenarios")
@@ -372,6 +372,10 @@ if st.button("Run Fill the tail", type="primary", key="run_fill_tail"):
 st.divider()
 st.subheader("Saved versions")
 for v in list_versions(dd):
+    if v.get("orphan"):
+        st.write(f"- `{v['slug']}` · orphaned folder (no metadata) — holds a "
+                 "slot; delete it in Version Compare")
+        continue
     sc = (v.get("scorecard") or {}).get("composite")
     st.write(f"- **{display_name(v['slug'], v.get('name'))}** (`{v['slug']}`) · composite={sc} · {v.get('source', '')}")
 
@@ -578,7 +582,7 @@ if single_phase_run:
             f"Recommended minimum is {SINGLE_PHASE_TL}s."
         )
 
-st.caption(f"Versions in use: {len(list_versions(dd))} / 5. Generating will replace prior Scenario X slots when needed.")
+st.caption(f"Versions in use: {len(list_versions(dd))} / {MAX_VERSIONS}. Generating will replace prior Scenario X slots when needed.")
 
 
 if st.button("Generate selected scenarios", type="primary", disabled=not selected):

@@ -46,19 +46,49 @@ def _unique_slug(name: str, data_dir: Path) -> str:
 
 
 def list_versions(data_dir: Path) -> list[dict[str, Any]]:
+    """Every directory under data/versions is a version slot — ONE truth.
+
+    Directories without a readable metadata.json (crash leftovers, hand
+    copies, corrupt metadata) are surfaced as ``orphan`` entries instead of
+    being skipped: hidden folders silently disagreeing with the '5/5 saved'
+    counter is how 8 on-disk directories showed as 5 (walkthrough finding 5,
+    2026-08-18). Orphans count toward MAX_VERSIONS and can be deleted from
+    Version Compare like any other version.
+    """
     vd = versions_dir(data_dir)
     versions: list[dict] = []
     for d in sorted(vd.iterdir()):
+        if not d.is_dir():
+            continue
         meta_path = d / "metadata.json"
-        if d.is_dir() and meta_path.exists():
+        meta: dict[str, Any] | None = None
+        if meta_path.exists():
             try:
-                meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                meta["slug"] = d.name
-                versions.append(meta)
-            except (json.JSONDecodeError, OSError, KeyError):
-                continue
-    versions.sort(key=lambda v: v.get("timestamp", ""), reverse=True)
+                loaded = json.loads(meta_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    meta = loaded
+            except (json.JSONDecodeError, OSError):
+                meta = None
+        if meta is None:
+            meta = {"name": d.name, "timestamp": "", "source": "",
+                    "scorecard": {}, "orphan": True}
+        meta["slug"] = d.name
+        versions.append(meta)
+    versions.sort(key=lambda v: str(v.get("timestamp") or ""), reverse=True)
     return versions
+
+
+def _check_capacity(existing: list[dict[str, Any]]) -> None:
+    if len(existing) < MAX_VERSIONS:
+        return
+    n_orph = sum(1 for v in existing if v.get("orphan"))
+    msg = (f"Maximum of {MAX_VERSIONS} versions reached "
+           f"({len(existing)} folder(s) under data/versions). "
+           "Delete one in Version Compare before saving.")
+    if n_orph:
+        msg += (f" {n_orph} of them are orphaned folder(s) without metadata "
+                "— safe to delete there.")
+    raise ValueError(msg)
 
 
 def save_version(
@@ -73,11 +103,7 @@ def save_version(
     source: str = "manual",
     extra_meta: dict[str, Any] | None = None,
 ) -> str:
-    existing = list_versions(data_dir)
-    if len(existing) >= MAX_VERSIONS:
-        raise ValueError(
-            f"Maximum of {MAX_VERSIONS} versions reached. Delete one before saving."
-        )
+    _check_capacity(list_versions(data_dir))
     slug = _unique_slug(name, data_dir)
     dest = versions_dir(data_dir) / slug
     dest.mkdir(parents=True, exist_ok=True)
@@ -128,11 +154,7 @@ def upsert_version(
     dest = versions_dir(data_dir) / slug
     creating = not dest.exists()
     if creating:
-        existing = list_versions(data_dir)
-        if len(existing) >= MAX_VERSIONS:
-            raise ValueError(
-                f"Maximum of {MAX_VERSIONS} versions reached. Delete one before saving."
-            )
+        _check_capacity(list_versions(data_dir))
     dest.mkdir(parents=True, exist_ok=True)
     save_calendar(calendar, dest / "calendar_blocks.csv")
     meta = {
