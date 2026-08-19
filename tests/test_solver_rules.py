@@ -27,11 +27,15 @@ _REQUIRED_IDS = {
     "casepacker_weight", "base_changeover_weight", "conv_org_weight",
     "cinn_weight", "flavor_weight",
     "min_run_hours", "min_run_pct_of_qty", "max_lines_per_order",
+    # over_target_reward_pct: promoted 2026-08-19 from the fixed
+    # "soft_demand_tiers" row (whose ~0.005% over-fill reward is now this
+    # honest, adjustable percentage).
+    "over_target_reward_pct",
     # fixed rules
     "week_grid", "week0_fill_start", "week_stitch", "relax_ladder",
     "producible_zeroing", "availability_gate", "cip_max_interval",
     "cip_duration", "cip_max_count", "cip_absorb", "co_fallback",
-    "min_co_multipliers", "spread_multipliers", "soft_demand_tiers",
+    "min_co_multipliers", "spread_multipliers",
     "week_gradient", "cur_mo_priority", "two_pass_epsilon", "horizon",
     "warm_start_gates", "f_staging", "now_floor", "cip_standdown",
     "demand_netting", "trials_blocked", "greedy_seed", "line_rates",

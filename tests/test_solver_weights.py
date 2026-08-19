@@ -13,7 +13,8 @@
 #      them, not just carry them.
 #   3. Config plumbing: _patch_work_toml -> flowstate.toml -> _load_config
 #      -> params_from_config must land EVERY override key on its Params
-#      field, including the float min_run_pct_of_qty.
+#      field, including the floats min_run_pct_of_qty and
+#      over_target_reward_pct.
 
 from __future__ import annotations
 
@@ -172,6 +173,86 @@ def test_mode_gated_weights_inert_outside_their_mode(attr, flags):
     assert base == doubled, f"{attr} moves the model outside its mode"
 
 
+# ── Over-target reward: an honest percentage (2026-08-19) ─────────────────
+#
+# In the soft-demand fill objective the marginal kg has two prices: a kg
+# AT/BELOW target moves both `prodcap_*` (min(produced, target)) and
+# `produced_*`, worth _w1 * 1000 = 1_000_000 in the single-week tiny model
+# (tier-1 base, week gradient zero); a kg ABOVE target moves only
+# `produced_*`, worth exactly the over-target coefficient. pct = X must make
+# that coefficient X% of the base — X * 10_000.
+
+def _soft_objective_coeffs(P: Params) -> dict[str, int]:
+    """Objective coefficient per variable name for a soft-demand fill model
+    (Maximize semantics: positive = reward)."""
+    data = _tiny_data(P)
+    model, _ = build_model(
+        P, data, "full", False, False,
+        maximize_production=True, objective_mode="balanced",
+    )
+    proto = model.Proto()
+    coeffs: dict[str, int] = {}
+    for i, c in zip(proto.objective.vars, proto.objective.coeffs):
+        if i < 0:  # negated variable reference
+            i, c = -i - 1, -c
+        name = proto.variables[i].name
+        coeffs[name] = coeffs.get(name, 0) + c
+    if proto.objective.scaling_factor < 0:  # Maximize stored as Minimize(-e)
+        coeffs = {k: -v for k, v in coeffs.items()}
+    return coeffs
+
+
+def test_over_target_reward_pct_scales_the_objective_linearly():
+    tier1_base = 1_000_000  # _w1 = 1000 (single week) x the x1000 scaling
+    c5 = _soft_objective_coeffs(
+        _base_params(soft_demand=True, over_target_reward_pct=5.0))
+    c25 = _soft_objective_coeffs(
+        _base_params(soft_demand=True, over_target_reward_pct=2.5))
+    c0 = _soft_objective_coeffs(
+        _base_params(soft_demand=True, over_target_reward_pct=0.0))
+    # Marginal reward of a kg ABOVE target = the coefficient on produced.
+    assert c5["produced_O1"] == 50_000, "5.0 must be exactly 5% of tier-1"
+    assert c25["produced_O1"] == 25_000, "2.5 must be exactly half of 5.0"
+    assert "produced_O1" not in c0, "0 must remove the term, not just zero it"
+    # Marginal reward of a kg at/below target (prodcap + produced move
+    # together) stays the full tier-1 base — the pct never touches tier 1.
+    for c in (c5, c25, c0):
+        assert c.get("prodcap_O1", 0) + c.get("produced_O1", 0) == tier1_base
+
+
+def test_over_target_reward_default_is_off():
+    """Params() must default to 0.0 — every tuned run so far effectively ran
+    at ~0.005% (the old x50 vs the x1000 scaling), i.e. no over-fill
+    incentive; the honest default preserves that."""
+    assert Params().over_target_reward_pct == 0.0
+
+
+def test_over_target_reward_changes_a_real_solve():
+    """Spare line-time sanity: one line, one order, 10h of work in a 168h
+    horizon. pct=0 stops at target; pct=5 tops the order up to qty_max."""
+    orders = [dict(order_id="O1", sku="111", due_start=0, due_end=167,
+                   qty_min=100, qty_max=200, qty_target=100, priority=1)]
+    common = dict(soft_demand=True, max_lines_per_order=1,
+                  objective_makespan_weight=1, objective_changeover_weight=0,
+                  objective_idle_weight=0)
+
+    def _solve(P: Params) -> int:
+        data = _tiny_data(P, n_lines=1)
+        data.orders = orders
+        model, v = build_model(P, data, "sanity1", False, True,
+                               maximize_production=True,
+                               objective_mode="balanced")
+        s = cp_model.CpSolver()
+        s.parameters.max_time_in_seconds = 10
+        s.parameters.num_search_workers = 4
+        status = s.Solve(model)
+        assert status == cp_model.OPTIMAL, s.StatusName(status)
+        return s.Value(v["produced"][0])
+
+    assert _solve(_base_params(over_target_reward_pct=0.0, **common)) == 100
+    assert _solve(_base_params(over_target_reward_pct=5.0, **common)) == 200
+
+
 # ── Hard solve rules honored by a real solve ──────────────────────────────
 
 def _solve_tiny(P: Params, orders=None, n_lines: int = 2):
@@ -255,6 +336,7 @@ KNOB_TO_PARAM = {
     "week_deviation_weight": (
         "objective", "objective_week_deviation_weight", 41),
     "cip_flex_weight": ("objective", "objective_cip_flex_weight", 21),
+    "over_target_reward_pct": ("objective", "over_target_reward_pct", 2.5),
     "topload_weight": ("changeover", "co_topload_weight", 51),
     "ttp_weight": ("changeover", "co_ttp_weight", 13),
     "ffs_weight": ("changeover", "co_ffs_weight", 76),
@@ -308,6 +390,7 @@ def test_cli_overrides_beat_toml_in_params_from_config():
 def test_normalize_overrides_keeps_float_pct_and_drops_junk():
     clean = normalize_overrides({
         "min_run_pct_of_qty": 0.35,      # must stay a float, not int-> 0
+        "over_target_reward_pct": 2.5,   # must stay a float, not int-> 2
         "min_run_hours": "6",
         "max_lines_per_order": 3.0,
         "makespan_weight": 9,
@@ -316,8 +399,10 @@ def test_normalize_overrides_keeps_float_pct_and_drops_junk():
     })
     assert clean == {
         "min_run_pct_of_qty": pytest.approx(0.35),
+        "over_target_reward_pct": pytest.approx(2.5),
         "min_run_hours": 6,
         "max_lines_per_order": 3,
         "makespan_weight": 9,
     }
     assert isinstance(clean["min_run_pct_of_qty"], float)
+    assert isinstance(clean["over_target_reward_pct"], float)
