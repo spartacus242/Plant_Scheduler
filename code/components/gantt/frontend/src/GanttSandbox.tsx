@@ -13,7 +13,7 @@ import { useBlockResize } from "./hooks/useBlockResize";
 import { useContextMenu } from "./hooks/useContextMenu";
 import { computeKpis, computeAdherence, checkOverlapsSimple, serverKpisToKpiData, orderTarget, weekFulfillmentCredit } from "./utils/kpi";
 import { isCapable, recalcDuration, findOverlapsOnLine } from "./utils/validation";
-import { LINE_HEIGHT, MIN_HOUR_WIDTH, MAX_HOUR_WIDTH, snapToHour, fitToWidth, xToHour, hourToStamp, displayOrderId, setDemandBaseWeek, isoWeekLabel, isoWeekAtHour } from "./utils/layout";
+import { LINE_HEIGHT, MIN_HOUR_WIDTH, MAX_HOUR_WIDTH, snapToHour, fitToWidth, xToHour, hourToStamp, displayOrderId, setDemandBaseWeek, isoWeekLabel, isoWeekAtHour, isPastDemandWeek } from "./utils/layout";
 import { getRate } from "./utils/validation";
 import { computeDragPreview, computeInsertPlan, type DragPreview, type InsertContext } from "./utils/dragPreview";
 import { isDouble } from "./utils/abLines";
@@ -828,6 +828,14 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     return computeAdherence(schedule, args.demandTargets, args.capabilities, coveredByOrder);
   }, [edited, args.kpis, schedule, args.demandTargets, args.capabilities, coveredByOrder]);
 
+  // The adherence table below the chart plans CURRENT/FUTURE weeks only —
+  // past-week misses live on the Reconcile page, same rule as the holding
+  // area and the popup demand list (finding 11, 2026-08-18).
+  const currentAdherenceRows = useMemo(
+    () => adherenceRows.filter((r) => !isPastDemandWeek(r.order_id, anchor)),
+    [adherenceRows, anchor],
+  );
+
   // Per-week chips (user request 2026-08-18): fulfillment vs the demand due
   // that ISO week + changeovers by machine, recomputed live client-side.
   const weekStats = useMemo(() => {
@@ -1105,7 +1113,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           SKU Adherence (live) — click a row to highlight on chart · "+" adds the missing tonnage to holding
         </strong>
         <AdherenceTable
-          rows={adherenceRows}
+          rows={currentAdherenceRows}
           formatOrder={(id) => displayOrderId(id, anchor)}
           highlightSku={highlightSku}
           onSkuClick={setHighlightSku}
