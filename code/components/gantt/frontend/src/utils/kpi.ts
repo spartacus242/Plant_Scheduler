@@ -134,6 +134,21 @@ export function computeAdherence(
   return rows;
 }
 
+/** Target (the 100% point) for an order: the midpoint of the min/max band,
+ * matching compute_adherence's pct denominator. */
+export function orderTarget(qtyMin: number, qtyMax: number): number {
+  return qtyMin > 0 && qtyMax >= qtyMin ? (qtyMin + qtyMax) / 2 : Math.max(qtyMin, qtyMax);
+}
+
+/** Kg an order contributes to its WEEK's fulfillment: capped at the order's
+ * own target — overproduction on one order cannot serve another order's
+ * demand, so excess must not raise the week's percentage (audit 2026-08-18:
+ * uncapped credit read W35 96% vs 93.7% true). Mirrors the identical cap in
+ * scorecard_engine.weekly_breakdown; change both or neither. */
+export function weekFulfillmentCredit(row: AdherenceRow): number {
+  return Math.min(row.scheduled_qty, orderTarget(row.qty_min, row.qty_max));
+}
+
 export interface ChangeoverCounts {
   total: number;
   recipe: number;

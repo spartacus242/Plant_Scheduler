@@ -1896,7 +1896,12 @@ def weekly_breakdown(
             agg[wk]["demand_kg"] += tgt
             agg[wk]["orders"] += 1
             if r:
-                agg[wk]["scheduled_kg"] += float(r["scheduled_qty"])
+                # Week credit caps at the order's own target: overproduction
+                # on one order cannot serve another order's demand, so excess
+                # must not raise the week's fulfilled_pct (audit 2026-08-18:
+                # uncapped credit read W35 96% vs 93.7% true). kpi.ts
+                # weekFulfillmentCredit applies the identical cap client-side.
+                agg[wk]["scheduled_kg"] += min(float(r["scheduled_qty"]), tgt)
                 if r["status"] == "MET":
                     agg[wk]["orders_met"] += 1
 

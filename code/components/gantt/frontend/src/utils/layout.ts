@@ -95,6 +95,17 @@ export function isoWeekLabel(weekIndex: number, anchor: Date): number {
   return isoWeekAtHour(anchor, weekIndex * 168 + 1);
 }
 
+/** True when a demand order's -W<k> suffix maps to an ISO week before now's.
+ * Past demand weeks are misses for the Reconcile page, not planning-board
+ * rows — the holding area (_holding_is_current in pages/calendar.py) and the
+ * popup demand list apply the same rule. Orders without a -W suffix are
+ * never "past" (they cannot be dated). `now` is injectable for tests. */
+export function isPastDemandWeek(orderId: string, anchor: Date, now: Date = new Date()): boolean {
+  const m = /-W(\d+)$/.exec(String(orderId ?? ""));
+  if (!m) return false;
+  return isoWeekLabel(parseInt(m[1], 10), anchor) < isoWeek(now);
+}
+
 /** Planner-facing order id: the internal -W0/-W1/-W2 horizon suffix becomes
  * the ISO week (-W33/-W34/-W35). Display only - never stored. */
 export function displayOrderId(orderId: string, anchor: Date): string {

@@ -93,8 +93,12 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClo
 
   // Implied kg/h linking duration <-> tonnage: prefer the block's own numbers
   // (they carry the solver's real decomposition), fall back to the table rate.
-  const impliedRate =
-    block.qty_kg && block.run_hours > 0 ? block.qty_kg / block.run_hours : rate > 0 ? rate : null;
+  // ownRate is also what the fill buttons scale tonnage by, so the Rate row
+  // shows it when present — displaying the catalog line-rate for a block
+  // running at its own rate misstated the maths (finding 12, 2026-08-18).
+  const ownRate =
+    !isWindow && block.qty_kg && block.run_hours > 0 ? block.qty_kg / block.run_hours : null;
+  const impliedRate = ownRate ?? (rate > 0 ? rate : null);
 
   const setDur = (v: string) => {
     const dur = parseFloat(v);
@@ -245,7 +249,16 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClo
           {typeof block.cases_left === "number" && (
             <tr><td style={LABEL}>Cases left</td><td>{block.cases_left.toLocaleString()}</td></tr>
           )}
-          <tr><td style={LABEL}>Rate</td><td>{rate > 0 ? `${rate} kg/h` : "N/A"}</td></tr>
+          <tr>
+            <td style={LABEL}>Rate</td>
+            <td>
+              {ownRate !== null
+                ? `${round1(ownRate)} kg/h (from block)`
+                : rate > 0
+                  ? `${rate} kg/h (catalog)`
+                  : "N/A"}
+            </td>
+          </tr>
           <tr><td style={LABEL}>Type</td><td>{block.block_type}</td></tr>
           {block.locked && (
             <tr><td style={LABEL}>Locked</td><td>yes — not editable</td></tr>

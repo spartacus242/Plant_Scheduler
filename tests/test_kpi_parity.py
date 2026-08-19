@@ -146,6 +146,16 @@ def test_python_golden_values(py_result):
     # trial qty must NOT count: O2 scheduled is 800 (10h * 80), not 800 + trial
     assert by_order["O2"]["scheduled_qty"] == 800
 
+    # Week-fulfillment credit cap (finding 7): min(scheduled, target), the
+    # arithmetic weekly_breakdown sums per week. Pinned here node-free so the
+    # goldens hold even when the TS half is skipped.
+    for oid, expected in EXPECTED_WEEK_CREDITS.items():
+        r = by_order[oid]
+        tgt = ((r["qty_min"] + r["qty_max"]) / 2
+               if r["qty_min"] > 0 and r["qty_max"] >= r["qty_min"]
+               else max(r["qty_min"], r["qty_max"]))
+        assert min(float(r["scheduled_qty"]), tgt) == expected
+
 
 # ---------------------------------------------------------------------------
 # TS parity — compile kpi.ts with the frontend's tsc, run under node, compare.
@@ -158,8 +168,23 @@ const fx = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
 const kpis = kpi.computeKpis(
   fx.schedule, fx.cipWindows, fx.demand, fx.caps, fx.co_pairs, fx.co_default);
 const adherence = kpi.computeAdherence(fx.schedule, fx.demand, fx.caps);
-process.stdout.write(JSON.stringify({ kpis, adherence }));
+const weekCredits = Object.fromEntries(
+  adherence.map((r) => [r.order_id, kpi.weekFulfillmentCredit(r)]));
+process.stdout.write(JSON.stringify({ kpis, adherence, weekCredits }));
 """
+
+# Hand-verified: credit = min(scheduled_qty, target) where target is the
+# min/max midpoint (max(min, max) when the band is degenerate) — the cap
+# weekly fulfillment sums (weekly_breakdown / weekStats, finding 7).
+#   O1 sched 1500, band 1200-1600 -> target 1400 -> 1400 (capped)
+#   O2 sched  800, band  900-1000 -> target  950 ->  800
+#   O3 sched  600, band  500-550  -> target  525 ->  525 (capped)
+#   O4 sched    0, band  300-400  -> target  350 ->    0
+#   O5 sched  200, band    0-0    -> target    0 ->    0 (no target, no credit)
+#   O6 sched  240, band  240-0    -> target  240 ->  240
+EXPECTED_WEEK_CREDITS = {
+    "O1": 1400.0, "O2": 800.0, "O3": 525.0, "O4": 0.0, "O5": 0.0, "O6": 240.0,
+}
 
 
 def _compile_kpi_ts(tmp: Path) -> Path:
@@ -238,6 +263,10 @@ def test_ts_matches_python(py_result, tmp_path):
         assert tr["pct_adherence"] == pytest.approx(pr["pct_adherence"], abs=1e-9)
         assert tr["qty_min"] == pytest.approx(pr["qty_min"], abs=1e-9)
         assert tr["qty_max"] == pytest.approx(pr["qty_max"], abs=1e-9)
+
+    # Week-fulfillment credit: capped at each order's target (finding 7) —
+    # the same arithmetic weekly_breakdown applies server-side.
+    assert ts["weekCredits"] == pytest.approx(EXPECTED_WEEK_CREDITS)
 
 
 # ---------------------------------------------------------------------------
