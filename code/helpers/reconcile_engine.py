@@ -20,11 +20,15 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
 import pandas as pd
+
+from helpers.demand_coverage import iso_week_key
 
 # Categories (fixed vocabulary)
 STOCK = "STOCK"
@@ -158,13 +162,25 @@ def coverage_findings(
     demand: pd.DataFrame,
     *,
     week1_end_h: float = 168.0,
+    demand_anchor: datetime | None = None,
+    now: datetime | None = None,
 ) -> list[Finding]:
     """Demand orders vs kg actually scheduled on the calendar (pure).
 
-    Zero-scheduled orders due in week 1 are BLOCKING (they will not be made
-    unless the plan changes today); every other under-minimum order rolls into
-    one summary finding — the Gantt adherence table already carries the
-    per-order detail, Reconcile only needs to say how big the hole is.
+    Zero-scheduled orders due in the current week are BLOCKING (they will not
+    be made unless the plan changes today); every other under-minimum order
+    rolls into one summary finding — the Gantt adherence table already carries
+    the per-order detail, Reconcile only needs to say how big the hole is.
+
+    `demand_anchor` is the frame of the demand file's OWN hour offsets (the
+    file self-anchors to the Monday of its earliest week —
+    demand_plan.source.json). When given, every order is keyed to its TRUE
+    ISO week and orders due BEFORE the current ISO week are excluded: those
+    are misses for the netting summary (demand_ledger_findings), not "plan
+    me now" items — flagging a W32 order as urgent in W34 sent the planner
+    chasing weeks that already happened. Surviving orders are labelled with
+    their ISO week (280351-W34) instead of the raw -W0 suffix. Without an
+    anchor the legacy hour-window behavior applies unchanged.
     """
     out: list[Finding] = []
     if demand is None or demand.empty:
@@ -181,8 +197,27 @@ def coverage_findings(
             prod["order_id"].astype(str))["_kg"].sum()
         sched_kg = by_order.to_dict()
 
+    now_key = iso_week_key(now or datetime.now()) \
+        if demand_anchor is not None else None
+
+    def _week_key(r) -> int | None:
+        """True ISO week of a demand row (None without an anchor)."""
+        if demand_anchor is None:
+            return None
+        ds, de = r.get("due_start_hour"), r.get("due_end_hour")
+        if ds is not None and de is not None \
+                and pd.notna(ds) and pd.notna(de):
+            mid = (float(ds) + float(de)) / 2.0
+            return iso_week_key(demand_anchor + timedelta(hours=mid))
+        wk = pd.to_numeric(pd.Series([r.get("week_index")]),
+                           errors="coerce").iloc[0]
+        if pd.isna(wk):
+            return None
+        return iso_week_key(demand_anchor + timedelta(weeks=int(wk)))
+
     zero_week1: list[dict] = []
     under: list[dict] = []
+    n_past = 0
     total_missing = 0.0
     for _, r in demand.iterrows():
         oid = str(r["order_id"])
@@ -194,22 +229,32 @@ def coverage_findings(
         got = float(sched_kg.get(oid, 0.0))
         if got >= qty_min:
             continue
+        key = _week_key(r)
+        if key is not None and key < now_key:
+            n_past += 1  # past ISO week — a miss, not a plan item
+            continue
         missing = qty_min - got
         total_missing += missing
         due_start = float(r.get("due_start_hour", 0) or 0)
-        entry = {"order_id": oid, "sku": str(r.get("sku", "")),
+        label = oid if key is None else \
+            re.sub(r"-W\d+$", f"-W{key % 100:02d}", oid)
+        entry = {"order_id": label, "sku": str(r.get("sku", "")),
                  "qty_min": round(qty_min, 1), "scheduled": round(got, 1),
                  "missing": round(missing, 1)}
-        if got <= 0 and due_start < week1_end_h:
+        is_week1 = (key == now_key) if key is not None \
+            else due_start < week1_end_h
+        if got <= 0 and is_week1:
             zero_week1.append(entry)
         else:
             under.append(entry)
 
     if zero_week1:
         worst = sorted(zero_week1, key=lambda e: -e["missing"])[:5]
+        week_txt = "week 1" if now_key is None else \
+            f"this week (W{now_key % 100:02d})"
         out.append(Finding(
             key="coverage_zero_week1", category=COVERAGE, severity=BLOCKING,
-            title=(f"{len(zero_week1)} order(s) due in week 1 have NOTHING "
+            title=(f"{len(zero_week1)} order(s) due in {week_txt} have NOTHING "
                    "scheduled"),
             detail=", ".join(f"{e['order_id']} ({e['missing']:,.0f} kg)"
                              for e in worst)
@@ -217,6 +262,16 @@ def coverage_findings(
             action="Plan them (solver or drag from holding) or park them with a reason",
             page="pages/calendar.py",
             context={"orders": zero_week1},
+        ))
+    if n_past:
+        out.append(Finding(
+            key="coverage_past_weeks", category=COVERAGE, severity=INFO,
+            title=(f"{n_past} unmet demand order(s) fall in past ISO weeks "
+                   "— counted as misses, not plan items"),
+            detail=(f"Due before the current ISO week (W{now_key % 100:02d}). "
+                    "The demand coverage ledger carries the per-week history."),
+            action="Nothing to plan — review the ledger's past weeks if the misses surprise you",
+            page="pages/reconcile.py",
         ))
     if under:
         worst = sorted(under, key=lambda e: -e["missing"])[:5]
@@ -549,6 +604,35 @@ def fit_findings(
 
 
 # ---------------------------------------------------------------------------
+# Stock-report inputs — one resolver for every consumer
+# ---------------------------------------------------------------------------
+
+def stock_report_inputs(data_dir: Path | str) -> tuple[str, dict]:
+    """(vif_folder, toggles) resolved exactly like the Stock Check page.
+
+    Source order: saved stockcheck settings → bridge-refreshed
+    data/reference/ (P1 live link) → bundled dev fixtures. Home and the
+    Reconcile page must feed assess_plan the SAME stock report, or their
+    finding counts disagree (walkthrough 2026-08-17: Home said 2 blocking
+    while Reconcile said 3 at the same moment).
+    """
+    import json
+    dd = Path(data_dir)
+    settings = dd / "stockcheck" / "settings.json"
+    try:
+        sc = json.loads(settings.read_text(encoding="utf-8")) \
+            if settings.exists() else {}
+    except Exception:  # noqa: BLE001 — unreadable settings = defaults
+        sc = {}
+    vif = str(sc.get("vif_folder", "")).strip()
+    if not vif:
+        ref = dd / "reference"
+        vif = str(ref) if (ref / "ediact 3.csv").exists() else \
+            str(dd / "stockcheck" / "dev_vif")
+    return vif, dict(sc.get("toggles", {}) or {})
+
+
+# ---------------------------------------------------------------------------
 # assess_plan — the IO shell. Never raises; broken inputs become findings.
 # ---------------------------------------------------------------------------
 
@@ -590,13 +674,18 @@ def assess_plan(
     if stock_report is not None:
         guard("stock", lambda: stock_findings(stock_report))
 
-    # COVERAGE
+    # COVERAGE — the reference demand file keeps its OWN anchor (hour 0 =
+    # the Monday of its earliest week, demand_plan.source.json), so orders
+    # are keyed to true ISO weeks and past weeks drop out of the findings.
     def _coverage():
         dem_path = ref / "demand_plan.csv"
         if not dem_path.exists():
             return []
+        from helpers.demand_coverage import demand_source_anchor
         return coverage_findings(
-            calendar, pd.read_csv(dem_path, dtype={"sku": str}))
+            calendar, pd.read_csv(dem_path, dtype={"sku": str}),
+            demand_anchor=demand_source_anchor(dd) or hz.anchor,
+            now=hz.now)
     guard("coverage", _coverage)
 
     # COVERAGE ledger — committed MOs vs the demand plan (pre-planning view).

@@ -365,7 +365,13 @@ def build_current_state(
                     f"{line}: ScheduledCIP {sched:%Y-%m-%d %H:%M} is stale "
                     "(before the anchor or before PreviousCIP) — ignored")
         for when, kind in project_cips(line, info, hz, dur, interval):
-            end = when + timedelta(hours=dur)
+            # Clip to the horizon: a CIP starting at/after the end is not
+            # drawable, and one straddling the end must not emit end_h >
+            # hz.end_h (walkthrough finding 2026-08-17: two cip_projected
+            # blocks ended at h509 on a 504h horizon).
+            if when >= hz.end:
+                continue
+            end = min(when + timedelta(hours=dur), hz.end)
             note = (info.notes if info and info.notes
                     and info.notes.upper() != "NULL" else "")
             blocks.append({
