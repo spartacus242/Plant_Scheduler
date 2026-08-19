@@ -40,7 +40,7 @@ from helpers.scorecard_engine import (
     score_calendar,
 )
 from helpers.scorecard_ui import render_delta_strip, render_scorecard
-from helpers.version_manager import list_versions, save_version
+from helpers.version_manager import MAX_VERSIONS, list_versions, save_version
 
 st.header("Plant Calendar")
 st.caption(
@@ -659,7 +659,9 @@ with b2:
             )
             st.session_state["cal_holding"] = []
             st.success(f"Saved version `{slug}` — see Version Compare")
-        except ValueError as e:
+        except (ValueError, OSError) as e:
+            # Friendly message, not a stack trace — capacity errors name the
+            # orphaned folders so the planner knows what to delete.
             st.error(str(e))
 
 # ── Lock & Export ──────────────────────────────────────────────────────────
@@ -688,5 +690,10 @@ with _lc3:
     st.caption(
         f"Currently: **{'locked through ' + f'{_lock_dt:%a %Y-%m-%d %H:%M}' if _lock_dt else 'no lock set'}**")
 
-n_ver = len(list_versions(dd))
-st.caption(f"{n_ver} / 5 versions saved")
+_vers = list_versions(dd)
+_n_orph = sum(1 for v in _vers if v.get("orphan"))
+_ver_cap = f"{len(_vers)} / {MAX_VERSIONS} versions saved"
+if _n_orph:
+    _ver_cap += (f" — {_n_orph} orphaned folder(s) hold slots; "
+                 "delete them in Version Compare")
+st.caption(_ver_cap)

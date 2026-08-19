@@ -450,7 +450,9 @@ def _scorecard_semantics(dd: Path, cfg: dict) -> list[HealthStatus]:
         return out
     try:
         hz = resolve_horizon(cfg)
-        iso_now = hz.anchor.isocalendar()[1]
+        # (year, week) — a bare week number matches the same week of any year.
+        anchor_yw = tuple(hz.anchor.isocalendar())[:2]
+        iso_now = anchor_yw[1]
         from helpers.scorecard_engine import list_scorecards
         items = list_scorecards(dd)
         for item in items:
@@ -461,8 +463,21 @@ def _scorecard_semantics(dd: Path, cfg: dict) -> list[HealthStatus]:
                 dt = datetime.fromisoformat(scored_at)
             except ValueError:
                 continue
-            if dt.isocalendar()[1] == iso_now:
-                return out  # scored this week
+            if tuple(dt.isocalendar())[:2] == anchor_yw:
+                # Scored this week — say so explicitly. An ABSENT entry is
+                # ambiguous: the Home Track step read "no entry" as "no
+                # scorecard history yet" even with history on disk
+                # (walkthrough finding, 2026-08-18).
+                comp = item.get("composite")
+                out.append(HealthStatus(
+                    key="scorecard", name="Weekly scorecard", state=OK,
+                    detail=(f"Scored in ISO week {iso_now} "
+                            f"({item.get('week_label', '?')}"
+                            + (f", composite {comp}" if comp is not None else "")
+                            + f") — {len(items)} scorecard(s) in history."),
+                    source="semantic",
+                ))
+                return out
         out.append(HealthStatus(
             key="scorecard", name="Weekly scorecard", state=STALE,
             detail=f"No scorecard saved in ISO week {iso_now}. History is how the "

@@ -18,6 +18,7 @@ from helpers.paths import data_dir
 from helpers.scorecard_engine import ScorecardResult, delta_narrative, score_calendar
 from helpers.scorecard_ui import render_delta_strip, render_scorecard
 from helpers.version_manager import (
+    MAX_VERSIONS,
     delete_all_versions,
     delete_version,
     export_version_excel,
@@ -46,7 +47,28 @@ def _demand_base_iso_week() -> int | None:
 
 
 dd = data_dir()
-versions = list_versions(dd)
+_all_versions = list_versions(dd)
+# Orphans (folders without readable metadata) hold a slot but have nothing to
+# compare — they only appear in the cleanup section below.
+orphan_versions = [v for v in _all_versions if v.get("orphan")]
+versions = [v for v in _all_versions if not v.get("orphan")]
+
+
+def _render_orphans() -> None:
+    if not orphan_versions:
+        return
+    st.subheader("Orphaned version folders")
+    st.caption(
+        f"Folders under `data/versions/` without readable metadata — "
+        f"leftovers from crashes or hand copies. They count toward the "
+        f"{MAX_VERSIONS}-version limit; delete them to free slots.")
+    for _ov in orphan_versions:
+        _oc1, _oc2 = st.columns([5, 1])
+        _oc1.markdown(f"`{_ov['slug']}`")
+        if _oc2.button("Delete", key=f"del_orphan_{_ov['slug']}"):
+            delete_version(_ov["slug"], dd)
+            st.rerun()
+
 
 # Official baseline score for reference
 official = load_calendar(dd / "calendar_blocks.csv")
@@ -56,6 +78,7 @@ OFFICIAL_KEY = "__official__"
 
 if not versions and baseline is None:
     st.info("No versions yet. Save one from the Plant Calendar or Generate Scenarios.")
+    _render_orphans()
     st.stop()
 
 if baseline:
@@ -64,6 +87,7 @@ if baseline:
 
 if not versions:
     st.info("No named versions yet — official calendar is shown above. Save options from Plant Calendar or Generate Scenarios.")
+    _render_orphans()
     st.stop()
 
 # Side-by-side picker — default left = official AZAP when available
@@ -480,6 +504,8 @@ for v in versions:
             st.rerun()
         xbytes = export_version_excel(slug, dd)
         st.download_button("Export Excel", data=xbytes, file_name=f"{slug}.xlsx", key=f"xl_{slug}")
+
+_render_orphans()
 
 if st.button("Delete all versions", type="secondary"):
     delete_all_versions(dd)
