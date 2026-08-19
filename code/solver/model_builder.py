@@ -1600,5 +1600,9 @@ def build_model(
         # soft-demand fill score (None otherwise) — pass 1 reads it, pass 2
         # floors on it (two-pass CO minimization)
         "prod_score": prod_score,
+        # Changeover-load expression for live telemetry: the weighted CO
+        # cost when per-machine weights exist, else the flat switch count.
+        # A plain int 0 (no lines / ignore_co) means "nothing to watch".
+        "co_load": weighted_co_total if use_weighted_co else flat_co_total,
     }
     return model, vars_dict

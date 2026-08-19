@@ -40,6 +40,7 @@ from helpers.scorecard_engine import (
     scoring_inputs_signature,
 )
 from helpers.solver_rules import render_solver_rulebook
+from helpers import solver_live
 from helpers.scorecard_ui import render_scorecard
 from helpers.version_manager import MAX_VERSIONS, list_versions, upsert_version
 from solver.changeover_cache import load_changeover_setup_nested
@@ -249,10 +250,24 @@ def _generate_one(
 
         _started = _dtnow.now()
         st.caption(f"🕐 Solver {'reattached' if resume else 'started'} **{_started:%H:%M:%S}**")
+        # Live narration (user request 2026-08-19): stage banner in planner
+        # language, data chips, solution feed, trust indicators and a solver
+        # journal — all fed from the solver's OWN telemetry (progress json +
+        # run log). Placeholders are created once so the journal expander
+        # keeps its open/closed state across the ~2s polls; both the
+        # attended and the reattach path render through this same closure.
+        _banner = st.empty()
+        _chips = st.empty()
         _bar = st.progress(0.0)
         st.caption("Leaving this page won't kill the solve — it will "
                    "reattach when you come back.")
         _live = st.empty()
+        _trust = st.empty()
+        _feed = st.empty()
+        with st.expander("Solver journal — the machinery, line by line"):
+            _journal = st.empty()
+        _is_fill = bool(scenario.get("fill_mode"))
+        _work_dir = dd / "_scenario_work" / str(scenario["id"])
         # Expected wall time: two-pass F runs pass 1 + anchor + pass 2 (each
         # bounded by the budget); single-pass scenarios may climb the relax
         # ladder. The bar is wall-clock vs this estimate (clamped at 99% —
@@ -262,22 +277,25 @@ def _generate_one(
 
         def _on_progress(prog, elapsed):
             _bar.progress(min(0.99, elapsed / _expected))
-            bits = [f"{int(elapsed // 60)}m {int(elapsed % 60):02d}s elapsed"]
-            if prog:
-                stages = prog.get("stages") or []
-                act = next((s for s in stages
-                            if s.get("status") == "active"), None)
-                if act:
-                    _d = act.get("detail", "")
-                    bits.append(act.get("label", "")
-                                + (f" — {_d}" if _d else ""))
-                stats = prog.get("solver_stats") or {}
-                if stats.get("gap_pct") is not None:
-                    bits.append(f"gap {stats['gap_pct']}%")
-                sols = prog.get("solutions") or []
-                if sols:
-                    bits.append(str(sols[-1].get("label", "")))
-            _live.caption(" · ".join(b for b in bits if b))
+            _banner.markdown(
+                f"**{solver_live.stage_banner(prog, fill_mode=_is_fill)}**")
+            _c = solver_live.data_chips(prog, fill_mode=_is_fill)
+            if _c:
+                _chips.caption(_c)
+            _live.caption(solver_live.live_caption(prog, elapsed))
+            _t = solver_live.trust_lines(prog)
+            if _t:
+                _trust.caption(" · ".join(_t))
+            _f = solver_live.solution_feed(prog)
+            if _f:
+                _feed.markdown(
+                    "**Live solution feed** (newest first)\n"
+                    + "\n".join(f"- {x}" for x in _f))
+            _j = solver_live.journal_from_dir(_work_dir)
+            _journal.code(
+                "\n".join(_j) if _j
+                else "(waiting for the solver's first log lines)",
+                language="text")
 
         try:
             if resume:

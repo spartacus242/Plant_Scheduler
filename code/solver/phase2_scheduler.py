@@ -26,6 +26,10 @@ from solver_progress import (
     set_data_summary,
     add_solution,
     update_solver_stats,
+    reset_solver_stats,
+    fill_solution_label,
+    co_solution_label,
+    generic_solution_label,
     STAGES_SINGLE,
     STAGES_TWO_PHASE,
 )
@@ -33,27 +37,84 @@ from solver_progress import (
 
 class _ProgressCallback(cp_model.CpSolverSolutionCallback):
     """Reports each intermediate solution to solver_progress.json so the
-    UI can display real-time objective improvements."""
+    UI can display real-time objective improvements.
 
-    def __init__(self, data_dir: Path, label_prefix: str = ""):
+    Pass-aware labels (user request 2026-08-19): the caller says which pass
+    this is and hands over the model expressions that carry the planner
+    metric — placed kg for a fill pass, weighted changeover load for the CO
+    pass — so labels report REAL numbers evaluated from the solution, never
+    percentages against a meaningless baseline.
+    """
+
+    def __init__(
+        self,
+        data_dir: Path,
+        label_prefix: str = "",
+        *,
+        direction: str = "min",
+        pass_id: str = "",
+        pass_name: str = "fill",
+        placed_expr: Any = None,
+        demand_kg: int = 0,
+        co_expr: Any = None,
+    ):
         super().__init__()
         self._data_dir = data_dir
         self._prefix = label_prefix
+        self._direction = direction
+        self._pass_id = pass_id
+        self._pass_name = pass_name
+        self._placed_expr = placed_expr
+        self._demand_kg = int(demand_kg or 0)
+        self._co_expr = co_expr
         self._count = 0
         self._first_obj: float | None = None
+        self._prev_placed: int | None = None
+        self._first_co: int | None = None
 
     def on_solution_callback(self) -> None:
         self._count += 1
         obj = self.ObjectiveValue()
         wall = self.WallTime()
         bound = self.BestObjectiveBound()
+        # Watched planner metrics: evaluated from the incumbent itself. A
+        # failed evaluation falls back to the generic label — never invent.
+        placed: int | None = None
+        co_load: int | None = None
+        if self._placed_expr is not None:
+            try:
+                placed = int(self.Value(self._placed_expr))
+            except Exception:  # noqa: BLE001
+                placed = None
+        if self._co_expr is not None:
+            try:
+                co_load = int(self.Value(self._co_expr))
+            except Exception:  # noqa: BLE001
+                co_load = None
         if self._first_obj is None:
             self._first_obj = obj
-            label = f"{self._prefix}First feasible solution"
+        if co_load is not None and self._first_co is None:
+            self._first_co = co_load
+        if self._pass_id == "fill" and placed is not None:
+            label = fill_solution_label(
+                self._count, placed, self._demand_kg, self._prev_placed,
+                pass_name=self._pass_name, prefix=self._prefix)
+        elif self._pass_id == "co":
+            label = co_solution_label(
+                self._count, obj, self._first_obj, co_load, self._first_co,
+                prefix=self._prefix)
         else:
-            pct = (obj - self._first_obj) / max(1, abs(self._first_obj)) * 100
-            label = f"{self._prefix}Solution #{self._count} ({pct:+.1f}%)"
-        add_solution(self._data_dir, wall, obj, label)
+            label = generic_solution_label(
+                self._count, obj, self._first_obj,
+                direction=self._direction, prefix=self._prefix)
+        if placed is not None:
+            self._prev_placed = placed
+        add_solution(
+            self._data_dir, wall, obj, label,
+            pass_id=self._pass_id or None,
+            placed_kg=placed,
+            co_load=co_load,
+        )
         gap = round(100 * abs(obj - bound) / max(1, abs(obj)), 1) if obj != 0 else 0
         update_solver_stats(
             self._data_dir,
@@ -62,6 +123,8 @@ class _ProgressCallback(cp_model.CpSolverSolutionCallback):
             best_bound=round(bound, 1),
             gap_pct=gap,
             elapsed_s=round(wall, 1),
+            direction=self._direction,
+            pass_id=self._pass_id,
         )
 
 
@@ -426,9 +489,11 @@ def reset_err() -> None:
 
 
 def log(msg: str) -> None:
+    # Every line gets a wall-clock stamp so the UI's solver-journal tail can
+    # show WHEN the machinery moved (warm-start, ladder, two-pass, ...).
     try:
         with open(ERR_FILE, "a", encoding="utf-8") as f:
-            f.write(msg.rstrip() + "\n")
+            f.write(f"[{datetime.now():%H:%M:%S}] " + msg.rstrip() + "\n")
     except OSError:
         pass
 
@@ -1351,11 +1416,13 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
             data_dir, "solving_week0", "active",
             f"{int(tl)}s limit, 8 workers (level {lvl}: {RELAX_LABELS[lvl]})",
         )
-        update_solver_stats(data_dir, status="STARTING", time_limit_s=tl)
+        reset_solver_stats(data_dir, status="STARTING", time_limit_s=tl,
+                           direction="min")
         solver0 = cp_model.CpSolver()
         solver0.parameters.num_search_workers = 8
         solver0.parameters.max_time_in_seconds = tl
-        cb0 = _ProgressCallback(data_dir, label_prefix=f"W0 L{lvl}: ")
+        cb0 = _ProgressCallback(data_dir, label_prefix=f"W0 L{lvl}: ",
+                                direction="min")
         status0 = solver0.Solve(model0, cb0)
         if status0 in (cp_model.FEASIBLE, cp_model.OPTIMAL):
             level0 = lvl
@@ -1500,10 +1567,13 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
             data_dir, "solving_week1", "active",
             f"{int(tl)}s limit, 8 workers (level {lvl}: {RELAX_LABELS[lvl]})",
         )
+        reset_solver_stats(data_dir, status="STARTING", time_limit_s=tl,
+                           direction="min")
         solver1 = cp_model.CpSolver()
         solver1.parameters.num_search_workers = 8
         solver1.parameters.max_time_in_seconds = tl
-        cb1 = _ProgressCallback(data_dir, label_prefix=f"W1 L{lvl}: ")
+        cb1 = _ProgressCallback(data_dir, label_prefix=f"W1 L{lvl}: ",
+                                direction="min")
         status1 = solver1.Solve(model1, cb1)
         if status1 in (cp_model.FEASIBLE, cp_model.OPTIMAL):
             level1 = lvl
@@ -1633,7 +1703,7 @@ def main() -> None:
             f">= pass 1 - {TWO_PASS_EPS}%")
     reset_err()
     log(
-        f"[{datetime.now()}] START phase={PHASE} relax={RELAX_DEMAND} relax_due={RELAX_DUE} "
+        f"START {datetime.now():%Y-%m-%d} phase={PHASE} relax={RELAX_DEMAND} relax_due={RELAX_DUE} "
         f"ignoreCO={IGNORE_CHANGEOVERS} auto_relax={AUTO_RELAX} "
         f"cross_week={CROSS_WEEK} cip_flex={CIP_FLEX} "
         f"tl={TIME_LIMIT} mlpo={P.max_lines_per_order}"
@@ -1784,15 +1854,42 @@ def main() -> None:
                         DATA_DIR, "solving", "active",
                         f"{int(tl)}s time limit, 8 workers (level {lvl}: {RELAX_LABELS[lvl]})",
                     )
-                    update_solver_stats(DATA_DIR, status="STARTING", time_limit_s=tl)
+                    # Single-phase always maximizes production (see
+                    # build_model call above); a soft-demand run additionally
+                    # watches REAL placed kg so solution labels talk demand,
+                    # not raw objective units.
+                    _cb_kwargs: Dict[str, Any] = {"direction": "max"}
+                    if _SOFT_DEMAND_ACTIVE:
+                        _dem_idx = [i for i, o in enumerate(data.orders)
+                                    if not o.get("is_current_mo")]
+                        if _dem_idx:
+                            _cb_kwargs.update(
+                                pass_id="fill",
+                                pass_name=("pass 1" if TWO_PASS_CO and lvl == 0
+                                           else "fill"),
+                                placed_expr=sum(vars_dict["produced"][i]
+                                                for i in _dem_idx),
+                                demand_kg=sum(
+                                    int(data.orders[i].get("qty_min") or 0)
+                                    for i in _dem_idx),
+                            )
+                    reset_solver_stats(
+                        DATA_DIR, status="STARTING", time_limit_s=tl,
+                        direction="max",
+                        pass_id=_cb_kwargs.get("pass_id", ""))
 
                     solver = cp_model.CpSolver()
                     solver.parameters.num_search_workers = 8
                     solver.parameters.max_time_in_seconds = tl
-                    cb = _ProgressCallback(DATA_DIR, label_prefix=f"L{lvl}: ")
+                    # Fill labels carry their own pass wording; the ladder
+                    # level only matters once it escalates past hard rules.
+                    _lvl_prefix = ("" if _cb_kwargs.get("pass_id") and lvl == 0
+                                   else f"L{lvl}: ")
+                    cb = _ProgressCallback(
+                        DATA_DIR, label_prefix=_lvl_prefix, **_cb_kwargs)
                     status = solver.Solve(model, cb)
                     status_name = solver.StatusName(status)
-                    log(f"[{datetime.now()}] SOLVER level={lvl} status={status_name}")
+                    log(f"SOLVER level={lvl} status={status_name}")
                     update_solver_stats(
                         DATA_DIR,
                         status=status_name,
@@ -1839,8 +1936,11 @@ def main() -> None:
                         log(f"[two-pass] hinted {_hinted} vars from pass 1")
                         update_stage(
                             DATA_DIR, "solving", "active",
-                            f"pass 2: min changeovers, fill floored "
-                            f"({int(tl)}s)")
+                            "pass 2 anchor: locking pass 1's plan in as the "
+                            "starting point")
+                        reset_solver_stats(
+                            DATA_DIR, status="ANCHORING", time_limit_s=tl,
+                            direction="min", pass_id="co")
                         # The floor excludes ~99% of the feasible space, so
                         # pass 2 lives or dies on starting FROM pass 1's
                         # solution. A partial hint is not enough: CP-SAT's
@@ -1872,11 +1972,25 @@ def main() -> None:
                         else:
                             log(f"[two-pass] anchor {_s2a.StatusName(_sta)} — "
                                 "falling back to the partial hint")
+                        update_stage(
+                            DATA_DIR, "solving", "active",
+                            f"pass 2: min changeovers, fill floored at "
+                            f"{100 - TWO_PASS_EPS:g}% ({int(tl)}s)")
+                        reset_solver_stats(
+                            DATA_DIR, status="STARTING", time_limit_s=tl,
+                            direction="min", pass_id="co")
                         _s2 = cp_model.CpSolver()
                         _s2.parameters.num_search_workers = 8
                         _s2.parameters.max_time_in_seconds = tl
                         _s2.parameters.repair_hint = True
-                        _cb2 = _ProgressCallback(DATA_DIR, label_prefix="P2co: ")
+                        # Watch the true weighted changeover load so pass-2
+                        # labels report it directly instead of the composite
+                        # objective (an int co_load means no CO term exists).
+                        _co_expr = v2.get("co_load")
+                        _cb2 = _ProgressCallback(
+                            DATA_DIR, direction="min", pass_id="co",
+                            co_expr=(None if isinstance(_co_expr, int)
+                                     else _co_expr))
                         _st2 = _s2.Solve(m2, _cb2)
                         if _st2 in (cp_model.FEASIBLE, cp_model.OPTIMAL):
                             log(f"[two-pass] pass 2 {_s2.StatusName(_st2)}: "
@@ -1884,6 +1998,9 @@ def main() -> None:
                                 f"(floor {_floor:,}) — adopting pass 2")
                             solver, vars_dict = _s2, v2
                             status_name = _s2.StatusName(_st2)
+                            update_solver_stats(
+                                DATA_DIR, status=status_name,
+                                elapsed_s=round(_s2.WallTime(), 1))
                         else:
                             log(f"[two-pass] pass 2 {_s2.StatusName(_st2)} — "
                                 "keeping pass 1 unchanged")
@@ -1954,7 +2071,7 @@ def main() -> None:
     # Post-solve validation
     if VALIDATE and not DIAGNOSE:
         update_stage(DATA_DIR, "validating", "active")
-        log(f"[{datetime.now()}] Running post-solve validation")
+        log("[validate] running post-solve validation")
         try:
             validate_all(DATA_DIR, verbose=True)
             update_stage(DATA_DIR, "validating", "done", "Validation complete")
