@@ -1,0 +1,97 @@
+{
+  "generation": "20260819-0230-9f3a7c21",
+  "created": "2026-08-19T05:11:32",
+  "inputs_signature": [
+    "demand_plan.csv:1f4c9be2",
+    "calendar_blocks.csv:77a01d3c",
+    "capabilities_rates.csv:0be49a55",
+    "changeovers.csv:d2c11e08",
+    "flowstate.toml:9c6f2ab4"
+  ],
+  "noise_floor": {"runs": 3, "spread_composite": 0.6},
+  "board_baseline": {
+    "overnight_score": {
+      "composite": 71.4, "fill": 78.2, "changeovers": 64.0,
+      "campaign": 70.5, "on_time": 72.9
+    }
+  },
+  "candidates": [
+    {
+      "run_id": "champion",
+      "params": {"changeover_weight": 120, "cip_defer_weight": 5, "over_target_reward_pct": 0.0},
+      "budgets": {"pass1_s": 600, "pass2_s": 600},
+      "overnight_score": {"composite": 84.2, "fill": 91.3, "changeovers": 76.1, "campaign": 82.4, "on_time": 87.0},
+      "guards": {"overlaps": 0, "pins_ok": true, "lock_ok": true, "cip_ok": true},
+      "gap_pct_end": 2.1,
+      "wall_s": 1284.5,
+      "version_slug": "overnight-20260819-best",
+      "published": "best"
+    },
+    {
+      "run_id": "noise-1",
+      "params": {"changeover_weight": 120, "cip_defer_weight": 5, "over_target_reward_pct": 0.0},
+      "budgets": {"pass1_s": 600, "pass2_s": 600},
+      "overnight_score": {"composite": 83.9, "fill": 91.0, "changeovers": 75.8, "campaign": 82.1, "on_time": 86.8},
+      "guards": {"overlaps": 0, "pins_ok": true, "lock_ok": true, "cip_ok": true},
+      "gap_pct_end": 2.4,
+      "wall_s": 1291.0,
+      "version_slug": null,
+      "published": null
+    },
+    {
+      "run_id": "noise-2",
+      "params": {"changeover_weight": 120, "cip_defer_weight": 5, "over_target_reward_pct": 0.0},
+      "budgets": {"pass1_s": 600, "pass2_s": 600},
+      "overnight_score": {"composite": 83.6, "fill": 90.8, "changeovers": 75.5, "campaign": 82.0, "on_time": 86.5},
+      "guards": {"overlaps": 0, "pins_ok": true, "lock_ok": true, "cip_ok": true},
+      "gap_pct_end": 2.6,
+      "wall_s": 1275.2,
+      "version_slug": null,
+      "published": null
+    },
+    {
+      "run_id": "explore-co-heavy",
+      "params": {"changeover_weight": 240, "cip_defer_weight": 5, "over_target_reward_pct": 0.0},
+      "budgets": {"pass1_s": 600, "pass2_s": 600},
+      "overnight_score": {"composite": 82.9, "fill": 89.4, "changeovers": 81.7, "campaign": 80.2, "on_time": 84.1},
+      "guards": {"overlaps": 0, "pins_ok": true, "lock_ok": true, "cip_ok": true},
+      "gap_pct_end": 3.0,
+      "wall_s": 1302.8,
+      "version_slug": "overnight-20260819-runner",
+      "published": "runner_up"
+    },
+    {
+      "run_id": "explore-fill-greedy",
+      "params": {"changeover_weight": 60, "over_target_reward_pct": 2.5},
+      "budgets": {"pass1_s": 900, "pass2_s": 300},
+      "overnight_score": {"composite": 81.1, "fill": 93.5, "changeovers": 68.9, "campaign": 78.6, "on_time": 83.2},
+      "guards": {"overlaps": 0, "pins_ok": true, "lock_ok": true, "cip_ok": true},
+      "gap_pct_end": 1.8,
+      "wall_s": 1268.4,
+      "version_slug": null,
+      "published": null
+    },
+    {
+      "run_id": "explore-cip-flex",
+      "params": {"changeover_weight": 120, "cip_flex_weight": 40},
+      "budgets": {"pass1_s": 600, "pass2_s": 600},
+      "overnight_score": {"composite": 79.4, "fill": 88.1, "changeovers": 74.0, "campaign": 76.3, "on_time": 79.9},
+      "guards": {"overlaps": 1, "pins_ok": true, "lock_ok": true, "cip_ok": false},
+      "gap_pct_end": null,
+      "wall_s": 1310.9,
+      "version_slug": null,
+      "published": null
+    },
+    {
+      "run_id": "explore-campaign",
+      "params": {"changeover_weight": 120, "min_run_hours": 8},
+      "budgets": {"pass1_s": 600, "pass2_s": 600},
+      "overnight_score": {"composite": 80.7, "fill": 87.9, "changeovers": 77.4, "campaign": 85.0, "on_time": 81.6},
+      "guards": {"overlaps": 0, "pins_ok": true, "lock_ok": true, "cip_ok": true},
+      "gap_pct_end": 2.9,
+      "wall_s": 1279.7,
+      "version_slug": null,
+      "published": null
+    }
+  ]
+}

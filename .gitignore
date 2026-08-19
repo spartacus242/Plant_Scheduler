@@ -70,6 +70,9 @@ data/reference/Shipping Receiving Schedule NPA - 2024.xlsm
 data/scorecards/Week-*.json
 data/scorecards/latest.json
 
+# Overnight optimizer output (the nightly batch owns this tree)
+data/optimizer/
+
 # Scratch / attachments (not part of the build)
 data/_scenario_regeneration/
 .hermes/desktop-attachments/
