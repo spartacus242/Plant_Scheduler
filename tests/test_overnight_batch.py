@@ -40,6 +40,74 @@ def test_gen_id_stability():
     assert c.split("-")[:2] == a.split("-")[:2]
 
 
+# ── generation rotation signature ──────────────────────────────────────────
+
+def test_generation_signature_covers_board_and_lock(tmp_path, monkeypatch):
+    """The fill staging nets the planner's board out of demand and the pin
+    guard compares against it, so a board (or week-lock) edit MUST rotate the
+    generation — scoring_inputs_signature alone watches only reference/+toml."""
+    data = tmp_path / "data"
+    (data / "reference").mkdir(parents=True)
+    board = data / "calendar_blocks.csv"
+    board.write_text("block_id\n", encoding="utf-8")
+    lock = data / "lock_state.json"
+    lock.write_text("{}", encoding="utf-8")
+    # hold the shared part constant so only our two files can move the result
+    monkeypatch.setattr(ob, "scoring_inputs_signature", lambda d: (1.0, 2.0))
+
+    base = ob.generation_signature(data)
+    assert base[:2] == (1.0, 2.0)
+    assert len(base) == 2 + len(ob._EXTRA_SIGNATURE_FILES)
+    assert ob.generation_signature(data) == base  # stable while nothing moves
+
+    import os
+    os.utime(board, (base[2] + 60, base[2] + 60))
+    moved = ob.generation_signature(data)
+    assert moved != base
+    assert ob.gen_id_for(moved, datetime(2026, 8, 20, 19, 0)) != \
+        ob.gen_id_for(base, datetime(2026, 8, 20, 19, 0))
+
+    os.utime(lock, (base[3] + 60, base[3] + 60))
+    assert ob.generation_signature(data) != moved
+
+    # a missing file reads 0.0 rather than exploding
+    board.unlink()
+    lock.unlink()
+    assert ob.generation_signature(data) == (1.0, 2.0, 0.0, 0.0)
+
+
+# ── work-dir isolation ─────────────────────────────────────────────────────
+
+def test_batch_solves_outside_the_shared_scenario_work_root(monkeypatch):
+    """An overnight arm must never land in data/_scenario_work: the UI's
+    plant write-back picker and the constraint probes both select the dir
+    that solved LAST, and a 3am sandbox solve would win that race."""
+    from helpers import scenario_runner as sr
+
+    assert ob.WORK_ROOT != "_scenario_work"
+
+    seen: dict[str, Path] = {}
+
+    class _Stop(Exception):
+        pass
+
+    def _capture(data_dir, work):
+        seen["work"] = work
+        raise _Stop
+
+    monkeypatch.setattr(sr, "_prepare_work_dir", _capture)
+    scenario = {"id": "F_overnight_champion_n1", "fill_mode": True}
+    with pytest.raises(_Stop):
+        sr.run_scenario(scenario, Path("data"), work_root=ob.WORK_ROOT)
+    assert seen["work"].parent.name == ob.WORK_ROOT
+    assert "_scenario_work" not in seen["work"].parts
+
+    # the default is unchanged for every existing caller
+    with pytest.raises(_Stop):
+        sr.run_scenario(scenario, Path("data"))
+    assert seen["work"].parent.name == "_scenario_work"
+
+
 # ── steering.json parsing ──────────────────────────────────────────────────
 
 def _steering(at: datetime, rows: list[dict]) -> dict:

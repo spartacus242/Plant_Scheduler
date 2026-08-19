@@ -19,9 +19,12 @@ running this script, working dir = repo root. Remove it with:
 
 Design decisions (user-approved, final):
   * machine stays on all night; solves run SEQUENTIALLY via run_scenario's
-    headless path, each in its OWN work dir (data/_scenario_work/
+    headless path, each in its OWN work dir (data/_overnight_work/
     F_overnight_<label>) so a planner's daytime run in _scenario_work/F is
-    never clobbered — the scenario id drives the work dir in run_scenario;
+    never clobbered — the scenario id drives the work dir in run_scenario,
+    and run_scenario's work_root argument moves the whole batch out of the
+    shared _scenario_work root the UI and the solved-dir probes scan (an
+    overnight arm must never read as "the run that solved last");
   * the batch process drops itself to BELOW_NORMAL priority; on Windows a
     child created by a BELOW_NORMAL/IDLE parent INHERITS that priority class
     (CreateProcess docs), so every solver subprocess run_scenario spawns runs
@@ -33,10 +36,12 @@ Design decisions (user-approved, final):
     the same resolver the agent uses) — a SKU whose components ran short
     mid-night gets its demand capped in every later round (trim_dns_demand);
   * generations: gen_id = "<YYYYMMDD-HHMM>-<8 hex of sha1(inputs signature)>".
-    The signature (scorecard_engine.scoring_inputs_signature) is re-checked
-    after every arm; a change — or a rolling-anchor roll at midnight — closes
-    the generation and stages a new one (fresh staging + stock check +
-    capacity bound). Old candidates stay in their own generation dir;
+    The signature (generation_signature: scorecard_engine's shared
+    scoring_inputs_signature PLUS the board and the week lock, which the fill
+    staging also reads) is re-checked after every arm; a change — or a
+    rolling-anchor roll at midnight — closes the generation and stages a new
+    one (fresh staging + stock check + capacity bound). Old candidates stay in
+    their own generation dir;
   * the fill denominator (min(net demand, capacity bound)) and the scoring
     frame (gates, ISO week marks) are computed ONCE per generation at staging
     and stored in the leaderboard — every candidate in a generation divides
@@ -100,6 +105,12 @@ from stockcheck.api import stock_check_report  # noqa: E402
 
 DATA = ROOT / "data"
 OPT_DIR = DATA / "optimizer"
+# The batch owns a work root of its OWN, outside the shared _scenario_work the
+# UI and the solved-dir probes scan ("*/schedule_phase2.csv", "*/mo_changes.csv").
+# Sharing that root made every overnight arm look like "the run that solved
+# last": Compare's plant write-back picker defaulted to a 3am sandbox solve and
+# the constraint probes asserted against it instead of the planner's scenario.
+WORK_ROOT = "_overnight_work"
 STAGING_ID = "F_overnight_stage"
 BEST_SLUG = "overnight_best"
 RUNNER_SLUG = "overnight_runner_up"
@@ -121,6 +132,29 @@ def gen_id_for(sig: tuple, now: datetime) -> str:
     """"<YYYYMMDD-HHMM>-<first 8 hex of sha1 of the scoring signature>"."""
     digest = hashlib.sha1(repr(tuple(sig)).encode("utf-8")).hexdigest()[:8]
     return f"{now:%Y%m%d-%H%M}-{digest}"
+
+
+# Files the fill staging reads that scoring_inputs_signature does NOT cover.
+# scoring_inputs_signature watches data/reference/* + flowstate.toml, but a
+# generation's frame is also built from the planner's own board: _overlay_fill
+# nets committed/pinned board blocks out of demand and derives the per-line
+# gates, and the pin guard compares against the live board. A planner still
+# editing at 19:30 would otherwise leave the generation staged against a board
+# that no longer exists — every later arm scored on stale netting and judged
+# against pins its staging never saw.
+_EXTRA_SIGNATURE_FILES = ("calendar_blocks.csv", "lock_state.json")
+
+
+def generation_signature(data_dir: Path) -> tuple[float, ...]:
+    """The rotation signature: the shared scoring inputs plus the board and
+    the week lock (see _EXTRA_SIGNATURE_FILES)."""
+    sig = list(scoring_inputs_signature(data_dir))
+    for name in _EXTRA_SIGNATURE_FILES:
+        try:
+            sig.append((Path(data_dir) / name).stat().st_mtime)
+        except OSError:
+            sig.append(0.0)
+    return tuple(sig)
 
 
 def parse_steering(raw: Any, now: datetime) -> tuple[list[dict], list[str]]:
@@ -420,11 +454,11 @@ def stage_generation(log: Log) -> Generation:
     Uses the same _prepare_work_dir + _overlay_fill machinery every F run
     uses, in its own STAGING work dir, so gates / netting / blocked windows
     are exactly what the arms will see."""
-    sig = scoring_inputs_signature(DATA)
+    sig = generation_signature(DATA)
     now = datetime.now()
     gid = gen_id_for(sig, now)
     log(f"[gen] staging generation {gid}")
-    work = DATA / "_scenario_work" / STAGING_ID
+    work = DATA / WORK_ROOT / STAGING_ID
     _prepare_work_dir(DATA.resolve(), work)
     notes = _overlay_fill(work, DATA)
     for n in notes[:8]:
@@ -593,7 +627,7 @@ def run_arm(arm: dict, gen: Generation, dns: dict[str, float],
     try:
         result = run_scenario(
             scenario, DATA, time_limit=int(budgets["pass1_s"]),
-            overrides=merged, work_dir_patch=patch,
+            overrides=merged, work_dir_patch=patch, work_root=WORK_ROOT,
             timeout_s=float(budgets["pass1_s"]) + float(budgets["pass2_s"])
             + 120.0 + TIMEOUT_SLACK_S)
     except Exception:  # noqa: BLE001 — one bad arm never kills the night
@@ -606,7 +640,7 @@ def run_arm(arm: dict, gen: Generation, dns: dict[str, float],
         return cand
     cand["wall_s"] = round(time.monotonic() - t0, 1)
 
-    work = DATA / "_scenario_work" / scenario["id"]
+    work = DATA / WORK_ROOT / scenario["id"]
     try:
         prog = json.loads(
             (work / "solver_progress.json").read_text(encoding="utf-8"))
@@ -824,7 +858,7 @@ def ensure_generation(gen: Generation | None, generations: list[Generation],
     """Rotate the generation when the scoring inputs signature OR the
     rolling anchor changed (midnight roll shifts every staged hour offset —
     scores across frames would be lies)."""
-    sig = tuple(scoring_inputs_signature(DATA))
+    sig = generation_signature(DATA)
     anchor = resolve_horizon(load_toml()).anchor
     if gen is not None and sig == gen.sig and anchor == gen.anchor:
         return gen
