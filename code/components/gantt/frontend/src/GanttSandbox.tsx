@@ -4,7 +4,7 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import {
   DndContext, DragOverlay, PointerSensor, useSensor, useSensors,
-  type DragEndEvent, type DragStartEvent, type DragMoveEvent,
+  type Active, type DragEndEvent, type DragStartEvent, type DragMoveEvent,
 } from "@dnd-kit/core";
 import type { SandboxArgs, ScheduleBlock, LineInfo } from "./types";
 import { isWindowBlock } from "./types";
@@ -13,9 +13,10 @@ import { useBlockResize } from "./hooks/useBlockResize";
 import { useContextMenu } from "./hooks/useContextMenu";
 import { computeKpis, computeAdherence, checkOverlapsSimple, serverKpisToKpiData, orderTarget, weekFulfillmentCredit } from "./utils/kpi";
 import { isCapable, recalcDuration, findOverlapsOnLine } from "./utils/validation";
-import { LINE_HEIGHT, MIN_HOUR_WIDTH, MAX_HOUR_WIDTH, snapToHour, fitToWidth, xToHour, hourToStamp, displayOrderId, setDemandBaseWeek, isoWeekLabel, isoWeekAtHour, isPastDemandWeek } from "./utils/layout";
+import { LINE_HEIGHT, MIN_HOUR_WIDTH, MAX_HOUR_WIDTH, fitToWidth, hourToStamp, displayOrderId, setDemandBaseWeek, isoWeekLabel, isoWeekAtHour, isPastDemandWeek } from "./utils/layout";
 import { getRate } from "./utils/validation";
-import { computeDragPreview, computeInsertPlan, type DragPreview, type InsertContext } from "./utils/dragPreview";
+import { computeDragPreview, computeInsertPlan, samePreview, type DragPreview, type InsertContext } from "./utils/dragPreview";
+import { planDrop, type DropPlan } from "./utils/dropPlan";
 import { isDouble, groupOf, sideOf } from "./utils/abLines";
 import { buildRows } from "./utils/ganttRows";
 import { skuColor, skuTextColor, blockLabel } from "./utils/colors";
@@ -218,13 +219,33 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     isBlockLocked,
   }), [setupBetween, horizon, lockedThroughH, isBlockLocked]);
 
-  const hourFromPointer = useCallback((clientX: number | undefined): number => {
-    const svg = chartSvgRef.current;
-    if (!svg || clientX == null) return 0;
-    const rect = svg.getBoundingClientRect();
-    const xInSvg = clientX - rect.left;
-    return Math.max(0, Math.min(horizon - 1, snapToHour(xToHour(xInSvg, viewStart, hourWidth))));
-  }, [horizon, viewStart, hourWidth]);
+  // ── Landing geometry ──
+  // The ghost's CURRENT rect against the svg's CURRENT rect, read at the
+  // same instant - never pointer deltas (dnd-kit's scroll adjustment is dead
+  // for SVG draggables, and the parent-page auto-scroll is invisible to the
+  // iframe entirely). Used by the live ghost preview AND the drop commit, so
+  // the block always lands exactly where the ghost showed.
+  const rowNames = useMemo(() => lines.map((l) => l.line_name), [lines]);
+  const computeLanding = useCallback(
+    (active: Active, block: ScheduleBlock, fromHolding: boolean): DropPlan | null => {
+      const translated = active.rect.current.translated;
+      const svg = chartSvgRef.current;
+      if (!translated || !svg) return null;
+      return planDrop({
+        translated,
+        svgRect: svg.getBoundingClientRect(),
+        viewStart,
+        viewEnd: Math.min(viewEnd, horizon),
+        hourWidth,
+        rowNames,
+        durationH: block.run_hours,
+        // Holding cards have no source row: the ghost's own position decides.
+        sourceLineName: fromHolding ? undefined : block.line_name,
+        requireInsideRows: fromHolding,
+      });
+    },
+    [viewStart, viewEnd, horizon, hourWidth, rowNames],
+  );
 
   // ── Auto-scroll the PARENT page while dragging near the viewport edge ──
   // The holding area lives below the chart; dragging a card up to a line
@@ -236,8 +257,16 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   const dragPointerTracker = useRef((e: PointerEvent) => {
     dragPointerY.current = e.clientY;
   });
+  // Any in-iframe scroll during a drag (wheel on .gantt-scroll, programmatic)
+  // slides the chart under the pointer-frozen ghost WITHOUT any dnd-kit
+  // event: recompute the landing preview from the live rects. Capture phase,
+  // because scroll events do not bubble.
+  const dragScrollRefresh = useRef(() => {
+    refreshPreviewRef.current();
+  });
   const startAutoScroll = useCallback(() => {
     window.addEventListener("pointermove", dragPointerTracker.current);
+    window.addEventListener("scroll", dragScrollRefresh.current, { capture: true, passive: true });
     const step = () => {
       try {
         const fe = window.frameElement as HTMLElement | null;
@@ -269,6 +298,10 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       } catch {
         /* cross-origin embed: no page auto-scroll */
       }
+      // Track the content under the ghost even when no pointer event fires:
+      // both this loop's parent-page scroll and a wheel/programmatic
+      // .gantt-scroll scroll move the chart without telling dnd-kit.
+      refreshPreviewRef.current();
       autoScrollRaf.current = requestAnimationFrame(step);
     };
     cancelAnimationFrame(autoScrollRaf.current);
@@ -279,12 +312,50 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     autoScrollRaf.current = 0;
     dragPointerY.current = null;
     window.removeEventListener("pointermove", dragPointerTracker.current);
+    window.removeEventListener("scroll", dragScrollRefresh.current, { capture: true });
   }, []);
+
+  // Latest drag state, so the auto-scroll rAF loop can recompute the preview
+  // between pointer events (a pure scroll fires no dnd-kit events at all -
+  // without this the ghost would freeze while the content slides under it).
+  const dragCtxRef = useRef<{ active: Active; overId?: string } | null>(null);
+
+  // Live, rate-aware preview of the placement the drop would produce.
+  // Never mutates committed state - purely visual until onDragEnd.
+  const refreshDragPreview = useCallback(() => {
+    const ctx = dragCtxRef.current;
+    if (!ctx) return;
+    const { active, overId } = ctx;
+    const activeId = String(active.id);
+    const fromHolding = activeId.startsWith("holding_");
+    const block =
+      (active.data.current?.block as ScheduleBlock | undefined) ??
+      schedule.find((b) => b.id === activeId) ??
+      cipWindows.find((b) => b.id === activeId);
+    if (!block) return;
+    const next = computeDragPreview({
+      block,
+      activeId,
+      overId,
+      plan: computeLanding(active, block, fromHolding),
+      lines,
+      caps,
+      allBlocks: [...schedule, ...cipWindows],
+      anchor,
+      downtime,
+      insertCtx,
+    });
+    // Recomputed every frame while auto-scroll runs: only re-render on change.
+    setDragPreview((prev) => (samePreview(prev, next) ? prev : next));
+  }, [schedule, cipWindows, lines, caps, anchor, downtime, insertCtx, computeLanding]);
+  const refreshPreviewRef = useRef(refreshDragPreview);
+  useEffect(() => { refreshPreviewRef.current = refreshDragPreview; });
 
   const onDragStart = useCallback(
     (event: DragStartEvent) => {
       setErrorMsg(null);
       setDragPreview(null);
+      dragCtxRef.current = { active: event.active };
       const blockData = event.active.data.current?.block as ScheduleBlock | undefined;
       if (blockData) {
         setActiveDragBlock(blockData);
@@ -297,44 +368,19 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     [startAutoScroll],
   );
 
-  // Live, rate-aware preview of the placement the drop would produce.
-  // Never mutates committed state - purely visual until onDragEnd.
   const onDragMove = useCallback(
     (event: DragMoveEvent) => {
-      const { active, over, delta } = event;
+      const { active, over } = event;
       if (!active) return;
-      const activeId = active.id as string;
-      const block =
-        (active.data.current?.block as ScheduleBlock | undefined) ??
-        schedule.find((b) => b.id === activeId) ??
-        cipWindows.find((b) => b.id === activeId);
-      if (!block) return;
-      const translated = active.rect.current.translated;
-      const pointerX = translated ? translated.left + translated.width / 2 : undefined;
-      setDragPreview(
-        computeDragPreview({
-          block,
-          activeId,
-          overId: over?.id as string | undefined,
-          deltaX: delta.x,
-          deltaY: delta.y,
-          pointerHour: hourFromPointer(pointerX),
-          lines,
-          caps,
-          allBlocks: [...schedule, ...cipWindows],
-          hourWidth,
-          lineHeight: LINE_HEIGHT,
-          anchor,
-          downtime,
-          insertCtx,
-        }),
-      );
+      dragCtxRef.current = { active, overId: over?.id as string | undefined };
+      refreshDragPreview();
     },
-    [schedule, cipWindows, lines, caps, hourWidth, hourFromPointer, anchor, downtime, insertCtx],
+    [refreshDragPreview],
   );
 
   const onDragCancel = useCallback(() => {
     stopAutoScroll();
+    dragCtxRef.current = null;
     setActiveDragSku(null);
     setActiveDragBlock(null);
     setDragPreview(null);
@@ -346,28 +392,26 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       setActiveDragSku(null);
       setActiveDragBlock(null);
       setDragPreview(null);
-      const { active, over, delta } = event;
+      dragCtxRef.current = null;
+      const { active, over } = event;
       if (!active) return;
 
       const activeId = active.id as string;
       const overId = over?.id as string | undefined;
-      const translated = active.rect.current.translated;
-      const pointerX = translated
-        ? translated.left + translated.width / 2
-        : undefined;
 
       // ── Drag FROM holding TO a line row ──
       if (activeId.startsWith("holding_")) {
-        if (!overId?.startsWith("line_")) {
-          reject("Drop onto a production line to restore from holding");
-          return;
-        }
         const blockId = activeId.replace("holding_", "");
-        const targetLineName = overId.replace("line_", "");
-        const targetLine = lines.find((l) => l.line_name === targetLineName);
-        if (!targetLine) return;
         const block = holdingArea.find((b) => b.id === blockId);
         if (!block) return;
+        const plan = computeLanding(active, block, true);
+        if (!plan || !plan.valid) {
+          reject(plan?.reason ?? "Drop onto a production line to restore from holding");
+          return;
+        }
+        const targetLine = lines[plan.rowIdx];
+        if (!targetLine) return;
+        const targetLineName = targetLine.line_name;
         if (block.locked) {
           reject("Block is locked");
           return;
@@ -376,12 +420,12 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           reject(`Line ${targetLineName} cannot run ${block.sku}`);
           return;
         }
+        const startHour = plan.snappedStartHour;
         let dur = block.run_hours;
         if (block.block_type !== "cip") {
-          const newDur = recalcDuration(block, targetLineName, caps, downtime, hourFromPointer(pointerX));
+          const newDur = recalcDuration(block, targetLineName, caps, downtime, startHour);
           if (newDur !== null) dur = newDur;
         }
-        const startHour = hourFromPointer(pointerX);
         if (intoLockedZone(startHour)) {
           reject(`Cannot drop into the locked window (committed through ${hourToStamp(lockedThroughH ?? 0, anchor)})`);
           return;
@@ -422,17 +466,18 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         return;
       }
 
-      const deltaHours = snapToHour(delta.x / hourWidth);
-      const startLineIndex = lines.findIndex((l) => l.line_name === block.line_name);
-      const lineDelta = Math.round(delta.y / LINE_HEIGHT);
-      const targetLineIndex = Math.max(0, Math.min(startLineIndex + lineDelta, lines.length - 1));
-      const targetLine = lines[targetLineIndex];
+      // Same landing function as the ghost preview: the block lands exactly
+      // where the ghost showed, whatever scrolled during the drag. No
+      // geometry (ghost never measured) -> leave the block where it is.
+      const plan = computeLanding(active, block, false);
+      if (!plan) return;
+      const targetLine = lines[plan.rowIdx];
       if (!targetLine) return;
 
-      const sameLine = targetLine.line_name === block.line_name;
+      const sameLine = plan.lineName === block.line_name;
 
       if (sameLine) {
-        const newStart = Math.max(0, snapToHour(block.start_hour + deltaHours));
+        const newStart = plan.snappedStartHour;
         if (newStart === block.start_hour) return;
         if (intoLockedZone(newStart)) {
           reject(`Cannot move into the locked window (committed through ${hourToStamp(lockedThroughH ?? 0, anchor)})`);
@@ -477,16 +522,15 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           return;
         }
         let dur = block.run_hours;
+        const newStart = plan.snappedStartHour;
         if (block.block_type !== "cip") {
-          const newStartForCalc = Math.max(0, snapToHour(block.start_hour + deltaHours));
-          const newDur = recalcDuration(block, targetLine.line_name, caps, downtime, newStartForCalc);
+          const newDur = recalcDuration(block, targetLine.line_name, caps, downtime, newStart);
           if (newDur === null) {
             reject(`No rate for ${block.sku} on ${targetLine.line_name}`);
             return;
           }
           dur = newDur;
         }
-        const newStart = Math.max(0, snapToHour(block.start_hour + deltaHours));
         if (intoLockedZone(newStart)) {
           reject(`Cannot move into the locked window (committed through ${hourToStamp(lockedThroughH ?? 0, anchor)})`);
           return;
@@ -519,7 +563,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         setWarnMsg(setupWarning(block.id, targetLine.line_name, newStart, newEnd));
       }
     },
-    [schedule, cipWindows, holdingArea, actions, hourWidth, caps, lines, hourFromPointer, reject, anchor, downtime, isBlockLocked, lockReason, intoLockedZone, lockedThroughH, insertCtx, stopAutoScroll],
+    [schedule, cipWindows, holdingArea, actions, caps, lines, computeLanding, reject, anchor, downtime, isBlockLocked, lockReason, intoLockedZone, lockedThroughH, insertCtx, stopAutoScroll],
   );
 
   const onResizeCommit = useCallback(
@@ -1095,6 +1139,21 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   const ghostHours = dragPreview?.hours ?? activeDragBlock?.run_hours ?? 0;
   const ghostWidth = Math.max(60, ghostHours * hourWidth);
 
+  // Snapped landing cell, drawn in the SVG under the floating drag overlay.
+  // On a valid insert gesture the block itself lands at the insert point, so
+  // the ghost moves there and the displaced-block preview shows the slide.
+  const dropGhost = useMemo(() => {
+    if (!dragPreview) return null;
+    const ins = dragPreview.insert && !dragPreview.insert.blockedReason ? dragPreview.insert : null;
+    return {
+      lineName: dragPreview.targetLine,
+      startHour: ins ? ins.insStart : dragPreview.startHour,
+      endHour: ins ? ins.insEnd : dragPreview.endHour,
+      valid: dragPreview.valid,
+      fill: ghostBg,
+    };
+  }, [dragPreview, ghostBg]);
+
   return (
     <div
       ref={containerRef}
@@ -1202,6 +1261,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           capableLines={capableLines}
           lockedThroughH={lockedThroughH}
           insertPreview={dragPreview && dragPreview.insert && !dragPreview.insert.blockedReason ? dragPreview.insert : null}
+          dropGhost={dropGhost}
           svgRef={chartSvgRef}
           onResizeStart={guardedStartResize}
           onContextMenu={handleContextMenu}

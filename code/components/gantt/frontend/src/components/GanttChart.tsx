@@ -12,6 +12,7 @@ import {
   LINE_HEIGHT,
   HEADER_HEIGHT,
   LINE_LABEL_WIDTH,
+  hourToX,
   xToHour,
 } from "../utils/layout";
 import type { ResizeState } from "../hooks/useBlockResize";
@@ -33,6 +34,15 @@ interface Props {
   /** Live insert preview: dashed ghost of the displaced block at its slid
    * position, so the user SEES the right block moving over before dropping. */
   insertPreview?: InsertPlan | null;
+  /** Translucent snapped landing cell for the current drag - the exact
+   * placement onDragEnd would commit; red-tinted when the drop would refuse. */
+  dropGhost?: {
+    lineName: string;
+    startHour: number;
+    endHour: number;
+    valid: boolean;
+    fill: string;
+  } | null;
   svgRef?: React.RefObject<SVGSVGElement | null>;
   onResizeStart: (blockId: string, edge: "left" | "right", startH: number, endH: number, clientX: number, hourWidth: number) => void;
   onContextMenu: (e: React.MouseEvent, blockId: string) => void;
@@ -127,7 +137,7 @@ const LineLabelsOverlay: React.FC<{ rows: GanttRow[]; svgHeight: number }> = ({ 
 
 export const GanttChart: React.FC<Props> = ({
   schedule, cipWindows, lines, viewStart, viewEnd, hourWidth, anchor,
-  resizing, highlightSku, capableLines, lockedThroughH, insertPreview, svgRef: externalSvgRef,
+  resizing, highlightSku, capableLines, lockedThroughH, insertPreview, dropGhost, svgRef: externalSvgRef,
   onResizeStart, onContextMenu, onEmptyContextMenu, onBlockClick, onZoomIn, onZoomOut, onResetZoom,
 }) => {
   const localSvgRef = useRef<SVGSVGElement>(null);
@@ -368,6 +378,37 @@ export const GanttChart: React.FC<Props> = ({
               </g>
             );
           })}
+
+          {/* Drop ghost: the snapped landing cell the drop would commit,
+              drawn over the blocks (translucent) while the drag overlay
+              floats above. Green-ish/block-colored when the drop is valid,
+              red-tinted when it would be refused. */}
+          {dropGhost && (() => {
+            const li = rowIndexOf(rows, dropGhost.lineName);
+            if (li < 0) return null;
+            const rowY = HEADER_HEIGHT + li * LINE_HEIGHT;
+            const slot = blockSlot(rows[li], dropGhost.lineName, LINE_HEIGHT);
+            const rowH = slot.height ?? LINE_HEIGHT;
+            const pad = rowH >= LINE_HEIGHT ? 4 : 2; // mirror GanttBlock's inset
+            const gx = hourToX(dropGhost.startHour, viewStart, hourWidth);
+            const gw = Math.max(2, (dropGhost.endHour - dropGhost.startHour) * hourWidth);
+            return (
+              <g pointerEvents="none">
+                <rect
+                  x={gx}
+                  y={rowY + slot.y + pad}
+                  width={gw}
+                  height={Math.max(6, rowH - pad * 2)}
+                  rx={4}
+                  fill={dropGhost.valid ? dropGhost.fill : "#e53935"}
+                  fillOpacity={dropGhost.valid ? 0.35 : 0.2}
+                  stroke={dropGhost.valid ? "#333" : "#b71c1c"}
+                  strokeWidth={1.5}
+                  strokeDasharray="5 3"
+                />
+              </g>
+            );
+          })()}
 
           {/* Frozen panes (drawn last = on top). The line-name strip pins to
               the viewport's left edge; the header band pins to its top.
