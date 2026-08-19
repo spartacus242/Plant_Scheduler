@@ -39,6 +39,7 @@ from helpers.scorecard_engine import (
     score_calendar,
     scoring_inputs_signature,
 )
+from helpers.solver_rules import render_solver_rulebook
 from helpers.scorecard_ui import render_scorecard
 from helpers.version_manager import MAX_VERSIONS, list_versions, upsert_version
 from solver.changeover_cache import load_changeover_setup_nested
@@ -456,6 +457,8 @@ _show_diag = st.toggle(
 if not _show_diag:
     st.stop()
 
+render_solver_rulebook(cfg)
+
 
 # -- Rough-draft schedule straight from the demand plan (no solver) --------
 st.subheader("Rough draft schedule from the demand plan (no solver)")
@@ -711,13 +714,17 @@ with oc2:
     w_cip = st.number_input(
         "cip_defer_weight", min_value=0, max_value=1000,
         value=int(_obj_cfg.get("cip_defer_weight", 5)), step=1,
-        help="Bonus per hour of CIP absorbed into an existing gap.",
+        help="Reward per hour a CIP starts LATER (cleans drift toward "
+             "their legal deadline instead of hour 0). All modes; the max "
+             "CIP interval itself stays hard.",
     )
 with oc3:
     w_late = st.number_input(
         "late_weight", min_value=0, max_value=10000,
         value=int(_obj_cfg.get("late_weight", 200)), step=10,
-        help="Penalty per hour an order finishes past its due date.",
+        help="Penalty per hour an order finishes past its due date. Only "
+             "active once the relax ladder reaches level 2 (soft due "
+             "dates); ignored in cross-week mode.",
     )
     w_week_dev = st.number_input(
         "week_deviation_weight", min_value=0, max_value=10000,
@@ -753,7 +760,40 @@ with cc4:
     w_case = st.slider("casepacker_weight", 0, 200, int(_co_cfg.get("casepacker_weight", 20)))
     w_base = st.slider("base_changeover_weight", 0, 200, int(_co_cfg.get("base_changeover_weight", 5)))
 
+st.markdown("**Solve rules (hard constraints, not weights)**")
+sr1, sr2, sr3 = st.columns(3)
+with sr1:
+    w_min_run = st.number_input(
+        "min_run_hours", min_value=1, max_value=48,
+        value=int(sched_cfg.get("min_run_hours", 4)), step=1,
+        help="Hard floor: any run a line gets must last at least this many "
+             "hours (each segment of a CIP-split run too). Also steers the "
+             "Scenario F greedy seed.",
+    )
+with sr2:
+    w_min_run_pct = st.number_input(
+        "min_run_pct_of_qty", min_value=0.0, max_value=1.0,
+        value=float(sched_cfg.get("min_run_pct_of_qty", 0.5)), step=0.05,
+        format="%.2f",
+        help="Hard floor: a line assigned to an order must run at least "
+             "this fraction of the hours the order's minimum quantity "
+             "needs. Only bites when an order splits across lines — at "
+             "0.50 each of two lines must take a real half, not a 1h stub.",
+    )
+with sr3:
+    w_mlpo = st.number_input(
+        "max_lines_per_order", min_value=1, max_value=6,
+        value=int(sched_cfg.get("max_lines_per_order", 3)), step=1,
+        help="Cap on how many lines may run the SAME ORDER simultaneously. "
+             "Per ORDER (one demand row = one SKU-week), not per SKU: the "
+             "same SKU in two different week-orders may use more lines in "
+             "total.",
+    )
+
 custom_overrides = {
+    "min_run_hours": int(w_min_run),
+    "min_run_pct_of_qty": float(w_min_run_pct),
+    "max_lines_per_order": int(w_mlpo),
     "makespan_weight": int(w_makespan),
     "changeover_weight": int(w_changeover),
     "cip_defer_weight": int(w_cip),

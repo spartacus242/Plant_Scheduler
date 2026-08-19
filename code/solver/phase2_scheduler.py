@@ -229,6 +229,101 @@ def _load_config(config_path: Path | None, data_dir: Path) -> dict:
     return cfg
 
 
+def params_from_config(
+    cfg: dict,
+    *,
+    max_lines_override: int | None = None,
+    min_run_override: int | None = None,
+    allow_week1: bool = True,
+) -> Params:
+    """Resolve Params from a loaded flowstate.toml dict.
+
+    The ONE place every tunable reaches P. The custom-scenario override path
+    (helpers/scenario_runner._patch_work_toml) writes into the same sections
+    this reads, and tests/test_solver_weights.py asserts the mapping stays
+    complete — a knob that patches the toml but never lands in P is a silent
+    no-op, which is exactly the failure mode this function exists to prevent.
+    ``max_lines_override`` / ``min_run_override`` carry CLI flags (they beat
+    the toml); ``allow_week1`` carries --no-week1-in-week0.
+    """
+    P = Params()
+    sched = cfg.get("scheduler", {}) or {}
+    if sched.get("planning_start_date"):
+        P.planning_start_date = sched["planning_start_date"]
+    # Horizon length: horizon_hours wins; horizon_weeks * 168 is the fallback
+    # so the two keys cannot silently disagree.
+    _hz_h = sched.get("horizon_hours")
+    if _hz_h is None and sched.get("horizon_weeks") is not None:
+        _hz_h = int(sched["horizon_weeks"]) * 168
+    if _hz_h:
+        P.horizon_h = int(_hz_h)
+    _cfg_cip = cfg.get("cip", {}) or {}
+    if _cfg_cip.get("interval_h") is not None:
+        P.cip_interval_h = int(_cfg_cip["interval_h"])
+    if _cfg_cip.get("duration_h") is not None:
+        P.cip_duration_h = int(_cfg_cip["duration_h"])
+    _cfg_obj = cfg.get("objective", {}) or {}
+    if _cfg_obj.get("makespan_weight") is not None:
+        P.objective_makespan_weight = int(_cfg_obj["makespan_weight"])
+    if _cfg_obj.get("changeover_weight") is not None:
+        P.objective_changeover_weight = int(_cfg_obj["changeover_weight"])
+    if _cfg_obj.get("cip_defer_weight") is not None:
+        P.objective_cip_defer_weight = int(_cfg_obj["cip_defer_weight"])
+    if _cfg_obj.get("idle_weight") is not None:
+        P.objective_idle_weight = int(_cfg_obj["idle_weight"])
+    if _cfg_obj.get("late_weight") is not None:
+        P.objective_late_weight = int(_cfg_obj["late_weight"])
+    if _cfg_obj.get("week_deviation_weight") is not None:
+        P.objective_week_deviation_weight = int(
+            _cfg_obj["week_deviation_weight"]
+        )
+    if _cfg_obj.get("cip_flex_weight") is not None:
+        P.objective_cip_flex_weight = int(_cfg_obj["cip_flex_weight"])
+    # Changeover type penalty weights — saved by settings.py into [objective]
+    if _cfg_obj.get("co_conv_org_weight") is not None:
+        P.co_conv_org_weight = int(_cfg_obj["co_conv_org_weight"])
+    if _cfg_obj.get("co_cinn_weight") is not None:
+        P.co_cinn_weight = int(_cfg_obj["co_cinn_weight"])
+    if _cfg_obj.get("co_flavor_weight") is not None:
+        P.co_flavor_weight = int(_cfg_obj["co_flavor_weight"])
+    _cfg_co = cfg.get("changeover", {}) or {}
+    if _cfg_co.get("topload_weight") is not None:
+        P.co_topload_weight = int(_cfg_co["topload_weight"])
+    if _cfg_co.get("ttp_weight") is not None:
+        P.co_ttp_weight = int(_cfg_co["ttp_weight"])
+    if _cfg_co.get("ffs_weight") is not None:
+        P.co_ffs_weight = int(_cfg_co["ffs_weight"])
+    if _cfg_co.get("casepacker_weight") is not None:
+        P.co_casepacker_weight = int(_cfg_co["casepacker_weight"])
+    if _cfg_co.get("base_changeover_weight") is not None:
+        P.co_base_weight = int(_cfg_co["base_changeover_weight"])
+    if _cfg_co.get("conv_org_weight") is not None:
+        P.co_conv_org_weight = int(_cfg_co["conv_org_weight"])
+    if _cfg_co.get("cinn_weight") is not None:
+        P.co_cinn_weight = int(_cfg_co["cinn_weight"])
+    if _cfg_co.get("flavor_weight") is not None:
+        P.co_flavor_weight = int(_cfg_co["flavor_weight"])
+    if sched.get("use_sku_rates") is not None:
+        P.use_sku_rates = bool(sched["use_sku_rates"])
+    # Solve rules ([scheduler]): CLI override beats toml beats Params default.
+    if max_lines_override is None:
+        max_lines_override = sched.get("max_lines_per_order")
+    if max_lines_override is not None:
+        P.max_lines_per_order = int(max_lines_override)
+    if min_run_override is None:
+        min_run_override = sched.get("min_run_hours")
+    if min_run_override is not None:
+        P.min_run_hours = int(min_run_override)
+    if sched.get("min_run_pct_of_qty") is not None:
+        P.min_run_pct_of_qty = float(sched["min_run_pct_of_qty"])
+    P.allow_week1_in_week0 = bool(allow_week1)
+    # Soft demand (Scenario F)
+    P.soft_demand = bool(sched.get("soft_demand", False))
+    if sched.get("shortfall_weight") is not None:
+        P.objective_shortfall_weight = int(sched["shortfall_weight"])
+    return P
+
+
 DATA_DIR = _ARGS.data_dir.resolve() if _ARGS.data_dir is not None else BASE_DIR
 _CFG = _load_config(_ARGS.config, DATA_DIR)
 _CFG_SCHED = _CFG.get("scheduler", {})
@@ -1500,68 +1595,15 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
 
 
 def main() -> None:
-    P = Params()
-    # Apply config overrides from flowstate.toml
-    if _CFG_SCHED.get("planning_start_date"):
-        P.planning_start_date = _CFG_SCHED["planning_start_date"]
-    # Horizon length. The app's rolling horizon is 3 weeks (504h) but Params
-    # still defaults to 336; without this override every order whose due
-    # window sits past hour 336 gets max_len == 0 in model_builder and can
-    # never be produced. horizon_hours wins; horizon_weeks * 168 is the
-    # fallback so the two keys cannot silently disagree.
-    _hz_h = _CFG_SCHED.get("horizon_hours")
-    if _hz_h is None and _CFG_SCHED.get("horizon_weeks") is not None:
-        _hz_h = int(_CFG_SCHED["horizon_weeks"]) * 168
-    if _hz_h:
-        P.horizon_h = int(_hz_h)
-    _cfg_cip = _CFG.get("cip", {})
-    if _cfg_cip.get("interval_h") is not None:
-        P.cip_interval_h = int(_cfg_cip["interval_h"])
-    if _cfg_cip.get("duration_h") is not None:
-        P.cip_duration_h = int(_cfg_cip["duration_h"])
-    _cfg_obj = _CFG.get("objective", {})
-    if _cfg_obj.get("makespan_weight") is not None:
-        P.objective_makespan_weight = int(_cfg_obj["makespan_weight"])
-    if _cfg_obj.get("changeover_weight") is not None:
-        P.objective_changeover_weight = int(_cfg_obj["changeover_weight"])
-    if _cfg_obj.get("cip_defer_weight") is not None:
-        P.objective_cip_defer_weight = int(_cfg_obj["cip_defer_weight"])
-    if _cfg_obj.get("idle_weight") is not None:
-        P.objective_idle_weight = int(_cfg_obj["idle_weight"])
-    if _cfg_obj.get("late_weight") is not None:
-        P.objective_late_weight = int(_cfg_obj["late_weight"])
-    if _cfg_obj.get("week_deviation_weight") is not None:
-        P.objective_week_deviation_weight = int(
-            _cfg_obj["week_deviation_weight"]
-        )
-    if _cfg_obj.get("cip_flex_weight") is not None:
-        P.objective_cip_flex_weight = int(_cfg_obj["cip_flex_weight"])
-    # Changeover type penalty weights — saved by settings.py into [objective]
-    if _cfg_obj.get("co_conv_org_weight") is not None:
-        P.co_conv_org_weight = int(_cfg_obj["co_conv_org_weight"])
-    if _cfg_obj.get("co_cinn_weight") is not None:
-        P.co_cinn_weight = int(_cfg_obj["co_cinn_weight"])
-    if _cfg_obj.get("co_flavor_weight") is not None:
-        P.co_flavor_weight = int(_cfg_obj["co_flavor_weight"])
-    _cfg_co = _CFG.get("changeover", {})
-    if _cfg_co.get("topload_weight") is not None:
-        P.co_topload_weight = int(_cfg_co["topload_weight"])
-    if _cfg_co.get("ttp_weight") is not None:
-        P.co_ttp_weight = int(_cfg_co["ttp_weight"])
-    if _cfg_co.get("ffs_weight") is not None:
-        P.co_ffs_weight = int(_cfg_co["ffs_weight"])
-    if _cfg_co.get("casepacker_weight") is not None:
-        P.co_casepacker_weight = int(_cfg_co["casepacker_weight"])
-    if _cfg_co.get("base_changeover_weight") is not None:
-        P.co_base_weight = int(_cfg_co["base_changeover_weight"])
-    if _cfg_co.get("conv_org_weight") is not None:
-        P.co_conv_org_weight = int(_cfg_co["conv_org_weight"])
-    if _cfg_co.get("cinn_weight") is not None:
-        P.co_cinn_weight = int(_cfg_co["cinn_weight"])
-    if _cfg_co.get("flavor_weight") is not None:
-        P.co_flavor_weight = int(_cfg_co["flavor_weight"])
-    if _CFG_SCHED.get("use_sku_rates") is not None:
-        P.use_sku_rates = bool(_CFG_SCHED["use_sku_rates"])
+    # Apply config overrides from flowstate.toml + CLI flags (CLI wins).
+    # The full toml -> Params mapping lives in params_from_config so the
+    # override plumbing is testable without a subprocess.
+    P = params_from_config(
+        _CFG,
+        max_lines_override=MAX_LINES_PER_ORDER,
+        min_run_override=MIN_RUN_HOURS_OVERRIDE,
+        allow_week1=not NO_WEEK1_IN_WEEK0,
+    )
     F = Files(DATA_DIR)
     # Rolling mode: auto-load week1_initial_states.csv if it exists
     if ROLLING:
@@ -1572,45 +1614,10 @@ def main() -> None:
     if INITIAL_STATES_PATH is not None:
         p = Path(INITIAL_STATES_PATH)
         F.init = str(p.resolve() if p.is_absolute() else (DATA_DIR / p))
-    if MAX_LINES_PER_ORDER is not None or MIN_RUN_HOURS_OVERRIDE is not None or NO_WEEK1_IN_WEEK0:
-        P = Params(
-            horizon_h=P.horizon_h,
-            changeover_penalty=P.changeover_penalty,
-            cip_interval_h=P.cip_interval_h,
-            cip_duration_h=P.cip_duration_h,
-            max_lines_per_order=MAX_LINES_PER_ORDER if MAX_LINES_PER_ORDER is not None else P.max_lines_per_order,
-            stale_threshold_days=P.stale_threshold_days,
-            stale_setup_extra_h=P.stale_setup_extra_h,
-            long_shutdown_default_h=P.long_shutdown_default_h,
-            planning_start_date=P.planning_start_date,
-            min_run_hours=MIN_RUN_HOURS_OVERRIDE if MIN_RUN_HOURS_OVERRIDE is not None else P.min_run_hours,
-            min_run_pct_of_qty=P.min_run_pct_of_qty,
-            allow_week1_in_week0=not NO_WEEK1_IN_WEEK0,
-            objective_makespan_weight=P.objective_makespan_weight,
-            objective_changeover_weight=P.objective_changeover_weight,
-            objective_cip_defer_weight=P.objective_cip_defer_weight,
-            objective_idle_weight=P.objective_idle_weight,
-            objective_late_weight=P.objective_late_weight,
-            objective_week_deviation_weight=P.objective_week_deviation_weight,
-            objective_cip_flex_weight=P.objective_cip_flex_weight,
-            co_topload_weight=P.co_topload_weight,
-            co_ttp_weight=P.co_ttp_weight,
-            co_ffs_weight=P.co_ffs_weight,
-            co_casepacker_weight=P.co_casepacker_weight,
-            co_base_weight=P.co_base_weight,
-            co_conv_org_weight=P.co_conv_org_weight,
-            co_cinn_weight=P.co_cinn_weight,
-            co_flavor_weight=P.co_flavor_weight,
-            use_sku_rates=P.use_sku_rates,
-        )
 
-    # Soft demand (Scenario F): set AFTER the Params reconstruction above so
-    # the flag can never be dropped by it.
-    P.soft_demand = bool(_CFG_SCHED.get("soft_demand", False))
+    # Soft demand (Scenario F): resolved inside params_from_config.
     global _SOFT_DEMAND_ACTIVE
     _SOFT_DEMAND_ACTIVE = P.soft_demand
-    if _CFG_SCHED.get("shortfall_weight") is not None:
-        P.objective_shortfall_weight = int(_CFG_SCHED["shortfall_weight"])
     if P.soft_demand:
         log(f"[soft-demand] every kg short of qty_min costs "
             f"{P.objective_shortfall_weight} in the objective (Scenario F)")
