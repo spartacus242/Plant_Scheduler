@@ -115,6 +115,11 @@ _COMMON_KNOBS = [
         "config": "objective.cip_flex_weight",
         "effect": "CIP flexibility mode only: percent the cip_defer reward is scaled to, so a CIP can be pulled EARLIER to absorb a changeover. The line's max allowable CIP interval stays HARD.",
     },
+    {
+        "param": "objective.over_target_reward_pct",
+        "config": "objective.over_target_reward_pct",
+        "effect": "Soft-demand (F) only: reward for kg ABOVE an order's target (toward its max), as a % of the per-kg value of real demand. 0 = never overproduce on purpose. NOT a fulfillment gain — fulfillment is capped at target; the extra kg build inventory.",
+    },
 ]
 
 _FORMULA_MIN_CO = (
@@ -202,6 +207,7 @@ OVERRIDE_SECTIONS: dict[str, str] = {
     "late_weight": "objective",
     "week_deviation_weight": "objective",
     "cip_flex_weight": "objective",
+    "over_target_reward_pct": "objective",
     "base_changeover_weight": "changeover",
     "topload_weight": "changeover",
     "ttp_weight": "changeover",
@@ -218,14 +224,15 @@ OVERRIDE_SECTIONS: dict[str, str] = {
 }
 
 # Overrides that are fractions, not integer weights — normalize_overrides
-# must not truncate them (int("0.5") -> 0 would silently erase the floor).
-FLOAT_OVERRIDE_KEYS = {"min_run_pct_of_qty"}
+# must not truncate them (int("0.5") -> 0 would silently erase the floor;
+# int(2.5) -> 2 would silently move the over-target reward).
+FLOAT_OVERRIDE_KEYS = {"min_run_pct_of_qty", "over_target_reward_pct"}
 
 OBJECTIVE_MODES = ("balanced", "min-changeovers", "spread-load")
 
 # Fallbacks matching Params in code/solver/data_loader.py, used when a
 # key is absent from flowstate.toml so the knob table never shows a blank.
-SOLVER_DEFAULTS: dict[str, int] = {
+SOLVER_DEFAULTS: dict[str, float] = {
     "objective.makespan_weight": 1,
     "objective.changeover_weight": 100,
     "objective.cip_defer_weight": 10,
@@ -233,6 +240,7 @@ SOLVER_DEFAULTS: dict[str, int] = {
     "objective.late_weight": 200,
     "objective.week_deviation_weight": 40,
     "objective.cip_flex_weight": 20,
+    "objective.over_target_reward_pct": 0.0,
     "changeover.topload_weight": 50,
     "changeover.ttp_weight": 10,
     "changeover.ffs_weight": 10,

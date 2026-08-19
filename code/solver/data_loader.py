@@ -96,6 +96,14 @@ class Params:
     # the objective. Filling always pays; shortage is reported, never hidden.
     soft_demand: bool = False
     objective_shortfall_weight: int = 1
+    # Over-target reward (soft demand only): kg between an order's
+    # qty_target and qty_max earn this percent of the BASE per-kg reward of
+    # at-or-below-target kg (the 1000 tier x the x1000 production scaling;
+    # week gradient excluded). Default 0.0 — the honest choice: the old
+    # hardcoded over_sum*50 claimed "5%" but missed the x1000 scaling, so
+    # every tuned run so far effectively ran at ~0.005% ≈ 0; default-off
+    # preserves that observed behavior. UI range 0.0-5.0.
+    over_target_reward_pct: float = 0.0
 
 
 class Files:
