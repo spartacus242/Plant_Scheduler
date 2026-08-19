@@ -48,6 +48,9 @@ r.emptyLine = sp.planPlacement({ ...base, blocksOnLine: [], clickHour: 5 });
 r.insideBlock = sp.planPlacement({ ...base, clickHour: 5 });
 r.afterCip = sp.planPlacement({ ...base,
   blocksOnLine: [mk("CIP", 0, 10, "cip"), mk("B", 40, 60)] });
+// Off-grid wall clock: the start must snap UP onto the 0.1h grid so every
+// derived boundary stays on-grid (and never precede the legal start).
+r.offGridNow = sp.planPlacement({ ...base, nowH: 22.437, clickHour: 30 });
 r.flags = {
   f5: sp.coFlagLabels(5), f32: sp.coFlagLabels(32),
   f0: sp.coFlagLabels(0), fu: sp.coFlagLabels(undefined),
@@ -85,6 +88,13 @@ r.splitOverrun = sp.splitPlacementByOrders(
 r.splitAllMet = sp.splitPlacementByOrders(
   "S", { startHour: 12, durationH: 15, qtyKg: 1500 },
   adh.map((x) => ({ ...x, scheduled_qty: 5000 })), demand, anchor, now);
+// Defense in depth: an OFF-GRID plan start (planPlacement now forbids one,
+// but the cursor must stay monotonic regardless) — siblings must not
+// overlap and the durations must sum to the plan's exactly. 12.04 is the
+// bite: the old cursor re-round pulled segment 2 back to 16.0 while
+// segment 1 ended at 16.04.
+r.splitOffGrid = sp.splitPlacementByOrders(
+  "S", { startHour: 12.04, durationH: 15, qtyKg: 1500 }, adh, demand4, anchor, now);
 process.stdout.write(JSON.stringify(r));
 """
 
@@ -176,6 +186,13 @@ def test_sku_picker_math(tmp_path):
     assert p["prevSku"] is None and p["nextSku"] == "B"
     assert p["prevType"] == "cip" and p["nextType"] == "sku"
 
+    # Off-grid wall clock (22.437): the start snaps UP onto the 0.1h grid —
+    # never earlier than the legal start — and the room shrinks to match.
+    p = r["offGridNow"]
+    assert p["startHour"] == pytest.approx(22.5)
+    assert p["durationH"] == pytest.approx(14.5)
+    assert p["qtyKg"] == pytest.approx(1450)
+
     # Bitmask decode (bit order = helpers/calendar_io.CO_FLAG_COLUMNS).
     assert r["flags"]["f5"] == ["ttp", "tpld"]
     assert r["flags"]["f32"] == ["cin-non"]
@@ -198,3 +215,13 @@ def test_sku_picker_math(tmp_path):
     assert r["splitAllMet"] == [
         {"orderId": "S-W3", "startHour": 12, "durationH": 15, "qtyKg": 1500},
     ]
+    # Off-grid plan start: sibling segments never overlap (the old cursor
+    # re-round pulled a start BEFORE the previous end) and the durations
+    # still sum to the plan's 15h exactly.
+    segs = r["splitOffGrid"]
+    assert len(segs) == 2
+    for a, b in zip(segs, segs[1:]):
+        assert b["startHour"] >= a["startHour"] + a["durationH"] - 1e-9
+    assert sum(s["durationH"] for s in segs) == pytest.approx(15.0)
+    assert sum(s["qtyKg"] for s in segs) == pytest.approx(1500)
+    assert segs[-1]["startHour"] + segs[-1]["durationH"] == pytest.approx(12.04 + 15)
