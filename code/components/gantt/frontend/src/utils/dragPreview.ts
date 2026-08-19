@@ -4,9 +4,10 @@
 
 import type { ScheduleBlock, LineInfo } from "../types";
 import { isCapable, recalcDuration, findOverlapsOnLine, getRate } from "./validation";
-import { snapToHour, hourToStamp } from "./layout";
+import { hourToStamp } from "./layout";
 import type { SideDowntime } from "./abLines";
 import { groupOf, hasOneSidedStretch, isDouble } from "./abLines";
+import type { DropPlan } from "./dropPlan";
 
 export interface InsertPlan {
   /** Where the dragged block lands (after the left neighbour + its setup). */
@@ -119,16 +120,12 @@ export interface DragPreviewInput {
   activeId: string;
   /** dnd-kit over id, if any. */
   overId?: string;
-  deltaX: number;
-  deltaY: number;
-  /** Hour under the pointer; used for holding-area restores. */
-  pointerHour: number;
+  /** Geometric landing from planDrop; null when the ghost is unmeasurable. */
+  plan: DropPlan | null;
   lines: LineInfo[];
   caps: Record<string, Record<string, number>>;
   /** Every committed block, for overlap checking. */
   allBlocks: ScheduleBlock[];
-  hourWidth: number;
-  lineHeight: number;
   /** Planning anchor, so rejection reasons name a wall-clock moment. */
   anchor: Date;
   /** Per-side scheduled downtime, keyed by line/side name. */
@@ -144,37 +141,26 @@ export interface DragPreviewInput {
  */
 export function computeDragPreview(input: DragPreviewInput): DragPreview | null {
   const {
-    block, activeId, overId, deltaX, deltaY, pointerHour,
-    lines, caps, allBlocks, hourWidth, lineHeight, anchor, downtime = {},
+    block, activeId, overId, plan,
+    lines, caps, allBlocks, anchor, downtime = {},
     insertCtx,
   } = input;
 
   const sourceRate = getRate(block.line_name, block.sku, caps);
   const sourceHours = block.run_hours;
+  const fromHolding = activeId.startsWith("holding_");
 
   // Drag to the holding area: nothing to place on the grid.
   if (overId === "holding_area") return null;
+  if (!plan) return null;
+  // Holding card not yet over the chart rows: nothing to place.
+  if (fromHolding && !plan.valid) return null;
+  if (!lines[plan.rowIdx]) return null;
 
-  let targetLineName: string;
-  let startHour: number;
+  const targetLineName = plan.lineName;
+  const startHour = plan.snappedStartHour;
 
-  if (activeId.startsWith("holding_")) {
-    if (!overId?.startsWith("line_")) return null;
-    targetLineName = overId.replace("line_", "");
-    startHour = pointerHour;
-  } else {
-    const startLineIndex = lines.findIndex((l) => l.line_name === block.line_name);
-    if (startLineIndex < 0) return null;
-    const lineDelta = Math.round(deltaY / lineHeight);
-    const targetLineIndex = Math.max(0, Math.min(startLineIndex + lineDelta, lines.length - 1));
-    const targetLine = lines[targetLineIndex];
-    if (!targetLine) return null;
-    targetLineName = targetLine.line_name;
-    const deltaHours = snapToHour(deltaX / hourWidth);
-    startHour = Math.max(0, snapToHour(block.start_hour + deltaHours));
-  }
-
-  const sameLine = targetLineName === block.line_name && !activeId.startsWith("holding_");
+  const sameLine = targetLineName === block.line_name && !fromHolding;
   const rate = getRate(targetLineName, block.sku, caps);
   const targetGroup = groupOf(targetLineName);
 
@@ -212,13 +198,23 @@ export function computeDragPreview(input: DragPreviewInput): DragPreview | null 
     reason = "Block is locked";
   }
 
+  // The drop refuses any landing inside the locked window - the ghost must
+  // show that refusal, not promise a placement the drop would reject.
+  const lockedThroughH = insertCtx?.lockedThroughH ?? null;
+  if (valid && lockedThroughH != null && startHour < lockedThroughH - 1e-9) {
+    valid = false;
+    reason = `Cannot ${fromHolding ? "drop" : "move"} into the locked window (committed through ${hourToStamp(lockedThroughH, anchor)})`;
+  }
+
   const endHour = startHour + hours;
 
   const oneSided = hasOneSidedStretch(targetGroup, startHour, endHour, downtime);
 
   let insert: InsertPlan | null = null;
   if (valid && findOverlapsOnLine(allBlocks, targetLineName, block.id, startHour, endHour)) {
-    insert = insertCtx
+    // Holding restores never insert-shift on drop, so the preview must not
+    // promise one - an overlapping landing is a plain refusal there.
+    insert = insertCtx && !fromHolding
       ? computeInsertPlan(block, targetLineName, startHour, hours, allBlocks, insertCtx)
       : null;
     if (insert && !insert.blockedReason) {
@@ -245,4 +241,35 @@ export function computeDragPreview(input: DragPreviewInput): DragPreview | null 
     oneSided,
     insert,
   };
+}
+
+/**
+ * Field-wise equality so the every-frame preview recompute (auto-scroll rAF
+ * loop) only re-renders when the landing actually changed.
+ */
+export function samePreview(a: DragPreview | null, b: DragPreview | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const sameInsert =
+    (a.insert ?? null) === (b.insert ?? null) ||
+    (a.insert != null && b.insert != null &&
+      a.insert.insStart === b.insert.insStart &&
+      a.insert.insEnd === b.insert.insEnd &&
+      a.insert.nextId === b.insert.nextId &&
+      a.insert.deltaH === b.insert.deltaH &&
+      a.insert.shiftedCount === b.insert.shiftedCount &&
+      a.insert.blockedReason === b.insert.blockedReason);
+  return (
+    a.targetLine === b.targetLine &&
+    a.startHour === b.startHour &&
+    a.endHour === b.endHour &&
+    a.hours === b.hours &&
+    a.rate === b.rate &&
+    a.sourceRate === b.sourceRate &&
+    a.sourceHours === b.sourceHours &&
+    a.valid === b.valid &&
+    a.reason === b.reason &&
+    a.oneSided === b.oneSided &&
+    sameInsert
+  );
 }
