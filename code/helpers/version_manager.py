@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
+import stat
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -219,17 +221,31 @@ def update_notes(slug: str, data_dir: Path, *, pros: str | None = None, cons: st
     safe_write_json(meta, meta_path)
 
 
+def _rmtree_force(path: Path) -> None:
+    # Windows: rmtree dies with WinError 5 on read-only entries (orphan
+    # version dirs restored from backup carry the R attribute) — clear the
+    # bit and retry.
+    def _clear_ro(func, p, _exc):
+        os.chmod(p, stat.S_IWRITE)
+        func(p)
+
+    try:
+        shutil.rmtree(path, onexc=_clear_ro)  # 3.12+
+    except TypeError:
+        shutil.rmtree(path, onerror=_clear_ro)
+
+
 def delete_version(slug: str, data_dir: Path) -> None:
     _validate_slug(slug)
     vdir = versions_dir(data_dir) / slug
     if vdir.exists() and vdir.is_dir():
-        shutil.rmtree(vdir)
+        _rmtree_force(vdir)
 
 
 def delete_all_versions(data_dir: Path) -> None:
     vd = versions_dir(data_dir)
     if vd.exists():
-        shutil.rmtree(vd)
+        _rmtree_force(vd)
         vd.mkdir(parents=True, exist_ok=True)
 
 

@@ -98,3 +98,20 @@ def test_max_reached_without_orphans_keeps_plain_message(tmp_path):
         save_version("overflow", empty_calendar(), {"composite": None}, dd)
     assert "orphan" not in str(exc.value)
     assert f"Maximum of {MAX_VERSIONS}" in str(exc.value)
+
+
+def test_delete_clears_windows_readonly_orphan(tmp_path):
+    # Walkthrough follow-up: real orphans carried the R attribute, so
+    # shutil.rmtree died with WinError 5 (Access is denied) from the UI.
+    import os
+    import stat
+
+    dd = _dd(tmp_path)
+    orphan = dd / "versions" / "readonly_leftover"
+    orphan.mkdir()
+    inner = orphan / "stub.txt"
+    inner.write_text("x", encoding="utf-8")
+    os.chmod(inner, stat.S_IREAD)
+    os.chmod(orphan, stat.S_IREAD)
+    delete_version("readonly_leftover", dd)
+    assert not orphan.exists()
