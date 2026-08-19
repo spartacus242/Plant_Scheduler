@@ -1,4 +1,4 @@
-# register_overnight.ps1 — create the Windows Task Scheduler entry
+# register_overnight.ps1 - create the Windows Task Scheduler entry
 # "Flowstate Overnight Optimizer": daily 19:00, venv python running
 # scripts/overnight_batch.py, working directory = repo root.
 #
