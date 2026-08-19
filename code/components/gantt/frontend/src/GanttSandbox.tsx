@@ -19,7 +19,7 @@ import { computeDragPreview, computeInsertPlan, type DragPreview, type InsertCon
 import { isDouble, groupOf, sideOf } from "./utils/abLines";
 import { buildRows } from "./utils/ganttRows";
 import { skuColor, skuTextColor, blockLabel } from "./utils/colors";
-import { coFlagLabels, planPlacement, remainingDemandBySku, splitPlacementByOrders } from "./utils/skuPicker";
+import { coFlagsForPair, planPlacement, remainingDemandBySku, splitPlacementByOrders } from "./utils/skuPicker";
 import { setComponentValue, setFrameHeight } from "./streamlit";
 
 import { GanttChart } from "./components/GanttChart";
@@ -637,8 +637,8 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         desc: args.skuDescriptions?.[c.sku] ?? "",
         remainingKg: rem,
         plan,
-        inFlags: plan.prevSku ? coFlagLabels(args.coFlags?.[`${plan.prevSku}|${c.sku}`]) : [],
-        outFlags: plan.nextSku ? coFlagLabels(args.coFlags?.[`${c.sku}|${plan.nextSku}`]) : [],
+        inFlags: plan.prevSku ? coFlagsForPair(args.coFlags, plan.prevSku, c.sku) : [],
+        outFlags: plan.nextSku ? coFlagsForPair(args.coFlags, c.sku, plan.nextSku) : [],
       });
     }
     rows.sort((a, b) => b.remainingKg - a.remainingKg);

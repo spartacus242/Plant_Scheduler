@@ -32,6 +32,20 @@ export function coFlagLabels(mask: number | undefined): string[] {
   return CO_FLAG_BITS.filter((f) => m & f.bit).map((f) => f.label);
 }
 
+/** Chips for the FROM|TO transition, or null when the pair is absent from
+ * coFlags — build_co_flags only covers demand-plan pairs, so a missing key
+ * means UNKNOWN, not clean (the chip renders "?"). A same-SKU "transition"
+ * is no changeover at all: honestly clean regardless of the table. */
+export function coFlagsForPair(
+  coFlags: Record<string, number> | undefined,
+  from: string,
+  to: string,
+): string[] | null {
+  if (from === to) return [];
+  const mask = coFlags?.[`${from}|${to}`];
+  return mask === undefined ? null : coFlagLabels(mask);
+}
+
 const EPS = 1e-9;
 const round1 = (v: number) => Math.round(v * 10) / 10;
 // Snap UP onto the 0.1h grid (EPS keeps values already on the grid put).

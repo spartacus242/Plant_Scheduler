@@ -55,6 +55,13 @@ r.flags = {
   f5: sp.coFlagLabels(5), f32: sp.coFlagLabels(32),
   f0: sp.coFlagLabels(0), fu: sp.coFlagLabels(undefined),
 };
+r.pairFlags = {
+  known: sp.coFlagsForPair({ "A|B": 5 }, "A", "B"),
+  zero: sp.coFlagsForPair({ "A|B": 0 }, "A", "B"),
+  missing: sp.coFlagsForPair({ "A|B": 5 }, "B", "A"),
+  self: sp.coFlagsForPair({}, "A", "A"),
+  none: sp.coFlagsForPair(undefined, "A", "B"),
+};
 
 // Demand-side helpers: order-id week suffixes count from the demand anchor's
 // ISO week (here W32); today W34 makes -W0/-W1 past, -W2 the current week.
@@ -197,6 +204,15 @@ def test_sku_picker_math(tmp_path):
     assert r["flags"]["f5"] == ["ttp", "tpld"]
     assert r["flags"]["f32"] == ["cin-non"]
     assert r["flags"]["f0"] == [] and r["flags"]["fu"] == []
+
+    # Pair lookup keeps the chips honest: a pair MISSING from the coFlags
+    # table is unknown (null -> "?" chip), never implied clean; a present
+    # 0-mask IS clean; a same-SKU "transition" is no changeover at all.
+    assert r["pairFlags"]["known"] == ["ttp", "tpld"]
+    assert r["pairFlags"]["zero"] == []
+    assert r["pairFlags"]["missing"] is None
+    assert r["pairFlags"]["self"] == []
+    assert r["pairFlags"]["none"] is None
 
     # Remaining demand: past weeks excluded, met orders contribute 0.
     assert r["remaining"] == {"S": 400}

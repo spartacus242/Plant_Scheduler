@@ -17,9 +17,10 @@ export interface PickerRowData {
   desc: string;
   remainingKg: number;
   plan: PlacementPlan;
-  /** Changeover-type chips prev→sku and sku→next. */
-  inFlags: string[];
-  outFlags: string[];
+  /** Changeover-type chips prev→sku and sku→next; null = pair absent from
+   * coFlags (neighbour off the demand plan) — unknown, NOT clean. */
+  inFlags: string[] | null;
+  outFlags: string[] | null;
 }
 
 interface Props {
@@ -44,7 +45,7 @@ const TD: React.CSSProperties = {
 };
 
 const Chips: React.FC<{
-  flags: string[]; setupH: number; against: string | null;
+  flags: string[] | null; setupH: number; against: string | null;
   /** Neighbour block_type when it is a window (CIP etc.) — no setup needed. */
   neighbourType: string | null; arrow: "in" | "out";
 }> = ({ flags, setupH, against, neighbourType, arrow }) => {
@@ -58,19 +59,35 @@ const Chips: React.FC<{
   }
   return (
     <span>
-      {flags.length === 0 && <span style={{ color: "#2e7d32", fontWeight: 600 }}>clean</span>}
-      {flags.map((f) => (
+      {flags === null ? (
+        // Pair not in the coFlags table (neighbour off the demand plan):
+        // the changeover TYPE is unknown — never imply a clean transition.
         <span
-          key={f}
+          title="no changeover data for this pair"
           style={{
-            display: "inline-block", padding: "0 5px", marginRight: 3,
-            borderRadius: 3, background: "#fff3e0", color: "#e65100",
+            display: "inline-block", padding: "0 6px", marginRight: 3,
+            borderRadius: 3, background: "#eceff1", color: "#607d8b",
             fontSize: 10.5, fontWeight: 700, lineHeight: "16px",
           }}
         >
-          {f}
+          ?
         </span>
-      ))}
+      ) : flags.length === 0 ? (
+        <span style={{ color: "#2e7d32", fontWeight: 600 }}>clean</span>
+      ) : (
+        flags.map((f) => (
+          <span
+            key={f}
+            style={{
+              display: "inline-block", padding: "0 5px", marginRight: 3,
+              borderRadius: 3, background: "#fff3e0", color: "#e65100",
+              fontSize: 10.5, fontWeight: 700, lineHeight: "16px",
+            }}
+          >
+            {f}
+          </span>
+        ))
+      )}
       {setupH > 0 && <span style={{ color: "#888", fontSize: 11 }}> +{setupH}h</span>}
     </span>
   );

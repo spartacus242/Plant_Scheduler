@@ -122,7 +122,8 @@ export interface SandboxArgs {
    * built by helpers.calendar_io.build_line_capable_skus. */
   lineCapableSkus?: Record<string, { sku: string; rate: number }[]>;
   /** "FROM|TO" -> changeover-type bitmask (helpers.calendar_io.build_co_flags;
-   * bit order in utils/skuPicker.CO_FLAG_BITS). Missing pair = no flags. */
+   * bit order in utils/skuPicker.CO_FLAG_BITS). The table only covers
+   * demand-plan pairs: a missing pair is UNKNOWN (renders "?"), not clean. */
   coFlags?: Record<string, number>;
   /** sku -> designation from sku_info (demand SKUs only) for picker rows. */
   skuDescriptions?: Record<string, string>;
