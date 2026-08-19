@@ -16,9 +16,10 @@ import { isCapable, recalcDuration, findOverlapsOnLine } from "./utils/validatio
 import { LINE_HEIGHT, MIN_HOUR_WIDTH, MAX_HOUR_WIDTH, snapToHour, fitToWidth, xToHour, hourToStamp, displayOrderId, setDemandBaseWeek, isoWeekLabel, isoWeekAtHour, isPastDemandWeek } from "./utils/layout";
 import { getRate } from "./utils/validation";
 import { computeDragPreview, computeInsertPlan, type DragPreview, type InsertContext } from "./utils/dragPreview";
-import { isDouble } from "./utils/abLines";
+import { isDouble, groupOf, sideOf } from "./utils/abLines";
 import { buildRows } from "./utils/ganttRows";
 import { skuColor, skuTextColor, blockLabel } from "./utils/colors";
+import { coFlagLabels, planPlacement, remainingDemandBySku, splitPlacementByOrders } from "./utils/skuPicker";
 import { setComponentValue, setFrameHeight } from "./streamlit";
 
 import { GanttChart } from "./components/GanttChart";
@@ -27,6 +28,7 @@ import { Palette } from "./components/Palette";
 import { AdherenceTable } from "./components/AdherenceTable";
 import { ContextMenu } from "./components/ContextMenu";
 import { BlockPopover } from "./components/BlockPopover";
+import { SkuPickerPopover, type PickerRowData } from "./components/SkuPickerPopover";
 import { DragPreviewBadge } from "./components/DragPreviewBadge";
 
 interface Props {
@@ -565,6 +567,112 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     [schedule, cipWindows],
   );
 
+  // ── Blank-space SKU picker (user request 2026-08-19) ──
+  // RIGHT-click on an empty gap lists demand-plan SKUs the line can run,
+  // with the changeover types the placement would create and a snap-left
+  // plan. Left-click keeps its existing deselect behavior.
+  const [picker, setPicker] = useState<{
+    lineName: string; lineId: number; hour: number; x: number; y: number;
+  } | null>(null);
+  const handleEmptyContextMenu = useCallback(
+    (e: React.MouseEvent, lineName: string, lineId: number, hour: number) => {
+      closeMenu();
+      setPopover(null);
+      setPicker({ lineName, lineId, hour, x: e.clientX, y: e.clientY });
+    },
+    [closeMenu],
+  );
+
+  const pickerRows = useMemo<PickerRowData[]>(() => {
+    if (!picker) return [];
+    const adh = computeAdherence(schedule, args.demandTargets, args.capabilities, coveredByOrder);
+    const remaining = remainingDemandBySku(adh, anchor);
+    // Candidates: server list (capable==1 ∩ demand plan); derived from the
+    // caps map when the mounting page sent none (generate / compare).
+    let cands = args.lineCapableSkus?.[picker.lineName];
+    if (!cands || cands.length === 0) {
+      const demSkus = [...new Set(args.demandTargets.map((d) => d.sku))];
+      cands = demSkus
+        .map((sku) => ({ sku, rate: getRate(picker.lineName, sku, caps) }))
+        .filter((c) => c.rate > 0);
+    }
+    const group = groupOf(picker.lineName);
+    // Blocks sharing the clicked ROW. Side-named WINDOWS (P17A down) are
+    // excluded: they only halve the rate, which qtyOverWindow already
+    // integrates via sideDowntime — they do not forbid placement.
+    const blocksOnLine = [...schedule, ...cipWindows].filter(
+      (b) => groupOf(b.line_name) === group &&
+        !(isWindowBlock(b.block_type) && sideOf(b.line_name)),
+    );
+    const nowH = (Date.now() - anchor.getTime()) / 3600_000;
+    const rows: PickerRowData[] = [];
+    for (const c of cands) {
+      const rem = remaining[c.sku] ?? 0;
+      if (rem <= 0) continue; // fully covered: not offered
+      const rate = c.rate > 0 ? c.rate : getRate(picker.lineName, c.sku, caps);
+      const plan = planPlacement({
+        clickHour: picker.hour,
+        sku: c.sku,
+        rate,
+        remainingKg: rem,
+        blocksOnLine,
+        changeovers: args.changeovers ?? {},
+        lockedThroughH,
+        nowH,
+        horizonH: horizon,
+        minRunH: args.config.min_run_hours,
+        lineGroup: group,
+        downtime,
+      });
+      rows.push({
+        sku: c.sku,
+        desc: args.skuDescriptions?.[c.sku] ?? "",
+        remainingKg: rem,
+        plan,
+        inFlags: plan.prevSku ? coFlagLabels(args.coFlags?.[`${plan.prevSku}|${c.sku}`]) : [],
+        outFlags: plan.nextSku ? coFlagLabels(args.coFlags?.[`${c.sku}|${plan.nextSku}`]) : [],
+      });
+    }
+    rows.sort((a, b) => b.remainingKg - a.remainingKg);
+    return rows;
+  }, [picker, schedule, cipWindows, args.demandTargets, args.capabilities,
+      args.changeovers, args.lineCapableSkus, args.skuDescriptions, args.coFlags,
+      coveredByOrder, anchor, lockedThroughH, horizon, caps, downtime,
+      args.config.min_run_hours]);
+
+  const handlePickerPlace = useCallback(
+    (row: PickerRowData) => {
+      if (!picker || row.plan.reason) return;
+      const { startHour, durationH, qtyKg } = row.plan;
+      const allBlocks = [...schedule, ...cipWindows];
+      // Belt and braces: the plan is gap-derived, but the board may have
+      // changed under the open popup.
+      if (findOverlapsOnLine(allBlocks, picker.lineName, "", startHour, startHour + durationH)) {
+        reject(`Overlap on ${picker.lineName} at ${hourToStamp(startHour, anchor)}`);
+        setPicker(null);
+        return;
+      }
+      // One placement, one undo step — but split into per-order segments so
+      // every kg credits the demand order it actually fills (adherence and
+      // the holding rebuild are per order; one big block on one order would
+      // leave the other weeks' cards standing).
+      const adh = computeAdherence(schedule, args.demandTargets, args.capabilities, coveredByOrder);
+      const segments = splitPlacementByOrders(
+        row.sku, { startHour, durationH, qtyKg }, adh, args.demandTargets, anchor,
+      );
+      if (!segments.length) {
+        reject(`No open demand order for ${row.sku}`);
+        setPicker(null);
+        return;
+      }
+      setErrorMsg(null);
+      actions.addProduction(picker.lineName, picker.lineId, row.sku, row.desc, segments);
+      setPicker(null);
+    },
+    [picker, schedule, cipWindows, args.demandTargets, args.capabilities,
+     coveredByOrder, anchor, actions, reject],
+  );
+
   // Typed edits from the popover (start / duration / tonnage). Same guards as
   // a drag: locked blocks reject, min-run enforced, overlaps reject. Returns
   // null when committed (popover closes) or the rejection reason — the
@@ -906,14 +1014,37 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   // rescoring, holding rebuild and the full scorecard run once.
   const lastPushed = useRef("");
   const [dirty, setDirty] = useState(false);
+  const adoptingHolding = useRef(false);
   useEffect(() => {
     const key = JSON.stringify({ schedule, cipWindows, holdingArea, lastAction });
     if (lastPushed.current === "") {
       lastPushed.current = key; // initial mount is not an edit
       return;
     }
+    if (adoptingHolding.current) {
+      // Server-derived holding adoption is NOT a user edit — fold it into
+      // the pushed-state key so the dirty flag stays honest.
+      adoptingHolding.current = false;
+      lastPushed.current = key;
+      return;
+    }
     if (key !== lastPushed.current) setDirty(true);
   }, [schedule, cipWindows, holdingArea, lastAction]);
+
+  // After a Refresh push, Python rebuilds the holding area (cards clear when
+  // the placed kg covers an order) and re-renders the component with the new
+  // holdingArea arg — WITHOUT remounting, so client state must adopt it or
+  // the cards on screen stay stale. Never adopt over unpushed edits: the
+  // planner's in-flight drags win and the next push re-derives anyway.
+  const lastServerHolding = useRef(JSON.stringify(args.holdingArea ?? []));
+  useEffect(() => {
+    const incoming = JSON.stringify(args.holdingArea ?? []);
+    if (incoming === lastServerHolding.current) return;
+    if (dirty) return; // retry once the edits are pushed
+    lastServerHolding.current = incoming;
+    adoptingHolding.current = true;
+    actions.setHoldingFromServer(args.holdingArea ?? []);
+  }, [args.holdingArea, dirty, actions]);
   const pushRefresh = useCallback(() => {
     lastPushed.current = JSON.stringify({ schedule, cipWindows, holdingArea, lastAction });
     setDirty(false);
@@ -929,7 +1060,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     const handler = (e: KeyboardEvent) => {
       if (e.ctrlKey && e.key === "z") { e.preventDefault(); actions.undo(); }
       if (e.ctrlKey && e.key === "y") { e.preventDefault(); actions.redo(); }
-      if (e.key === "Escape") { closeMenu(); setPopover(null); setHighlightSku(null); setErrorMsg(null); }
+      if (e.key === "Escape") { closeMenu(); setPopover(null); setPicker(null); setHighlightSku(null); setErrorMsg(null); }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -949,7 +1080,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     <div
       ref={containerRef}
       style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}
-      onClick={() => { closeMenu(); setPopover(null); }}
+      onClick={() => { closeMenu(); setPopover(null); setPicker(null); }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <div style={{ flex: 1 }}>
@@ -1055,11 +1186,16 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           svgRef={chartSvgRef}
           onResizeStart={guardedStartResize}
           onContextMenu={handleContextMenu}
+          onEmptyContextMenu={handleEmptyContextMenu}
           onBlockClick={handleBlockClick}
           onZoomIn={zoomIn}
           onZoomOut={zoomOut}
           onResetZoom={resetZoom}
         />
+        <div style={{ fontSize: 11, color: "#8a94a0", marginTop: 2 }}>
+          Right-click an empty gap on a line to add a demand-plan SKU there
+          (snaps left, changeover setup respected).
+        </div>
 
         <div style={{ marginTop: 8 }}>
           <HoldingArea blocks={holdingArea} anchor={anchor} skuFormats={args.skuFormats ?? {}} />
@@ -1132,6 +1268,19 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         minRunHours={args.config.min_run_hours}
         anchor={anchor}
       />
+
+      {picker && (
+        <SkuPickerPopover
+          lineName={picker.lineName}
+          hour={picker.hour}
+          x={picker.x}
+          y={picker.y}
+          anchor={anchor}
+          rows={pickerRows}
+          onPlace={handlePickerPlace}
+          onClose={() => setPicker(null)}
+        />
+      )}
 
       {popover && (
         <BlockPopover

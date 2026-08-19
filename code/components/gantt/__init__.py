@@ -31,6 +31,9 @@ def gantt_calendar(
     side_downtime: Optional[Dict[str, List[List[float]]]] = None,
     sku_formats: Optional[Dict[str, str]] = None,
     kpis: Optional[Dict[str, Any]] = None,
+    line_capable_skus: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    co_flags: Optional[Dict[str, int]] = None,
+    sku_descriptions: Optional[Dict[str, str]] = None,
     height: int = 800,
     key: str = "gantt_calendar",
 ) -> Optional[Dict[str, Any]]:
@@ -43,6 +46,11 @@ def gantt_calendar(
     `kpis` is the canonical KPI payload from helpers.scorecard_engine.gantt_kpis
     (computed with scorecard rules). The frontend renders it verbatim until the
     user edits, then recomputes live with the same rules via its co_pairs map.
+
+    `line_capable_skus` / `co_flags` / `sku_descriptions` feed the blank-space
+    SKU picker (right-click a gap): candidates per line and the changeover-type
+    bitmask per SKU pair — build with helpers.calendar_io.build_line_capable_skus
+    / build_co_flags.
 
     Returns None until interaction, then schedule / cipWindows / holdingArea / lastAction.
     """
@@ -57,6 +65,9 @@ def gantt_calendar(
         sideDowntime=side_downtime or {},
         skuFormats=sku_formats or {},
         kpis=kpis,
+        lineCapableSkus=line_capable_skus or {},
+        coFlags=co_flags or {},
+        skuDescriptions=sku_descriptions or {},
         config=config or {
             "planning_anchor": "2026-02-15 00:00:00",
             "cip_duration_h": 6,

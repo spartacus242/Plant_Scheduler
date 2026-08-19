@@ -12,6 +12,7 @@ import {
   LINE_HEIGHT,
   HEADER_HEIGHT,
   LINE_LABEL_WIDTH,
+  xToHour,
 } from "../utils/layout";
 import type { ResizeState } from "../hooks/useBlockResize";
 import type { InsertPlan } from "../utils/dragPreview";
@@ -35,6 +36,9 @@ interface Props {
   svgRef?: React.RefObject<SVGSVGElement | null>;
   onResizeStart: (blockId: string, edge: "left" | "right", startH: number, endH: number, clientX: number, hourWidth: number) => void;
   onContextMenu: (e: React.MouseEvent, blockId: string) => void;
+  /** Right-click on EMPTY row space: opens the blank-space SKU picker at
+   * that (line, hour). Blocks stop propagation, so this only fires on gaps. */
+  onEmptyContextMenu?: (e: React.MouseEvent, lineName: string, lineId: number, hour: number) => void;
   onBlockClick: (blockId: string) => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
@@ -124,7 +128,7 @@ const LineLabelsOverlay: React.FC<{ rows: GanttRow[]; svgHeight: number }> = ({ 
 export const GanttChart: React.FC<Props> = ({
   schedule, cipWindows, lines, viewStart, viewEnd, hourWidth, anchor,
   resizing, highlightSku, capableLines, lockedThroughH, insertPreview, svgRef: externalSvgRef,
-  onResizeStart, onContextMenu, onBlockClick, onZoomIn, onZoomOut, onResetZoom,
+  onResizeStart, onContextMenu, onEmptyContextMenu, onBlockClick, onZoomIn, onZoomOut, onResetZoom,
 }) => {
   const localSvgRef = useRef<SVGSVGElement>(null);
   const svgRef = externalSvgRef ?? localSvgRef;
@@ -192,6 +196,27 @@ export const GanttChart: React.FC<Props> = ({
 
   const allBlocks = [...schedule, ...cipWindows];
 
+  // Right-click on empty chart space -> (line, hour) for the SKU picker.
+  // Blocks call stopPropagation in their own handler, so reaching the svg
+  // means the click landed on a gap (or the header/label strip, filtered out).
+  const handleSvgContextMenu = React.useCallback(
+    (e: React.MouseEvent<SVGSVGElement>) => {
+      if (!onEmptyContextMenu) return;
+      const svg = svgRef.current;
+      if (!svg) return;
+      e.preventDefault(); // no browser menu anywhere on the chart
+      const rect = svg.getBoundingClientRect();
+      const xIn = e.clientX - rect.left;
+      const yIn = e.clientY - rect.top;
+      const rowIdx = Math.floor((yIn - HEADER_HEIGHT) / LINE_HEIGHT);
+      if (xIn <= LINE_LABEL_WIDTH || rowIdx < 0 || rowIdx >= rows.length) return;
+      const hour = xToHour(xIn, viewStart, hourWidth);
+      if (hour < viewStart || hour > viewEnd) return;
+      onEmptyContextMenu(e, rows[rowIdx].name, rows[rowIdx].lineId, hour);
+    },
+    [onEmptyContextMenu, rows, viewStart, viewEnd, hourWidth, svgRef],
+  );
+
   return (
     <>
       {/* HTML zoom controls — above the SVG */}
@@ -206,7 +231,7 @@ export const GanttChart: React.FC<Props> = ({
         .gantt-scroll::-webkit-scrollbar-thumb:hover { background: #607d8b; }
       `}</style>
       <div ref={scrollRef} onScroll={handleScroll} className="gantt-scroll" style={{ overflowX: "auto", overflowY: "auto", maxHeight: 640, width: "100%", border: "1px solid #e0e0e5", borderRadius: 8 }}>
-        <svg ref={svgRef as React.RefObject<SVGSVGElement>} width={svgWidth} height={svgHeight} style={{ display: "block" }}>
+        <svg ref={svgRef as React.RefObject<SVGSVGElement>} width={svgWidth} height={svgHeight} style={{ display: "block" }} onContextMenu={handleSvgContextMenu}>
           {/* Time axis body layer: gridlines that scroll with the rows */}
           <TimeAxisSvg
             viewStart={viewStart}

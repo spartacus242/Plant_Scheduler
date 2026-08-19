@@ -306,6 +306,68 @@ def _block_row(b: dict, btype: str) -> dict:
     }
 
 
+# Changeover-flag bitmask bit order (bit i = column i) — mirrored in the
+# Gantt frontend (utils/skuPicker.ts CO_FLAG_BITS); change both or neither.
+CO_FLAG_COLUMNS = (
+    "ttp_change",
+    "ffs_change",
+    "topload_change",
+    "casepacker_change",
+    "conv_to_org_change",
+    "cinn_to_non",
+)
+
+
+def build_co_flags(changeovers_csv: Path, demand_skus: set[str]) -> dict[str, int]:
+    """{"FROM|TO": bitmask} of changeover-type flags for SKU pairs where both
+    sides appear in the demand plan — data for the blank-space SKU picker.
+
+    Setup hours are NOT duplicated here: the Gantt already receives the full
+    setup matrix (`changeovers`). Zero-mask pairs are omitted — the client
+    reads a missing pair as "no machine touched".
+    """
+    if not changeovers_csv.exists() or not demand_skus:
+        return {}
+    df = pd.read_csv(changeovers_csv, dtype={"from_sku": str, "to_sku": str})
+    df = df[df["from_sku"].isin(demand_skus) & df["to_sku"].isin(demand_skus)]
+    for col in CO_FLAG_COLUMNS:
+        if col not in df.columns:
+            df[col] = 0
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+    out: dict[str, int] = {}
+    for r in df.itertuples(index=False):
+        mask = 0
+        for i, col in enumerate(CO_FLAG_COLUMNS):
+            if getattr(r, col):
+                mask |= 1 << i
+        if mask:
+            out[f"{r.from_sku}|{r.to_sku}"] = mask
+    return out
+
+
+def build_line_capable_skus(
+    caps_csv: Path, demand_skus: set[str]
+) -> dict[str, list[dict]]:
+    """{line_name: [{"sku", "rate"}]} of demand-plan SKUs each line can run
+    (capable == 1) — candidate list for the blank-space SKU picker."""
+    if not caps_csv.exists() or not demand_skus:
+        return {}
+    df = pd.read_csv(caps_csv, dtype={"sku": str})
+    if "calc_rate_kgph" not in df.columns and "rate_kgph" in df.columns:
+        df = df.rename(columns={"rate_kgph": "calc_rate_kgph"})
+    df["capable"] = pd.to_numeric(df.get("capable", 0), errors="coerce").fillna(0)
+    df["calc_rate_kgph"] = pd.to_numeric(
+        df.get("calc_rate_kgph", 0), errors="coerce").fillna(0)
+    out: dict[str, list[dict]] = {}
+    for r in df.itertuples(index=False):
+        sku = str(r.sku)
+        if int(r.capable) != 1 or sku not in demand_skus:
+            continue
+        out.setdefault(str(r.line_name), []).append(
+            {"sku": sku, "rate": float(r.calc_rate_kgph)})
+    return out
+
+
 def drop_display_overlays(df: pd.DataFrame) -> pd.DataFrame:
     """Remove display-only overlay blocks before a save.
 

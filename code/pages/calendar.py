@@ -14,6 +14,8 @@ if str(BASE_DIR) not in sys.path:
 
 from components.gantt import gantt_calendar
 from helpers.calendar_io import (
+    build_co_flags,
+    build_line_capable_skus,
     calendar_to_gantt_payload,
     drop_display_overlays,
     ensure_lines_from_calendar,
@@ -541,8 +543,12 @@ if _lock_dt is not None:
             "blocks starting before then are committed to the plant "
             "(no drag/resize/edit).")
 
-# sku -> pack format (e.g. "6X12X90") for the holding-area card text
+# sku -> pack format (e.g. "6X12X90") for the holding-area card text, plus
+# sku -> designation for the blank-space SKU picker rows (demand SKUs only —
+# the picker offers nothing else, so the payload stays lean).
 _fmt_map: dict[str, str] = {}
+_desc_map: dict[str, str] = {}
+_dem_skus = {str(t["sku"]) for t in demand_targets}
 _sku_info_path = dd / "reference" / "sku_info.csv"
 if _sku_info_path.exists():
     try:
@@ -554,8 +560,22 @@ if _sku_info_path.exists():
                 if str(r.get("format", "")).strip()
                 and str(r.get("format", "")).lower() != "nan"
             }
+        if "designation" in _si.columns:
+            _desc_map = {
+                str(r["sku"]): str(r["designation"]).strip()
+                for _, r in _si.iterrows()
+                if str(r["sku"]) in _dem_skus
+                and str(r.get("designation", "")).strip()
+                and str(r.get("designation", "")).lower() != "nan"
+            }
     except Exception:
         _fmt_map = {}
+        _desc_map = {}
+
+# Blank-space SKU picker payloads: demand-plan SKUs each line can run and the
+# changeover-type bitmask per SKU pair (setup hours ride in `changeovers`).
+_line_capable = build_line_capable_skus(caps_path, _dem_skus)
+_co_flags = build_co_flags(co_path, _dem_skus)
 
 # Canonical KPI payload — same engine (scorecard_engine) as the scorecard
 # rendered below, so the Gantt KPI bar and the scorecard cannot disagree.
@@ -575,6 +595,9 @@ state = gantt_calendar(
     side_downtime=side_downtime,
     sku_formats=_fmt_map,
     kpis=server_kpis,
+    line_capable_skus=_line_capable,
+    co_flags=_co_flags,
+    sku_descriptions=_desc_map,
     config={
         "planning_anchor": f"{_anchor:%Y-%m-%d %H:%M:%S}",
         "cip_duration_h": int(cip_cfg.get("duration_h", 6)),
