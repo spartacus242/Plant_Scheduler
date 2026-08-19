@@ -88,6 +88,26 @@ _RULES: list[dict[str, Any]] = [
                 "changeover. The line's max CIP interval always stays hard.",
     ),
     dict(
+        # Promoted from fixed rule 2026-08-19: the old hardcoded over_sum*50
+        # claimed "5%" but missed the x1000 production scaling — it was
+        # really ~0.005%. Now an honest percentage; 0.0 default preserves
+        # the near-zero behavior every tuned run actually had.
+        id="over_target_reward_pct", group=GROUP_KNOB, ui="exposed",
+        name="Over-target reward (Scenario F)",
+        config="objective.over_target_reward_pct", default=0.0,
+        where="model_builder.py soft_demand branch (over_sum coefficient); "
+              "[objective] over_target_reward_pct",
+        planner="Soft-demand fill only: reward for kg ABOVE an order's "
+                "target (toward its max), as a % of the per-kg value of "
+                "real demand. 0 = never overproduce on purpose. 5 = the "
+                "solver treats 100 kg of overrun as worth 5 kg of real "
+                "demand — a nudge to top up spare line-time, NOT a "
+                "fulfillment gain: fulfillment is capped at target; the "
+                "extra kg build inventory. Kg up to target always pay full "
+                "weight, so meeting ALL targets still beats over-filling "
+                "any one order; qty_max stays the hard wall.",
+    ),
+    dict(
         id="topload_weight", group=GROUP_KNOB, ui="exposed",
         name="Topload change cost",
         config="changeover.topload_weight", default=50,
@@ -383,19 +403,6 @@ _RULES: list[dict[str, Any]] = [
         planner="In fill/maximize modes, produced kilograms outrank every "
                 "preference (changeovers, makespan, idle): the solver "
                 "never trades real tonnage for a nicer-looking plan.",
-    ),
-    dict(
-        id="soft_demand_tiers", group=GROUP_FIXED, ui="don't expose",
-        name="Soft-demand two-tier reward (Scenario F)",
-        value="kg up to target: full weight; kg past target: ~0.005%",
-        where="model_builder.py soft_demand branch (qty_target cap, "
-              "over_sum * 50)",
-        planner="Every kg up to an order's 100% target pays full weight, "
-                "so meeting ALL targets beats over-filling any one order. "
-                "Kg between target and the 110% cap earn almost nothing. "
-                "NOTE: the code comment says 5%, but after the x1000 "
-                "production scaling the effective ratio is ~0.005% — "
-                "over-fill is a near-pure tiebreaker today.",
     ),
     dict(
         id="week_gradient", group=GROUP_FIXED, ui="don't expose",
