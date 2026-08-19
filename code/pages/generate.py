@@ -39,6 +39,7 @@ from helpers.scorecard_engine import (
     score_calendar,
     scoring_inputs_signature,
 )
+from helpers.overnight_ui import render_overnight_results
 from helpers.solver_rules import render_solver_rulebook
 from helpers import solver_live
 from helpers.scorecard_ui import render_scorecard
@@ -465,6 +466,8 @@ for v in list_versions(dd):
     sc = (v.get("scorecard") or {}).get("composite")
     st.write(f"- **{display_name(v['slug'], v.get('name'))}** (`{v['slug']}`) · composite={sc} · {v.get('source', '')}")
 
+# Overnight results — silent no-op until the batch has written data/optimizer/.
+render_overnight_results(dd)
 
 st.divider()
 _show_diag = st.toggle(
