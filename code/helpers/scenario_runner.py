@@ -81,7 +81,7 @@ _COMMON_KNOBS = [
     {
         "param": "objective.cip_defer_weight",
         "config": "objective.cip_defer_weight",
-        "effect": "Bonus (subtracted) per hour a CIP is deferred into an existing gap. Raise to absorb CIP into downtime.",
+        "effect": "Reward per hour a CIP STARTS LATER — CIPs drift toward their legal deadline instead of being dumped at hour 0. The line's max CIP interval stays hard.",
     },
     {
         "param": "objective.late_weight",
@@ -193,7 +193,16 @@ OVERRIDE_SECTIONS: dict[str, str] = {
     "conv_org_weight": "changeover",
     "cinn_weight": "changeover",
     "flavor_weight": "changeover",
+    # Solve rules (hard constraints), not objective weights. They ride the
+    # same toml patch: [scheduler] -> phase2_scheduler.params_from_config -> P.
+    "min_run_hours": "scheduler",
+    "min_run_pct_of_qty": "scheduler",
+    "max_lines_per_order": "scheduler",
 }
+
+# Overrides that are fractions, not integer weights — normalize_overrides
+# must not truncate them (int("0.5") -> 0 would silently erase the floor).
+FLOAT_OVERRIDE_KEYS = {"min_run_pct_of_qty"}
 
 OBJECTIVE_MODES = ("balanced", "min-changeovers", "spread-load")
 
@@ -1051,6 +1060,7 @@ def _greedy_seed(work: Path) -> list[str]:
         "cinn_to_non": float(cw.get("cinn_weight", 30)),
     }
     _base_w = float(cw.get("base_changeover_weight", 5))
+    _flavor_w = float(cw.get("flavor_weight", 5))
     co_cost: dict[str, dict[str, float]] = {}
     co_df = _pd.read_csv(work / "changeovers.csv",
                          dtype={"from_sku": str, "to_sku": str})
@@ -1058,7 +1068,10 @@ def _greedy_seed(work: Path) -> list[str]:
         _c = _base_w + sum(
             w for col, w in _w.items()
             if int(getattr(_r, col, 0) or 0) == 1)
-        co_cost.setdefault(str(_r.from_sku), {})[str(_r.to_sku)] = _c
+        # added_flavors can be negative (removing flavors is a reward);
+        # clamp at 0 exactly like the model's pair_cost (model_builder).
+        _c += _flavor_w * int(getattr(_r, "added_flavors", 0) or 0)
+        co_cost.setdefault(str(_r.from_sku), {})[str(_r.to_sku)] = max(0.0, _c)
 
     blocked: dict[str, list[tuple[float, float]]] = {}
     for _, r in dt.iterrows():
@@ -1105,7 +1118,9 @@ def normalize_overrides(overrides: dict[str, Any] | None) -> dict[str, Any]:
         if key not in OVERRIDE_SECTIONS or value is None:
             continue
         try:
-            clean[key] = int(value)
+            clean[key] = (
+                float(value) if key in FLOAT_OVERRIDE_KEYS else int(value)
+            )
         except (TypeError, ValueError):
             continue
     return clean
