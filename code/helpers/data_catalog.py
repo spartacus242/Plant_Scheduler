@@ -27,6 +27,16 @@ class DataFile:
     filename: str
     blurb: str
     key_columns: tuple = field(default_factory=tuple)
+    # Who OWNS the file's content (drives whether Data Files offers upload):
+    #   "user"    — planner-maintained; upload/replace is the normal flow
+    #   "bridge"  — auto-synced from the live-data repo (fs-live-pull);
+    #               manual uploads would be overwritten on the next pull
+    #   "app"     — written by Flowstate itself (Save / Promote)
+    #   "derived" — rebuilt by an importer from another source file
+    managed_by: str = "user"
+    # True when the live pull ALSO syncs this file: planner edits are
+    # legitimate (capability fixes, downtime editor) but may be overwritten.
+    bridge_synced: bool = False
 
     def path(self, dd: Optional[Path] = None) -> Path:
         base = data_dir() if dd is None else Path(dd)
@@ -44,8 +54,11 @@ CATALOG: tuple = (
         name="Current schedule (calendar blocks)",
         subdir="",
         filename="calendar_blocks.csv",
-        blurb="The plant's own line schedule: what runs on which line, when. Not AZAP -- AZAP only says which SKUs and how many kg.",
+        blurb="The plant's own line schedule: what runs on which line, when. "
+        "Written by Flowstate itself (Save / Promote) — edit it on the Plant "
+        "Calendar, not here.",
         key_columns=("block_id", "block_type", "line_id", "start_h", "end_h"),
+        managed_by="app",
     ),
     DataFile(
         key="lines",
@@ -62,6 +75,17 @@ CATALOG: tuple = (
         filename="capabilities_rates.csv",
         blurb="Which SKUs each line can run, and how fast (kg/hr).",
         key_columns=("line_id", "sku", "capable"),
+        bridge_synced=True,
+    ),
+    DataFile(
+        key="line_rates",
+        name="Line average rates",
+        subdir="reference",
+        filename="line_rates.csv",
+        blurb="Flat per-line average rates (kg/hr) — the rate source when "
+        "use_sku_rates is off; prices forfeited-CIP kg in the scorecard.",
+        key_columns=(),
+        managed_by="bridge",
     ),
     DataFile(
         key="downtimes",
@@ -70,14 +94,18 @@ CATALOG: tuple = (
         filename="downtimes.csv",
         blurb="Planned line-down windows: maintenance, contractors, outages.",
         key_columns=("line_id", "start_hour", "end_hour"),
+        bridge_synced=True,
     ),
     DataFile(
         key="demand_plan",
-        name="Demand plan (AZAP)",
+        name="Demand plan (AZAP, derived)",
         subdir="reference",
         filename="demand_plan.csv",
-        blurb="AZAP: the customer / corporate demand plan -- which SKU, how many kg, which week. It does not assign lines.",
+        blurb="AZAP demand the scorecard/calendar/solver read — REBUILT from "
+        "demand_plan_summary.csv by the import (never hand-edited): which SKU, "
+        "how many kg, which week. It does not assign lines.",
         key_columns=("order_id", "sku", "qty_target"),
+        managed_by="derived",
     ),
     DataFile(
         key="changeovers",
@@ -86,6 +114,7 @@ CATALOG: tuple = (
         filename="changeovers.csv",
         blurb="Setup hours and change flags for every SKU-to-SKU transition.",
         key_columns=("from_sku", "to_sku", "setup_hours"),
+        bridge_synced=True,
     ),
     DataFile(
         key="line_cip_hrs",
@@ -94,14 +123,18 @@ CATALOG: tuple = (
         filename="line_cip_hrs.csv",
         blurb="Maximum run hours per line before a CIP is required.",
         key_columns=("line_id", "max_cip_hrs"),
+        bridge_synced=True,
     ),
     DataFile(
         key="initial_states",
         name="Initial line states",
         subdir="reference",
         filename="initial_states.csv",
-        blurb="Where each line starts: current SKU, available-from hour, CIP carryover.",
+        blurb="Where each line starts: current SKU, available-from hour, CIP "
+        "carryover. Auto-synced from the plant's live data — not a planner "
+        "input.",
         key_columns=("line_id", "initial_sku", "available_from_hour"),
+        managed_by="bridge",
     ),
     DataFile(
         key="sku_info",
@@ -110,6 +143,7 @@ CATALOG: tuple = (
         filename="sku_info.csv",
         blurb="SKU master: description/designation, format, organic / flavor attributes.",
         key_columns=("sku", "designation"),
+        bridge_synced=True,
     ),
     DataFile(
         key="cip_info",
@@ -118,8 +152,10 @@ CATALOG: tuple = (
         filename="cip_info.csv",
         blurb="Per-line CIP state: PreviousCIP (end of the last CIP), "
         "MaxHoursBetweenCIP (food-safety limit), ScheduledCIP (planned next, "
-        "optional), Notes. Drives CIP projection and the per-line interval limit.",
+        "optional), Notes. Drives CIP projection and the per-line interval "
+        "limit. Live plant feed — not a planner input.",
         key_columns=("LineEquipment", "PreviousCIP", "MaxHoursBetweenCIP"),
+        managed_by="bridge",
     ),
 )
 

@@ -102,7 +102,10 @@ def _catalog_statuses(dd: Path) -> list[HealthStatus]:
     for spec in CATALOG:
         # cip_info has a dedicated live-feed rule (path override via Settings,
         # freshness cadence) — the generic catalog row would duplicate it.
-        if spec.key == "cip_info":
+        # line_rates is mode-conditional: the rate_mode semantic already
+        # judges it against use_sku_rates, so the generic MISSING row would
+        # cry wolf in per-SKU mode.
+        if spec.key in ("cip_info", "line_rates"):
             continue
         info = status(spec, dd)
         if not info["exists"]:

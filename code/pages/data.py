@@ -164,6 +164,22 @@ st.caption(
 
 with st.expander("Import demand_plan_summary.csv", expanded=True):
     from helpers.demand_summary_import import import_summary as _imps
+    # Current derived demand at a glance — demand_plan.csv has no upload row
+    # below (it is rebuilt HERE), so its freshness lives here instead.
+    _dem_cur = reference_dir(dd) / "demand_plan.csv"
+    if _dem_cur.exists():
+        try:
+            import json as _dpj
+            _src = _dpj.loads(
+                (reference_dir(dd) / "demand_plan.source.json").read_text(
+                    encoding="utf-8"))
+            _prov = (f"imported {str(_src.get('imported', ''))[:16]} · weeks "
+                     f"{_src.get('weeks')} · anchor W{_src.get('anchor_iso_week')}")
+        except Exception:  # noqa: BLE001 — provenance is best-effort
+            _prov = "no source.json — provenance unknown"
+        _mt = datetime.fromtimestamp(_dem_cur.stat().st_mtime)
+        st.caption(f"Current `demand_plan.csv`: {_prov} · file written "
+                   f"{_mt:%Y-%m-%d %H:%M}")
     _cfg_demand_path = datasources_config().get("demand_summary_csv", "").strip()
     _cfg_demand_ok = bool(_cfg_demand_path) and Path(_cfg_demand_path).exists()
     if _cfg_demand_ok:
@@ -240,64 +256,81 @@ with st.expander("Import demand_plan_summary.csv", expanded=True):
                 st.rerun()
 
 st.divider()
-st.subheader("All input files")
-st.caption(
-    "Upload to replace (backed up first), preview, download. Cell-editing "
-    "lives in Excel — re-upload the file after edits."
-)
 
-for spec in CATALOG:
+
+def _freshness(path: Path) -> str:
+    """'updated 2026-08-14 · 4.9d ago' — scannable staleness in the header."""
+    try:
+        mtime = datetime.fromtimestamp(path.stat().st_mtime)
+    except OSError:
+        return ""
+    age_h = (datetime.now() - mtime).total_seconds() / 3600.0
+    age = f"{age_h:.1f}h ago" if age_h < 48 else f"{age_h / 24.0:.1f}d ago"
+    return f"updated {mtime:%Y-%m-%d} · {age}"
+
+
+def _render_file(spec, *, uploadable: bool) -> None:
     info = status(spec, dd)
     badge = "OK" if info["exists"] and not info["error"] else ("MISSING" if not info["exists"] else "ERROR")
     rows = info["rows"] if info["rows"] is not None else "-"
-    header = f"[{badge}] {spec.name}  --  {spec.rel()}  ({rows} rows)"
+    path = spec.path(dd)
+    fresh = _freshness(path) if info["exists"] else ""
+    header = f"[{badge}] {spec.name}  --  {spec.rel()}  ({rows} rows" \
+        + (f" · {fresh}" if fresh else "") + ")"
 
     with st.expander(header):
         st.caption(spec.blurb)
         if spec.key_columns:
             st.caption("Required columns: " + ", ".join(spec.key_columns))
+        if uploadable and spec.bridge_synced:
+            st.caption(
+                "⚠ Also auto-synced by the live data pull — a manual upload "
+                "here may be overwritten the next time the plant feed lands."
+            )
 
-        path = spec.path(dd)
-
-        # (a) Replace the file with an upload.
-        up = st.file_uploader(
-            "Replace this file",
-            type=["csv"],
-            key=f"up_{spec.key}",
-            label_visibility="collapsed",
-        )
-        if up is not None:
-            raw = up.getvalue()
-            try:
-                new_df = pd.read_csv(io.BytesIO(raw), encoding=CSV_ENCODING, dtype=str, keep_default_na=False)
-            except Exception as exc:
-                new_df = None
-                st.error(f"Not a readable CSV: {type(exc).__name__}: {exc}")
-            if new_df is not None:
-                gaps = missing_columns(new_df, spec)
-                if gaps:
-                    st.error("Missing required column(s): " + ", ".join(gaps))
-                else:
-                    st.success(f"Parsed OK: {len(new_df)} rows, {len(new_df.columns)} columns.")
-                    st.dataframe(new_df.head(10), use_container_width=True, hide_index=True)
-                    if st.button("Overwrite " + spec.filename, key=f"ovr_{spec.key}"):
-                        if path.exists():
-                            b = backup(path)
-                            st.caption(f"Backed up to `{b.name}`")
-                        safe_write_csv(new_df, path)
-                        st.success(f"Replaced {spec.rel()}")
-                        st.rerun()
+        if uploadable:
+            up = st.file_uploader(
+                "Replace this file",
+                type=["csv"],
+                key=f"up_{spec.key}",
+                label_visibility="collapsed",
+            )
+            if up is not None:
+                raw = up.getvalue()
+                try:
+                    new_df = pd.read_csv(io.BytesIO(raw), encoding=CSV_ENCODING, dtype=str, keep_default_na=False)
+                except Exception as exc:
+                    new_df = None
+                    st.error(f"Not a readable CSV: {type(exc).__name__}: {exc}")
+                if new_df is not None:
+                    gaps = missing_columns(new_df, spec)
+                    if gaps:
+                        st.error("Missing required column(s): " + ", ".join(gaps))
+                    else:
+                        st.success(f"Parsed OK: {len(new_df)} rows, {len(new_df.columns)} columns.")
+                        st.dataframe(new_df.head(10), use_container_width=True, hide_index=True)
+                        if st.button("Overwrite " + spec.filename, key=f"ovr_{spec.key}"):
+                            if path.exists():
+                                b = backup(path)
+                                st.caption(f"Backed up to `{b.name}`")
+                            safe_write_csv(new_df, path)
+                            st.success(f"Replaced {spec.rel()}")
+                            st.rerun()
 
         if not info["exists"]:
-            st.warning("File does not exist yet -- upload one above.")
-            continue
+            if uploadable:
+                st.warning("File does not exist yet -- upload one above.")
+            else:
+                st.warning("File does not exist yet — it arrives with the "
+                           "live data pull / the app writes it.")
+            return
         if info["error"]:
             st.error(f"Could not read the file: {info['error']}")
-            continue
+            return
 
         df = read_csv(spec, dd)
 
-        # (b) Read-only preview + download. The in-browser cell editor was
+        # Read-only preview + download. The in-browser cell editor was
         # developer furniture — planner edits happen in Excel and come back
         # through the upload above (every write is backed up first).
         st.dataframe(df.head(20), use_container_width=True, hide_index=True)
@@ -310,3 +343,31 @@ for spec in CATALOG:
             mime="text/csv",
             key=f"dl_{spec.key}",
         )
+
+
+# Planner inputs: files a person maintains — upload/replace is the normal
+# flow. Auto-maintained files (live-feed synced, app-written, or derived by
+# the demand import) are shown below for freshness/preview only: uploading
+# over them was a footgun (user request 2026-08-19 — initial_states.csv is
+# plant data, demand_plan.csv is rebuilt from the summary import above).
+_user_specs = [s for s in CATALOG if s.managed_by == "user"]
+_auto_specs = [s for s in CATALOG
+               if s.managed_by in ("bridge", "app") ]
+# demand_plan (managed_by="derived") is deliberately NOT listed — its whole
+# UI is the summary import section above; its freshness shows there.
+
+st.subheader("Planner input files")
+st.caption(
+    "Upload to replace (backed up first), preview, download. Cell-editing "
+    "lives in Excel — re-upload the file after edits."
+)
+for spec in _user_specs:
+    _render_file(spec, uploadable=True)
+
+st.subheader("Auto-maintained files (read-only)")
+st.caption(
+    "Synced by the live data pull or written by Flowstate itself — shown "
+    "here so stale feeds are visible, not for editing."
+)
+for spec in _auto_specs:
+    _render_file(spec, uploadable=False)

@@ -12,7 +12,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from helpers.calendar_io import load_calendar, save_calendar
+from helpers.calendar_io import load_calendar
 from helpers.labels import display_name
 from helpers.paths import data_dir, versions_dir
 from helpers.scorecard_engine import (
@@ -558,22 +558,20 @@ for v in versions:
             render_scorecard(sc, show_formulas=False)
 
         new_name = st.text_input("Rename", value=display_name(slug, v.get("name")), key=f"rename_{slug}")
-        a, b, c, d = st.columns(4)
+        # "Load into calendar" was removed 2026-08-19: it wrote the SAME
+        # calendar_blocks.csv as Promote but WITHOUT the pre-promote backup —
+        # a worse duplicate (user spotted the redundancy). Promote is the one
+        # action that makes a version official; the side-by-side preview
+        # above is the what-if view.
+        a, c, d = st.columns(3)
         if a.button("Rename", key=f"do_rename_{slug}"):
             rename_version(slug, new_name, dd)
             st.rerun()
-        if b.button("Load into calendar", key=f"load_{slug}"):
-            from helpers.version_manager import calendar_in_board_frame
-            data = load_version(slug, dd)
-            _cal_bf, _shift = calendar_in_board_frame(
-                data["calendar"], slug, dd)
-            save_calendar(_cal_bf, dd / "calendar_blocks.csv")
-            _note = (f" (hours re-based {_shift:+.0f}h into the board's "
-                     "frame)" if _shift else "")
-            st.success(f"Loaded into official calendar_blocks.csv{_note}")
         if c.button("Promote to official", key=f"promo_{slug}"):
             promote_version(slug, dd)
-            st.success("Promoted")
+            st.success("Promoted — the previous official board was backed up "
+                       "to data/_backups first. Open the Plant Calendar to "
+                       "work with it.")
         if d.button("Delete", key=f"del_{slug}"):
             delete_version(slug, dd)
             st.rerun()
