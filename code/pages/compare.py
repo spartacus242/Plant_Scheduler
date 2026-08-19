@@ -332,7 +332,6 @@ sections = [
     ("changeovers", "recipe_changes", "Recipe COs", False),
     ("changeovers", "format_changes", "Format COs", False),
     ("changeovers", "total_co_hours", "CO hours", False),
-    ("cip", "cip_count", "CIP count", False),
     ("cip", "cip_hours", "CIP hours", False),
     ("cip", "cip_forfeited_h", "CIP forfeited h", False),
     ("cip", "cip_forfeited_kg", "CIP forfeited kg", False),

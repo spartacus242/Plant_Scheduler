@@ -189,15 +189,23 @@ METRIC_DOCS: dict[str, dict[str, Any]] = {
     },
     # --- cip ---------------------------------------------------------------
     "cip_count": {
-        "definition": "Number of CIP blocks in the horizon.",
+        "definition": (
+            "Number of CIP blocks in the horizon. REPORTED ONLY - every CIP is "
+            "mandated by cip_info, so the count is the same on any compliant "
+            "schedule and cannot be optimized."
+        ),
         "formula": "count(blocks where block_type == 'cip')",
         "direction": "lower",
-        "cap_key": "cap_cip_count",
-        "scoring": "score = clamp(100 * (1 - cip_count / cap_cip_count), 0, 100)",
+        "cap_key": None,
+        "scoring": (
+            "Not scored. Operational context only - the CIP category scores "
+            "overdue compliance (cip_overdue), and rewarding a lower count "
+            "rewarded a schedule that never cleaned a line at all."
+        ),
         "category": "cip",
         "why": (
-            "Each CIP is a full stop on the line plus chemical and water cost. Running "
-            "the same recipe longer between cleans means fewer of them."
+            "Useful for reading the board (how many stops the week carries), but "
+            "the cleans are a hygiene mandate, not a lever the planner can pull."
         ),
     },
     "cip_hours": {
@@ -1614,7 +1622,6 @@ def delta_narrative(baseline: ScorecardResult, proposed: ScorecardResult) -> lis
         ("changeovers", "recipe_only_changes", "recipe-only changeovers"),
         ("changeovers", "weighted_co", "weighted changeover load"),
         ("changeovers", "total_co_hours", "changeover hours"),
-        ("cip", "cip_count", "CIPs"),
         ("cip", "cip_hours", "CIP hours"),
         ("cip", "cip_forfeited_h", "forfeited CIP hours"),
         ("cip", "cip_forfeited_kg", "forfeited CIP kg"),
@@ -1678,7 +1685,6 @@ def contribution_breakdown(
             ("total_co_hours", "cap_co_hours"),
         ],
         "cip": [
-            ("cip_count", "cap_cip_count"),
             ("cip_hours", "cap_cip_hours"),
             ("cip_forfeited_kg", "cap_cip_forfeited_kg"),
         ],
