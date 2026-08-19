@@ -72,10 +72,11 @@ def test_classify_strips_float_suffix_from_codes():
 
 # --------------------------------------------------------------- placement
 
-def _state(rows, cips=None, cfg=None, hz=None):
+def _state(rows, cips=None, cfg=None, hz=None, caps=None):
     mp = ManprgResult(frame=_frame(rows))
     return build_current_state(hz or _hz(), manprg=mp,
-                               cips=cips or CipInfoResult(), cfg=cfg, now=NOW)
+                               cips=cips or CipInfoResult(), cfg=cfg, now=NOW,
+                               caps=caps)
 
 
 def test_completed_mos_are_counted_but_not_drawn():
@@ -145,6 +146,187 @@ def test_two_started_mos_on_a_line_keep_only_the_latest_as_running():
     ])
     assert [r["mo"] for r in st.running] == ["NEW"]
     assert any("superseded" in w for w in st.warnings)
+
+
+# ----------------------------------------- running-MO end re-forecast
+# actual_rate = cases made / hours since start; end = now + left / rate.
+# The base fixture plans 100 cas over 10h with 5000 kg, so kg/cas = 50 and
+# a 500 kg/h catalog rate is exactly the planned 10 cas/h.
+
+def _caps(rate_kgph: float = 500.0, sku: str = "280581",
+          line: str = "P09") -> pd.DataFrame:
+    return pd.DataFrame([{"line_id": 0, "sku": sku, "line_name": line,
+                          "capable": 1, "calc_rate_kgph": rate_kgph}])
+
+
+def _run_blk(st):
+    return st.blocks[st.blocks["attrs"].str.contains("current_state:running")].iloc[0]
+
+
+def test_slow_line_pushes_reforecast_end_later():
+    # 25 cas in 5h = 5 cas/h (half the planned 10): 75 left -> +15h from now.
+    st = _state([{"mo": "RUN", "made_cas": 25.0, "left_cas": 75.0,
+                  "start_dt": pd.Timestamp(NOW) - timedelta(hours=5)}],
+                caps=_caps())
+    blk = _run_blk(st)
+    assert blk["end_h"] == pytest.approx(27.0)      # now(12) + 75/5
+    # manprg's pro-rata estimate said now + 7.5h = 19.5 — kept for honesty
+    assert st.running[0]["manprg_end"] == pd.Timestamp(NOW) + timedelta(hours=7.5)
+    assert "reforecast=" in blk["attrs"]
+    assert "running 50% slow" in blk["attrs"]
+    assert "re-forecast from actual rate" in blk["sku_description"]
+    assert not any("re-forecast unavailable" in w for w in st.warnings)
+
+
+def test_fast_line_pulls_reforecast_end_earlier():
+    # 80 cas in 5h = 16 cas/h: 20 left -> +1.25h; manprg said nominal end 17.0.
+    st = _state([{"mo": "RUN", "made_cas": 80.0, "left_cas": 20.0,
+                  "start_dt": pd.Timestamp(NOW) - timedelta(hours=5)}],
+                caps=_caps())
+    blk = _run_blk(st)
+    assert blk["end_h"] == pytest.approx(13.25)
+    assert st.running[0]["manprg_end"] == pd.Timestamp(NOW) + timedelta(hours=5)
+    assert "running 60% fast" in blk["attrs"]
+
+
+def test_reforecast_agreeing_with_manprg_adds_no_noise():
+    # 50 cas in 5h = exactly the planned rate: same end, no tooltip line.
+    st = _state([{"mo": "RUN", "made_cas": 50.0, "left_cas": 50.0,
+                  "start_dt": pd.Timestamp(NOW) - timedelta(hours=5)}],
+                caps=_caps())
+    blk = _run_blk(st)
+    assert blk["end_h"] == pytest.approx(17.0)
+    assert "reforecast=" not in blk["attrs"]
+    assert blk["sku_description"] == "D"
+
+
+def _assert_fallback(st, expected_end_h: float, why_fragment: str):
+    blk = _run_blk(st)
+    assert blk["end_h"] == pytest.approx(expected_end_h), \
+        "guard must fall back to the manprg estimate"
+    assert "reforecast=" not in blk["attrs"]
+    assert any("re-forecast unavailable" in w and why_fragment in w
+               for w in st.warnings), st.warnings
+
+
+def test_guard_short_elapsed_falls_back():
+    # 0.5h elapsed: manprg pro-rata = now + 9h... nominal end wins at 21.5.
+    st = _state([{"mo": "RUN", "made_cas": 10.0, "left_cas": 90.0,
+                  "start_dt": pd.Timestamp(NOW) - timedelta(hours=0.5)}],
+                caps=_caps())
+    _assert_fallback(st, 21.5, "elapsed")
+
+
+def test_guard_low_completion_falls_back():
+    # 1% done in 5h: counter barely moved -> manprg remaining 9.9h.
+    st = _state([{"mo": "RUN", "made_cas": 1.0, "left_cas": 99.0,
+                  "start_dt": pd.Timestamp(NOW) - timedelta(hours=5)}],
+                caps=_caps())
+    _assert_fallback(st, 21.9, "% complete")
+
+
+def test_guard_future_start_falls_back():
+    # started-in-the-future telemetry is garbage; nominal end = start + 10h.
+    st = _state([{"mo": "RUN", "made_cas": 10.0, "left_cas": 90.0,
+                  "start_dt": pd.Timestamp(NOW) + timedelta(hours=2)}],
+                caps=_caps())
+    _assert_fallback(st, 24.0, "not in the past")
+
+
+def test_guard_rate_below_band_falls_back():
+    # 5 cas in 50h = 0.1 cas/h, far under 0.25x of the 10 cas/h catalog.
+    st = _state([{"mo": "RUN", "made_cas": 5.0, "left_cas": 95.0,
+                  "start_dt": pd.Timestamp(NOW) - timedelta(hours=50)}],
+                caps=_caps())
+    _assert_fallback(st, 21.5, "outside")   # manprg: now + 10*0.95
+
+
+def test_guard_rate_above_band_falls_back():
+    # 90 cas in 2h = 45 cas/h, over 2x of the 10 cas/h catalog.
+    st = _state([{"mo": "RUN", "made_cas": 90.0, "left_cas": 10.0,
+                  "start_dt": pd.Timestamp(NOW) - timedelta(hours=2)}],
+                caps=_caps())
+    _assert_fallback(st, 20.0, "outside")   # nominal end start+10h wins
+
+
+def test_guard_no_catalog_rate_falls_back():
+    st = _state([{"mo": "RUN", "made_cas": 25.0, "left_cas": 75.0,
+                  "start_dt": pd.Timestamp(NOW) - timedelta(hours=5)}],
+                caps=None)
+    _assert_fallback(st, 19.5, "no catalog rate")
+
+
+def test_toggle_off_is_exact_legacy_behaviour():
+    from helpers.current_state import reforecast_enabled
+    assert reforecast_enabled(None) is True
+    assert reforecast_enabled({"scheduler": {}}) is True
+    assert reforecast_enabled(
+        {"scheduler": {"reforecast_running_mo_ends": False}}) is False
+    st = _state([{"mo": "RUN", "made_cas": 25.0, "left_cas": 75.0,
+                  "start_dt": pd.Timestamp(NOW) - timedelta(hours=5)}],
+                cfg={"scheduler": {"reforecast_running_mo_ends": False}},
+                caps=_caps())
+    blk = _run_blk(st)
+    assert blk["end_h"] == pytest.approx(19.5)      # manprg pro-rata estimate
+    assert "reforecast" not in blk["attrs"]
+    assert blk["sku_description"] == "D"
+    assert not any("re-forecast" in w for w in st.warnings)
+
+
+def test_queued_mos_and_free_hours_shift_with_the_reforecast_end():
+    st = _state([
+        {"mo": "RUN", "made_cas": 25.0, "left_cas": 75.0,
+         "start_dt": pd.Timestamp(NOW) - timedelta(hours=5)},
+        {"mo": "Q1", "made_cas": "", "hours": 8.0,
+         "start_dt": pd.Timestamp(NOW) + timedelta(hours=1)},
+    ], caps=_caps())
+    q1 = st.blocks[st.blocks["order_id"] == "Q1"].iloc[0]
+    assert q1["start_h"] >= 27.0 - 1e-6, \
+        "queued MO must wait for the re-forecast end"
+    assert st.line_running_free_h["P09"] == pytest.approx(27.0)
+
+
+def test_netting_credits_the_week_the_reforecast_end_lands_in():
+    """A slow line can push the running MO's midpoint across the ISO-week
+    boundary — the committed kg must credit the week it now actually lands
+    in, through the same ledger staging/netting uses."""
+    from helpers.demand_coverage import build_ledger
+
+    # planned 1000 cas over 100h (50 t); 100 cas in 40h = 2.5 cas/h (0.25x
+    # of catalog — inside the band edge). 900 left -> end = now + 360h.
+    rows = [{"mo": "RUN", "hours": 100.0, "fct_cas": 1000.0,
+             "made_cas": 100.0, "left_cas": 900.0, "fct_kg": 50000.0,
+             "start_dt": pd.Timestamp(NOW) - timedelta(hours=40)}]
+    demand = pd.DataFrame([
+        {"order_id": "O-W33", "sku": "280581", "qty_target": 60000.0,
+         "due_start_hour": 0.0, "due_end_hour": 168.0},
+        {"order_id": "O-W34", "sku": "280581", "qty_target": 60000.0,
+         "due_start_hour": 168.0, "due_end_hour": 336.0},
+    ])
+
+    # interval_h <= 0 stands the CIP projection down — a projected CIP would
+    # split the 372h block and smear its kg over several weeks, which is not
+    # what this test is about.
+    no_cip = {"cip": {"interval_h": -1}}
+
+    # legacy: manprg says end = now + 90h (hour 102) -> midpoint in W33
+    off = _state(rows, cfg={**no_cip,
+                            "scheduler": {"reforecast_running_mo_ends": False}},
+                 caps=_caps())
+    led_off = build_ledger(demand, off.blocks, anchor=ANCHOR)
+    by_order_off = {r.order_id: r for r in led_off.rows}
+    assert by_order_off["O-W33"].committed_kg == pytest.approx(50000.0)
+    assert by_order_off["O-W34"].committed_kg == 0.0
+
+    # re-forecast: end hour 372 -> midpoint hour 186 lands in W34
+    on = _state(rows, cfg=no_cip, caps=_caps())
+    assert _run_blk(on)["end_h"] == pytest.approx(372.0)
+    led_on = build_ledger(demand, on.blocks, anchor=ANCHOR)
+    by_order_on = {r.order_id: r for r in led_on.rows}
+    assert by_order_on["O-W33"].committed_kg == 0.0
+    assert by_order_on["O-W33"].applied_kg == 0.0
+    assert by_order_on["O-W34"].committed_kg == pytest.approx(50000.0)
+    assert by_order_on["O-W34"].applied_kg == pytest.approx(50000.0)
 
 
 # --------------------------------------------------------------- CIP

@@ -10,9 +10,13 @@
 #   * Item == "CIP"                     -> a CIP block, NEVER production output.
 #   * Qty made >= Fct qty (or Left<=0)  -> COMPLETED, dropped (don't render).
 #   * Qty made > 0, not complete        -> RUNNING. Locked; the solver may not
-#                                          move it. It runs to its ESTIMATED
-#                                          end: pro-rata remaining work from
-#                                          now, never earlier than now.
+#                                          move it. Its end is RE-FORECAST from
+#                                          the ACTUAL observed rate (cases made
+#                                          / hours since start) when telemetry
+#                                          is usable ([scheduler]
+#                                          reforecast_running_mo_ends, default
+#                                          on); guard rails fall back to
+#                                          manprg's pro-rata estimate, loudly.
 #   * Qty made empty/0                  -> QUEUED. Placed sequentially by start
 #                                          date after the line's running MO,
 #                                          unlocked (the solver may reshuffle).
@@ -215,6 +219,111 @@ def _estimated_end(row: dict, now: datetime) -> datetime:
 
 
 # --------------------------------------------------------------------------
+# running-MO end re-forecast from the ACTUAL observed rate (user-approved
+# 2026-08-19): manprg's pro-rata estimate trusts the PLANNED rate, so a line
+# running 20% slow "finishes" hours before it really will and the committed
+# window lies to netting / fill gates / staging. cases_made / elapsed is the
+# honest rate; every guard rail falls back to the manprg estimate, loudly.
+# --------------------------------------------------------------------------
+
+REFORECAST_MIN_ELAPSED_H = 1.0    # under an hour the rate is mostly startup
+REFORECAST_MIN_PCT = 2.0          # <2% done: the counter barely moved
+REFORECAST_RATE_BAND = (0.25, 2.0)  # sane multiple of the catalog rate
+REFORECAST_NOTE_MIN_DELTA_MIN = 30.0  # agree within 30 min -> no noise
+
+
+def reforecast_enabled(cfg: dict | None) -> bool:
+    """[scheduler] reforecast_running_mo_ends — default ON. False = legacy."""
+    raw = ((cfg or {}).get("scheduler") or {}).get(
+        "reforecast_running_mo_ends", True)
+    return str(raw).strip().lower() not in ("0", "false", "no", "off")
+
+
+def _catalog_rate_cph(row: dict, caps: pd.DataFrame | None) -> float | None:
+    """Catalog rate for the MO's line×SKU, in CASES/h (comparable to manprg).
+
+    capabilities_rates.csv speaks kg/h; the MO's own Fct kg / Fct cases gives
+    the kg-per-case to convert. None when the rate cannot be resolved — the
+    sanity band is then unverifiable and the caller must fall back.
+    """
+    if caps is None or not len(caps):
+        return None
+    if row["fct_cas"] <= 0 or row["qty_kg"] <= 0:
+        return None
+    kg_per_cas = row["qty_kg"] / row["fct_cas"]
+    hit = caps[(caps["line_name"].astype(str) == row["line"])
+               & (caps["sku"].astype(str) == str(row["item"]))]
+    if not len(hit):
+        return None
+    kgph = pd.to_numeric(pd.Series([hit.iloc[0].get("calc_rate_kgph")]),
+                         errors="coerce").iloc[0]
+    if pd.isna(kgph) or kgph <= 0:
+        return None
+    return float(kgph) / kg_per_cas
+
+
+def _reforecast_end(row: dict, now: datetime,
+                    catalog_cph: float | None) -> tuple[datetime | None, str]:
+    """(re-forecast end, "") from the actual rate, or (None, why-not).
+
+    actual_rate = cases made / hours since start; end = now + left / rate.
+    Every guard returns None so the caller keeps manprg's estimate instead.
+    """
+    started = row.get("start_dt")
+    if started is None or pd.isna(started):
+        return None, "no usable start timestamp"
+    started = pd.Timestamp(started)
+    now_ts = pd.Timestamp(now)
+    if started >= now_ts:
+        return None, f"start {started:%Y-%m-%d %H:%M} is not in the past"
+    elapsed_h = (now_ts - started).total_seconds() / 3600.0
+    if elapsed_h < REFORECAST_MIN_ELAPSED_H:
+        return None, (f"only {elapsed_h:.1f}h elapsed "
+                      f"(<{REFORECAST_MIN_ELAPSED_H:g}h)")
+    if row["completion_pct"] < REFORECAST_MIN_PCT:
+        return None, (f"only {row['completion_pct']:.1f}% complete "
+                      f"(<{REFORECAST_MIN_PCT:g}%)")
+    if row["made_cas"] <= 0 or row["left_cas"] < 0:
+        return None, "no usable case counts"
+    actual_cph = row["made_cas"] / elapsed_h
+    if catalog_cph is None:
+        return None, "no catalog rate to sanity-check the actual rate"
+    lo, hi = REFORECAST_RATE_BAND
+    if not (lo * catalog_cph <= actual_cph <= hi * catalog_cph):
+        return None, (f"actual rate {actual_cph:.1f} cas/h outside "
+                      f"{lo:g}x-{hi:g}x of catalog {catalog_cph:.1f} cas/h")
+    end = now_ts + timedelta(hours=row["left_cas"] / actual_cph)
+    if end <= now_ts:
+        return None, "re-forecast end is not after now"
+    return end.to_pydatetime(), ""
+
+
+def _reforecast_note(row: dict, now: datetime, end: datetime,
+                     manprg_end: datetime) -> str:
+    """Honest tooltip line when re-forecast and manprg disagree by >30 min.
+
+    "ends Thu 03:40 re-forecast from actual rate (manprg said Thu 01:10 —
+    running 18% slow)". Empty when they agree — no noise.
+    """
+    delta_min = (pd.Timestamp(end)
+                 - pd.Timestamp(manprg_end)).total_seconds() / 60.0
+    if abs(delta_min) <= REFORECAST_NOTE_MIN_DELTA_MIN:
+        return ""
+    pace_txt = ""
+    elapsed_h = (pd.Timestamp(now)
+                 - pd.Timestamp(row["start_dt"])).total_seconds() / 3600.0
+    plan_cph = row["fct_cas"] / row["hours"] if row["hours"] > 0 else 0.0
+    if elapsed_h > 0 and plan_cph > 0:
+        pace = (row["made_cas"] / elapsed_h) / plan_cph
+        if pace < 1.0:
+            pace_txt = f" — running {round((1.0 - pace) * 100)}% slow"
+        elif pace > 1.0:
+            pace_txt = f" — running {round((pace - 1.0) * 100)}% fast"
+    return (f"ends {pd.Timestamp(end):%a %H:%M} re-forecast from actual rate "
+            f"(manprg said {pd.Timestamp(manprg_end):%a %H:%M}{pace_txt})")
+
+
+# --------------------------------------------------------------------------
 # CIP projection
 # --------------------------------------------------------------------------
 
@@ -268,11 +377,15 @@ def build_current_state(
     lines: pd.DataFrame | None = None,
     cfg: dict | None = None,
     now: datetime | None = None,
+    caps: pd.DataFrame | None = None,
+    caps_path: str | Path | None = None,
 ) -> CurrentState:
     """Ground-truth calendar for the horizon, in anchor hours.
 
     Either pass already-parsed `manprg` / `cips` results (tests, reuse from the
-    page) or the file paths to read them from.
+    page) or the file paths to read them from. `caps` / `caps_path`
+    (capabilities_rates.csv) sanity-check the running-MO re-forecast rate;
+    without them every re-forecast falls back to the manprg estimate.
     """
     n = now or hz.now
     if manprg is None:
@@ -283,6 +396,17 @@ def build_current_state(
     state = CurrentState(blocks=pd.DataFrame(columns=CALENDAR_COLUMNS))
     state.warnings.extend(manprg.warnings)
     state.warnings.extend(cips.warnings)
+
+    if caps is None and caps_path and Path(caps_path).exists():
+        from helpers.capability_check import load_capabilities
+        try:
+            caps = load_capabilities(caps_path)
+        except Exception as exc:  # noqa: BLE001 — degrade to fallback, loudly
+            state.warnings.append(
+                f"capabilities_rates unreadable ({exc}) — running-MO ends "
+                "keep the manprg estimate")
+            caps = None
+    do_reforecast = reforecast_enabled(cfg)
 
     rows = classify_rows(manprg.frame)
     dur = cip_hours(cfg)
@@ -297,7 +421,7 @@ def build_current_state(
         line_rows = sorted(by_line[line], key=lambda r: r["start_dt"])
         cursor = pd.Timestamp(n)
 
-        # 1. the running MO — locked, runs to its estimated end
+        # 1. the running MO — locked, runs to its re-forecast (or estimated) end
         running = [r for r in line_rows if r["kind"] == RUNNING]
         if len(running) > 1:
             # only the latest start can really be running; the rest are stale
@@ -309,7 +433,17 @@ def build_current_state(
                 stale["kind"] = "completed"
             running = running[-1:]
         for r in running:
-            end = _estimated_end(r, n)
+            manprg_end = _estimated_end(r, n)
+            end, rf_note = manprg_end, ""
+            if do_reforecast:
+                rf_end, why = _reforecast_end(r, n, _catalog_rate_cph(r, caps))
+                if rf_end is None:
+                    state.warnings.append(
+                        f"{line}: MO {r['mo']} kept at manprg's estimated "
+                        f"end — re-forecast unavailable ({why})")
+                else:
+                    end = rf_end
+                    rf_note = _reforecast_note(r, n, end, manprg_end)
             # A long-running MO can have started days before the anchor. Keep
             # the block INSIDE the window (a start_h of -191 renders nowhere on
             # a rolling Gantt) but record the true start so nothing is lost.
@@ -320,8 +454,17 @@ def build_current_state(
             blk["attrs"] += f";started={true_start:%Y-%m-%dT%H:%M}"
             if shown_start > true_start:
                 blk["attrs"] += ";clamped_to_anchor"
+            if rf_note:
+                # attrs carries the honest delta; sku_description is the field
+                # the Gantt tooltip already renders, so the line rides along
+                # with no frontend change.
+                blk["attrs"] += f";reforecast={rf_note}"
+                blk["sku_description"] = (
+                    f"{blk['sku_description']} · {rf_note}"
+                    if blk["sku_description"] else rf_note)
             blocks.append(blk)
             state.running.append({**r, "est_end": end,
+                                  "manprg_end": manprg_end,
                                   "shown_start": shown_start.to_pydatetime()})
             cursor = max(cursor, pd.Timestamp(end))
             # Running-only free hour (queued MOs are solver orders now)

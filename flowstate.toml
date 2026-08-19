@@ -17,6 +17,12 @@ use_sku_rates = false
 # orders locked to their line; the availability gate is the running MO's end
 # and mo_changes.csv records every split/trim/reorder for VIF write-back.
 use_current_mo = true
+# Re-forecast a RUNNING MO's end from its ACTUAL observed rate (cases made /
+# hours since start) instead of trusting manprg's planned-rate estimate.
+# Guard rails (short elapsed, <2% done, garbage start, rate far off the
+# capabilities_rates.csv catalog rate, end in the past) fall back to the
+# manprg estimate with a warning. false = exact legacy behaviour.
+reforecast_running_mo_ends = true
 
 [cip]
 interval_h = 120

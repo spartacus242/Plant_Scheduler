@@ -463,7 +463,8 @@ def build_ledger_from_data(
             ref / "cip_info.csv")
         state = build_current_state(
             hz, manprg_paths=[p for p in mp_paths if Path(p).exists()],
-            cip_path=cip_path if Path(cip_path).exists() else None, cfg=cfg)
+            cip_path=cip_path if Path(cip_path).exists() else None, cfg=cfg,
+            caps_path=ref / "capabilities_rates.csv")
 
     blocks = state.blocks
     cal_path = dd / "calendar_blocks.csv"

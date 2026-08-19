@@ -662,7 +662,8 @@ def _overlay_current_state(
     notes.extend(_stage_time_frame(work, dd, hz))
     try:
         cs = _bcs(hz, manprg_paths=mp_paths, cip_path=cip_path,
-                  lines=_ll(dd / "lines.csv"), cfg=cfg)
+                  lines=_ll(dd / "lines.csv"), cfg=cfg,
+                  caps_path=dd / "reference" / "capabilities_rates.csv")
     except Exception as exc:  # noqa: BLE001
         return notes + [f"current-state overlay skipped: {exc}"]
 
@@ -864,7 +865,8 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
         dd / "reference" / "cip_info.csv")
     notes.extend(_stage_time_frame(work, dd, hz))
     cs = _bcs(hz, manprg_paths=mp_paths, cip_path=cip_path,
-              lines=_ll(dd / "lines.csv"), cfg=cfg)
+              lines=_ll(dd / "lines.csv"), cfg=cfg,
+              caps_path=dd / "reference" / "capabilities_rates.csv")
     blocks = cs.blocks
 
     # Planner-pinned demand blocks (Plant Calendar popup: "Fix for solver").
