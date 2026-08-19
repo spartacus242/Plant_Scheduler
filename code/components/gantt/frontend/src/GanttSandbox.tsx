@@ -11,7 +11,7 @@ import { isWindowBlock } from "./types";
 import { useScheduleState } from "./hooks/useScheduleState";
 import { useBlockResize } from "./hooks/useBlockResize";
 import { useContextMenu } from "./hooks/useContextMenu";
-import { computeKpis, computeAdherence, checkOverlapsSimple, serverKpisToKpiData } from "./utils/kpi";
+import { computeKpis, computeAdherence, checkOverlapsSimple, serverKpisToKpiData, orderTarget, weekFulfillmentCredit } from "./utils/kpi";
 import { isCapable, recalcDuration, findOverlapsOnLine } from "./utils/validation";
 import { LINE_HEIGHT, MIN_HOUR_WIDTH, MAX_HOUR_WIDTH, snapToHour, fitToWidth, xToHour, hourToStamp, displayOrderId, setDemandBaseWeek, isoWeekLabel, isoWeekAtHour } from "./utils/layout";
 import { getRate } from "./utils/validation";
@@ -841,12 +841,11 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       const wkNum = isoWeekLabel(parseInt(m[1], 10), anchor);
       if (wkNum < nowIsoWk) continue; // past weeks are misses, not plan
       const wk = `W${wkNum}`;
-      const target = r.qty_min > 0 && r.qty_max >= r.qty_min
-        ? (r.qty_min + r.qty_max) / 2
-        : Math.max(r.qty_min, r.qty_max);
       const d = (dem[wk] ??= { sched: 0, target: 0 });
-      d.sched += r.scheduled_qty;
-      d.target += target;
+      // Credit caps at the order's own target — overproduction on one order
+      // cannot raise the week's fulfillment (same cap as weekly_breakdown).
+      d.sched += weekFulfillmentCredit(r);
+      d.target += orderTarget(r.qty_min, r.qty_max);
     }
     const byLine: Record<string, ScheduleBlock[]> = {};
     for (const b of schedule) {
