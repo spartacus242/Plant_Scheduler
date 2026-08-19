@@ -79,7 +79,13 @@ export const GanttBlock: React.FC<Props> = ({
   );
 
   const handleContext = useCallback(
-    (e: React.MouseEvent) => { e.preventDefault(); onContextMenu(e, block.id); },
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      // Never bubble to the chart background — that would ALSO open the
+      // blank-space SKU picker on top of the block menu.
+      e.stopPropagation();
+      onContextMenu(e, block.id);
+    },
     [block.id, onContextMenu],
   );
 

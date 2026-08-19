@@ -25,6 +25,13 @@ export interface ScheduleStateActions {
   removeToHolding: (id: string) => void;
   restoreFromHolding: (id: string, lineName: string, lineId: number, startHour: number, duration: number) => void;
   addToHolding: (orderId: string, sku: string, runHours: number, qtyKg?: number) => void;
+  /** Blank-space SKU picker: place a NEW production run as contiguous
+   * per-order segments (ONE undo step). Order ids must be real demand orders
+   * so the kg credits adherence and the next holding rebuild. */
+  addProduction: (
+    lineName: string, lineId: number, sku: string, skuDescription: string,
+    segments: { orderId: string; startHour: number; durationH: number; qtyKg: number }[],
+  ) => void;
   addCip: (lineName: string, lineId: number, startHour: number, duration: number) => void;
   addTrial: (lineName: string, lineId: number, sku: string, startHour: number, duration: number) => void;
   addWindowBlock: (
@@ -36,6 +43,10 @@ export interface ScheduleStateActions {
     label: string,
   ) => void;
   reportAction: (msg: string) => void;
+  /** Adopt the SERVER-derived holding area (rebuilt after every Refresh
+   * push). Not a user edit: no undo entry — the caller keeps the dirty
+   * flag honest. */
+  setHoldingFromServer: (blocks: ScheduleBlock[]) => void;
   undo: () => void;
   redo: () => void;
   canUndo: boolean;
@@ -253,6 +264,36 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
     setLastAction(`Added ${orderId} to holding (${runHours.toFixed(1)}h)`);
   }, [pushUndo]);
 
+  const addProduction = useCallback((
+    lineName: string, lineId: number, sku: string, skuDescription: string,
+    segments: { orderId: string; startHour: number; durationH: number; qtyKg: number }[],
+  ) => {
+    if (!segments.length) return;
+    pushUndo();
+    const blocks: ScheduleBlock[] = segments.map((s) => ({
+      id: `blk_${_nextId++}`,
+      line_id: lineId,
+      line_name: lineName,
+      order_id: s.orderId,
+      sku,
+      sku_description: skuDescription,
+      start_hour: s.startHour,
+      end_hour: s.startHour + s.durationH,
+      run_hours: s.durationH,
+      is_trial: false,
+      block_type: "sku",
+      qty_kg: s.qtyKg > 0 ? s.qtyKg : undefined,
+    }));
+    setSchedule((prev) => [...prev, ...blocks]);
+    const totalH = segments.reduce((t, s) => t + s.durationH, 0);
+    const totalKg = segments.reduce((t, s) => t + s.qtyKg, 0);
+    setLastAction(
+      `Placed ${sku} on ${lineName} at ${stamp(segments[0].startHour)} ` +
+        `(${totalH.toFixed(1)}h, ${Math.round(totalKg).toLocaleString()} kg ` +
+        `across ${segments.length} order(s))`,
+    );
+  }, [pushUndo, stamp]);
+
   const addCip = useCallback((lineName: string, lineId: number, startHour: number, duration: number) => {
     pushUndo();
     const b: ScheduleBlock = {
@@ -321,11 +362,16 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
     setLastAction(msg);
   }, []);
 
+  const setHoldingFromServer = useCallback((blocks: ScheduleBlock[]) => {
+    setHoldingArea(blocks.map(ensureId));
+  }, []);
+
   const data: ScheduleStateData = { schedule, cipWindows, holdingArea, lastAction };
   const actions: ScheduleStateActions = {
     updateBlock, insertShift, moveBlock, resizeBlock, splitBlock,
-    removeToHolding, restoreFromHolding, addToHolding, addCip, addTrial, addWindowBlock,
-    reportAction,
+    removeToHolding, restoreFromHolding, addToHolding, addProduction,
+    addCip, addTrial, addWindowBlock,
+    reportAction, setHoldingFromServer,
     undo, redo,
     canUndo: undoStack.current.length > 0,
     canRedo: redoStack.current.length > 0,
