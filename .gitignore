@@ -70,6 +70,10 @@ data/reference/Shipping Receiving Schedule NPA - 2024.xlsm
 data/scorecards/Week-*.json
 data/scorecards/latest.json
 
+# Overnight optimizer output (leaderboards, briefs, batch.log — written
+# nightly by scripts/overnight_batch.py; steering.json rides along too)
+data/optimizer/
+
 # Scratch / attachments (not part of the build)
 data/_scenario_regeneration/
 .hermes/desktop-attachments/

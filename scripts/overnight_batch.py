@@ -336,8 +336,14 @@ def set_below_normal_priority(log: Log) -> None:
         return
     try:
         import ctypes
+        from ctypes import wintypes
         BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
         k32 = ctypes.windll.kernel32
+        # Without explicit types ctypes truncates the pseudo-handle (-1) to
+        # 32 bits and SetPriorityClass silently fails on 64-bit Python.
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        k32.SetPriorityClass.restype = wintypes.BOOL
         if k32.SetPriorityClass(k32.GetCurrentProcess(),
                                 BELOW_NORMAL_PRIORITY_CLASS):
             log("process priority set to BELOW_NORMAL (solver subprocesses "
