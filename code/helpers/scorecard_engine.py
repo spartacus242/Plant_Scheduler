@@ -1587,6 +1587,31 @@ def score_calendar(
     )
 
 
+SCORING_INPUT_FILES = (
+    "demand_plan.csv", "demand_plan.source.json", "line_cip_hrs.csv",
+    "capabilities_rates.csv", "changeovers.csv",
+)
+
+
+def scoring_inputs_signature(data_dir: Path) -> tuple[float, ...]:
+    """st.cache_data key material: mtimes of every live file score_calendar
+    reads besides the calendar itself, plus flowstate.toml (caps/weights/
+    anchor). Cached scores keyed only by a version's own files would go
+    stale when the live feeds move (~30 min); this signature invalidates
+    them the moment any scoring input changes."""
+    from helpers.paths import toml_path as _tp
+
+    ref = Path(data_dir) / "reference"
+    paths = [ref / name for name in SCORING_INPUT_FILES] + [_tp()]
+    sig: list[float] = []
+    for p in paths:
+        try:
+            sig.append(p.stat().st_mtime)
+        except OSError:
+            sig.append(0.0)
+    return tuple(sig)
+
+
 def save_scorecard(result: ScorecardResult, data_dir: Path, filename: str | None = None) -> Path:
     d = scorecards_dir(data_dir)
     name = filename or f"{result.week_label}_{result.scored_at.replace(':', '').replace('-', '')}.json"
