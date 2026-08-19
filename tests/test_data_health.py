@@ -379,6 +379,47 @@ def test_capability_check_stale_on_conflict(tmp_path):
     assert "280581@P10" in hit.detail
 
 
+def _write_scorecard(dd: Path, scored_at: str, week_label: str = "Week-X",
+                     composite: float = 50.0) -> None:
+    name = f"{week_label}_{scored_at.replace(':', '').replace('-', '')}.json"
+    (dd / "scorecards" / name).write_text(json.dumps({
+        "week_label": week_label, "scored_at": scored_at,
+        "composite": composite,
+    }), encoding="utf-8")
+
+
+def test_scorecard_scored_this_week_is_ok(tmp_path):
+    """Scored this ISO week -> an explicit OK entry. The Home Track step read
+    an ABSENT entry as 'no scorecard history yet' (walkthrough finding 9)."""
+    dd = _empty_data_dir(tmp_path)
+    _min_catalog(dd)
+    # anchor fixed at 2026-08-03 (ISO week 32 of 2026)
+    _write_scorecard(dd, "2026-08-04T09:00:00", week_label="Week-2026-08-04")
+    health = dh.assess(dd, _cfg())
+    hit = next((h for h in health if h.key == "scorecard"), None)
+    assert hit is not None and hit.state == OK
+    assert "Week-2026-08-04" in hit.detail
+
+
+def test_scorecard_other_week_is_stale(tmp_path):
+    dd = _empty_data_dir(tmp_path)
+    _min_catalog(dd)
+    _write_scorecard(dd, "2026-07-20T09:00:00")
+    health = dh.assess(dd, _cfg())
+    hit = next((h for h in health if h.key == "scorecard"), None)
+    assert hit is not None and hit.state == STALE
+
+
+def test_scorecard_same_week_number_prior_year_is_stale(tmp_path):
+    """ISO week 32 of 2025 must not satisfy week 32 of 2026."""
+    dd = _empty_data_dir(tmp_path)
+    _min_catalog(dd)
+    _write_scorecard(dd, "2025-08-05T09:00:00")
+    health = dh.assess(dd, _cfg())
+    hit = next((h for h in health if h.key == "scorecard"), None)
+    assert hit is not None and hit.state == STALE
+
+
 def test_version_slots_full(tmp_path):
     dd = _empty_data_dir(tmp_path)
     _min_catalog(dd)
