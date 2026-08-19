@@ -1234,6 +1234,273 @@ def _read_diag_blockages(work: Path) -> str:
         return ""
 
 
+# ── Mid-solve reattach (walkthrough finding 6, 2026-08-18) ─────────────────
+# Streamlit kills the page script when the user navigates away mid-solve; the
+# solver subprocess keeps running but nobody is left to save its result. The
+# live-progress launch drops run_pending.json next to the solver outputs so
+# generate.py can reattach on the next load: still running → resume polling;
+# finished but never saved → collect + save now. The manifest is cleared the
+# moment a save is ATTEMPTED (or the run fails) — it marks "result at risk of
+# being lost", not a durable queue.
+
+PENDING_MANIFEST = "run_pending.json"
+PENDING_STALE_H = 24.0
+
+
+def pending_manifest_path(work: Path) -> Path:
+    return Path(work) / PENDING_MANIFEST
+
+
+def _write_pending_manifest(
+    work: Path,
+    scenario: dict[str, Any],
+    *,
+    time_limit: int | None,
+    timeout_s: float,
+    pid: int,
+    cs_notes: list[str] | None,
+) -> None:
+    from datetime import datetime as _dt
+
+    from helpers.safe_io import safe_write_json
+    safe_write_json({
+        "started_at": _dt.now().isoformat(timespec="seconds"),
+        "scenario": scenario,
+        "time_limit": time_limit,
+        "timeout_s": timeout_s,
+        "pid": int(pid),
+        "work_dir": str(work),
+        "slug_hint": f"scenario_{str(scenario.get('id', '')).lower()}",
+        # Pre-solve staging notes live only in run_scenario's locals — carry
+        # them so a reattached run's log is as complete as an attended one.
+        "cs_notes": [str(n) for n in (cs_notes or [])],
+    }, pending_manifest_path(work))
+
+
+def read_pending_manifest(work: Path) -> dict[str, Any] | None:
+    """None = no manifest; {} = present but unreadable (offer discard)."""
+    import json as _j
+    p = pending_manifest_path(work)
+    if not p.exists():
+        return None
+    try:
+        m = _j.loads(p.read_text(encoding="utf-8"))
+        return m if isinstance(m, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def clear_pending_manifest(work: Path) -> None:
+    try:
+        pending_manifest_path(work).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def pending_is_stale(manifest: dict[str, Any], *, now: Any | None = None) -> bool:
+    """Corrupt, or started more than PENDING_STALE_H ago."""
+    from datetime import datetime as _dt
+    if not manifest or not isinstance(manifest.get("scenario"), dict):
+        return True
+    try:
+        started = _dt.fromisoformat(str(manifest.get("started_at")))
+    except (TypeError, ValueError):
+        return True
+    return ((now or _dt.now()) - started).total_seconds() > PENDING_STALE_H * 3600
+
+
+def list_pending_runs(data_dir: Path) -> list[dict[str, Any]]:
+    """All pending-run manifests under data/_scenario_work, work_dir attached."""
+    root = Path(data_dir) / "_scenario_work"
+    out: list[dict[str, Any]] = []
+    if not root.exists():
+        return out
+    for p in sorted(root.glob(f"*/{PENDING_MANIFEST}")):
+        m = read_pending_manifest(p.parent)
+        if m is None:  # pragma: no cover — raced with a concurrent clear
+            continue
+        m = dict(m)
+        m["work_dir"] = str(p.parent)
+        out.append(m)
+    return out
+
+
+def _pid_alive(pid: Any) -> bool:
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        k32 = ctypes.windll.kernel32
+        h = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not h:
+            return False
+        try:
+            code = wintypes.DWORD()
+            # An exited process whose handle someone still holds opens fine —
+            # only exit code STILL_ACTIVE means it is really running.
+            if not k32.GetExitCodeProcess(h, ctypes.byref(code)):
+                return False
+            return code.value == STILL_ACTIVE
+        finally:
+            k32.CloseHandle(h)
+    import os
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def resume_scenario(
+    scenario: dict[str, Any],
+    data_dir: Path,
+    *,
+    progress_cb: Any | None = None,
+) -> dict[str, Any]:
+    """Reattach to a solve whose page run was killed mid-poll.
+
+    Same contract as run_scenario: polls solver_progress.json while the
+    recorded pid is alive, then collects the work-dir outputs. The exit code
+    is unknowable after a detach, so outputs are the truth: a schedule on
+    disk counts as success.
+    """
+    import json as _pj
+    import time as _time
+    from datetime import datetime as _dt
+
+    work = (Path(data_dir) / "_scenario_work" / str(scenario["id"])).resolve()
+    m = read_pending_manifest(work) or {}
+    try:
+        t0 = _dt.fromisoformat(str(m.get("started_at")))
+    except (TypeError, ValueError):
+        t0 = None
+    timeout_s = float(m.get("timeout_s") or 0) or max(
+        120, float(m.get("time_limit") or 60) * 4 + 60)
+    pid = m.get("pid")
+    while _pid_alive(pid):
+        elapsed = (_dt.now() - t0).total_seconds() if t0 else 0.0
+        prog = None
+        try:
+            pp = work / "solver_progress.json"
+            if pp.exists():
+                prog = _pj.loads(pp.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            prog = None
+        if progress_cb is not None:
+            try:
+                progress_cb(prog, elapsed)
+            except Exception:  # noqa: BLE001 — UI must not kill a solve
+                pass
+        if t0 is not None and elapsed > timeout_s:
+            break  # over budget: collect what exists instead of spinning
+        _time.sleep(2.0)
+    so_p = work / "_solver_stdout.txt"
+    se_p = work / "_solver_stderr.txt"
+    stdout = so_p.read_text(encoding="utf-8", errors="replace") if so_p.exists() else ""
+    stderr = se_p.read_text(encoding="utf-8", errors="replace") if se_p.exists() else ""
+    rc = 0 if (work / "schedule_phase2.csv").exists() else 1
+    result = _collect_result(
+        scenario, work, data_dir, rc, stdout, stderr,
+        [str(n) for n in (m.get("cs_notes") or [])])
+    if not result["ok"]:
+        clear_pending_manifest(work)  # nothing to save — stop reattaching
+    return result
+
+
+def _collect_result(
+    scenario: dict[str, Any],
+    work: Path,
+    data_dir: Path,
+    returncode: int,
+    stdout: str,
+    stderr: str,
+    cs_notes: list[str],
+) -> dict[str, Any]:
+    """Turn a finished solver work dir into run_scenario's result contract.
+
+    Shared by the attended path (run_scenario) and the reattach path
+    (resume_scenario) so both save and score identically.
+    """
+    log = (stdout or "") + "\n" + (stderr or "")
+    err_file = work / "solver_error.txt"
+    if err_file.exists():
+        log += "\n" + err_file.read_text(encoding="utf-8")
+    if cs_notes:
+        log = "[current state] " + "; ".join(cs_notes) + "\n" + log
+
+    fill_mode = bool(scenario.get("fill_mode"))
+    sched = work / "schedule_phase2.csv"
+    cip = work / "cip_windows.csv"
+    feas = _read_feasibility(work)
+    relax_level = feas.get("relax_level") if feas else None
+    diag_blockages = _read_diag_blockages(work)
+    if returncode != 0 or not sched.exists():
+        return {
+            "ok": False,
+            "returncode": returncode,
+            "log": log,
+            "calendar": None,
+            "scorecard": None,
+            "feasibility": feas,
+            "relax_level": relax_level,
+            "diag_blockages": diag_blockages,
+        }
+
+    if fill_mode:
+        # Committed layer (true block types) + the solver's fill blocks +
+        # only the REAL line-downs — the committed windows in downtimes.csv
+        # were solver plumbing, not calendar content.
+        import pandas as _pd2
+
+        from helpers.calendar_io import load_calendar as _lc
+        committed_path = work / "committed_blocks.csv"
+        committed = _lc(committed_path) if committed_path.exists() else None
+        real_dt = work / "real_downtimes.csv"
+        fill_part = import_solver_schedule(
+            sched,
+            cip if cip.exists() else None,
+            real_dt if real_dt.exists() else None,
+        )
+        calendar = (_pd2.concat([committed, fill_part], ignore_index=True)
+                    if committed is not None and len(committed) else fill_part)
+    else:
+        calendar = import_solver_schedule(
+            sched,
+            cip if cip.exists() else None,
+            work / "downtimes.csv" if (work / "downtimes.csv").exists() else None,
+        )
+    score = score_calendar(calendar, week_label=scenario["name"], data_dir=data_dir)
+    fill_gates = None
+    if fill_mode:
+        gates_path = work / "fill_gates.json"
+        if gates_path.exists():
+            try:
+                import json as _json
+
+                fill_gates = _json.loads(
+                    gates_path.read_text(encoding="utf-8")).get("gates") or None
+            except Exception:  # noqa: BLE001 — gates are an enhancement, not a gate
+                fill_gates = None
+    return {
+        "ok": True,
+        "returncode": returncode,
+        "log": log,
+        "calendar": calendar,
+        "scorecard": score,
+        "feasibility": feas,
+        "relax_level": relax_level,
+        "diag_blockages": diag_blockages,
+        "fill_gates": fill_gates,
+    }
+
+
 def run_scenario(
     scenario: dict[str, Any],
     data_dir: Path,
@@ -1378,6 +1645,15 @@ def run_scenario(
                 open(_se_p, "w", encoding="utf-8") as _se:
             _p = subprocess.Popen(cmd, cwd=_solver_cwd, stdout=_so,
                                   stderr=_se, text=True)
+            # Reattach manifest: if the user navigates away Streamlit kills
+            # THIS loop but not the solver — generate.py finds the manifest
+            # on its next load and resumes (resume_scenario).
+            try:
+                _write_pending_manifest(
+                    work, scenario, time_limit=time_limit,
+                    timeout_s=_timeout_s, pid=_p.pid, cs_notes=_cs_notes)
+            except Exception:  # noqa: BLE001 — bookkeeping must not kill a solve
+                pass
             _t0 = _time.monotonic()
             while True:
                 _rc = _p.poll()
@@ -1407,76 +1683,11 @@ def run_scenario(
         proc = _P()
         _stdout = _so_p.read_text(encoding="utf-8", errors="replace")
         _stderr = _se_p.read_text(encoding="utf-8", errors="replace")
-    log = (_stdout or "") + "\n" + (_stderr or "")
-    err_file = work / "solver_error.txt"
-    if err_file.exists():
-        log += "\n" + err_file.read_text(encoding="utf-8")
-    if _cs_notes:
-        log = "[current state] " + "; ".join(_cs_notes) + "\n" + log
-
-    sched = work / "schedule_phase2.csv"
-    cip = work / "cip_windows.csv"
-    feas = _read_feasibility(work)
-    relax_level = feas.get("relax_level") if feas else None
-    diag_blockages = _read_diag_blockages(work)
-    if proc.returncode != 0 or not sched.exists():
-        return {
-            "ok": False,
-            "returncode": proc.returncode,
-            "log": log,
-            "calendar": None,
-            "scorecard": None,
-            "feasibility": feas,
-            "relax_level": relax_level,
-            "diag_blockages": diag_blockages,
-        }
-
-    if fill_mode:
-        # Committed layer (true block types) + the solver's fill blocks +
-        # only the REAL line-downs — the committed windows in downtimes.csv
-        # were solver plumbing, not calendar content.
-        import pandas as _pd2
-
-        from helpers.calendar_io import load_calendar as _lc
-        committed_path = work / "committed_blocks.csv"
-        committed = _lc(committed_path) if committed_path.exists() else None
-        real_dt = work / "real_downtimes.csv"
-        fill_part = import_solver_schedule(
-            sched,
-            cip if cip.exists() else None,
-            real_dt if real_dt.exists() else None,
-        )
-        calendar = (_pd2.concat([committed, fill_part], ignore_index=True)
-                    if committed is not None and len(committed) else fill_part)
-    else:
-        calendar = import_solver_schedule(
-            sched,
-            cip if cip.exists() else None,
-            work / "downtimes.csv" if (work / "downtimes.csv").exists() else None,
-        )
-    score = score_calendar(calendar, week_label=scenario["name"], data_dir=data_dir)
-    fill_gates = None
-    if fill_mode:
-        gates_path = work / "fill_gates.json"
-        if gates_path.exists():
-            try:
-                import json as _json
-
-                fill_gates = _json.loads(
-                    gates_path.read_text(encoding="utf-8")).get("gates") or None
-            except Exception:  # noqa: BLE001 — gates are an enhancement, not a gate
-                fill_gates = None
-    return {
-        "ok": True,
-        "returncode": proc.returncode,
-        "log": log,
-        "calendar": calendar,
-        "scorecard": score,
-        "feasibility": feas,
-        "relax_level": relax_level,
-        "diag_blockages": diag_blockages,
-        "fill_gates": fill_gates,
-    }
+    result = _collect_result(scenario, work, data_dir, proc.returncode,
+                             _stdout, _stderr, _cs_notes)
+    if progress_cb is not None and not result["ok"]:
+        clear_pending_manifest(work)  # nothing to save — no reattach needed
+    return result
 
 
 def save_scenario_version(
@@ -1485,6 +1696,10 @@ def save_scenario_version(
     data_dir: Path,
 ) -> str:
     """Persist scenario as a named version (may delete oldest if at capacity — caller should manage slots)."""
+    # A save ATTEMPT retires the reattach manifest either way: the result has
+    # reached a screen, so it is no longer silently at risk (a failed save is
+    # reported to the user, not retried on every page load).
+    clear_pending_manifest(Path(data_dir) / "_scenario_work" / str(scenario.get("id", "")))
     if not result.get("ok") or result.get("calendar") is None:
         raise ValueError("Scenario did not produce a calendar")
     # If full, delete a previous scenario occupying the same slot

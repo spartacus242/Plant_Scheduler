@@ -25,7 +25,11 @@ from helpers.scenario_runner import (
     CUSTOM_SCENARIO_ID,
     OBJECTIVE_MODES,
     SCENARIOS,
+    clear_pending_manifest,
+    list_pending_runs,
     make_custom_scenario,
+    pending_is_stale,
+    resume_scenario,
     run_scenario,
     save_scenario_version,
     scenario_knobs,
@@ -198,13 +202,17 @@ def _generate_one(
     cross_week: bool = False,
     cip_flex: bool = False,
     work_dir_patch=None,
+    resume: bool = False,
 ) -> bool:
-    """Solve one scenario, render its result, and save it as a version."""
+    """Solve one scenario (or reattach to a running one), render its result,
+    and save it as a version."""
     scenario = dict(scenario)
-    scenario["cross_week"] = bool(cross_week)
-    scenario["cip_flex"] = bool(cip_flex)
-    with st.status(f"Solving {scenario['name']}...", expanded=True) as status:
-        st.write(scenario["intent"])
+    if not resume:
+        scenario["cross_week"] = bool(cross_week)
+        scenario["cip_flex"] = bool(cip_flex)
+    _verb = "Reattached to" if resume else "Solving"
+    with st.status(f"{_verb} {scenario['name']}...", expanded=True) as status:
+        st.write(scenario.get("intent", ""))
         if cross_week or cip_flex:
             modes = []
             if cross_week:
@@ -215,8 +223,10 @@ def _generate_one(
         from datetime import datetime as _dtnow
 
         _started = _dtnow.now()
-        st.caption(f"🕐 Solver started **{_started:%H:%M:%S}**")
+        st.caption(f"🕐 Solver {'reattached' if resume else 'started'} **{_started:%H:%M:%S}**")
         _bar = st.progress(0.0)
+        st.caption("Leaving this page won't kill the solve — it will "
+                   "reattach when you come back.")
         _live = st.empty()
         # Expected wall time: two-pass F runs pass 1 + anchor + pass 2 (each
         # bounded by the budget); single-pass scenarios may climb the relax
@@ -245,10 +255,14 @@ def _generate_one(
             _live.caption(" · ".join(b for b in bits if b))
 
         try:
-            result = run_scenario(scenario, dd, time_limit=int(time_limit),
-                                  overrides=overrides,
-                                  work_dir_patch=work_dir_patch,
-                                  progress_cb=_on_progress)
+            if resume:
+                result = resume_scenario(scenario, dd,
+                                         progress_cb=_on_progress)
+            else:
+                result = run_scenario(scenario, dd, time_limit=int(time_limit),
+                                      overrides=overrides,
+                                      work_dir_patch=work_dir_patch,
+                                      progress_cb=_on_progress)
             _bar.progress(1.0)
             _live.caption(
                 f"Done in {(_dtnow.now() - _started).seconds // 60}m "
@@ -368,6 +382,29 @@ if st.button("Run Fill the tail", type="primary", key="run_fill_tail"):
             _f_patch = None
     _f_scn = next(_s for _s in SCENARIOS if _s["id"] == "F")
     _generate_one(_f_scn, int(_f_tl), work_dir_patch=_f_patch)
+
+# ── Reattach to an abandoned solve (walkthrough finding 6) ────────────────
+# Navigating away mid-solve kills this script but not the solver subprocess;
+# the runner leaves run_pending.json in its work dir. On load: still running
+# → resume the polling UI; finished but never saved → collect + save now;
+# stale/corrupt → offer to discard.
+for _pend in list_pending_runs(dd):
+    _pwork = Path(_pend["work_dir"])
+    _pscn = _pend.get("scenario") or {}
+    if pending_is_stale(_pend):
+        st.info(
+            f"Found a stale or unreadable solver-run manifest in "
+            f"`{_pwork.name}` (started {_pend.get('started_at', 'unknown')}). "
+            "Its result was never saved and it is over a day old.")
+        if st.button("Discard it", key=f"discard_pending_{_pwork.name}"):
+            clear_pending_manifest(_pwork)
+            st.rerun()
+        continue
+    st.info(
+        f"**{_pscn.get('name', _pwork.name)}** kept solving while you were "
+        f"away (started {_pend.get('started_at', '')}) — reattaching.")
+    _generate_one(_pscn, int(_pend.get("time_limit") or default_tl),
+                  resume=True)
 
 st.divider()
 st.subheader("Saved versions")
