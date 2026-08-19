@@ -317,25 +317,34 @@ def promote_version(slug: str, data_dir: Path) -> None:
     save_calendar(cal, official)
 
 
+def export_calendar_excel(cal_df: pd.DataFrame, scorecard: dict | None = None) -> bytes:
+    """Excel bytes for any calendar frame — the live board or a version.
+
+    Raw start_h/end_h stay (the solver round-trips on them); human start/end
+    datetime columns are added alongside for readers.
+    """
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        if cal_df is not None and len(cal_df):
+            out = with_display_times(cal_df, planning_anchor(), iso=True)
+            out.to_excel(writer, sheet_name="Calendar", index=False)
+        flat = []
+        for section in ("changeovers", "cip", "trials", "maintenance", "campaigns", "service"):
+            for k, v in ((scorecard or {}).get(section) or {}).items():
+                flat.append({"section": section, "metric": k, "value": v})
+        if flat:
+            pd.DataFrame(flat).to_excel(writer, sheet_name="Scorecard", index=False)
+    return buf.getvalue()
+
+
 def export_version_excel(slug: str, data_dir: Path) -> bytes:
     _validate_slug(slug)
     vdir = versions_dir(data_dir) / slug
-    buf = BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        cal = vdir / "calendar_blocks.csv"
-        if cal.exists():
-            # Raw start_h/end_h stay (the solver round-trips on them); human
-            # start/end datetime columns are added alongside for readers.
-            cal_df = with_display_times(pd.read_csv(cal), planning_anchor(), iso=True)
-            cal_df.to_excel(writer, sheet_name="Calendar", index=False)
-        meta_path = vdir / "metadata.json"
-        if meta_path.exists():
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            sc = meta.get("scorecard", {})
-            flat = []
-            for section in ("changeovers", "cip", "trials", "maintenance", "campaigns", "service"):
-                for k, v in (sc.get(section) or {}).items():
-                    flat.append({"section": section, "metric": k, "value": v})
-            if flat:
-                pd.DataFrame(flat).to_excel(writer, sheet_name="Scorecard", index=False)
-    return buf.getvalue()
+    cal = vdir / "calendar_blocks.csv"
+    cal_df = pd.read_csv(cal) if cal.exists() else pd.DataFrame()
+    meta_path = vdir / "metadata.json"
+    sc: dict = {}
+    if meta_path.exists():
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        sc = meta.get("scorecard", {}) or {}
+    return export_calendar_excel(cal_df, sc)

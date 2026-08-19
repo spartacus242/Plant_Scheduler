@@ -59,7 +59,9 @@ pg = st.navigation(
             st.Page("pages/calendar.py", title="Plant Calendar", icon=":material/drag_indicator:"),
             st.Page("pages/generate.py", title="Generate Scenarios", icon=":material/auto_awesome:"),
         ],
-        "4 · Lock & Export": [
+        # Lock & Export lives ON the Plant Calendar page (planner request
+        # 2026-08-19) — this group is named for what its page actually does.
+        "4 · Compare & Promote": [
             st.Page("pages/compare.py", title="Compare & Promote", icon=":material/compare:"),
         ],
         "5 · Track": [

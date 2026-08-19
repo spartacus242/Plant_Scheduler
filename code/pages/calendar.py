@@ -40,7 +40,12 @@ from helpers.scorecard_engine import (
     score_calendar,
 )
 from helpers.scorecard_ui import render_delta_strip, render_scorecard
-from helpers.version_manager import MAX_VERSIONS, list_versions, save_version
+from helpers.version_manager import (
+    MAX_VERSIONS,
+    export_calendar_excel,
+    list_versions,
+    save_version,
+)
 
 st.header("Plant Calendar")
 st.caption(
@@ -619,7 +624,26 @@ if n_holding:
 
 st.divider()
 st.subheader("Live scorecard (same engine as Phase 0)")
-live = score_calendar(working, week_label="what-if", data_dir=dd)
+# Re-scoring an unchanged board wastes ~1-2s on every page visit / widget
+# click. Fingerprint the board (positions matter — cal_board_sig above only
+# covers order+qty, which is NOT enough for a score key) and reuse.
+_score_cols = [c for c in (
+    "order_id", "sku", "line_name", "block_type", "start_h", "end_h",
+    "start_hour", "end_hour", "qty_kg", "attrs") if c in working.columns]
+try:
+    _live_sig = int(pd.util.hash_pandas_object(
+        working[_score_cols].astype(str), index=False).sum())
+except Exception:  # noqa: BLE001 — cache key failure just means recompute
+    _live_sig = None
+if (_live_sig is not None
+        and st.session_state.get("cal_live_score_sig") == _live_sig
+        and st.session_state.get("cal_live_score")):
+    live = ScorecardResult.from_dict(st.session_state["cal_live_score"])
+else:
+    live = score_calendar(working, week_label="what-if", data_dir=dd)
+    if _live_sig is not None:
+        st.session_state["cal_live_score_sig"] = _live_sig
+        st.session_state["cal_live_score"] = live.to_dict()
 baseline_dict = st.session_state.get("cal_baseline_score") or {}
 if baseline_dict:
     baseline = ScorecardResult.from_dict(baseline_dict)
@@ -689,6 +713,24 @@ with _lc2:
 with _lc3:
     st.caption(
         f"Currently: **{'locked through ' + f'{_lock_dt:%a %Y-%m-%d %H:%M}' if _lock_dt else 'no lock set'}**")
+
+# The Export half of "Lock & Export": the schedule as shown on screen
+# (unsaved edits included), Calendar + Scorecard sheets. The VIF write-back
+# (mo_changes.csv) stays on Compare & Promote — it is per solver run.
+from datetime import datetime as _dtnow
+_xc1, _xc2 = st.columns([1, 2])
+with _xc1:
+    st.download_button(
+        "⬇ Export schedule (Excel)",
+        data=export_calendar_excel(drop_display_overlays(working), live.to_dict()),
+        file_name=f"flowstate_schedule_{_dtnow.now():%Y%m%d_%H%M}.xlsx",
+        use_container_width=True,
+    )
+with _xc2:
+    st.caption(
+        "Exports the board as shown (including unsaved edits). "
+        "MO changes for VIF write-back: Compare & Promote page."
+    )
 
 _vers = list_versions(dd)
 _n_orph = sum(1 for v in _vers if v.get("orphan"))
