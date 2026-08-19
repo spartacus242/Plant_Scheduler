@@ -342,6 +342,9 @@ def params_from_config(
         )
     if _cfg_obj.get("cip_flex_weight") is not None:
         P.objective_cip_flex_weight = int(_cfg_obj["cip_flex_weight"])
+    # Percentage, not an integer weight — float() so 2.5 survives.
+    if _cfg_obj.get("over_target_reward_pct") is not None:
+        P.over_target_reward_pct = float(_cfg_obj["over_target_reward_pct"])
     # Changeover type penalty weights — saved by settings.py into [objective]
     if _cfg_obj.get("co_conv_org_weight") is not None:
         P.co_conv_org_weight = int(_cfg_obj["co_conv_org_weight"])
@@ -1691,6 +1694,10 @@ def main() -> None:
     if P.soft_demand:
         log(f"[soft-demand] every kg short of qty_min costs "
             f"{P.objective_shortfall_weight} in the objective (Scenario F)")
+        if P.over_target_reward_pct > 0:
+            log(f"[soft-demand] over-target kg pay "
+                f"{P.over_target_reward_pct}% of the base per-kg reward "
+                f"(toward qty_max; fulfillment stays capped at target)")
     # Two-pass CO minimization (Scenario F): pass 1 maximizes fill, pass 2
     # re-solves with that fill score as a hard floor (minus epsilon) and
     # MINIMIZES the weighted changeover load. Measured 2026-08-14: price

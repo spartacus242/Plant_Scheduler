@@ -736,6 +736,17 @@ with oc2:
              "their legal deadline instead of hour 0). All modes; the max "
              "CIP interval itself stays hard.",
     )
+    w_over_target = st.slider(
+        "over_target_reward_pct", min_value=0.0, max_value=5.0,
+        value=float(_obj_cfg.get("over_target_reward_pct", 0.0)), step=0.5,
+        help="Soft-demand fill (Scenario F) only. Reward for kg ABOVE an "
+             "order's target (toward its max), as a % of the per-kg value "
+             "of real demand. 0 = never overproduce on purpose. 5 = the "
+             "solver treats 100 kg of overrun as worth 5 kg of real demand "
+             "— a nudge to top up spare line-time, NOT a fulfillment gain: "
+             "fulfillment is capped at target; the extra kg build "
+             "inventory.",
+    )
 with oc3:
     w_late = st.number_input(
         "late_weight", min_value=0, max_value=10000,
@@ -819,6 +830,7 @@ custom_overrides = {
     "late_weight": int(w_late),
     "week_deviation_weight": int(w_week_dev),
     "cip_flex_weight": int(w_cip_flex),
+    "over_target_reward_pct": float(w_over_target),
     "topload_weight": int(w_topload),
     "ffs_weight": int(w_ffs),
     "ttp_weight": int(w_ttp),

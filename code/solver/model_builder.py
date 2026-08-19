@@ -1378,13 +1378,24 @@ def build_model(
         # kg is worth ten demand kg, so dropping an MO is only worthwhile
         # when it frees enormous demand capacity.)
         over_sum = 0
+        over_coeff = 0
         if getattr(P, "soft_demand", False):
             # Two-tier fill reward (Scenario F, user rule "target is
             # 90-110%"): each kg up to qty_target pays full weight; kg
-            # between target and qty_max pay 5%. A flat reward drove every
-            # scheduled order to its 110% cap while other orders sat at 0
-            # (measured 2026-08-14 run 10) — meeting ALL targets must beat
+            # between target and qty_max pay over_target_reward_pct % of
+            # the BASE tier-1 per-kg reward. Base = the 1000 tier times the
+            # x1000 production scaling in the objective below — the week
+            # gradient is deliberately excluded so the pct means one fixed
+            # thing whatever the week count: pct=5 -> 50_000 per over kg vs
+            # 1_000_000 per base tier-1 kg = exactly 5%. (The old hardcoded
+            # over_sum*50 claimed "5%" but missed the x1000 scaling — it was
+            # really ~0.005%, a near-pure tiebreaker; the 0.0 default keeps
+            # that observed behavior.) A flat reward drove every scheduled
+            # order to its 110% cap while other orders sat at 0 (measured
+            # 2026-08-14 run 10) — meeting ALL targets must beat
             # over-filling any one of them. qty_max stays the hard wall.
+            over_coeff = int(round(float(getattr(
+                P, "over_target_reward_pct", 0.0)) * 10_000))
             #
             # Week-proximity gradient (user rule "right tonnage on the
             # right ISO week", 2026-08-15): when residual demand exceeds
@@ -1420,7 +1431,11 @@ def build_model(
                     0, tgt, f"prodcap_{o['order_id']}")
                 model.AddMinEquality(capped, [produced[o_idx], tgt])
                 tier1.append(capped * _w1(o))
-                over_terms.append(produced[o_idx] - capped)
+                # pct=0 = no incentive at all: skip the term, don't just
+                # zero its coefficient. The target cap above stays either
+                # way — fulfillment reward never exceeds qty_target.
+                if over_coeff > 0:
+                    over_terms.append(produced[o_idx] - capped)
             prod_sum = sum(tier1)
             if over_terms:
                 over_sum = sum(over_terms)
@@ -1480,7 +1495,7 @@ def build_model(
             )
         else:
             model.Maximize(
-                prod_sum * 1000 + over_sum * 50
+                prod_sum * 1000 + over_sum * over_coeff
                 - secondary - late_total * W_late - week_pen
             )
     elif objective_mode == "min-changeovers":
