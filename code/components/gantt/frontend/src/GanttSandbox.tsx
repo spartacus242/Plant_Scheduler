@@ -19,7 +19,7 @@ import { computeDragPreview, computeInsertPlan, type DragPreview, type InsertCon
 import { isDouble, groupOf, sideOf } from "./utils/abLines";
 import { buildRows } from "./utils/ganttRows";
 import { skuColor, skuTextColor, blockLabel } from "./utils/colors";
-import { coFlagLabels, planPlacement, remainingDemandBySku, splitPlacementByOrders } from "./utils/skuPicker";
+import { coFlagsForPair, planPlacement, remainingDemandBySku, splitPlacementByOrders } from "./utils/skuPicker";
 import { setComponentValue, setFrameHeight } from "./streamlit";
 
 import { GanttChart } from "./components/GanttChart";
@@ -574,6 +574,13 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   const [picker, setPicker] = useState<{
     lineName: string; lineId: number; hour: number; x: number; y: number;
   } | null>(null);
+  // Read-only mounts (compare / generate previews) send none of the picker
+  // payloads: without lineCapableSkus the picker would offer placements with
+  // zero setup and all-clean chips, and place unlocked blocks on a board
+  // whose blocks are locked. Only the calendar page sends the payload.
+  const pickerEnabled = Boolean(
+    args.lineCapableSkus && Object.keys(args.lineCapableSkus).length > 0,
+  );
   const handleEmptyContextMenu = useCallback(
     (e: React.MouseEvent, lineName: string, lineId: number, hour: number) => {
       closeMenu();
@@ -588,7 +595,8 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     const adh = computeAdherence(schedule, args.demandTargets, args.capabilities, coveredByOrder);
     const remaining = remainingDemandBySku(adh, anchor);
     // Candidates: server list (capable==1 ∩ demand plan); derived from the
-    // caps map when the mounting page sent none (generate / compare).
+    // caps map for a line the server list happens to miss (the picker only
+    // opens at all when the payload is present — see pickerEnabled).
     let cands = args.lineCapableSkus?.[picker.lineName];
     if (!cands || cands.length === 0) {
       const demSkus = [...new Set(args.demandTargets.map((d) => d.sku))];
@@ -629,8 +637,8 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         desc: args.skuDescriptions?.[c.sku] ?? "",
         remainingKg: rem,
         plan,
-        inFlags: plan.prevSku ? coFlagLabels(args.coFlags?.[`${plan.prevSku}|${c.sku}`]) : [],
-        outFlags: plan.nextSku ? coFlagLabels(args.coFlags?.[`${c.sku}|${plan.nextSku}`]) : [],
+        inFlags: plan.prevSku ? coFlagsForPair(args.coFlags, plan.prevSku, c.sku) : [],
+        outFlags: plan.nextSku ? coFlagsForPair(args.coFlags, c.sku, plan.nextSku) : [],
       });
     }
     rows.sort((a, b) => b.remainingKg - a.remainingKg);
@@ -1036,12 +1044,23 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   // holdingArea arg — WITHOUT remounting, so client state must adopt it or
   // the cards on screen stay stale. Never adopt over unpushed edits: the
   // planner's in-flight drags win and the next push re-derives anyway.
-  const lastServerHolding = useRef(JSON.stringify(args.holdingArea ?? []));
+  //
+  // lastSeenServerHolding records every server holding we SAW, adopted or
+  // not — recording only on adoption replays stale args after a Refresh:
+  //   1. edits pending (dirty), page reruns with holding H1: skip adopt,
+  //      but remember H1 as seen;
+  //   2. "⟳ Refresh checks" flips dirty false — this effect re-fires with
+  //      args.holdingArea STILL H1 (pre-push); H1 == last seen, so the
+  //      just-pushed holding is not clobbered by the old one;
+  //   3. Python's rerun arrives with the rebuilt H2: differs from last
+  //      seen and not dirty -> adopt.
+  const lastSeenServerHolding = useRef(JSON.stringify(args.holdingArea ?? []));
   useEffect(() => {
     const incoming = JSON.stringify(args.holdingArea ?? []);
-    if (incoming === lastServerHolding.current) return;
+    const changed = incoming !== lastSeenServerHolding.current;
+    lastSeenServerHolding.current = incoming;
+    if (!changed) return;
     if (dirty) return; // retry once the edits are pushed
-    lastServerHolding.current = incoming;
     adoptingHolding.current = true;
     actions.setHoldingFromServer(args.holdingArea ?? []);
   }, [args.holdingArea, dirty, actions]);
@@ -1186,16 +1205,18 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           svgRef={chartSvgRef}
           onResizeStart={guardedStartResize}
           onContextMenu={handleContextMenu}
-          onEmptyContextMenu={handleEmptyContextMenu}
+          onEmptyContextMenu={pickerEnabled ? handleEmptyContextMenu : undefined}
           onBlockClick={handleBlockClick}
           onZoomIn={zoomIn}
           onZoomOut={zoomOut}
           onResetZoom={resetZoom}
         />
-        <div style={{ fontSize: 11, color: "#8a94a0", marginTop: 2 }}>
-          Right-click an empty gap on a line to add a demand-plan SKU there
-          (snaps left, changeover setup respected).
-        </div>
+        {pickerEnabled && (
+          <div style={{ fontSize: 11, color: "#8a94a0", marginTop: 2 }}>
+            Right-click an empty gap on a line to add a demand-plan SKU there
+            (snaps left, changeover setup respected).
+          </div>
+        )}
 
         <div style={{ marginTop: 8 }}>
           <HoldingArea blocks={holdingArea} anchor={anchor} skuFormats={args.skuFormats ?? {}} />

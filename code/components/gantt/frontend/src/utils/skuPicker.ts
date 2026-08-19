@@ -32,8 +32,24 @@ export function coFlagLabels(mask: number | undefined): string[] {
   return CO_FLAG_BITS.filter((f) => m & f.bit).map((f) => f.label);
 }
 
+/** Chips for the FROM|TO transition, or null when the pair is absent from
+ * coFlags — build_co_flags only covers demand-plan pairs, so a missing key
+ * means UNKNOWN, not clean (the chip renders "?"). A same-SKU "transition"
+ * is no changeover at all: honestly clean regardless of the table. */
+export function coFlagsForPair(
+  coFlags: Record<string, number> | undefined,
+  from: string,
+  to: string,
+): string[] | null {
+  if (from === to) return [];
+  const mask = coFlags?.[`${from}|${to}`];
+  return mask === undefined ? null : coFlagLabels(mask);
+}
+
 const EPS = 1e-9;
 const round1 = (v: number) => Math.round(v * 10) / 10;
+// Snap UP onto the 0.1h grid (EPS keeps values already on the grid put).
+const ceil1 = (v: number) => Math.ceil(v * 10 - EPS) / 10;
 
 export interface PlacementPlan {
   startHour: number;
@@ -58,7 +74,12 @@ type GapBlock = Pick<ScheduleBlock, "sku" | "start_hour" | "end_hour" | "block_t
 /**
  * Snap-left placement of `sku` into the gap around `clickHour`.
  *
- *   start    = max(prev.end + setup(prev→sku), 0, nowH, lockedThroughH)
+ *   start    = max(prev.end + setup(prev→sku), 0, nowH, lockedThroughH),
+ *              snapped UP onto the 0.1h grid — nowH is a wall clock and
+ *              block edges can sit anywhere, but every boundary derived
+ *              from the start (order-split segments) rounds to 0.1h, and
+ *              an off-grid start lets a rounded boundary land before its
+ *              sibling's end (self-overlap).
  *   endLimit = next ? next.start − setup(sku→next) : horizon
  *   duration = min(endLimit − start, max(minRunH, hours for remainingKg))
  *   qty      = kg the line physically makes over [start, start+duration]
@@ -112,7 +133,8 @@ export function planPlacement(a: {
   const nextSku = next && !isWindowBlock(next.block_type) ? next.sku : null;
 
   const floor = Math.max(0, a.nowH, a.lockedThroughH ?? 0);
-  const startHour = Math.max(prev ? prev.end_hour + setupBeforeH : 0, floor);
+  // ceil, not round: the snapped start must never precede the legal start.
+  const startHour = ceil1(Math.max(prev ? prev.end_hour + setupBeforeH : 0, floor));
   const endLimit = Math.min(
     next ? next.start_hour - setupAfterH : a.horizonH,
     a.horizonH,
@@ -226,7 +248,10 @@ export function splitPlacementByOrders(
         durationH,
         qtyKg: round1(takes[i].qty),
       });
-      cursor = round1(cursor + durationH);
+      // Monotonic advance: with an off-grid cursor, round1 can pull the
+      // next start BEFORE this segment's end — siblings must never overlap.
+      const segEnd = cursor + durationH;
+      cursor = Math.max(round1(segEnd), segEnd);
     }
   }
   return segs;

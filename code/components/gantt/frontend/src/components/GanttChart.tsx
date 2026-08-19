@@ -205,6 +205,16 @@ export const GanttChart: React.FC<Props> = ({
       const svg = svgRef.current;
       if (!svg) return;
       e.preventDefault(); // no browser menu anywhere on the chart
+      // The frozen header band and line-label strip are scroll-translated
+      // groups drawn ON TOP of the rows: while scrolled, their screen
+      // position no longer matches the untransformed hit-test below, so a
+      // right-click on them must not open the picker for whatever row/hour
+      // they happen to cover. Both groups paint background rects, so any
+      // click on them lands inside the group.
+      const target = e.target as Node | null;
+      if (target && (headerGRef.current?.contains(target) || labelsGRef.current?.contains(target))) {
+        return;
+      }
       const rect = svg.getBoundingClientRect();
       const xIn = e.clientX - rect.left;
       const yIn = e.clientY - rect.top;
