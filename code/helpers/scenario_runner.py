@@ -1558,6 +1558,7 @@ def run_scenario(
     overrides: dict[str, Any] | None = None,
     work_dir_patch: Any | None = None,
     progress_cb: Any | None = None,
+    timeout_s: float | None = None,
 ) -> dict[str, Any]:
     """Run one scenario. Returns {ok, calendar, scorecard, log, returncode,
     feasibility, relax_level}.
@@ -1565,6 +1566,11 @@ def run_scenario(
     ``overrides`` is a flat weight mapping (see OVERRIDE_SECTIONS) written into
     the work-dir flowstate.toml before the solver runs. Scenarios may also carry
     their own 'overrides' key (custom scenarios); the argument wins.
+
+    ``timeout_s`` overrides the subprocess kill ceiling. The default
+    (4 x time_limit + 60) assumes one solve budget; a two-pass run whose
+    pass 2 carries its own budget (scheduler.time_limit_pass2, overnight
+    batch) must pass an explicit ceiling covering both passes.
 
     ``work_dir_patch`` is the agent seam: a callable ``(work: Path) ->
     list[str]`` invoked AFTER staging + current-state overlay and BEFORE the
@@ -1673,7 +1679,8 @@ def run_scenario(
 
     _solver_cwd = str(
         (Path(data_dir).resolve().parent / "code" / "solver").resolve())
-    _timeout_s = max(120, (time_limit or 60) * 4 + 60)
+    _timeout_s = (float(timeout_s) if timeout_s
+                  else max(120, (time_limit or 60) * 4 + 60))
     if progress_cb is None:
         proc = subprocess.run(
             cmd, cwd=_solver_cwd, capture_output=True, text=True,

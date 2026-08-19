@@ -1705,9 +1705,14 @@ def main() -> None:
     # dedicated minimization pass is the lever.
     TWO_PASS_CO = bool(_CFG_SCHED.get("two_pass_co", False))
     TWO_PASS_EPS = float(_CFG_SCHED.get("two_pass_epsilon_pct", 1.0))
+    # Separate pass-2 budget (overnight batch): scheduler.time_limit_pass2
+    # in the work toml. Unset/0 keeps the historical behaviour — pass 2
+    # reuses pass 1's time limit.
+    TWO_PASS_TL = float(_CFG_SCHED.get("time_limit_pass2", 0) or 0)
     if TWO_PASS_CO and P.soft_demand:
         log(f"[two-pass] enabled: pass 2 minimizes changeovers holding fill "
-            f">= pass 1 - {TWO_PASS_EPS}%")
+            f">= pass 1 - {TWO_PASS_EPS}%"
+            + (f" (pass 2 budget {TWO_PASS_TL:.0f}s)" if TWO_PASS_TL else ""))
     reset_err()
     log(
         f"START {datetime.now():%Y-%m-%d} phase={PHASE} relax={RELAX_DEMAND} relax_due={RELAX_DUE} "
@@ -1916,6 +1921,7 @@ def main() -> None:
                         and level == 0 and _SOFT_DEMAND_ACTIVE and TWO_PASS_CO
                         and vars_dict.get("prod_score") is not None):
                     try:
+                        _tl2 = TWO_PASS_TL or tl
                         _score1 = solver.Value(vars_dict["prod_score"])
                         _floor = int(_score1 * (1.0 - TWO_PASS_EPS / 100.0))
                         log(f"[two-pass] pass 1 fill score {_score1:,} -> "
@@ -1946,7 +1952,7 @@ def main() -> None:
                             "pass 2 anchor: locking pass 1's plan in as the "
                             "starting point")
                         reset_solver_stats(
-                            DATA_DIR, status="ANCHORING", time_limit_s=tl,
+                            DATA_DIR, status="ANCHORING", time_limit_s=_tl2,
                             direction="min", pass_id="co")
                         # The floor excludes ~99% of the feasible space, so
                         # pass 2 lives or dies on starting FROM pass 1's
@@ -1960,7 +1966,7 @@ def main() -> None:
                         # complete hints are adopted as the incumbent.
                         _s2a = cp_model.CpSolver()
                         _s2a.parameters.num_search_workers = 8
-                        _s2a.parameters.max_time_in_seconds = min(120.0, tl)
+                        _s2a.parameters.max_time_in_seconds = min(120.0, _tl2)
                         _s2a.parameters.fix_variables_to_their_hinted_value = True
                         _sta = _s2a.Solve(m2)
                         if _sta in (cp_model.FEASIBLE, cp_model.OPTIMAL):
@@ -1982,13 +1988,13 @@ def main() -> None:
                         update_stage(
                             DATA_DIR, "solving", "active",
                             f"pass 2: min changeovers, fill floored at "
-                            f"{100 - TWO_PASS_EPS:g}% ({int(tl)}s)")
+                            f"{100 - TWO_PASS_EPS:g}% ({int(_tl2)}s)")
                         reset_solver_stats(
-                            DATA_DIR, status="STARTING", time_limit_s=tl,
+                            DATA_DIR, status="STARTING", time_limit_s=_tl2,
                             direction="min", pass_id="co")
                         _s2 = cp_model.CpSolver()
                         _s2.parameters.num_search_workers = 8
-                        _s2.parameters.max_time_in_seconds = tl
+                        _s2.parameters.max_time_in_seconds = _tl2
                         _s2.parameters.repair_hint = True
                         # Watch the true weighted changeover load so pass-2
                         # labels report it directly instead of the composite
