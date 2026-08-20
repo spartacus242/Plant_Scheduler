@@ -693,6 +693,28 @@ def _public_cand(cand: dict) -> dict:
     return {k: v for k, v in cand.items() if not k.startswith("_")}
 
 
+# Two of the four subscores (changeovers, campaign — 45% of the composite)
+# are PER PLACED HOUR, so an arm that simply places less can score well by
+# doing less. The frozen v1 formula stays as-is; instead an under-filling
+# candidate is barred from PUBLICATION — it still appears on the leaderboard
+# with its real score, but the planner's version slots only ever receive a
+# schedule that actually filled the tail. Threshold: within this fraction of
+# the best fill subscore seen among guard-passing candidates.
+PUBLISH_FILL_FLOOR_RATIO = 0.85
+
+
+def publishable(pool: list[dict]) -> tuple[list[dict], list[dict]]:
+    """(eligible, barred) split of guard-passing candidates on the fill floor."""
+    if not pool:
+        return [], []
+    best_fill = max(float(c["overnight_score"]["fill"]) for c in pool)
+    floor = best_fill * PUBLISH_FILL_FLOOR_RATIO
+    eligible = [c for c in pool
+                if float(c["overnight_score"]["fill"]) >= floor]
+    barred = [c for c in pool if c not in eligible]
+    return eligible, barred
+
+
 def publish_top2(generations: list[Generation], log: Log,
                  notes: list[str]) -> None:
     """Cross-generation top-1 + runner-up (guards must pass) -> fixed-slug
@@ -704,6 +726,21 @@ def publish_top2(generations: list[Generation], log: Log,
             and c["guards"]["lock_ok"] and c["guards"]["cip_ok"]]
     if not pool:
         notes.append("nothing published: no candidate passed all guards")
+        log("[publish] " + notes[-1])
+        return
+    pool, barred = publishable(pool)
+    for c in barred:
+        c["publish_barred"] = "fill below the night's best fill"
+    if barred:
+        notes.append(
+            f"{len(barred)} candidate(s) scored well on per-hour ratios but "
+            "filled too little to publish (they stay on the leaderboard): "
+            + ", ".join(f"{c.get('label', c['run_id'])} "
+                        f"(fill {float(c['overnight_score']['fill']):.1f})"
+                        for c in barred[:4]))
+        log("[publish] " + notes[-1])
+    if not pool:
+        notes.append("nothing published: every candidate was under-filled")
         log("[publish] " + notes[-1])
         return
     pool.sort(key=lambda c: -float(c["overnight_score"]["composite"]))

@@ -399,3 +399,47 @@ def test_publish_first_creation_at_capacity_is_caught(temp_env):
     assert len(list_versions(temp_env)) == MAX_VERSIONS
     assert any("overnight_best" in n and "skipped" in n for n in notes)
     assert gen.candidates[0]["published"] is None
+
+
+# ---------------------------------------------------------------------------
+# Publish fill floor — the frozen v1 composite gives 45% of its weight to
+# per-placed-hour ratios, so an arm that places almost nothing can outrank a
+# real schedule. It may sit on the leaderboard; it may NOT reach the
+# planner's version slots (2026-08-19).
+# ---------------------------------------------------------------------------
+
+def _pub_cand(run_id: str, fill: float, composite: float) -> dict:
+    return {
+        "run_id": run_id, "label": run_id,
+        "overnight_score": {"version": "v1", "composite": composite,
+                            "fill": fill, "changeovers": 90.0,
+                            "campaign": 100.0, "on_time": 20.0},
+        "guards": {"overlaps": 0, "pins_ok": True, "lock_ok": True,
+                   "cip_ok": True},
+    }
+
+
+def test_underfilled_candidate_is_barred_from_publishing():
+    from overnight_batch import publishable
+
+    real = _pub_cand("champion", fill=86.0, composite=63.0)
+    lazy = _pub_cand("lazy", fill=31.0, composite=70.0)   # wins on ratios alone
+    eligible, barred = publishable([lazy, real])
+    assert [c["run_id"] for c in eligible] == ["champion"]
+    assert [c["run_id"] for c in barred] == ["lazy"]
+
+
+def test_close_fills_all_stay_eligible():
+    from overnight_batch import publishable
+
+    a = _pub_cand("a", fill=86.0, composite=63.0)
+    b = _pub_cand("b", fill=80.0, composite=65.0)   # 93% of best — fine
+    eligible, barred = publishable([a, b])
+    assert {c["run_id"] for c in eligible} == {"a", "b"}
+    assert barred == []
+
+
+def test_publishable_handles_an_empty_pool():
+    from overnight_batch import publishable
+
+    assert publishable([]) == ([], [])
