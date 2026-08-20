@@ -1560,6 +1560,8 @@ def run_scenario(
     overrides: dict[str, Any] | None = None,
     work_dir_patch: Any | None = None,
     progress_cb: Any | None = None,
+    timeout_s: float | None = None,
+    work_root: str = "_scenario_work",
 ) -> dict[str, Any]:
     """Run one scenario. Returns {ok, calendar, scorecard, log, returncode,
     feasibility, relax_level}.
@@ -1568,16 +1570,27 @@ def run_scenario(
     the work-dir flowstate.toml before the solver runs. Scenarios may also carry
     their own 'overrides' key (custom scenarios); the argument wins.
 
+    ``timeout_s`` overrides the subprocess kill ceiling. The default
+    (4 x time_limit + 60) assumes one solve budget; a two-pass run whose
+    pass 2 carries its own budget (scheduler.time_limit_pass2, overnight
+    batch) must pass an explicit ceiling covering both passes.
+
     ``work_dir_patch`` is the agent seam: a callable ``(work: Path) ->
     list[str]`` invoked AFTER staging + current-state overlay and BEFORE the
     solve. It may rewrite the solver's own input copies (never the real
     data/reference files) — e.g. the agent trimming component-blocked demand —
     and returns human-readable notes that are prepended to the run log so
     every input mutation is visible in the record.
+
+    ``work_root`` names the directory under data/ that holds the run's work
+    dir. The default is the shared "_scenario_work" that the UI and the
+    solved-dir probes scan; a background producer (the overnight batch) passes
+    its own root so its dirs never surface as "the run that solved last" in
+    Compare's MO-changes picker or the constraint probes.
     """
     from datetime import datetime as _dt_run
     _started_at = _dt_run.now().isoformat(timespec="seconds")
-    work = (Path(data_dir) / "_scenario_work" / scenario["id"]).resolve()
+    work = (Path(data_dir) / work_root / scenario["id"]).resolve()
     _prepare_work_dir(Path(data_dir).resolve(), work)
 
     # Only scenario E ("current state + demand") treats the manprg running /
@@ -1675,7 +1688,8 @@ def run_scenario(
 
     _solver_cwd = str(
         (Path(data_dir).resolve().parent / "code" / "solver").resolve())
-    _timeout_s = max(120, (time_limit or 60) * 4 + 60)
+    _timeout_s = (float(timeout_s) if timeout_s
+                  else max(120, (time_limit or 60) * 4 + 60))
     if progress_cb is None:
         proc = subprocess.run(
             cmd, cwd=_solver_cwd, capture_output=True, text=True,

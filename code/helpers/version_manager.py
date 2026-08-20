@@ -191,6 +191,7 @@ def upsert_version(
     cons: str = "",
     notes: str = "",
     source: str = "manual",
+    extra_meta: dict[str, Any] | None = None,
 ) -> str:
     """Create or overwrite a version at a fixed slug (does not count toward MAX when updating)."""
     _validate_slug(slug)
@@ -221,6 +222,10 @@ def upsert_version(
             f"{_hzm.resolve(_ltm()).anchor:%Y-%m-%d %H:%M:%S}")
     except Exception:  # noqa: BLE001
         pass
+    # Structured extras (e.g. fill_gates) ride alongside the core keys;
+    # they must never shadow them — same rule as save_version.
+    for k, v in (extra_meta or {}).items():
+        meta.setdefault(k, v)
     safe_write_json(meta, dest / "metadata.json")
     return slug
 
