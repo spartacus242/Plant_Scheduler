@@ -494,6 +494,7 @@ def _prepare_work_dir(data_dir: Path, work: Path) -> None:
         work.mkdir(parents=True)
 
     ref = data_dir / "reference"
+    root_toml = data_dir.parent / "flowstate.toml"
 
     mapping = {
         "changeovers.csv": "changeovers.csv",
@@ -508,12 +509,22 @@ def _prepare_work_dir(data_dir: Path, work: Path) -> None:
     missing: list[str] = []
     for src_name, dst_name in mapping.items():
         src = ref / src_name
-        if src.exists():
-            shutil.copy2(src, work / dst_name)
-        else:
+        if not src.exists():
             missing.append(src_name)
+        elif src_name == "downtimes.csv":
+            # The reference file stores wall-clock datetimes; the solver
+            # speaks hours. Derive the work-dir copy against the root toml
+            # anchor (the work frame until _stage_time_frame moves it).
+            from helpers.config import load_toml as _lt
+            from helpers.downtime_store import stage_solver_downtimes
+            from helpers.timefmt import planning_anchor as _pa
 
-    root_toml = data_dir.parent / "flowstate.toml"
+            stage_solver_downtimes(
+                src, work / dst_name,
+                _pa(_lt(root_toml) if root_toml.exists() else None))
+        else:
+            shutil.copy2(src, work / dst_name)
+
     if root_toml.exists():
         shutil.copy2(root_toml, work / "flowstate.toml")
 
@@ -536,9 +547,12 @@ def _stage_time_frame(work: Path, dd: Path, hz) -> list[str]:
     reconciling them put gates in the today-frame while demand due windows
     sat in the demand frame — up to 264h apart. This helper (called by BOTH
     overlays, so scenarios A-E get it too, not just F):
-      1. rewrites the work toml's planning_start_date to hz.anchor, and
+      1. rewrites the work toml's planning_start_date to hz.anchor,
       2. re-bases demand_plan.csv due windows into the hz.anchor frame,
-         dropping weeks that ended before the horizon (misses).
+         dropping weeks that ended before the horizon (misses), and
+      3. re-derives the work downtimes.csv from the wall-clock reference
+         file so its hours are in the hz.anchor frame too (the copy staged
+         by _prepare_work_dir spoke the root-toml frame).
     """
     import json as _json
     from datetime import datetime as _dt
@@ -578,6 +592,18 @@ def _stage_time_frame(work: Path, dd: Path, hz) -> list[str]:
             notes.append(f"demand due windows re-based {shift_h:+.0f}h "
                          "(demand anchor -> staging anchor)")
             notes.extend(rb_notes)
+
+    # Downtimes are wall-clock truth; only their HOUR VIEW depends on the
+    # frame. Re-derive the staged copy so hour 0 = hz.anchor. This must run
+    # BEFORE the overlays append trial/committed windows (they already speak
+    # the hz frame) — both overlays call this helper first, so it does.
+    dt_src = dd / "reference" / "downtimes.csv"
+    if dt_src.exists():
+        from helpers.downtime_store import stage_solver_downtimes
+
+        n_dt = stage_solver_downtimes(dt_src, work / "downtimes.csv", hz.anchor)
+        notes.append(f"downtimes derived from wall-clock file ({n_dt} row(s), "
+                     f"hour 0 = {hz.anchor:%Y-%m-%d %H:%M})")
     return notes
 
 
@@ -1681,9 +1707,10 @@ def run_scenario(
             }
         _cs_notes = [f"current-state overlay FAILED: {_exc}"]
 
-    # Downtime windows are stored as hour offsets, so they go stale whenever the
-    # horizon grows: a "0-336h" row written under a 2-week horizon silently frees
-    # the line for hours 336-504 of a 3-week plan. Detect and report; never rewrite.
+    # The reference file stores wall-clock datetimes now, but the WORK-DIR
+    # copy still speaks hours — a window ending on a legacy horizon boundary
+    # (a stale pre-migration artifact, or a replayed old work dir) silently
+    # frees the line mid-plan. Detect and report; never rewrite.
     try:
         _cs_notes.extend(_audit_work_downtimes(work))
     except Exception as _exc:  # noqa: BLE001

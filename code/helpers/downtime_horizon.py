@@ -1,10 +1,12 @@
-# helpers/downtime_horizon.py -- stale-horizon audit for downtimes.csv.
+# helpers/downtime_horizon.py -- stale-horizon audit for staged downtimes.
 #
 # WHY THIS EXISTS
 # ---------------
-# `data/reference/downtimes.csv` stores each outage as an HOUR OFFSET pair
-# (start_hour, end_hour) against the planning anchor -- not as real dates.
-# That makes every row silently dependent on two moving parts:
+# The solver's WORK-DIR downtimes.csv speaks HOUR OFFSET pairs (start_hour,
+# end_hour) against the staging anchor. (The reference file now stores
+# wall-clock datetimes -- helpers/downtime_store -- but the staged copy, and
+# any pre-migration or replayed work dir, is still hours.) An hour pair is
+# silently dependent on two moving parts:
 #
 #   * the anchor (`anchor_mode = "today"` re-anchors weekly), and
 #   * the horizon length (`[scheduler] horizon_hours`).
@@ -89,7 +91,7 @@ def audit_downtime_horizon(
             f"downtime STALE HORIZON: {line} is down 0-{end:g}h ({reason}) but the "
             f"horizon is {horizon:g}h -- the solver will treat {line} as AVAILABLE "
             f"from hour {end:g}. If the line is down for the whole plan, extend "
-            f"end_hour to {horizon:g} in data/reference/downtimes.csv."
+            f"its end date in the Start-of-day downtime editor."
         )
     return notes
 

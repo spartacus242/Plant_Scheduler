@@ -166,12 +166,24 @@ def import_solver_schedule(
             })
 
     if downtimes_path and downtimes_path.exists():
-        dt = pd.read_csv(downtimes_path)
+        # Two dialects arrive here. The REFERENCE file stores wall-clock
+        # datetimes (helpers/downtime_store) — derive start_hour/end_hour
+        # against this calendar's anchor frame. A solver WORK-DIR file
+        # (work/downtimes.csv, real_downtimes.csv) already speaks hours in
+        # the schedule's own frame — pass those through untouched.
+        head = pd.read_csv(downtimes_path, nrows=0, encoding="utf-8-sig")
+        if {"start_datetime", "end_datetime"}.issubset(head.columns):
+            from helpers.downtime_store import load_downtimes_file
+            dt = load_downtimes_file(downtimes_path, anchor=planning_anchor)
+        else:
+            dt = pd.read_csv(downtimes_path)
         for _, r in dt.iterrows():
             reason = str(r.get("reason", "Down") or "Down")
             btype = "line_down" if "down" in reason.lower() else "maintenance"
             start = float(r.get("start_hour", 0))
             end = float(r.get("end_hour", start))
+            if pd.isna(start) or pd.isna(end):
+                continue
             rows.append({
                 "block_id": _new_id("down" if btype == "line_down" else "maint"),
                 "block_type": btype,

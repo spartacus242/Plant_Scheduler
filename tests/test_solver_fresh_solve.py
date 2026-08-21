@@ -74,15 +74,27 @@ TOL = 1e-6
 def _stage_work_dir(work: Path) -> None:
     """Copy the solver's reference inputs + a time-limit-patched toml.
 
-    Uses shutil.copy2 (exact bytes) exactly like scenario_runner._prepare_work_dir,
-    so no value is reinterpreted by a pandas round-trip on the way into the solve.
+    Mirrors scenario_runner._prepare_work_dir: shutil.copy2 (exact bytes) for
+    everything EXCEPT downtimes.csv — the reference file stores wall-clock
+    datetimes, so the solver's hour-frame copy is derived through the one
+    loader (helpers/downtime_store), exactly like production staging.
     """
     import shutil
 
+    from helpers.downtime_store import stage_solver_downtimes
+    from helpers.timefmt import planning_anchor
+
     work.mkdir(parents=True, exist_ok=True)
+    import tomllib
+
+    anchor = planning_anchor(tomllib.loads(ROOT_TOML.read_text(encoding="utf-8")))
     for name in INPUTS:
         src = REFERENCE / name
-        if src.exists():
+        if not src.exists():
+            continue
+        if name == "downtimes.csv":
+            stage_solver_downtimes(src, work / name, anchor)
+        else:
             shutil.copy2(src, work / name)
     toml = ROOT_TOML.read_text(encoding="utf-8")
     # Override the time limit only; keep every other [scheduler] default.

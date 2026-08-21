@@ -732,8 +732,13 @@ def assess_plan(
 
     # FIT
     def _fit():
+        # Downtimes are stored wall-clock; derive hours against the toml
+        # planning anchor — the frame calendar_blocks.csv hours live in.
+        from helpers.downtime_store import load_downtimes
+        from helpers.timefmt import planning_anchor
         dt_path = ref / "downtimes.csv"
-        downtimes = pd.read_csv(dt_path) if dt_path.exists() else None
+        downtimes = (load_downtimes(dd, anchor=planning_anchor(cfg))
+                     if dt_path.exists() else None)
         return fit_findings(calendar, downtimes, horizon_h=float(hz.hours))
     guard("fit", _fit)
 

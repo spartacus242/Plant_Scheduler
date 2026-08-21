@@ -302,19 +302,29 @@ def test_c7_audit_tolerates_junk_rows():
 def test_c7_real_reference_downtimes_cover_the_configured_horizon():
     """The live data must not contain a stale full-horizon outage. This is the
     check that caught P11/P13 being scheduled on hours 336-504 of a 504 h plan
-    while both lines were physically down."""
+    while both lines were physically down.
+
+    The reference file stores wall-clock datetimes now; the audit speaks
+    hours, so derive them through the one loader (migrate=False: a test must
+    never rewrite the live file)."""
     dt_path = ROOT / "data" / "reference" / "downtimes.csv"
     toml_path = ROOT / "flowstate.toml"
     if not dt_path.exists() or not toml_path.exists():
         pytest.skip("reference downtimes.csv / flowstate.toml missing")
     import tomllib
 
-    sch = tomllib.loads(toml_path.read_text(encoding="utf-8")).get("scheduler", {})
+    from helpers.downtime_store import load_downtimes_file
+    from helpers.timefmt import planning_anchor
+
+    cfg = tomllib.loads(toml_path.read_text(encoding="utf-8"))
+    sch = cfg.get("scheduler", {})
     horizon = float(sch.get("horizon_hours") or float(sch.get("horizon_weeks", 0) or 0) * 168)
     if horizon <= 0:
         pytest.skip("no horizon configured")
-    rows = pd.read_csv(dt_path, encoding="utf-8-sig", dtype=str,
-                       keep_default_na=False).to_dict("records")
+    anchor = planning_anchor(cfg)
+    rows = load_downtimes_file(
+        dt_path, anchor=anchor, storage_anchor=anchor, migrate=False,
+    ).to_dict("records")
     notes = audit_downtime_horizon(rows, horizon)
     assert not notes, "\n".join(notes)
 
