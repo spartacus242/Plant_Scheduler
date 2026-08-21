@@ -63,6 +63,11 @@ Usage:
                                                       # small portfolio, no
                                                       # publish unless --publish
     python scripts/overnight_batch.py --skip-pull     # no fs-live-pull (tests)
+    python scripts/overnight_batch.py --pass1-s 120 --pass2-s 300
+                                                      # override EVERY arm's
+                                                      # budgets (small runs)
+    python scripts/overnight_batch.py --no-publish    # never publish, beats
+                                                      # every other flag
 """
 from __future__ import annotations
 
@@ -221,44 +226,144 @@ def effective_co_weights(cfg: dict) -> dict[str, int]:
 
 
 def default_portfolio(cfg: dict, *, dry_run: bool) -> list[dict]:
-    """The default arm list. Champion = current config defaults (Scenario F's
-    own overrides on top of the toml — no extra params). Exploration arms
-    scale the EFFECTIVE changeover weights, keeping the existing priority
-    ordering (ffs > topload > ... ) intact."""
-    base = effective_co_weights(cfg)
-    x15 = {k: int(round(v * 1.5)) for k, v in base.items()}
-    x2 = dict(base)
-    x2["ffs_weight"] = int(base["ffs_weight"] * 2)
-    x2["topload_weight"] = int(base["topload_weight"] * 2)
+    """The default arm list (2026-08-21 redesign: diversity of STARTING
+    POINTS is the lever, not budgets or weights).
+
+    Champion = current config defaults (Scenario F's own overrides on top of
+    the toml — no extra params). The champion params kept reproducing the
+    board because the board came from the same solver + same seed path, so
+    the portfolio varies where the search STARTS:
+      * champion x2 ("noise") — the noise floor;
+      * seed x2               — champion params, CP-SAT random_seed 2 / 3
+                                (scheduler.solver_random_seed, applied to
+                                every solve pass);
+      * cold x1               — champion params, warm start fully disabled:
+                                no greedy seed, carried prev files removed;
+      * chained x1            — warm-starts from the best candidate SO FAR
+                                in the same generation; runs LAST so every
+                                other arm is a possible donor.
+    Ladder arms are RETIRED by default: last night (gen 20260820-1505)
+    measured 600/3600s vs 300/1800s within the champion noise floor — the
+    doubled budget never paid. Exploration arms exist only when
+    steering.json asks (apply_steering appends them). The dry-run portfolio
+    is the same composition minus one seed arm."""
     ch = dict(DRY_BUDGETS if dry_run else CHAMPION_BUDGETS)
     arms = [
-        {"label": "champion_n1", "kind": "noise", "params": {}, "budgets": ch},
-        {"label": "champion_n2", "kind": "noise", "params": {}, "budgets": ch},
+        {"label": "champion_n1", "kind": "noise", "params": {},
+         "budgets": dict(ch)},
+        {"label": "champion_n2", "kind": "noise", "params": {},
+         "budgets": dict(ch)},
+        {"label": "seed_2", "kind": "seed",
+         "params": {"solver_random_seed": 2}, "budgets": dict(ch)},
     ]
-    if dry_run:
-        arms.append({"label": "explore_co_x1_5", "kind": "exploration",
-                     "params": x15, "budgets": dict(DRY_BUDGETS)})
-        return arms
+    if not dry_run:
+        arms.append({"label": "seed_3", "kind": "seed",
+                     "params": {"solver_random_seed": 3},
+                     "budgets": dict(ch)})
     arms += [
-        {"label": "champion_n3", "kind": "noise", "params": {}, "budgets": ch},
-        {"label": "ladder_300_1800", "kind": "ladder", "params": {},
-         "budgets": {"pass1_s": 300, "pass2_s": 1800}},
-        {"label": "ladder_600_3600", "kind": "ladder", "params": {},
-         "budgets": {"pass1_s": 600, "pass2_s": 3600}},
-        {"label": "explore_co_x1_5", "kind": "exploration", "params": x15,
-         "budgets": dict(CHAMPION_BUDGETS)},
-        {"label": "explore_ffs_topload_x2", "kind": "exploration",
-         "params": x2, "budgets": dict(CHAMPION_BUDGETS)},
+        {"label": "cold_start", "kind": "cold", "params": {},
+         "budgets": dict(ch), "warm_start": "none"},
+        {"label": "chained_best", "kind": "chained", "params": {},
+         "budgets": dict(ch), "warm_start": "chained"},
     ]
     return arms
 
 
 def apply_steering(arms: list[dict], steering: list[dict]) -> list[dict]:
-    """Replace the exploration arms with the steering ones; champion/noise
-    (and the budget ladder) always run regardless."""
+    """Append the steering exploration arms (the default portfolio carries
+    none since the 2026-08-21 redesign); champion/noise, seed, cold and
+    chained arms always run regardless."""
     if not steering:
         return arms
     return [a for a in arms if a["kind"] != "exploration"] + steering
+
+
+def apply_budget_overrides(arms: list[dict], pass1_s: int | None,
+                           pass2_s: int | None) -> list[dict]:
+    """--pass1-s / --pass2-s override the budgets of EVERY arm — the
+    small-run testing lever. None = that pass keeps its per-arm budget, so
+    the flag-less nightly run is byte-identical."""
+    if pass1_s is None and pass2_s is None:
+        return arms
+    for arm in arms:
+        b = arm["budgets"]
+        if pass1_s is not None:
+            b["pass1_s"] = int(pass1_s)
+        if pass2_s is not None:
+            b["pass2_s"] = int(pass2_s)
+    return arms
+
+
+def best_donor(candidates: list[dict]) -> dict | None:
+    """The best scored candidate SO FAR — the chained arm's warm-start
+    donor. Guards are deliberately not required: a hint only steers the
+    search (the solver's trust gates + CP-SAT hint repair own correctness),
+    so the highest composite is the most informative starting point either
+    way."""
+    pool = [c for c in candidates if c.get("overnight_score")]
+    if not pool:
+        return None
+    return max(pool, key=lambda c: float(c["overnight_score"]["composite"]))
+
+
+# The files that DEFINE the donor's solved problem: the solver's nine
+# signature inputs (phase2_scheduler.input_signature) plus the F staging
+# artifacts the calendar re-assembly and fill scoring read. flowstate.toml
+# is deliberately absent — budgets/seed are the arm's own and are not part
+# of the input signature.
+CHAIN_PROBLEM_FILES = (
+    "capabilities_rates.csv", "changeovers.csv", "demand_plan.csv",
+    "downtimes.csv", "initial_states.csv", "line_cip_hrs.csv",
+    "line_rates.csv", "sku_info.csv", "current_mo.csv",
+    "committed_blocks.csv", "real_downtimes.csv", "fill_gates.json",
+    "coverage_ledger.csv",
+)
+
+
+def plant_chain_seed(work: Path, donor_work: Path) -> list[str]:
+    """The chained arm re-solves the donor's EXACT staged problem, warm-
+    started from the donor's solution.
+
+    Copies (a) the donor's staged problem files (CHAIN_PROBLEM_FILES) and
+    (b) its solved schedule as prev_schedule.csv + feasibility_report.json
+    as prev_feasibility.json, carrying the donor's input_sig and relax
+    level verbatim. The solver's trust gates then accept because the
+    chained solve genuinely IS the same inputs — measured 2026-08-21: two
+    arms of the same generation staged 14 min apart differ (running-MO
+    tail estimates tick forward with the wall clock: gates +1h on 3 lines,
+    matching downtime windows, slightly different netting), so carrying
+    the signature alone is NOT enough and re-staging would make hints
+    illegitimate. The gate itself is never touched: if the copy fails
+    half-way the signatures disagree and the solver honestly solves cold.
+    """
+    import shutil as _sh
+    src_sched = donor_work / "schedule_phase2.csv"
+    src_feas = donor_work / "feasibility_report.json"
+    if not src_sched.exists():
+        return [f"chain seed unavailable ({src_sched.name} missing in "
+                f"{donor_work.name}) — solving cold"]
+    copied = 0
+    for name in CHAIN_PROBLEM_FILES:
+        src = donor_work / name
+        if src.exists():
+            _sh.copy2(src, work / name)
+            copied += 1
+        else:
+            # a file staged for the arm but absent from the donor would
+            # silently shift the problem — remove it so both dirs agree
+            # (current_mo.csv is legitimately absent in F on both sides)
+            (work / name).unlink(missing_ok=True)
+    _sh.copy2(src_sched, work / "prev_schedule.csv")
+    if src_feas.exists():
+        _sh.copy2(src_feas, work / "prev_feasibility.json")
+        return [f"chained: donor {donor_work.name}'s staged problem "
+                f"({copied} file(s)) + solved schedule planted; input_sig "
+                "carried verbatim for the solver's trust gates"]
+    # Without the donor's report the solver treats the previous signature
+    # as unknown-changed and skips the hints — reported, never papered over.
+    return [f"chained: donor {donor_work.name}'s staged problem "
+            f"({copied} file(s)) + schedule planted WITHOUT a feasibility "
+            "report — the solver's signature gate will skip the hints"]
 
 
 def count_overlaps(calendar: pd.DataFrame) -> int:
@@ -619,15 +724,57 @@ def run_arm(arm: dict, gen: Generation, dns: dict[str, float],
     log(f"[arm {label}] start: budgets {budgets['pass1_s']}/"
         f"{budgets['pass2_s']}s, params {arm.get('params') or 'champion'}")
 
+    # ── Warm-start mode (portfolio redesign 2026-08-21) ──────────────────
+    # "none"   -> cold arm: run_scenario skips the greedy seed and removes
+    #             carried prev files, so the solver logs a true cold start;
+    # "chained"-> resolve the best scored candidate SO FAR in THIS
+    #             generation as donor; its solved schedule (+ feasibility
+    #             report carrying its input_sig) is planted by the patch
+    #             below and run_scenario skips the greedy seed ("prev").
+    #             No donor yet (first arms, or every earlier arm failed)
+    #             falls back to the default greedy seed — an arm that
+    #             cannot chain still earns its slot.
+    donor_work: Path | None = None
+    ws_mode = arm.get("warm_start")
+    if ws_mode == "chained":
+        donor = best_donor(gen.candidates)
+        dwork = (DATA / WORK_ROOT / f"F_overnight_{donor['label']}"
+                 if donor else None)
+        if dwork is not None and (dwork / "schedule_phase2.csv").exists():
+            scenario["warm_start"] = "prev"
+            donor_work = dwork
+            cand_chained_from = donor["run_id"]
+            log(f"[arm {label}] chained warm start from {donor['run_id']} "
+                f"(composite "
+                f"{donor['overnight_score']['composite']})")
+        else:
+            cand_chained_from = None
+            log(f"[arm {label}] chained: no solved donor in this "
+                "generation yet — greedy seed fallback")
+    else:
+        cand_chained_from = None
+        if ws_mode:
+            scenario["warm_start"] = ws_mode
+
     def patch(work: Path) -> list[str]:
         notes: list[str] = []
-        dem_path = work / "demand_plan.csv"
-        dem = pd.read_csv(dem_path, dtype={"sku": str})
-        trimmed, tnotes = trim_dns_demand(dem, dns)
-        trimmed.to_csv(dem_path, index=False)
-        if tnotes:
-            notes.append(f"DNS trim: {len(tnotes)} order(s) capped "
-                         f"({len(dns)} component-blocked SKU(s))")
+        if donor_work is not None:
+            # The chained arm re-solves the donor's exact staged problem —
+            # a fresh DNS re-trim here would diverge the copied bytes and
+            # illegitimately break the warm-start signature, so the donor's
+            # demand (its own DNS caps included) stands. Stock changes
+            # since the donor staged still reach the brief's stock events.
+            notes.extend(plant_chain_seed(work, donor_work))
+            notes.append("DNS trim skipped: chained arm keeps the donor's "
+                         "staged demand (donor-time caps included)")
+        else:
+            dem_path = work / "demand_plan.csv"
+            dem = pd.read_csv(dem_path, dtype={"sku": str})
+            trimmed, tnotes = trim_dns_demand(dem, dns)
+            trimmed.to_csv(dem_path, index=False)
+            if tnotes:
+                notes.append(f"DNS trim: {len(tnotes)} order(s) capped "
+                             f"({len(dns)} component-blocked SKU(s))")
         _set_work_scheduler_flag(
             work / "flowstate.toml", "time_limit_pass2",
             int(budgets["pass2_s"]))
@@ -642,6 +789,10 @@ def run_arm(arm: dict, gen: Generation, dns: dict[str, float],
         "overnight_score": None, "guards": None, "gap_pct_end": None,
         "wall_s": 0.0, "version_slug": None, "published": None,
     }
+    if ws_mode == "chained":
+        # honest provenance: which run's schedule seeded this search
+        # (None = no donor was available and the greedy seed ran instead)
+        cand["chained_from"] = cand_chained_from
     try:
         result = run_scenario(
             scenario, DATA, time_limit=int(budgets["pass1_s"]),
@@ -1008,12 +1159,22 @@ def ensure_generation(gen: Generation | None, generations: list[Generation],
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     ap.add_argument("--dry-run", action="store_true",
-                    help="tiny budgets (60/120s), 3-arm portfolio, no "
-                         "publish unless --publish, no 5am wait")
+                    help="tiny budgets (60/120s), 5-arm portfolio "
+                         "(champion x2, seed, cold, chained), no publish "
+                         "unless --publish, no 5am wait")
     ap.add_argument("--publish", action="store_true",
                     help="publish even in --dry-run")
+    ap.add_argument("--no-publish", action="store_true",
+                    help="never publish, regardless of every other flag "
+                         "(beats --publish)")
     ap.add_argument("--skip-pull", action="store_true",
                     help="skip fs-live-pull (sandbox/test runs)")
+    ap.add_argument("--pass1-s", type=int, default=None, metavar="N",
+                    help="override EVERY arm's pass-1 budget in seconds "
+                         "(small-run testing); default: per-arm budgets")
+    ap.add_argument("--pass2-s", type=int, default=None, metavar="N",
+                    help="override EVERY arm's pass-2 budget in seconds "
+                         "(small-run testing); default: per-arm budgets")
     ap.add_argument("--consolidate-at", default="05:00",
                     help="HH:MM for the final champion run (default 05:00)")
     args = ap.parse_args()
@@ -1041,6 +1202,11 @@ def main() -> int:
         for n in steer_notes:
             log(f"[steering] {n}")
         arms = apply_steering(arms, steer_arms)
+    arms = apply_budget_overrides(arms, args.pass1_s, args.pass2_s)
+    if args.pass1_s is not None or args.pass2_s is not None:
+        log(f"[portfolio] budgets overridden for every arm: "
+            f"pass1={args.pass1_s or 'per-arm'}s "
+            f"pass2={args.pass2_s or 'per-arm'}s")
     log(f"[portfolio] {len(arms)} arm(s): "
         + ", ".join(a["label"] for a in arms))
 
@@ -1093,13 +1259,18 @@ def main() -> int:
             stock_events.extend(sc_notes)
             champion = {"label": "champion_5am", "kind": "champion",
                         "params": {}, "budgets": dict(CHAMPION_BUDGETS)}
+            # --pass1-s/--pass2-s override EVERY arm, the 5am one included
+            apply_budget_overrides([champion], args.pass1_s, args.pass2_s)
             run_arm(champion, gen, dns, log)
         except Exception:  # noqa: BLE001
             log("[consolidate] FAILED:\n" + traceback.format_exc(limit=5))
             brief_notes.append("5am champion consolidation FAILED")
 
     if generations:
-        if not args.dry_run or args.publish:
+        if args.no_publish:
+            brief_notes.append("publish skipped (--no-publish)")
+            log("[publish] skipped (--no-publish)")
+        elif not args.dry_run or args.publish:
             publish_top2(generations, log, brief_notes)
         else:
             brief_notes.append("dry run: publish skipped (use --publish)")

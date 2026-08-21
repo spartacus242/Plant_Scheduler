@@ -387,7 +387,25 @@ def params_from_config(
     P.soft_demand = bool(sched.get("soft_demand", False))
     if sched.get("shortfall_weight") is not None:
         P.objective_shortfall_weight = int(sched["shortfall_weight"])
+    # CP-SAT random seed: absent = never touch the parameter (CP-SAT keeps
+    # its own default), so existing configs behave byte-identically.
+    if sched.get("solver_random_seed") is not None:
+        P.solver_random_seed = int(sched["solver_random_seed"])
     return P
+
+
+def apply_solver_seed(solver: "cp_model.CpSolver", P: Params) -> None:
+    """[scheduler] solver_random_seed -> CP-SAT parameters, EVERY solve pass.
+
+    The one place the seed reaches the solver — two-phase W0/W1, the
+    single-phase ladder, and both pass-2 solves (anchor + real) call this,
+    so an arm pinned to seed N really searches with seed N everywhere.
+    None (the default) leaves solver.parameters untouched: CP-SAT's own
+    default seed stays in force and existing runs are unchanged.
+    """
+    seed = getattr(P, "solver_random_seed", None)
+    if seed is not None:
+        solver.parameters.random_seed = int(seed)
 
 
 DATA_DIR = _ARGS.data_dir.resolve() if _ARGS.data_dir is not None else BASE_DIR
@@ -1424,6 +1442,7 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         solver0 = cp_model.CpSolver()
         solver0.parameters.num_search_workers = 8
         solver0.parameters.max_time_in_seconds = tl
+        apply_solver_seed(solver0, P)
         cb0 = _ProgressCallback(data_dir, label_prefix=f"W0 L{lvl}: ",
                                 direction="min")
         status0 = solver0.Solve(model0, cb0)
@@ -1575,6 +1594,7 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         solver1 = cp_model.CpSolver()
         solver1.parameters.num_search_workers = 8
         solver1.parameters.max_time_in_seconds = tl
+        apply_solver_seed(solver1, P)
         cb1 = _ProgressCallback(data_dir, label_prefix=f"W1 L{lvl}: ",
                                 direction="min")
         status1 = solver1.Solve(model1, cb1)
@@ -1720,6 +1740,10 @@ def main() -> None:
         f"cross_week={CROSS_WEEK} cip_flex={CIP_FLEX} "
         f"tl={TIME_LIMIT} mlpo={P.max_lines_per_order}"
     )
+    # AFTER reset_err — anything logged earlier is wiped with the old file.
+    if P.solver_random_seed is not None:
+        log(f"[seed] CP-SAT random_seed {P.solver_random_seed} "
+            "(applied to every solve pass)")
 
     # Initialise structured progress
     if _CROSS_WEEK_FORCED_SINGLE:
@@ -1893,6 +1917,7 @@ def main() -> None:
                     solver = cp_model.CpSolver()
                     solver.parameters.num_search_workers = 8
                     solver.parameters.max_time_in_seconds = tl
+                    apply_solver_seed(solver, P)
                     # Fill labels carry their own pass wording; the ladder
                     # level only matters once it escalates past hard rules.
                     _lvl_prefix = ("" if _cb_kwargs.get("pass_id") and lvl == 0
@@ -1967,6 +1992,7 @@ def main() -> None:
                         _s2a = cp_model.CpSolver()
                         _s2a.parameters.num_search_workers = 8
                         _s2a.parameters.max_time_in_seconds = min(120.0, _tl2)
+                        apply_solver_seed(_s2a, P)
                         _s2a.parameters.fix_variables_to_their_hinted_value = True
                         _sta = _s2a.Solve(m2)
                         if _sta in (cp_model.FEASIBLE, cp_model.OPTIMAL):
@@ -1995,6 +2021,7 @@ def main() -> None:
                         _s2 = cp_model.CpSolver()
                         _s2.parameters.num_search_workers = 8
                         _s2.parameters.max_time_in_seconds = _tl2
+                        apply_solver_seed(_s2, P)
                         _s2.parameters.repair_hint = True
                         # Watch the true weighted changeover load so pass-2
                         # labels report it directly instead of the composite

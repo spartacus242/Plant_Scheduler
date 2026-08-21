@@ -221,6 +221,10 @@ OVERRIDE_SECTIONS: dict[str, str] = {
     "min_run_hours": "scheduler",
     "min_run_pct_of_qty": "scheduler",
     "max_lines_per_order": "scheduler",
+    # CP-SAT random seed (search diversity, not a weight): same toml ride,
+    # applied to every solve pass via phase2_scheduler.apply_solver_seed.
+    # Absent = CP-SAT's own default seed.
+    "solver_random_seed": "scheduler",
 }
 
 # Overrides that are fractions, not integer weights — normalize_overrides
@@ -1134,6 +1138,45 @@ def _greedy_seed(work: Path) -> list[str]:
     return notes
 
 
+def _stage_warm_start(work: Path, scenario: dict[str, Any]) -> list[str]:
+    """Fill-mode warm-start staging, per the scenario's ``warm_start`` key.
+
+    * "greedy" (default / absent): build the greedy construction seed —
+      the historical behaviour, byte-identical for every existing caller.
+    * "none" (cold arm): NO seed at all. The greedy seed is skipped AND any
+      prev_schedule.csv / prev_feasibility.json carried across the work-dir
+      wipe by _prepare_work_dir is removed, so the solver has nothing to
+      hint from and logs a true cold start.
+    * "prev" (chained arm): the caller's work_dir_patch planted a donor
+      schedule as prev_schedule.csv (+ prev_feasibility.json carrying the
+      donor's input_sig and relax level). The greedy seed is skipped so it
+      cannot overwrite the donor; the solver's own trust gates (input-
+      signature md5 + relax-level) then decide whether to hint from it.
+    """
+    mode = str(scenario.get("warm_start") or "greedy")
+    if mode == "none":
+        removed = []
+        for name in ("prev_schedule.csv", "prev_feasibility.json"):
+            p = work / name
+            if p.exists():
+                try:
+                    p.unlink()
+                    removed.append(name)
+                except OSError:
+                    pass
+        note = "warm start disabled (cold start): greedy seed skipped"
+        if removed:
+            note += f"; removed carried {', '.join(removed)}"
+        return [note]
+    if mode == "prev":
+        if (work / "prev_schedule.csv").exists():
+            return ["warm start from planted prev_schedule.csv (chained): "
+                    "greedy seed skipped; the solver's trust gates decide"]
+        return ["warm start mode 'prev' but no prev_schedule.csv planted — "
+                "solving cold (greedy seed skipped)"]
+    return _greedy_seed(work)
+
+
 def normalize_overrides(overrides: dict[str, Any] | None) -> dict[str, Any]:
     """Keep only known weight keys with a real value; coerce to int.
 
@@ -1675,14 +1718,17 @@ def run_scenario(
     eff_overrides = overrides if overrides is not None else scenario.get("overrides")
     _patch_work_toml(toml, time_limit, eff_overrides)
 
-    # Scenario F: construct a dense greedy fill AFTER all input patching —
-    # including the toml weight overrides above, which the format-aware
-    # candidate ranking reads — and hand it to the solver as a full warm
-    # start. Hours-hashed inputs are untouched by the toml patch, so the
-    # seed's input signature still matches the solver's. Best-effort but loud.
+    # Scenario F: stage the warm start AFTER all input patching — including
+    # the toml weight overrides above, which the greedy seed's format-aware
+    # candidate ranking reads, and any donor schedule the patch planted.
+    # Hours-hashed inputs are untouched by the toml patch, so a seed's input
+    # signature still matches the solver's. Default is the greedy
+    # construction seed; scenario["warm_start"] = "none"/"prev" gives the
+    # overnight batch cold and chained arms (see _stage_warm_start).
+    # Best-effort but loud.
     if fill_mode:
         try:
-            _cs_notes.extend(_greedy_seed(work))
+            _cs_notes.extend(_stage_warm_start(work, scenario))
         except Exception as _exc:  # noqa: BLE001
             _cs_notes.append(f"greedy seed FAILED (solving cold): {_exc}")
 

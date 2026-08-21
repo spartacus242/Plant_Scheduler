@@ -216,6 +216,19 @@ _RULES: list[dict[str, Any]] = [
                 "the whole subprocess at 4x budget + 60s.",
     ),
     dict(
+        id="solver_random_seed", group=GROUP_KNOB, ui="easy",
+        name="CP-SAT random seed",
+        config="scheduler.solver_random_seed", default="absent (CP-SAT default)",
+        where="phase2_scheduler.py apply_solver_seed (every solve pass); "
+              "[scheduler] solver_random_seed",
+        planner="Fixed seed for CP-SAT's randomized search. Same model + "
+                "different seed explores a DIFFERENT search path, so two "
+                "runs stop reproducing each other — the overnight batch's "
+                "seed arms use this to diversify starting points. It never "
+                "changes what is feasible, only where the search looks "
+                "first. Absent = CP-SAT's own default seed.",
+    ),
+    dict(
         id="objective_mode", group=GROUP_KNOB, ui="exposed",
         name="Objective mode",
         value="balanced / min-changeovers / spread-load",
