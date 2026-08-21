@@ -771,8 +771,13 @@ def test_real_generations_regression(tmp_path):
         (opt / g / "leaderboard.json").write_text(
             (REAL_OPT / g / "leaderboard.json").read_text(encoding="utf-8"),
             encoding="utf-8")
-    latest = json.loads(
-        (REAL_OPT / "latest.json").read_text(encoding="utf-8"))
+    # The pointer is frozen AS IT WAS that night — the live latest.json moves
+    # with every later batch (a supervised daytime run re-pointed it hours
+    # after this test was written, breaking the replay). The generation dirs
+    # themselves are immutable history; only the pointer needed pinning.
+    latest = {"generation": REAL_GENS[-1],
+              "leaderboard": f"{REAL_GENS[-1]}/leaderboard.json",
+              "brief": "brief.md"}
     (opt / "latest.json").write_text(
         json.dumps({**latest, "published": block}), encoding="utf-8")
 
