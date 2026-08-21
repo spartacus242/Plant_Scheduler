@@ -5,7 +5,10 @@
 # The planner enters this downtime FIRST; the duration maths for production
 # blocks then already knows which hours are one-sided.
 #
-# Rendered on the Data Files page and on the Plant Calendar.
+# Rendered on the Data Files page and on the Plant Calendar. This editor is
+# the ONLY place downtimes.csv is written (user rule 2026-08-21): the file
+# stores absolute wall-clock datetimes via helpers/downtime_store, so rolling
+# the calendar anchor never moves an outage.
 
 from __future__ import annotations
 
@@ -15,6 +18,13 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from helpers.downtime_store import (
+    DT_FMT,
+    STORE_COLUMNS as DOWNTIME_COLUMNS,
+    downtimes_path,
+    load_downtimes as _store_load,
+    save_downtimes,
+)
 from helpers.lines_model import (
     DOUBLE_GROUPS,
     group_of,
@@ -22,32 +32,21 @@ from helpers.lines_model import (
     side_of,
     sides_of,
 )
-from helpers.safe_io import safe_write_csv
-
-DOWNTIME_COLUMNS = ["line_id", "line_name", "start_hour", "end_hour", "reason"]
+from helpers.timefmt import parse_datetime
 
 STEP1_CAPTION = (
     "**STEP 1 - Set scheduled downtime per side first, then schedule production.** "
     "The Bossar double lines (P17-P22) are two parallel sides, A and B. Either side "
     "can be down alone; the line then runs at exactly half rate. Enter the downtime "
     "here and the Gantt will stretch any production block that crosses a one-sided "
-    "stretch automatically."
+    "stretch automatically. Times are wall-clock dates -- rolling the calendar "
+    "never moves them."
 )
 
 
-def downtimes_path(dd: Path) -> Path:
-    return dd / "reference" / "downtimes.csv"
-
-
 def load_downtimes(dd: Path) -> pd.DataFrame:
-    path = downtimes_path(dd)
-    if not path.exists():
-        return pd.DataFrame(columns=DOWNTIME_COLUMNS)
-    df = pd.read_csv(path, encoding="utf-8-sig", dtype=str, keep_default_na=False)
-    for col in DOWNTIME_COLUMNS:
-        if col not in df.columns:
-            df[col] = ""
-    return df
+    """Store columns + hours derived against the toml planning anchor."""
+    return _store_load(dd)
 
 
 def line_options(dd: Path) -> list[str]:
@@ -98,13 +97,14 @@ def side_downtime_summary(dd: Path) -> pd.DataFrame:
     """One row per recorded downtime window, annotated with group and side."""
     df = load_downtimes(dd)
     if df.empty:
-        return pd.DataFrame(columns=["line_name", "group", "side", "start_hour", "end_hour", "reason"])
+        return pd.DataFrame(columns=["line_name", "group", "side",
+                                     "start_datetime", "end_datetime", "reason"])
     out = pd.DataFrame({
         "line_name": df["line_name"],
         "group": [group_of(v) for v in df["line_name"]],
         "side": [side_of(v) or "(whole line)" for v in df["line_name"]],
-        "start_hour": df["start_hour"],
-        "end_hour": df["end_hour"],
+        "start_datetime": df["start_datetime"],
+        "end_datetime": df["end_datetime"],
         "reason": df["reason"],
     })
     return out
@@ -113,9 +113,9 @@ def side_downtime_summary(dd: Path) -> pd.DataFrame:
 def render_side_downtime_editor(dd: Path, *, key_prefix: str = "dt") -> None:
     """Add / review per-side scheduled downtime. Writes reference/downtimes.csv.
 
-    The user picks real start/end DATE + TIME; we convert to hour offsets
-    against the planning anchor for storage (the solver reads start_hour/
-    end_hour, so the on-disk schema is unchanged)."""
+    The user picks real start/end DATE + TIME and exactly that is stored
+    (start_datetime/end_datetime). The board-hour view every consumer needs
+    is derived at load time by helpers/downtime_store."""
     st.markdown(STEP1_CAPTION)
 
     options = line_options(dd)
@@ -124,7 +124,7 @@ def render_side_downtime_editor(dd: Path, *, key_prefix: str = "dt") -> None:
         return
 
     from helpers.config import load_toml
-    from helpers.timefmt import hour_to_datetime, planning_anchor
+    from helpers.timefmt import planning_anchor
     anchor = planning_anchor(load_toml())
 
     doubles = [o for o in options if is_double(o)]
@@ -143,7 +143,7 @@ def render_side_downtime_editor(dd: Path, *, key_prefix: str = "dt") -> None:
     with c1:
         line_name = st.selectbox("Line / side to take down", options, key=f"{key_prefix}_line")
 
-    # default window: anchor now -> anchor+24h
+    # default window: anchor day 00:00 -> anchor day 23:59
     d1, d2 = st.columns(2)
     with d1:
         start_date = st.date_input("Start date", value=anchor.date(), key=f"{key_prefix}_sdate")
@@ -155,8 +155,6 @@ def render_side_downtime_editor(dd: Path, *, key_prefix: str = "dt") -> None:
 
     start_dt = datetime.combine(start_date, start_time)
     end_dt = datetime.combine(end_date, end_time)
-    start_h = (start_dt - anchor).total_seconds() / 3600.0
-    end_h = (end_dt - anchor).total_seconds() / 3600.0
 
     grp = group_of(line_name)
     if is_double(line_name) and side_of(line_name):
@@ -175,8 +173,8 @@ def render_side_downtime_editor(dd: Path, *, key_prefix: str = "dt") -> None:
             row = {
                 "line_id": line_id_for(dd, line_name),
                 "line_name": line_name,
-                "start_hour": str(round(start_h, 3)),
-                "end_hour": str(round(end_h, 3)),
+                "start_datetime": start_dt.strftime(DT_FMT),
+                "end_datetime": end_dt.strftime(DT_FMT),
                 "reason": reason or "Down",
             }
             df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
@@ -184,7 +182,7 @@ def render_side_downtime_editor(dd: Path, *, key_prefix: str = "dt") -> None:
             note = ""
             if path.exists():
                 note = f"  Backup: {_backup(path, dd)}"
-            safe_write_csv(df[DOWNTIME_COLUMNS], path)
+            save_downtimes(dd, df)
             st.success(f"{line_name} down {start_dt:%m/%d %H:%M}-{end_dt:%m/%d %H:%M} ({reason}).{note}")
             st.rerun()
 
@@ -193,12 +191,11 @@ def render_side_downtime_editor(dd: Path, *, key_prefix: str = "dt") -> None:
         st.caption("No scheduled downtime recorded yet.")
         return
 
-    # display start/end as real date-times (from stored hour offsets)
     disp = summary.copy()
-    disp["start"] = disp["start_hour"].apply(lambda h: hour_to_datetime(h, anchor).strftime("%m/%d %H:%M"))
-    disp["end"] = disp["end_hour"].apply(lambda h: hour_to_datetime(h, anchor).strftime("%m/%d %H:%M"))
+    disp = disp.rename(columns={"start_datetime": "start", "end_datetime": "end"})
     disp = disp[["line_name", "group", "side", "start", "end", "reason"]]
-    st.caption("Scheduled downtime on record (edit or delete rows, then Save):")
+    st.caption("Scheduled downtime on record (edit or delete rows, then Save). "
+               "Dates are wall-clock, `YYYY-MM-DD HH:MM`:")
     edited = st.data_editor(
         disp,
         num_rows="dynamic",
@@ -209,45 +206,47 @@ def render_side_downtime_editor(dd: Path, *, key_prefix: str = "dt") -> None:
     )
     if st.button("Save downtime table", key=f"{key_prefix}_save"):
         out = pd.DataFrame(edited)
-        rows = []
-
-        def _to_hours(v) -> str:
-            """Accept a 'MM/DD HH:MM' display string or a raw hour number."""
-            s = str(v or "").strip()
-            if not s:
-                return ""
-            try:
-                dt = datetime.strptime(f"{anchor.year}/{s}", "%Y/%m/%d %H:%M")
-                return str(round((dt - anchor).total_seconds() / 3600.0, 3))
-            except ValueError:
-                pass
-            try:
-                return str(round(float(s), 3))  # already an hour number
-            except ValueError:
-                return ""
-
-        for rec in out.to_dict("records"):
+        rows: list[dict] = []
+        problems: list[str] = []
+        for i, rec in enumerate(out.to_dict("records")):
             name = str(rec.get("line_name", "") or "").strip()
             if not name:
+                continue
+            s_dt = parse_datetime(rec.get("start", rec.get("start_datetime", "")))
+            e_dt = parse_datetime(rec.get("end", rec.get("end_datetime", "")))
+            if s_dt is None or e_dt is None:
+                problems.append(f"row {i + 1} ({name}): unreadable start/end "
+                                "-- use YYYY-MM-DD HH:MM dates")
+                continue
+            if e_dt <= s_dt:
+                problems.append(f"row {i + 1} ({name}): end is not after start")
                 continue
             rows.append({
                 "line_id": line_id_for(dd, name),
                 "line_name": name,
-                "start_hour": _to_hours(rec.get("start", rec.get("start_hour", ""))),
-                "end_hour": _to_hours(rec.get("end", rec.get("end_hour", ""))),
+                "start_datetime": s_dt.strftime(DT_FMT),
+                "end_datetime": e_dt.strftime(DT_FMT),
                 "reason": rec.get("reason", "") or "Down",
             })
-        path = downtimes_path(dd)
-        note = ""
-        if path.exists():
-            note = f"  Backup: {_backup(path, dd)}"
-        safe_write_csv(pd.DataFrame(rows, columns=DOWNTIME_COLUMNS), path)
-        st.success(f"Saved {len(rows)} downtime row(s).{note}")
-        st.rerun()
+        if problems:
+            st.error("Nothing saved -- fix these rows first:\n\n- "
+                     + "\n- ".join(problems))
+        else:
+            path = downtimes_path(dd)
+            note = ""
+            if path.exists():
+                note = f"  Backup: {_backup(path, dd)}"
+            save_downtimes(dd, pd.DataFrame(rows, columns=DOWNTIME_COLUMNS))
+            st.success(f"Saved {len(rows)} downtime row(s).{note}")
+            st.rerun()
 
 
 def downtime_map_for_calendar(dd: Path, calendar: pd.DataFrame | None = None) -> dict:
-    """Merged downtime map (line/side name -> intervals) from CSV + calendar."""
+    """Merged downtime map (line/side name -> intervals) from CSV + calendar.
+
+    CSV hours are derived by the store against the toml planning anchor --
+    the same frame calendar_blocks.csv hours are stored in.
+    """
     from helpers.lines_model import downtime_from_rows
 
     rows: list[dict] = load_downtimes(dd).to_dict("records")

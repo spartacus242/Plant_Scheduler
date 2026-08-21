@@ -59,6 +59,10 @@ def pull_once(conf: dict) -> list[str]:
     ref_dir = Path(conf["data_reference_dir"])
     ref_dir.mkdir(parents=True, exist_ok=True)
     updated: list[str] = []
+    # downtimes.csv is deliberately NOT in conf["files"] (removed 2026-08-21):
+    # it is planner-owned wall-clock data edited ONLY in the app's Start-of-day
+    # downtime strip (helpers/downtime_ui.py). Pulling it from the live repo
+    # clobbered the planner's edits with the plant feed's stale copy.
     for fname in conf["files"]:
         src = clone / fname
         dst = ref_dir / fname

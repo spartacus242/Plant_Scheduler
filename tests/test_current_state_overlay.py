@@ -50,7 +50,9 @@ def test_overlay_actually_gates_lines_from_the_running_mo(tmp_path):
     notes = sr._overlay_current_state(tmp_path, ROOT / "data")
     out = pd.read_csv(tmp_path / "initial_states.csv")
 
-    assert notes and "overlaid" in notes[0], notes
+    # Staging notes (time-frame + wall-clock downtime derivation) may precede
+    # the overlay note — assert on presence, not position.
+    assert notes and any("overlaid" in n for n in notes), notes
     gated = out[out["available_from_hour"].astype(float) > 0]
     assert len(gated) > 0, "no line was gated — the overlay did nothing"
     assert (out["initial_sku"] != "CLEAN").any(), \

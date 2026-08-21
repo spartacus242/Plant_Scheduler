@@ -92,9 +92,12 @@ CATALOG: tuple = (
         name="Lines down (downtimes)",
         subdir="reference",
         filename="downtimes.csv",
-        blurb="Planned line-down windows: maintenance, contractors, outages.",
-        key_columns=("line_id", "start_hour", "end_hour"),
-        bridge_synced=True,
+        blurb="Planned line-down windows: maintenance, contractors, outages. "
+        "Absolute wall-clock start/end (rolling the calendar never moves "
+        "them). Edited ONLY in the Start-of-day downtime strip — deliberately "
+        "excluded from the live-data pull so the bridge can't clobber it.",
+        key_columns=("line_id", "line_name", "start_datetime", "end_datetime"),
+        managed_by="app",
     ),
     DataFile(
         key="demand_plan",
