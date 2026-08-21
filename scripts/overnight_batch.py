@@ -306,31 +306,64 @@ def best_donor(candidates: list[dict]) -> dict | None:
     return max(pool, key=lambda c: float(c["overnight_score"]["composite"]))
 
 
+# The files that DEFINE the donor's solved problem: the solver's nine
+# signature inputs (phase2_scheduler.input_signature) plus the F staging
+# artifacts the calendar re-assembly and fill scoring read. flowstate.toml
+# is deliberately absent — budgets/seed are the arm's own and are not part
+# of the input signature.
+CHAIN_PROBLEM_FILES = (
+    "capabilities_rates.csv", "changeovers.csv", "demand_plan.csv",
+    "downtimes.csv", "initial_states.csv", "line_cip_hrs.csv",
+    "line_rates.csv", "sku_info.csv", "current_mo.csv",
+    "committed_blocks.csv", "real_downtimes.csv", "fill_gates.json",
+    "coverage_ledger.csv",
+)
+
+
 def plant_chain_seed(work: Path, donor_work: Path) -> list[str]:
-    """Copy the donor arm's SOLVED schedule into the chained arm's work dir
-    as its warm start (prev_schedule.csv). feasibility_report.json rides
-    along as prev_feasibility.json so the donor's input_sig (md5 of ITS
-    staged inputs) and relax level reach the solver's trust gates
-    unchanged: same generation = same staged bytes, so the gate accepts;
-    if anything really moved between the arms the signatures differ and
-    the solver honestly solves cold. The signature is CARRIED, never
-    faked."""
+    """The chained arm re-solves the donor's EXACT staged problem, warm-
+    started from the donor's solution.
+
+    Copies (a) the donor's staged problem files (CHAIN_PROBLEM_FILES) and
+    (b) its solved schedule as prev_schedule.csv + feasibility_report.json
+    as prev_feasibility.json, carrying the donor's input_sig and relax
+    level verbatim. The solver's trust gates then accept because the
+    chained solve genuinely IS the same inputs — measured 2026-08-21: two
+    arms of the same generation staged 14 min apart differ (running-MO
+    tail estimates tick forward with the wall clock: gates +1h on 3 lines,
+    matching downtime windows, slightly different netting), so carrying
+    the signature alone is NOT enough and re-staging would make hints
+    illegitimate. The gate itself is never touched: if the copy fails
+    half-way the signatures disagree and the solver honestly solves cold.
+    """
     import shutil as _sh
     src_sched = donor_work / "schedule_phase2.csv"
     src_feas = donor_work / "feasibility_report.json"
     if not src_sched.exists():
         return [f"chain seed unavailable ({src_sched.name} missing in "
                 f"{donor_work.name}) — solving cold"]
+    copied = 0
+    for name in CHAIN_PROBLEM_FILES:
+        src = donor_work / name
+        if src.exists():
+            _sh.copy2(src, work / name)
+            copied += 1
+        else:
+            # a file staged for the arm but absent from the donor would
+            # silently shift the problem — remove it so both dirs agree
+            # (current_mo.csv is legitimately absent in F on both sides)
+            (work / name).unlink(missing_ok=True)
     _sh.copy2(src_sched, work / "prev_schedule.csv")
     if src_feas.exists():
         _sh.copy2(src_feas, work / "prev_feasibility.json")
-        return [f"chain seed planted from {donor_work.name} "
-                "(schedule + feasibility with the donor's input_sig)"]
+        return [f"chained: donor {donor_work.name}'s staged problem "
+                f"({copied} file(s)) + solved schedule planted; input_sig "
+                "carried verbatim for the solver's trust gates"]
     # Without the donor's report the solver treats the previous signature
     # as unknown-changed and skips the hints — reported, never papered over.
-    return [f"chain seed planted from {donor_work.name} WITHOUT a "
-            "feasibility report — the solver's signature gate will skip "
-            "the hints"]
+    return [f"chained: donor {donor_work.name}'s staged problem "
+            f"({copied} file(s)) + schedule planted WITHOUT a feasibility "
+            "report — the solver's signature gate will skip the hints"]
 
 
 def count_overlaps(calendar: pd.DataFrame) -> int:
@@ -708,14 +741,22 @@ def run_arm(arm: dict, gen: Generation, dns: dict[str, float],
     def patch(work: Path) -> list[str]:
         notes: list[str] = []
         if donor_work is not None:
+            # The chained arm re-solves the donor's exact staged problem —
+            # a fresh DNS re-trim here would diverge the copied bytes and
+            # illegitimately break the warm-start signature, so the donor's
+            # demand (its own DNS caps included) stands. Stock changes
+            # since the donor staged still reach the brief's stock events.
             notes.extend(plant_chain_seed(work, donor_work))
-        dem_path = work / "demand_plan.csv"
-        dem = pd.read_csv(dem_path, dtype={"sku": str})
-        trimmed, tnotes = trim_dns_demand(dem, dns)
-        trimmed.to_csv(dem_path, index=False)
-        if tnotes:
-            notes.append(f"DNS trim: {len(tnotes)} order(s) capped "
-                         f"({len(dns)} component-blocked SKU(s))")
+            notes.append("DNS trim skipped: chained arm keeps the donor's "
+                         "staged demand (donor-time caps included)")
+        else:
+            dem_path = work / "demand_plan.csv"
+            dem = pd.read_csv(dem_path, dtype={"sku": str})
+            trimmed, tnotes = trim_dns_demand(dem, dns)
+            trimmed.to_csv(dem_path, index=False)
+            if tnotes:
+                notes.append(f"DNS trim: {len(tnotes)} order(s) capped "
+                             f"({len(dns)} component-blocked SKU(s))")
         _set_work_scheduler_flag(
             work / "flowstate.toml", "time_limit_pass2",
             int(budgets["pass2_s"]))

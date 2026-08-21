@@ -246,7 +246,12 @@ def test_best_donor_picks_top_scored_candidate():
     assert ob.best_donor([{"run_id": "b", "overnight_score": None}]) is None
 
 
-def test_plant_chain_seed_carries_signature(tmp_path):
+def test_plant_chain_seed_copies_the_donor_problem(tmp_path):
+    """The chained arm re-solves the donor's EXACT staged problem: measured
+    2026-08-21, two same-generation arms staged 14 min apart differ (the
+    running-MO tail estimates tick with the wall clock — gates +1h on 3
+    lines), so carrying only the signature is not enough. The donor's
+    staged inputs are copied byte-for-byte; the trust gate stays intact."""
     donor = tmp_path / "F_overnight_seed_3"
     work = tmp_path / "F_overnight_chained_best"
     donor.mkdir()
@@ -256,17 +261,32 @@ def test_plant_chain_seed_carries_signature(tmp_path):
     (donor / "feasibility_report.json").write_text(
         json.dumps({"relax_level": 0, "input_sig": "abc123"}),
         encoding="utf-8")
+    # donor problem files vs the chained arm's own (drifted) staging
+    (donor / "demand_plan.csv").write_text("donor-demand", encoding="utf-8")
+    (donor / "initial_states.csv").write_text("donor-init", encoding="utf-8")
+    (work / "demand_plan.csv").write_text("drifted-demand", encoding="utf-8")
+    (work / "initial_states.csv").write_text("drifted-init", encoding="utf-8")
+    # staged for the arm but absent from the donor -> must be REMOVED so
+    # both dirs hash identically (a half-shared problem is no problem)
+    (work / "current_mo.csv").write_text("stray", encoding="utf-8")
+
     notes = ob.plant_chain_seed(work, donor)
     assert (work / "prev_schedule.csv").read_text(encoding="utf-8") == \
         "line_id,order_id\n"
+    assert (work / "demand_plan.csv").read_text(encoding="utf-8") == \
+        "donor-demand"
+    assert (work / "initial_states.csv").read_text(encoding="utf-8") == \
+        "donor-init"
+    assert not (work / "current_mo.csv").exists()
     # the donor's signature + relax level are CARRIED verbatim — the
     # solver's trust gates decide, the batch never fakes a signature
     planted = json.loads(
         (work / "prev_feasibility.json").read_text(encoding="utf-8"))
     assert planted == {"relax_level": 0, "input_sig": "abc123"}
-    assert any("chain seed planted" in n for n in notes)
+    assert any("input_sig carried" in n for n in notes)
 
-    # donor without a report: schedule planted, absence reported honestly
+    # donor without a report: problem + schedule planted, gate consequence
+    # reported honestly
     (donor / "feasibility_report.json").unlink()
     notes2 = ob.plant_chain_seed(work, donor)
     assert any("WITHOUT a" in n for n in notes2)
@@ -275,6 +295,22 @@ def test_plant_chain_seed_carries_signature(tmp_path):
     (donor / "schedule_phase2.csv").unlink()
     notes3 = ob.plant_chain_seed(work, donor)
     assert any("solving cold" in n for n in notes3)
+
+
+def test_chain_problem_files_cover_the_solver_signature():
+    """Every file phase2_scheduler.input_signature hashes must be copied by
+    plant_chain_seed — one missed file and the trust gate honestly rejects
+    the whole chain (that is how the 2026-08-21 drift was caught)."""
+    sys.path.insert(
+        0, str(Path(__file__).resolve().parent.parent / "code" / "solver"))
+    import phase2_scheduler
+    import inspect
+    src = inspect.getsource(phase2_scheduler.input_signature)
+    sig_files = {n for n in ob.CHAIN_PROBLEM_FILES if f'"{n}"' in src}
+    # the nine signature inputs are all covered
+    assert len(sig_files) == 9, (
+        f"CHAIN_PROBLEM_FILES covers only {sorted(sig_files)} of the "
+        "solver's input_signature files")
 
 
 # ── cold / chained warm-start staging (scenario_runner seam) ───────────────
