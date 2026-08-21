@@ -131,9 +131,12 @@ def test_steering_fresh_replaces_exploration_arms():
     base = ob.default_portfolio({}, dry_run=False)
     merged = ob.apply_steering(base, arms)
     kinds = [a["kind"] for a in merged]
-    # champion noise x3 + ladder x2 survive; both default exploration arms gone
-    assert kinds.count("noise") == 3
-    assert kinds.count("ladder") == 2
+    # every diversity arm survives; the steering exploration arm is appended
+    # (the default portfolio carries no exploration arms since 2026-08-21)
+    assert kinds.count("noise") == 2
+    assert kinds.count("seed") == 2
+    assert kinds.count("cold") == 1
+    assert kinds.count("chained") == 1
     assert [a["label"] for a in merged if a["kind"] == "exploration"] == \
         ["steer_hot_idea"]
 
@@ -164,23 +167,152 @@ def test_steering_stale_or_malformed_is_ignored():
 
 
 def test_default_portfolio_shape():
+    """Portfolio redesign 2026-08-21: diversity of STARTING POINTS.
+    Ladder arms are retired (600/3600 vs 300/1800 measured within noise on
+    2026-08-20); exploration arms come only from steering.json."""
     full = ob.default_portfolio({}, dry_run=False)
     assert [a["label"] for a in full] == [
-        "champion_n1", "champion_n2", "champion_n3",
-        "ladder_300_1800", "ladder_600_3600",
-        "explore_co_x1_5", "explore_ffs_topload_x2"]
+        "champion_n1", "champion_n2", "seed_2", "seed_3",
+        "cold_start", "chained_best"]
+    assert [a["kind"] for a in full] == [
+        "noise", "noise", "seed", "seed", "cold", "chained"]
+    assert all(a["budgets"] == ob.CHAMPION_BUDGETS for a in full)
+    assert not any(a["kind"] in ("ladder", "exploration") for a in full)
+    # seed arms: champion params + ONLY the CP-SAT seed differs
+    seeds = [a for a in full if a["kind"] == "seed"]
+    assert [a["params"] for a in seeds] == [
+        {"solver_random_seed": 2}, {"solver_random_seed": 3}]
+    # cold arm skips every warm start; chained plants the donor schedule
+    assert next(a for a in full if a["kind"] == "cold")["warm_start"] == \
+        "none"
+    assert next(a for a in full if a["kind"] == "chained")["warm_start"] == \
+        "chained"
     dry = ob.default_portfolio({}, dry_run=True)
     assert [a["label"] for a in dry] == [
-        "champion_n1", "champion_n2", "explore_co_x1_5"]
+        "champion_n1", "champion_n2", "seed_2", "cold_start",
+        "chained_best"]
     assert all(a["budgets"] == ob.DRY_BUDGETS for a in dry)
-    # exploration params scale the EFFECTIVE weights and stay ints
-    x15 = next(a for a in full if a["label"] == "explore_co_x1_5")
+    # F's built-in overrides remain the champion baseline the effective-
+    # weight helper reports (steering authors scale from these)
     eff = ob.effective_co_weights({})
-    assert x15["params"]["ffs_weight"] == int(round(eff["ffs_weight"] * 1.5))
-    assert all(isinstance(v, int) for v in x15["params"].values())
-    # F's built-in overrides are the champion baseline (ffs 600, topload 450)
     assert eff["ffs_weight"] == 600
     assert eff["topload_weight"] == 450
+
+
+def test_chained_arm_runs_after_every_possible_donor():
+    """The chained arm warm-starts from the best candidate SO FAR, so it
+    must be ordered after every other arm in both portfolios."""
+    for dry in (False, True):
+        arms = ob.default_portfolio({}, dry_run=dry)
+        assert arms[-1]["kind"] == "chained"
+
+
+def test_budget_override_flags_hit_every_arm():
+    arms = ob.default_portfolio({}, dry_run=False)
+    out = ob.apply_budget_overrides(arms, 120, 300)
+    assert all(a["budgets"] == {"pass1_s": 120, "pass2_s": 300}
+               for a in out)
+    # one-sided override keeps the other pass per-arm
+    arms2 = ob.default_portfolio({}, dry_run=False)
+    ob.apply_budget_overrides(arms2, None, 300)
+    assert all(a["budgets"]["pass1_s"] == ob.CHAMPION_BUDGETS["pass1_s"]
+               for a in arms2)
+    assert all(a["budgets"]["pass2_s"] == 300 for a in arms2)
+    # no flags = byte-identical budgets (the Task Scheduler path)
+    arms3 = ob.default_portfolio({}, dry_run=False)
+    before = [dict(a["budgets"]) for a in arms3]
+    ob.apply_budget_overrides(arms3, None, None)
+    assert [a["budgets"] for a in arms3] == before
+    # steering arms are arms too
+    steer = [{"label": "steer_x", "kind": "exploration", "params": {},
+              "budgets": {"pass1_s": 600, "pass2_s": 2400}}]
+    merged = ob.apply_budget_overrides(
+        ob.apply_steering(ob.default_portfolio({}, dry_run=False), steer),
+        60, 90)
+    assert all(a["budgets"] == {"pass1_s": 60, "pass2_s": 90}
+               for a in merged)
+
+
+def test_best_donor_picks_top_scored_candidate():
+    cands = [
+        {"run_id": "a", "label": "champion_n1",
+         "overnight_score": {"composite": 64.2}},
+        {"run_id": "b", "label": "seed_2", "overnight_score": None},  # failed
+        {"run_id": "c", "label": "seed_3",
+         "overnight_score": {"composite": 66.1}},
+    ]
+    assert ob.best_donor(cands)["run_id"] == "c"
+    assert ob.best_donor([]) is None
+    assert ob.best_donor([{"run_id": "b", "overnight_score": None}]) is None
+
+
+def test_plant_chain_seed_carries_signature(tmp_path):
+    donor = tmp_path / "F_overnight_seed_3"
+    work = tmp_path / "F_overnight_chained_best"
+    donor.mkdir()
+    work.mkdir()
+    (donor / "schedule_phase2.csv").write_text("line_id,order_id\n",
+                                               encoding="utf-8")
+    (donor / "feasibility_report.json").write_text(
+        json.dumps({"relax_level": 0, "input_sig": "abc123"}),
+        encoding="utf-8")
+    notes = ob.plant_chain_seed(work, donor)
+    assert (work / "prev_schedule.csv").read_text(encoding="utf-8") == \
+        "line_id,order_id\n"
+    # the donor's signature + relax level are CARRIED verbatim — the
+    # solver's trust gates decide, the batch never fakes a signature
+    planted = json.loads(
+        (work / "prev_feasibility.json").read_text(encoding="utf-8"))
+    assert planted == {"relax_level": 0, "input_sig": "abc123"}
+    assert any("chain seed planted" in n for n in notes)
+
+    # donor without a report: schedule planted, absence reported honestly
+    (donor / "feasibility_report.json").unlink()
+    notes2 = ob.plant_chain_seed(work, donor)
+    assert any("WITHOUT a" in n for n in notes2)
+
+    # donor without a schedule: nothing planted, cold reported
+    (donor / "schedule_phase2.csv").unlink()
+    notes3 = ob.plant_chain_seed(work, donor)
+    assert any("solving cold" in n for n in notes3)
+
+
+# ── cold / chained warm-start staging (scenario_runner seam) ───────────────
+
+def test_stage_warm_start_modes(tmp_path, monkeypatch):
+    from helpers import scenario_runner as sr
+
+    work = tmp_path
+    carried = work / "prev_schedule.csv"
+    carried_feas = work / "prev_feasibility.json"
+
+    # "none" (cold arm): carried warm-start files are REMOVED — the solver
+    # must log a true cold start with zero hints
+    carried.write_text("stale", encoding="utf-8")
+    carried_feas.write_text("{}", encoding="utf-8")
+    notes = sr._stage_warm_start(work, {"warm_start": "none"})
+    assert not carried.exists() and not carried_feas.exists()
+    assert any("cold start" in n for n in notes)
+
+    # "prev" (chained arm): the planted donor schedule is left untouched
+    carried.write_text("donor", encoding="utf-8")
+    notes2 = sr._stage_warm_start(work, {"warm_start": "prev"})
+    assert carried.read_text(encoding="utf-8") == "donor"
+    assert any("chained" in n for n in notes2)
+    # "prev" without a planted file is reported, not invented
+    carried.unlink()
+    notes3 = sr._stage_warm_start(work, {"warm_start": "prev"})
+    assert any("no prev_schedule.csv" in n for n in notes3)
+
+    # default / absent: the historical greedy seed runs
+    called = {}
+    monkeypatch.setattr(sr, "_greedy_seed",
+                        lambda w: called.setdefault("work", w) and []
+                        or ["greedy ran"])
+    assert sr._stage_warm_start(work, {}) == ["greedy ran"]
+    assert called["work"] == work
+    assert sr._stage_warm_start(work, {"warm_start": "greedy"}) == \
+        ["greedy ran"]
 
 
 # ── guards: overlaps + pins ────────────────────────────────────────────────
