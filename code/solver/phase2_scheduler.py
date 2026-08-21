@@ -1708,10 +1708,6 @@ def main() -> None:
         p = Path(INITIAL_STATES_PATH)
         F.init = str(p.resolve() if p.is_absolute() else (DATA_DIR / p))
 
-    if P.solver_random_seed is not None:
-        log(f"[seed] CP-SAT random_seed {P.solver_random_seed} "
-            "(applied to every solve pass)")
-
     # Soft demand (Scenario F): resolved inside params_from_config.
     global _SOFT_DEMAND_ACTIVE
     _SOFT_DEMAND_ACTIVE = P.soft_demand
@@ -1744,6 +1740,10 @@ def main() -> None:
         f"cross_week={CROSS_WEEK} cip_flex={CIP_FLEX} "
         f"tl={TIME_LIMIT} mlpo={P.max_lines_per_order}"
     )
+    # AFTER reset_err — anything logged earlier is wiped with the old file.
+    if P.solver_random_seed is not None:
+        log(f"[seed] CP-SAT random_seed {P.solver_random_seed} "
+            "(applied to every solve pass)")
 
     # Initialise structured progress
     if _CROSS_WEEK_FORCED_SINGLE:
