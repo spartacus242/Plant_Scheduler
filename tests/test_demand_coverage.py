@@ -100,6 +100,50 @@ def test_surplus_carries_forward_by_true_iso_week():
     assert by2["S-W35"].status == COVERED
 
 
+# ── pro-rating: a block straddling the Monday boundary splits by overlap ──
+
+def test_boundary_straddling_block_prorates_by_overlap_share():
+    """THE live bug (2026-08-21): the midpoint rule bucketed a committed
+    block's ENTIRE kg into one week, so the MO re-forecast stretching blocks
+    flipped whole tonnages across the Monday boundary — W35 read 1.91M kg
+    of committed credit against ~1.1M kg of weekly plant capacity. A block
+    must credit each week by TIME-OVERLAP share instead.
+
+    Sunday-Aug-16 anchor: W34 starts at hour 24, W35 at hour 192. Block
+    [4, 104] runs 20h in W33 and 80h in W34 -> 20%/80% of its 10 t."""
+    dem = _demand([
+        {"order_id": "P-W33", "sku": "P", "qty_target": 5000,
+         "due_start_hour": 0, "due_end_hour": 23},
+        {"order_id": "P-W34", "sku": "P", "qty_target": 8000,
+         "due_start_hour": 24, "due_end_hour": 191},
+    ])
+    blocks = _blocks([{"sku": "P", "qty_kg": 10000.0,
+                       "start_h": 4.0, "end_h": 104.0}])
+    led = build_ledger(dem, blocks, anchor=SUN_AUG_16)
+    by = {r.order_id: r for r in led.rows}
+    assert by["P-W33"].committed_kg == 2000.0    # 20/100 x 10000
+    assert by["P-W33"].applied_kg == 2000.0
+    assert by["P-W33"].net_kg == 3000.0
+    assert by["P-W33"].status == PARTIAL
+    assert by["P-W34"].committed_kg == 8000.0    # 80/100 x 10000
+    assert by["P-W34"].status == COVERED
+    # shares always sum to the block's full kg — pro-rating re-buckets,
+    # never invents or loses tonnage
+    assert sum(r.committed_kg for r in led.rows) == 10000.0
+
+
+def test_block_inside_one_week_is_not_split():
+    """Pro-rating only touches boundary-straddlers — a block wholly inside
+    a week credits exactly as before (midpoint and overlap agree)."""
+    dem = _demand([{"order_id": "Q-W34", "sku": "Q", "qty_target": 9000,
+                    "due_start_hour": 24, "due_end_hour": 191}])
+    blocks = _blocks([{"sku": "Q", "qty_kg": 7000.0,
+                       "start_h": 24.0, "end_h": 100.0}])  # W34 edge-to-mid
+    led = build_ledger(dem, blocks, anchor=SUN_AUG_16)
+    assert led.rows[0].committed_kg == 7000.0
+    assert led.rows[0].applied_kg == 7000.0
+
+
 # ── completed-MO actuals (the Thursday trap) ──────────────────────────────
 
 def test_completed_mo_actuals_net_demand_midweek():
@@ -261,14 +305,16 @@ def test_unknown_kg_blocks_counted_and_noted():
 
 def test_week_index_fallback_without_due_columns():
     """The pinned-blocks call site passes demand with no due windows —
-    week_index keys the row, week_bounds key the block."""
+    week_index keys the row, week_bounds key the block. The block [300, 340]
+    straddles the 336h bound: 36/40 of its kg (4500) lands in bucket 1, the
+    500 kg beyond the demand file carries forward and credits nothing."""
     dem = pd.DataFrame([{"order_id": "O2", "sku": "S2", "week_index": 1,
                          "qty_target": 6000.0, "lower_pct": 0.9,
                          "upper_pct": 1.1}])
     blocks = _blocks([{"sku": "S2", "qty_kg": 5000.0,
                        "start_h": 300.0, "end_h": 340.0}])
     led = build_ledger(dem, blocks, week_bounds=[0.0, 168.0, 336.0])
-    assert led.rows[0].applied_kg == 5000.0
+    assert led.rows[0].applied_kg == 4500.0
     assert led.rows[0].week_label == "W+1"
 
 

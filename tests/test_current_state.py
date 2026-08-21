@@ -286,10 +286,14 @@ def test_queued_mos_and_free_hours_shift_with_the_reforecast_end():
     assert st.line_running_free_h["P09"] == pytest.approx(27.0)
 
 
-def test_netting_credits_the_week_the_reforecast_end_lands_in():
-    """A slow line can push the running MO's midpoint across the ISO-week
-    boundary — the committed kg must credit the week it now actually lands
-    in, through the same ledger staging/netting uses."""
+def test_netting_prorates_a_reforecast_stretched_mo_across_weeks():
+    """A slow line stretches the running MO across the ISO-week boundary —
+    its kg must be PRO-RATED into each week by time-overlap share, through
+    the same ledger staging/netting uses. The old midpoint rule flipped the
+    ENTIRE 50 t into whichever week held the midpoint: the live 2026-08-21
+    re-forecast (10 of 11 lines slow) slid a whole day's worth of MOs over
+    the Monday boundary and W35 read 1.91M kg of committed credit against
+    ~1.1M kg of total weekly plant capacity."""
     from helpers.demand_coverage import build_ledger
 
     # planned 1000 cas over 100h (50 t); 100 cas in 40h = 2.5 cas/h (0.25x
@@ -305,11 +309,12 @@ def test_netting_credits_the_week_the_reforecast_end_lands_in():
     ])
 
     # interval_h <= 0 stands the CIP projection down — a projected CIP would
-    # split the 372h block and smear its kg over several weeks, which is not
-    # what this test is about.
+    # split the 372h block and change the hand-computed shares below, which
+    # is not what this test is about.
     no_cip = {"cip": {"interval_h": -1}}
 
-    # legacy: manprg says end = now + 90h (hour 102) -> midpoint in W33
+    # legacy: manprg says end = now + 90h -> block [0, 102] sits wholly in
+    # W33 (Monday anchor: boundary at 168) -> all 50 t credit W33.
     off = _state(rows, cfg={**no_cip,
                             "scheduler": {"reforecast_running_mo_ends": False}},
                  caps=_caps())
@@ -318,15 +323,23 @@ def test_netting_credits_the_week_the_reforecast_end_lands_in():
     assert by_order_off["O-W33"].committed_kg == pytest.approx(50000.0)
     assert by_order_off["O-W34"].committed_kg == 0.0
 
-    # re-forecast: end hour 372 -> midpoint hour 186 lands in W34
+    # re-forecast: end hour 372 -> block [0, 372] spans W33/W34/W35.
+    # Hand-computed overlap shares of the 372h run:
+    #   W33 hours [0,168)   = 168/372 -> 50000*168/372 = 22580.645 kg
+    #   W34 hours [168,336) = 168/372 -> 22580.645 kg
+    #   W35 hours [336,372) =  36/372 ->  4838.710 kg (no demand row: carry)
     on = _state(rows, cfg=no_cip, caps=_caps())
     assert _run_blk(on)["end_h"] == pytest.approx(372.0)
     led_on = build_ledger(demand, on.blocks, anchor=ANCHOR)
     by_order_on = {r.order_id: r for r in led_on.rows}
-    assert by_order_on["O-W33"].committed_kg == 0.0
-    assert by_order_on["O-W33"].applied_kg == 0.0
-    assert by_order_on["O-W34"].committed_kg == pytest.approx(50000.0)
-    assert by_order_on["O-W34"].applied_kg == pytest.approx(50000.0)
+    w33_kg = 50000.0 * 168.0 / 372.0
+    assert by_order_on["O-W33"].committed_kg == pytest.approx(w33_kg)
+    assert by_order_on["O-W33"].applied_kg == pytest.approx(w33_kg)
+    assert by_order_on["O-W34"].committed_kg == pytest.approx(w33_kg)
+    assert by_order_on["O-W34"].applied_kg == pytest.approx(w33_kg)
+    # the whole block still credits exactly once: shares sum to 50 t
+    assert sum(r.committed_kg for r in led_on.rows) + 50000.0 * 36.0 / 372.0 \
+        == pytest.approx(50000.0)
 
 
 # --------------------------------------------------------------- CIP
