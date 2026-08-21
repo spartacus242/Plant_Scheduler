@@ -104,6 +104,11 @@ class Params:
     # every tuned run so far effectively ran at ~0.005% ≈ 0; default-off
     # preserves that observed behavior. UI range 0.0-5.0.
     over_target_reward_pct: float = 0.0
+    # CP-SAT random_seed for EVERY solve pass (phase2_scheduler
+    # apply_solver_seed). None = never touch the parameter, so CP-SAT keeps
+    # its own default. Same model + different seed explores a different
+    # search path — the overnight batch's seed arms diversify with it.
+    solver_random_seed: int | None = None
 
 
 class Files:

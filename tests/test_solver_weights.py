@@ -348,6 +348,7 @@ KNOB_TO_PARAM = {
     "min_run_hours": ("scheduler", "min_run_hours", 5),
     "min_run_pct_of_qty": ("scheduler", "min_run_pct_of_qty", 0.35),
     "max_lines_per_order": ("scheduler", "max_lines_per_order", 4),
+    "solver_random_seed": ("scheduler", "solver_random_seed", 7),
 }
 
 
@@ -385,6 +386,38 @@ def test_cli_overrides_beat_toml_in_params_from_config():
     assert P.max_lines_per_order == 5
     assert P.min_run_hours == 7
     assert P.allow_week1_in_week0 is False
+
+
+# ── CP-SAT random seed: toml -> Params -> solver.parameters ───────────────
+#
+# random_seed is a SEARCH parameter, not a model coefficient — it can never
+# appear in the model proto, so the WEIGHT_CASES proto-diff harness cannot
+# see it. The honest assertion is on the CpSolver's parameters proto:
+# apply_solver_seed is the one choke point every solve pass calls.
+
+def test_solver_seed_reaches_cpsat_parameters():
+    P = Params(solver_random_seed=7)
+    s = cp_model.CpSolver()
+    phase2_scheduler.apply_solver_seed(s, P)
+    assert s.parameters.random_seed == 7
+
+
+def test_solver_seed_absent_leaves_cpsat_default_untouched():
+    """No seed in Params must mean NO write at all — CP-SAT's own default
+    stays in force, so every existing config behaves byte-identically.
+    (ortools 9.15's parameters wrapper has no HasField, so the assertion is
+    against a fresh solver's default value.)"""
+    default = cp_model.CpSolver().parameters.random_seed
+    s = cp_model.CpSolver()
+    phase2_scheduler.apply_solver_seed(s, Params())
+    assert s.parameters.random_seed == default
+    assert Params().solver_random_seed is None
+
+
+def test_solver_seed_toml_to_params():
+    cfg = {"scheduler": {"solver_random_seed": 3}}
+    assert phase2_scheduler.params_from_config(cfg).solver_random_seed == 3
+    assert phase2_scheduler.params_from_config({}).solver_random_seed is None
 
 
 def test_normalize_overrides_keeps_float_pct_and_drops_junk():

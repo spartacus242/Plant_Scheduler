@@ -221,6 +221,10 @@ OVERRIDE_SECTIONS: dict[str, str] = {
     "min_run_hours": "scheduler",
     "min_run_pct_of_qty": "scheduler",
     "max_lines_per_order": "scheduler",
+    # CP-SAT random seed (search diversity, not a weight): same toml ride,
+    # applied to every solve pass via phase2_scheduler.apply_solver_seed.
+    # Absent = CP-SAT's own default seed.
+    "solver_random_seed": "scheduler",
 }
 
 # Overrides that are fractions, not integer weights — normalize_overrides
