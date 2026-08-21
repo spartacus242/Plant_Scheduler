@@ -175,6 +175,37 @@ def test_stage_drops_unparseable_rows(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# the Gantt overlay: same wall-clock windows whatever the anchor says
+# ---------------------------------------------------------------------------
+
+def test_gantt_downtime_map_is_wall_clock_invariant(tmp_path, monkeypatch):
+    """downtime_map_for_calendar feeds the Plant Calendar Gantt overlay in the
+    toml-anchor frame. Simulate a roll (toml anchor 08-19 -> 08-21): interval
+    hours must shift by exactly -48 so anchor+hours — the drawn wall-clock
+    window — is identical before and after."""
+    from datetime import timedelta
+
+    import helpers.config as config
+    from helpers.downtime_ui import downtime_map_for_calendar
+
+    dd = _dd(tmp_path, V2_CSV)
+    maps = {}
+    for anchor in (A0, A1):
+        cfg = {"scheduler": {
+            "planning_start_date": anchor.strftime("%Y-%m-%d %H:%M:%S")}}
+        monkeypatch.setattr(config, "load_toml", lambda path=None, cfg=cfg: cfg)
+        maps[anchor] = downtime_map_for_calendar(dd)
+
+    for line in ("P11", "P13"):
+        walls = {
+            anchor: [(anchor + timedelta(hours=s), anchor + timedelta(hours=e))
+                     for s, e in m[line]]
+            for anchor, m in maps.items()
+        }
+        assert walls[A0] == walls[A1], line
+
+
+# ---------------------------------------------------------------------------
 # save: only STORE_COLUMNS hit the disk — hours never do
 # ---------------------------------------------------------------------------
 
