@@ -77,6 +77,7 @@ ENGINE_OK = True
 ENGINE_ERR = ""
 try:
     from stockcheck import coverage as cov
+    from stockcheck import weeks as wk
     from stockcheck.api import stock_check_report
     from stockcheck.receiving_import import parse_receiving_schedule
     from stockcheck.vif_import import import_vif_folder
@@ -105,10 +106,19 @@ with left:
         help="Network share on Carsten's machine; data/reference/ when the "
              "GitHub bridge delivers the exports; dev fixtures as last resort.")
 with mid:
-    from helpers.timefmt import week_label as _wk_label
-    week_index = st.selectbox("Demand week", options=[None, 0, 1, 2],
-                              format_func=lambda x: "All weeks" if x is None
-                              else _wk_label(x))
+    # Weeks of the CURRENT demand plan (anchor from demand_plan.source.json),
+    # floored at today's ISO week. Hardcoding [0, 1, 2] and labeling without
+    # an anchor rendered timefmt's Feb default as WW07/WW08/WW09.
+    if ENGINE_OK:
+        _dem_anchor = wk.demand_anchor(DATA)
+        _week_opts = wk.current_week_options(
+            wk.demand_week_indices(DATA), _dem_anchor)
+    else:
+        _dem_anchor, _week_opts = None, []
+    week_index = st.selectbox(
+        "Demand week", options=[None] + _week_opts,
+        format_func=lambda x: ("All weeks" if x is None
+                               else wk.week_index_label(x, _dem_anchor)))
 with right:
     refresh = st.button("Refresh from VIF", type="primary",
                         help="Re-imports only if source files changed.")
@@ -228,7 +238,8 @@ with tab_demand:
         cov_s = ("—" if ratio is None
                  else (f"{ratio:.1%}" if ratio >= 0.005 else f"{ratio:.2%}"))
         tbl.append({
-            "SKU": d["sku"], "Wk": _wk_label(d["week_index"]),
+            "SKU": d["sku"],
+            "Wk": wk.week_index_label(d["week_index"], _dem_anchor),
             "Target kg": d["target_kg"],
             "Coverage": cov_s,
             "Status": STATUS_TEXT.get(d["status"], d["status"]),
@@ -278,9 +289,16 @@ with tab_item:
     st.subheader("Component → consuming SKUs")
     items = sorted(rep["item_reverse"].keys())
     item = st.selectbox("Component item", items)
-    cons = rep["item_reverse"][item]
-    st.dataframe(pd.DataFrame(cons), use_container_width=True,
-                 hide_index=True)
+    cons = pd.DataFrame(rep["item_reverse"][item])
+    if "week_index" in cons.columns:
+        # Sort on week_index (monotonic in real time), THEN label — sorting
+        # on the ISO week number would put next January's W01 before W52.
+        cons = cons.sort_values("week_index", kind="stable")
+        cons.insert(int(cons.columns.get_loc("week_index")), "Wk",
+                    [wk.week_index_label(w, _dem_anchor)
+                     for w in cons["week_index"]])
+        cons = cons.drop(columns=["week_index"])
+    st.dataframe(cons, use_container_width=True, hide_index=True)
 
 with tab_recv:
     st.subheader("Inbound appointments (Shipping/Receiving schedule)")
@@ -298,8 +316,16 @@ with tab_dq:
     st.markdown(f"**NO_BOM SKUs ({len(rep['no_bom_skus'])})** in the current "
                 "schedule/demand universe — no recipe in ediact 3, cannot be "
                 "checked:")
+    st.caption("Fix: these SKUs are on the board or in the demand plan but "
+               "have no recipe in the BOM export (ediact 3.csv). Add the "
+               "recipe to the VIF export, or take the SKU off the schedule / "
+               "out of the demand plan.")
     st.code(", ".join(rep["no_bom_skus"]) or "none in the current plan")
     st.markdown("**All SKUs without a BOM** (full catalog from `sku_info.csv`):")
+    st.caption("Fix: these SKUs are listed in sku_info.csv but have no recipe "
+               "in the BOM exports (ediact 3.csv / ediact 4.csv). Either "
+               "remove them from sku_info.csv or add their recipes to the "
+               "BOM export.")
     try:
         si = pd.read_csv(DATA / "reference" / "sku_info.csv", dtype={"sku": str})
         from stockcheck.vif_import import import_vif_folder  # local already
@@ -312,6 +338,12 @@ with tab_dq:
     st.code(", ".join(no_bom_all) or "none")
     st.markdown(f"**UNK items ({len(rep['unk'])})** — requirement exists but "
                 "magnitude unknown:")
+    st.caption("Fix: each row names a broken recipe line in ediact 3.csv / "
+               "ediact 4.csv — either the activity's Output row is missing "
+               "its quantity (the need can't be scaled), or a blank-qty "
+               "alternate row has no quantity-bearing primary of the same "
+               "unit in that activity. Correct that activity in the VIF "
+               "BOM export.")
     if rep["unk"]:
         st.dataframe(pd.DataFrame(rep["unk"]).head(100),
                      use_container_width=True, hide_index=True)
