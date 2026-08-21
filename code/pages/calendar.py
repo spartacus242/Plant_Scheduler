@@ -414,27 +414,40 @@ if _active:
 # qmin / at zero qty belong in the holding area for manual placement. We
 # read the newest scenario work-dir's produced_vs_bounds.csv once per session
 # and merge those blocks into cal_holding (skipping ones already there).
-# ── Coverage ledger (committed MOs + kg already made) — built once per
-# run, shared by the holding cards, the server KPI payload and (via that
-# payload) the client's live per-week fulfillment. Finished blocks are
-# hidden from the board but their kg still filled the week.
-_covered_map: dict = {}
+# ── THE MASTER-FILE INVARIANT (user mandate 2026-08-21) ──────────────────
+# The calendar shows calendar_blocks.csv; the metrics score
+# calendar_blocks.csv; holding is demand minus the board minus made kg.
+# Therefore the credit map handed to this page contains ONLY kg that NO
+# visible board block represents: made kg from completed MOs the board
+# hides (current_state drops them), minus any completed MO whose block
+# still IS on the board. Committed MOs ARE board blocks after a rebuild —
+# crediting them here too double-counts by construction (that mistake made
+# a W35 card read 98% over a nearly empty calendar). The SOLVER's netting
+# is the opposite deliberately: it keeps the FULL ledger (committed MOs are
+# real future production it must not re-plan) — see
+# build_ledger_from_data(made_only=...) for where the line is drawn.
+_made_credit: dict = {}
 try:
     from helpers.demand_coverage import build_ledger_from_data as _blfd
-    _led0 = _blfd(dd, cfg)
+    _board_oids = {
+        str(o) for o in cal.loc[
+            cal["block_type"] == "production", "order_id"].dropna().astype(str)
+        if o and o.lower() != "nan"}
+    _led0 = _blfd(dd, cfg, made_only=True, exclude_mos=_board_oids)
     if _led0 is not None:
-        _covered_map = _led0.applied_by_order()
-except Exception:  # noqa: BLE001 — numbers degrade to gross
-    _covered_map = {}
+        _made_credit = _led0.applied_by_order()
+except Exception:  # noqa: BLE001 — numbers degrade to board-only
+    _made_credit = {}
 
 # Holding reflects the OFFICIAL BOARD, not the latest solve (user report
 # 2026-08-18: "why only 1 item for W35?" — Monday's un-promoted proposal
-# covered W35, so holding said 'done' while the board sat empty). A card
-# exists when board-scheduled kg + committed/made credit < qty_min:
-#   - board credit: production blocks whose order_id matches the demand
-#     order (promoted fill / manually placed) — committed MO blocks are
-#     NOT counted here because the coverage ledger already credits them
-#     (counting both would double-credit).
+# covered W35, so holding said 'done' while the board sat empty). Same
+# master-file rule as the week cards: HOLDING = demand − board − made,
+# computed by ONE compute_adherence pass over the board with the made-only
+# credit map — the exact numbers the week cards and the adherence table
+# show, so a card exists precisely when that shared number is under qmin.
+# Committed-MO blocks credit through the waterfall (they are board blocks);
+# _made_credit adds only completed-MO kg the board hides.
 # Rebuilds whenever the board file changes (promote/save/roll).
 _board_stamp = st.session_state.get(
     "cal_board_sig",
@@ -449,21 +462,20 @@ if st.session_state.get("cal_holding_stamp") != _board_stamp:
             load_demand,
         )
         _dem = load_demand(dd / "reference" / "demand_plan.csv")
-        _dem_ids = set(_dem["order_id"].astype(str))
-        _board_kg: dict[str, float] = {}
         # last pushed what-if state (the Refresh button) wins over disk, so
         # tonnage edits move cards in/out of holding without a Save
         _wrk_recs = st.session_state.get("cal_working_records")
         _bsrc = (pd.DataFrame(_wrk_recs)
                  if _wrk_recs else cal)
-        _bprod = _bsrc[_bsrc["block_type"] == "production"]
-        for _, _r in _bprod.iterrows():
-            _oid = str(_r.get("order_id", "") or "")
-            if _oid in _dem_ids:
-                _kg = pd.to_numeric(
-                    pd.Series([_r.get("qty_kg")]), errors="coerce").iloc[0]
-                if not pd.isna(_kg) and _kg > 0:
-                    _board_kg[_oid] = _board_kg.get(_oid, 0.0) + float(_kg)
+        # Per-order covered kg via the SAME adherence pass the week cards
+        # and the adherence table use: board blocks (matching order_ids
+        # credit directly; committed-MO blocks waterfall onto their SKU's
+        # orders earliest-due first, capped at qty_max) + made-only credit.
+        from helpers.scorecard_engine import compute_adherence as _adh
+        _board_kg: dict[str, float] = {
+            str(r["order_id"]): float(r["scheduled_qty"])
+            for r in _adh(_bsrc, demand_targets, caps,
+                          covered_by_order=_made_credit)}
         _t = pd.to_numeric(_dem["qty_target"], errors="coerce").fillna(0)
         _lo = pd.to_numeric(_dem.get("lower_pct", 0.9),
                             errors="coerce").fillna(0.9)
@@ -479,11 +491,11 @@ if st.session_state.get("cal_holding_stamp") != _board_stamp:
         })
         _rates = average_rate_per_sku(
             load_capabilities(dd / "reference" / "capabilities_rates.csv"))
-        # Committed MOs (+ kg already made) credit the cards — a demand
-        # week the plant's own plan covers must not sit in holding as if
-        # it still needed scheduling (280480-W34).
-        _blocks = build_holding(_dem, _prod, rates=_rates,
-                                committed_by_order=_covered_map)
+        # produced already carries board + made per order (one shared
+        # adherence pass above) — no second credit map, or made kg would
+        # count twice. A week the board leaves empty MUST fill its holding
+        # column: that is the planner's work queue.
+        _blocks = build_holding(_dem, _prod, rates=_rates)
         _held = [b.to_payload() for b in _blocks]
     except Exception as _e:  # noqa: BLE001
         st.caption(f"Holding auto-populate skipped: {_e}")
@@ -591,7 +603,7 @@ _co_flags = build_co_flags(co_path, _dem_skus, _board_skus)
 # rendered below, so the Gantt KPI bar and the scorecard cannot disagree.
 server_kpis = gantt_kpis(
     cal, demand_targets, caps, cfg=scorecard_config(cfg), data_dir=dd,
-    covered_by_order=_covered_map,
+    covered_by_order=_made_credit,
 )
 
 state = gantt_calendar(

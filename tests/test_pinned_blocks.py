@@ -156,6 +156,7 @@ def test_pinned_block_credits_demand_but_does_not_gate_the_line():
     residual, notes = subtract_committed(
         demand, both, week_bounds=[0.0, 168.0, 336.0])
 
-    # pin midpoint 320h -> week 1 bucket -> 5000 kg credited, 1000 kg left
-    assert residual["qty_target"].iloc[0] == 1000.0
+    # pin [300, 340] pro-rates by overlap: 36/40 of 5000 = 4500 kg in the
+    # week-1 bucket, 500 kg beyond the demand file (carries, credits nothing)
+    assert residual["qty_target"].iloc[0] == 1500.0
     assert len(notes) == 1

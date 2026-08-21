@@ -7,7 +7,12 @@
 #
 #   * the demand plan is GROSS weekly requirements — the planner never nets
 #     out MOs by hand; Flowstate does ALL subtraction;
-#   * committed kg lands in the ISO week of the block's midpoint;
+#   * committed kg is PRO-RATED across the ISO weeks the block spans, by
+#     time-overlap share (a block running 60h in W34 and 40h in W35 credits
+#     60% / 40%). The previous midpoint rule flipped a block's ENTIRE kg
+#     across the Monday boundary whenever a re-forecast stretched it — live
+#     2026-08-21 the W35 committed credit read 1.91M kg against ~1.1M kg of
+#     total weekly plant capacity;
 #   * per SKU, weeks are consumed oldest-first and surplus carries FORWARD
 #     only (this week's extra production is next week's inventory, never
 #     last week's); deficits never carry;
@@ -62,7 +67,7 @@ class CoverageRow:
     week_key: int        # ISO year*100+week, or a bucket index (no anchor)
     week_label: str      # "WW34" (ISO) / "W+1" (bucket)
     gross_kg: float      # the demand plan's requirement (never mutated)
-    committed_kg: float  # planned MO kg whose midpoint lands in this week
+    committed_kg: float  # planned MO kg pro-rated into this week by overlap
     produced_kg: float   # completed-MO kg made in this week (actuals)
     carry_in_kg: float   # surplus arriving from earlier weeks
     applied_kg: float    # kg credited against this order
@@ -178,11 +183,61 @@ def _row_week_key(r, keyer, has_due: bool) -> int | None:
 # supply sides
 # ---------------------------------------------------------------------------
 
+def _week_overlap_shares(
+    start_h: float,
+    end_h: float,
+    anchor: datetime | None,
+    week_bounds: list[float] | None,
+) -> dict[int, float]:
+    """week_key -> share of a block's duration falling in that week.
+
+    A block's kg is production spread over its whole run, so a boundary-
+    straddling block credits each week by TIME-OVERLAP share (60h in W34 +
+    40h in W35 -> 60% / 40%). The previous midpoint rule flipped the entire
+    kg across the Monday boundary when a re-forecast stretched the block:
+    live 2026-08-21, W35 read 1.91M kg of committed credit against ~1.1M kg
+    of total weekly plant capacity. Shares always sum to 1.0.
+    """
+    dur = float(end_h) - float(start_h)
+    keyer = _hour_keyer(anchor, week_bounds)
+    if dur <= 0:
+        return {keyer((float(start_h) + float(end_h)) / 2.0): 1.0}
+    # week boundaries (hour offsets) strictly inside (start_h, end_h)
+    cuts: list[float] = []
+    if anchor is not None:
+        a = pd.Timestamp(anchor)
+        ts = a + timedelta(hours=float(start_h))
+        monday = (ts.normalize() - timedelta(days=int(ts.weekday()))
+                  + timedelta(weeks=1))     # first ISO Monday 00:00 after ts
+        while True:
+            h = (monday - a).total_seconds() / 3600.0
+            if h >= float(end_h):
+                break
+            if h > float(start_h):
+                cuts.append(h)
+            monday += timedelta(weeks=1)
+    elif week_bounds:
+        cuts = [b for b in week_bounds if float(start_h) < b < float(end_h)]
+    else:
+        b = (float(start_h) // 168.0) * 168.0 + 168.0
+        while b < float(end_h):
+            if b > float(start_h):
+                cuts.append(b)
+            b += 168.0
+    edges = [float(start_h), *cuts, float(end_h)]
+    shares: dict[int, float] = {}
+    for lo, hi in zip(edges, edges[1:]):
+        key = keyer((lo + hi) / 2.0)
+        shares[key] = shares.get(key, 0.0) + (hi - lo) / dur
+    return shares
+
+
 def _supply_from_blocks(
     blocks: pd.DataFrame | None,
-    keyer,
+    anchor: datetime | None,
+    week_bounds: list[float] | None,
 ) -> tuple[dict[tuple[str, int], float], int]:
-    """Planned MO kg (running + queued + pinned) by block-midpoint week."""
+    """Planned MO kg (running + queued + pinned), pro-rated by week overlap."""
     supply: dict[tuple[str, int], float] = {}
     unknown = 0
     if blocks is None or not len(blocks):
@@ -196,9 +251,10 @@ def _supply_from_blocks(
         if pd.isna(kg) or kg <= 0:
             unknown += 1
             continue
-        mid = (float(b["start_h"]) + float(b["end_h"])) / 2.0
-        key = keyer(mid)
-        supply[(sku, key)] = supply.get((sku, key), 0.0) + float(kg)
+        shares = _week_overlap_shares(float(b["start_h"]), float(b["end_h"]),
+                                      anchor, week_bounds)
+        for key, share in shares.items():
+            supply[(sku, key)] = supply.get((sku, key), 0.0) + float(kg) * share
     return supply, unknown
 
 
@@ -286,12 +342,11 @@ def build_ledger(
         return ledger
 
     iso_mode = anchor is not None
-    block_keyer = _hour_keyer(anchor, week_bounds)
     dem_keyer = _hour_keyer(demand_anchor or anchor, week_bounds)
     has_due = ("due_start_hour" in demand.columns
                and "due_end_hour" in demand.columns)
 
-    planned, unknown = _supply_from_blocks(blocks, block_keyer)
+    planned, unknown = _supply_from_blocks(blocks, anchor, week_bounds)
     produced, produced_total, prod_notes = _supply_from_completed(
         completed, anchor, lookback_weeks)
     ledger.unknown_kg_blocks = unknown
@@ -434,11 +489,24 @@ def build_ledger_from_data(
     *,
     state=None,
     lookback_weeks: int = 4,
+    made_only: bool = False,
+    exclude_mos: set[str] | None = None,
 ) -> CoverageLedger | None:
     """Ledger for the live data dir: reference demand vs manprg current state.
 
     Returns None when there is no demand plan. `state` lets a page reuse an
     already-built CurrentState instead of parsing manprg twice.
+
+    `made_only=True` — THE CALENDAR-PAGE INVARIANT (user mandate 2026-08-21):
+    a surface that shows calendar_blocks.csv must count board kg FROM THE
+    BOARD and take ledger credit ONLY for kg no visible block represents.
+    Committed MOs ARE board blocks after a rebuild, so crediting them here
+    too is double counting by construction. In this mode the supply side is
+    completed (hidden) MOs' made kg ONLY — no committed blocks, no pinned
+    calendar blocks — and `exclude_mos` (the order_ids visible on the board)
+    drops any completed MO whose block still IS on the board. The SOLVER's
+    netting must keep the full supply (a queued MO's kg is real future
+    production it must not re-plan): never pass made_only on a netting path.
     """
     from helpers import horizon as _hz
     from helpers.config import datasources_config, load_toml
@@ -466,13 +534,20 @@ def build_ledger_from_data(
             cip_path=cip_path if Path(cip_path).exists() else None, cfg=cfg,
             caps_path=ref / "capabilities_rates.csv")
 
-    blocks = state.blocks
-    cal_path = dd / "calendar_blocks.csv"
-    if cal_path.exists():
-        from helpers.calendar_io import load_calendar
-        pinned = pinned_blocks(load_calendar(cal_path))
-        if pinned is not None and len(pinned):
-            blocks = pd.concat([blocks, pinned], ignore_index=True)
+    completed = getattr(state, "completed", None)
+    if made_only:
+        blocks = None
+        if completed and exclude_mos:
+            completed = [r for r in completed
+                         if str(r.get("mo") or "") not in exclude_mos]
+    else:
+        blocks = state.blocks
+        cal_path = dd / "calendar_blocks.csv"
+        if cal_path.exists():
+            from helpers.calendar_io import load_calendar
+            pinned = pinned_blocks(load_calendar(cal_path))
+            if pinned is not None and len(pinned):
+                blocks = pd.concat([blocks, pinned], ignore_index=True)
 
     # Reference demand keeps its own frame (hour 0 = the file's earliest ISO
     # Monday) — the blocks live in the horizon frame. ISO keying absorbs the
@@ -480,6 +555,6 @@ def build_ledger_from_data(
     demand_anchor = demand_source_anchor(dd) or hz.anchor
     return build_ledger(
         demand, blocks,
-        completed=getattr(state, "completed", None),
+        completed=completed,
         anchor=hz.anchor, demand_anchor=demand_anchor,
         lookback_weeks=lookback_weeks)
