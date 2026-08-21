@@ -76,6 +76,25 @@ export function isoWeekAtHour(anchor: Date, hour: number): number {
   return isoWeek(new Date(anchor.getTime() + hour * 3600_000));
 }
 
+/** Anchor-relative hour offsets of ISO week boundaries (Monday 00:00
+ * wall-clock) covering [viewStart, viewEnd): the last Monday at or before
+ * viewStart, then every following Monday. The rolling anchor is TODAY at
+ * midnight — any weekday — so boundaries must come from the calendar, not
+ * from `k*168` parity (hour-0 stepping put every "week" line on a Friday
+ * after a Friday roll). Steps by wall-clock days so a DST week (167/169h)
+ * still lands on Monday midnight. */
+export function mondayBoundaries(anchor: Date, viewStart: number, viewEnd: number): number[] {
+  const start = new Date(anchor.getTime() + viewStart * 3600_000);
+  const d = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); // back to Monday (Mon=0)
+  const out: number[] = [];
+  while ((d.getTime() - anchor.getTime()) / 3_600_000 < viewEnd) {
+    out.push((d.getTime() - anchor.getTime()) / 3_600_000);
+    d.setDate(d.getDate() + 7);
+  }
+  return out;
+}
+
 /** ISO week of the DEMAND anchor (demand_plan.source.json anchor_iso_week).
  * Order-id week indexes count from the demand file's own anchor week, NOT
  * the calendar anchor — converting k via anchor + k*168h mislabels every

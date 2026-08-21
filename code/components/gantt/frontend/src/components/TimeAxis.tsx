@@ -2,7 +2,7 @@
 // Zoom buttons are rendered as a separate HTML component by GanttChart.
 
 import React from "react";
-import { hourToX, isoWeekAtHour, LINE_LABEL_WIDTH, HEADER_HEIGHT } from "../utils/layout";
+import { hourToX, isoWeekAtHour, mondayBoundaries, LINE_LABEL_WIDTH, HEADER_HEIGHT } from "../utils/layout";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -27,12 +27,14 @@ export const TimeAxisSvg: React.FC<SvgProps> = ({
   const showHeader = layer !== "body";
   const dayPixels = 24 * hourWidth;
 
-  // ── Day ticks ──
-  // ISO week band: one label per week span (planner-facing W33/W34...).
-  const weekTicks: { hour: number; label: string }[] = [];
-  for (let h = Math.floor(viewStart / 168) * 168; h < viewEnd; h += 168) {
-    weekTicks.push({ hour: h, label: `W${isoWeekAtHour(anchor, h + 1)}` });
-  }
+  // ── Week ticks ──
+  // ISO week boundaries at true Monday-00:00 wall-clock positions (the
+  // rolling anchor is any weekday, so k*168 stepping is wrong). Label =
+  // the ISO week containing the boundary; sampled 1h in so a float-fuzzed
+  // boundary can never date-normalize into the prior week.
+  const weekTicks: { hour: number; label: string }[] = mondayBoundaries(
+    anchor, viewStart, viewEnd,
+  ).map((h) => ({ hour: h, label: `W${isoWeekAtHour(anchor, h + 1)}` }));
   const dayTicks: { hour: number; label: string }[] = [];
   const firstDay = Math.floor(viewStart / 24) * 24;
   for (let h = firstDay; h <= viewEnd; h += 24) {
@@ -63,7 +65,22 @@ export const TimeAxisSvg: React.FC<SvgProps> = ({
         </>
       )}
 
-      {/* Day columns */}
+      {/* Opaque fills FIRST: the alternating day band must never paint over
+          axis text, so every <text> renders in a later layer. A week
+          boundary is 7 days (odd), so consecutive boundaries alternate band
+          parity — interleaved rendering hid every other week label. */}
+      {showHeader && dayTicks.map((t, i) => {
+        if (i % 2 !== 1) return null;
+        const x = hourToX(t.hour, viewStart, hourWidth);
+        const colW = hourToX(t.hour + 24, viewStart, hourWidth) - x;
+        return <rect key={`band_${t.hour}`} x={x} y={0} width={colW} height={HEADER_HEIGHT} fill="#eef0f5" />;
+      })}
+
+      {/* Gridlines */}
+      {showBody && dayTicks.map((t) => {
+        const x = hourToX(t.hour, viewStart, hourWidth);
+        return <line key={`day_${t.hour}`} x1={x} y1={HEADER_HEIGHT} x2={x} y2={svgHeight} stroke="#d0d0d0" strokeWidth={1} />;
+      })}
       {weekTicks.map((t) => {
         const wx0 = hourToX(t.hour, viewStart, hourWidth);
         return (
@@ -73,45 +90,8 @@ export const TimeAxisSvg: React.FC<SvgProps> = ({
                     stroke="#90a4ae" strokeWidth={1.5} strokeDasharray="8 4" />
             )}
             {showHeader && (
-              <>
-                <line x1={wx0} y1={0} x2={wx0} y2={HEADER_HEIGHT}
-                      stroke="#90a4ae" strokeWidth={1.5} strokeDasharray="8 4" />
-                <text x={Math.max(wx0, hourToX(viewStart, viewStart, hourWidth)) + 6}
-                      y={11} fontSize={11} fontWeight={700} fill="#455a64">
-                  {t.label}
-                </text>
-              </>
-            )}
-          </g>
-        );
-      })}
-      {dayTicks.map((t, i) => {
-        const x = hourToX(t.hour, viewStart, hourWidth);
-        const nextX = hourToX(t.hour + 24, viewStart, hourWidth);
-        const colW = nextX - x;
-        return (
-          <g key={t.hour}>
-            {/* Alternating band */}
-            {showHeader && i % 2 === 1 && (
-              <rect x={x} y={0} width={colW} height={HEADER_HEIGHT} fill="#eef0f5" />
-            )}
-            {/* Day boundary line through chart body */}
-            {showBody && (
-              <line x1={x} y1={HEADER_HEIGHT} x2={x} y2={svgHeight} stroke="#d0d0d0" strokeWidth={1} />
-            )}
-            {/* Day label centered in column */}
-            {showHeader && dayPixels > 30 && (
-              <text
-                x={x + colW / 2}
-                y={HEADER_HEIGHT / 2 + 1}
-                textAnchor="middle"
-                dominantBaseline="middle"
-                fontSize={dayPixels >= 55 ? 11 : 9}
-                fontWeight={600}
-                fill="#333"
-              >
-                {t.label}
-              </text>
+              <line x1={wx0} y1={0} x2={wx0} y2={HEADER_HEIGHT}
+                    stroke="#90a4ae" strokeWidth={1.5} strokeDasharray="8 4" />
             )}
           </g>
         );
@@ -135,18 +115,36 @@ export const TimeAxisSvg: React.FC<SvgProps> = ({
         );
       })}
 
-      {/* Week boundary at hour 168 */}
-      {168 >= viewStart && 168 <= viewEnd && (
-        <line
-          x1={hourToX(168, viewStart, hourWidth)}
-          y1={showHeader ? 0 : HEADER_HEIGHT}
-          x2={hourToX(168, viewStart, hourWidth)}
-          y2={showBody ? svgHeight : HEADER_HEIGHT}
-          stroke="#AB63FA"
-          strokeDasharray="6,3"
-          strokeWidth={2}
-        />
-      )}
+      {/* Labels LAST — nothing may paint over them. A week whose Monday is
+          left of the viewport keeps its label pinned at the viewport edge. */}
+      {showHeader && weekTicks.map((t) => {
+        const wx0 = hourToX(t.hour, viewStart, hourWidth);
+        return (
+          <text key={`wklbl_${t.hour}`}
+                x={Math.max(wx0, hourToX(viewStart, viewStart, hourWidth)) + 6}
+                y={11} fontSize={11} fontWeight={700} fill="#455a64">
+            {t.label}
+          </text>
+        );
+      })}
+      {showHeader && dayPixels > 30 && dayTicks.map((t) => {
+        const x = hourToX(t.hour, viewStart, hourWidth);
+        const colW = hourToX(t.hour + 24, viewStart, hourWidth) - x;
+        return (
+          <text
+            key={`daylbl_${t.hour}`}
+            x={x + colW / 2}
+            y={HEADER_HEIGHT / 2 + 1}
+            textAnchor="middle"
+            dominantBaseline="middle"
+            fontSize={dayPixels >= 55 ? 11 : 9}
+            fontWeight={600}
+            fill="#333"
+          >
+            {t.label}
+          </text>
+        );
+      })}
     </g>
   );
 };
