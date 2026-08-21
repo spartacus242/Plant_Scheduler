@@ -1241,7 +1241,14 @@ def main() -> int:
         run_arm(arm, gen, dns, log)
 
     # ── ~5am champion consolidation on the freshest data ──────────────────
-    if not args.dry_run:
+    # A supervised run (budgets overridden) is someone at the desk watching:
+    # sleeping 17h for the 5am step would hold the brief hostage. Finalize
+    # immediately instead; the no-flag nightly path is unchanged.
+    supervised = args.pass1_s is not None or args.pass2_s is not None
+    if supervised and not args.dry_run:
+        log("[consolidate] supervised run (budget overrides) — 5am "
+            "consolidation skipped, finalizing now")
+    if not args.dry_run and not supervised:
         now = datetime.now()
         if now < consolidate_target:
             wait_s = (consolidate_target - now).total_seconds()
