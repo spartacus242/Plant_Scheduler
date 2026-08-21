@@ -303,6 +303,18 @@ def pins_match(calendar: pd.DataFrame, pinned: pd.DataFrame,
     return True
 
 
+def baseline_composite(board_baseline: Any) -> float | None:
+    """A generation's OWN board-baseline composite, or None when its board
+    had no comparable fill region. Works on the leaderboard's stored shape
+    ({"overnight_score": {...}})."""
+    score = (board_baseline or {}).get("overnight_score") \
+        if isinstance(board_baseline, dict) else None
+    comp = (score or {}).get("composite") if isinstance(score, dict) else None
+    if isinstance(comp, bool) or not isinstance(comp, (int, float)):
+        return None
+    return float(comp)
+
+
 def noise_floor(candidates: list[dict]) -> dict | None:
     """{"runs": n, "spread_composite": max-min} over completed noise arms."""
     comps = [c["overnight_score"]["composite"] for c in candidates
@@ -534,8 +546,10 @@ def stage_generation(log: Log) -> Generation:
     return gen
 
 
-def write_leaderboard(gen: Generation) -> None:
-    safe_write_json({
+def leaderboard_dict(gen: Generation) -> dict:
+    """The leaderboard's on-disk shape (also fed to published_block, so the
+    latest.json rows and the leaderboard can never disagree)."""
+    return {
         "generation": gen.gen_id,
         "created": gen.created,
         "inputs_signature": list(gen.sig),
@@ -548,7 +562,11 @@ def write_leaderboard(gen: Generation) -> None:
         "frame": {"anchor": f"{gen.anchor:%Y-%m-%d %H:%M:%S}",
                   "horizon_h": gen.horizon_h},
         "candidates": [_public_cand(c) for c in gen.candidates],
-    }, gen.dir / "leaderboard.json")
+    }
+
+
+def write_leaderboard(gen: Generation) -> None:
+    safe_write_json(leaderboard_dict(gen), gen.dir / "leaderboard.json")
 
 
 def append_history(gen: Generation, record: dict) -> None:
@@ -791,7 +809,15 @@ def publish_top2(generations: list[Generation], log: Log,
         cand["version_slug"] = slug
         cand["published"] = tag
         write_leaderboard(gen)
-        notes.append(f"published {slug}: {name} (run {cand['run_id']})")
+        # the delta is against the candidate's OWN generation's board —
+        # a cross-generation delta is exactly what generations exist to forbid
+        base = baseline_composite(gen.board_baseline)
+        delta_txt = (f"{score['composite']} vs its generation's board "
+                     f"{base} -> {float(score['composite']) - base:+.2f}"
+                     if base is not None
+                     else "no board baseline in its generation")
+        notes.append(f"published {slug}: {name} (run {cand['run_id']}; "
+                     f"{delta_txt})")
         log(f"[publish] {notes[-1]}")
 
 
@@ -799,11 +825,22 @@ def write_brief(generations: list[Generation], notes: list[str],
                 stock_events: list[str], started: datetime,
                 log: Log) -> None:
     """Deterministic, stats-based morning summary. The future agent
-    overwrites this file with its own narrative."""
-    all_cands = [c for g in generations for c in g.candidates]
-    scored = [c for c in all_cands if c.get("overnight_score")]
-    scored.sort(key=lambda c: -float(c["overnight_score"]["composite"]))
+    overwrites this file with its own narrative.
+
+    Every delta here is SAME-GENERATION: a candidate is only ever compared
+    against the board baseline its own generation staged. (The 2026-08-21
+    brief compared a 20260820-1505 candidate against the 20260821-0500
+    board and reported +4.54 when the honest same-generation delta was
+    +0.44 — inside the ±1.64 noise floor.)"""
+    # (candidate, its OWN generation's baseline, gen_id) — the only pairing
+    # a delta may ever be computed from
+    entries = [(c, baseline_composite(g.board_baseline), g.gen_id)
+               for g in generations for c in g.candidates]
+    all_cands = [c for c, _b, _g in entries]
+    scored = [e for e in entries if e[0].get("overnight_score")]
+    scored.sort(key=lambda e: -float(e[0]["overnight_score"]["composite"]))
     floor = noise_floor(all_cands)
+    spread = (floor or {}).get("spread_composite")
     lines = [
         f"# Overnight optimizer brief — {datetime.now():%Y-%m-%d %H:%M}",
         "",
@@ -813,13 +850,16 @@ def write_brief(generations: list[Generation], notes: list[str],
         "",
         "## Generations",
         "",
-        "| generation | created | arms | net demand kg | capacity bound kg |",
-        "|---|---|---|---|---|",
+        "| generation | created | arms | net demand kg | capacity bound kg "
+        "| board baseline |",
+        "|---|---|---|---|---|---|",
     ]
     for g in generations:
+        base = baseline_composite(g.board_baseline)
         lines.append(
             f"| {g.gen_id} | {g.created} | {len(g.candidates)} | "
-            f"{g.net_demand_kg:,.0f} | {g.capacity_bound:,.0f} |")
+            f"{g.net_demand_kg:,.0f} | {g.capacity_bound:,.0f} | "
+            f"{base if base is not None else '—'} |")
     lines += ["", "## Noise floor", ""]
     if floor:
         lines.append(f"{floor['runs']} champion runs, composite spread "
@@ -829,33 +869,59 @@ def write_brief(generations: list[Generation], notes: list[str],
     lines += ["", "## Top candidates", ""]
     if scored:
         lines += [
-            "| run | composite | fill | changeovers | campaign | on_time | "
-            "guards ok | published |",
-            "|---|---|---|---|---|---|---|---|",
+            "| run | composite | Δ vs board | fill | changeovers | campaign "
+            "| on_time | guards ok | published |",
+            "|---|---|---|---|---|---|---|---|---|",
         ]
-        for c in scored[:5]:
+        for c, base, _gid in scored[:5]:
             s = c["overnight_score"]
+            delta = (f"{float(s['composite']) - base:+.2f}"
+                     if base is not None else "—")
             gok = (c.get("guards") and c["guards"]["overlaps"] == 0
                    and c["guards"]["pins_ok"] and c["guards"]["lock_ok"]
                    and c["guards"]["cip_ok"])
             lines.append(
-                f"| {c['run_id']} | {s['composite']} | {s['fill']} | "
-                f"{s['changeovers']} | {s['campaign']} | {s['on_time']} | "
-                f"{'yes' if gok else 'NO'} | {c.get('published') or ''} |")
+                f"| {c['run_id']} | {s['composite']} | {delta} | "
+                f"{s['fill']} | {s['changeovers']} | {s['campaign']} | "
+                f"{s['on_time']} | {'yes' if gok else 'NO'} | "
+                f"{c.get('published') or ''} |")
+        lines += ["", "Δ vs board is same-generation: each candidate "
+                      "against the board baseline its own generation staged."]
     else:
         lines.append("No candidate produced a schedule.")
     lines += ["", "## vs your board", ""]
-    last = generations[-1]
-    if last.board_baseline:
-        b = last.board_baseline["overnight_score"]["composite"]
-        if scored:
-            top = scored[0]["overnight_score"]["composite"]
-            lines.append(f"Board fill region scores {b}; best candidate "
-                         f"{top} ({top - b:+.2f} vs your board).")
-        else:
-            lines.append(f"Board fill region scores {b}.")
+    headline = next((e for e in scored if e[1] is not None), None)
+    if headline is not None:
+        c, base, gid = headline
+        comp = float(c["overnight_score"]["composite"])
+        delta = comp - base
+        line = (f"Best candidate {c['overnight_score']['composite']} "
+                f"({c['run_id']}) vs its generation's board {base} "
+                f"-> {delta:+.2f}")
+        if spread is not None:
+            line += (f" (noise ±{float(spread):.2f}) — "
+                     + ("within noise" if abs(delta) <= float(spread)
+                        else "beyond noise"))
+        line += f". Generation {gid}."
+        lines.append(line)
+        if headline is not scored[0]:
+            top, _tb, tgid = scored[0]
+            lines.append(
+                f"(Overall best {top['overnight_score']['composite']} "
+                f"({top['run_id']}, generation {tgid}) has no board "
+                "baseline in its generation — no honest delta for it.)")
+    elif scored:
+        c, _base, gid = scored[0]
+        lines.append(
+            f"Best candidate {c['overnight_score']['composite']} "
+            f"({c['run_id']}, generation {gid}) has no board baseline in "
+            "its generation — no honest delta to report.")
+        note = next((g.board_note for g in generations
+                     if g.gen_id == gid and g.board_note), "")
+        if note:
+            lines.append(note)
     else:
-        lines.append(last.board_note or "No board baseline.")
+        lines.append(generations[-1].board_note or "No board baseline.")
     lines += ["", "## Budget ladder", "",
               ladder_verdict(all_cands, floor)]
     lines += ["", "## Stock check", ""]
@@ -878,11 +944,41 @@ def write_brief(generations: list[Generation], notes: list[str],
     log(f"[brief] written ({len(lines)} lines)")
 
 
-def write_latest(gen: Generation) -> None:
+def published_block(boards: list[dict]) -> list[dict]:
+    """latest.json's additive "published" rows: every published candidate
+    paired with ITS OWN generation's baseline and same-generation delta, so
+    a reader never has to reconstruct cross-generation context (and can
+    never be tempted into a cross-generation delta). Takes leaderboard-
+    shaped dicts (leaderboard_dict / leaderboard.json), best first."""
+    rows: list[dict] = []
+    for board in boards:
+        base = baseline_composite(board.get("board_baseline"))
+        for c in board.get("candidates") or []:
+            score = c.get("overnight_score")
+            if not c.get("published") or not isinstance(score, dict):
+                continue
+            comp = float(score["composite"])
+            rows.append({
+                "tag": c["published"],
+                "version_slug": c.get("version_slug"),
+                "run_id": c["run_id"],
+                "generation": board.get("generation"),
+                "composite": comp,
+                "board_baseline_composite": base,
+                "delta_same_gen": (round(comp - base, 2)
+                                   if base is not None else None),
+            })
+    rows.sort(key=lambda r: (r["tag"] != "best", -r["composite"]))
+    return rows
+
+
+def write_latest(gen: Generation, published: list[dict]) -> None:
     safe_write_json({
         "generation": gen.gen_id,
         "leaderboard": f"{gen.gen_id}/leaderboard.json",
         "brief": "brief.md",
+        # additive schema — older readers that ignore it keep working
+        "published": published,
     }, OPT_DIR / "latest.json")
 
 
@@ -1012,7 +1108,9 @@ def main() -> int:
         for g in generations:
             write_leaderboard(g)
         write_brief(generations, brief_notes, stock_events, started, log)
-        write_latest(generations[-1])
+        write_latest(generations[-1],
+                     published_block([leaderboard_dict(g)
+                                      for g in generations]))
     else:
         log("no generation was staged — nothing to publish or brief")
 

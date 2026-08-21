@@ -287,20 +287,25 @@ def _mk_candidate(data: Path, gen: "ob.Generation", run_id: str,
     }
 
 
-def _mk_gen(data: Path) -> "ob.Generation":
+def _mk_gen(data: Path, gen_id: str = "20260820-1900-abcd1234",
+            created: str = "2026-08-20T19:00:00",
+            baseline: float | None = None) -> "ob.Generation":
     from helpers.horizon import resolve as _hr
     from helpers.config import load_toml as _lt
     anchor = _hr(_lt()).anchor  # publish shifts vs the CURRENT anchor -> 0
     gen = ob.Generation(
-        gen_id="20260820-1900-abcd1234", sig=(1.0,),
-        created="2026-08-20T19:00:00", anchor=anchor, horizon_h=504.0,
+        gen_id=gen_id, sig=(1.0,),
+        created=created, anchor=anchor, horizon_h=504.0,
         week_marks=[(0.0, 34)], gates={"P09": 10.0},
         demand=pd.DataFrame([{"order_id": "O1", "sku": "111",
                               "qty_target": 1000.0, "lower_pct": 0.9,
                               "upper_pct": 1.1, "due_start_hour": 0,
                               "due_end_hour": 167}]),
         net_demand_kg=1000.0, capacity_bound=5000.0, capacity_detail={},
-        co_map={}, board_baseline=None, board_note="",
+        co_map={},
+        board_baseline=({"overnight_score": {"composite": baseline}}
+                        if baseline is not None else None),
+        board_note="",
     )
     gen.dir.mkdir(parents=True, exist_ok=True)
     return gen
@@ -443,3 +448,176 @@ def test_publishable_handles_an_empty_pool():
     from overnight_batch import publishable
 
     assert publishable([]) == ([], [])
+
+
+# ---------------------------------------------------------------------------
+# Same-generation deltas — the 2026-08-21 brief compared a 20260820-1505
+# candidate (71.19) against the 20260821-0500 board (66.65) and headlined
+# +4.54 when the honest same-generation delta was +0.44, inside the ±1.64
+# noise floor. Every delta a planner sees must stay inside one generation.
+# ---------------------------------------------------------------------------
+
+OLD_GEN = "20260820-1505-aaaa1111"
+NEW_GEN = "20260821-0500-bbbb2222"
+
+
+def test_published_block_uses_own_generation_baseline():
+    boards = [
+        {"generation": OLD_GEN,
+         "board_baseline": {"overnight_score": {"composite": 70.75}},
+         "candidates": [
+             {"run_id": "champ_a", "published": "best",
+              "version_slug": "overnight_best",
+              "overnight_score": {"composite": 71.19}},
+             {"run_id": "champ_b", "published": None,
+              "overnight_score": {"composite": 70.0}},
+         ]},
+        {"generation": NEW_GEN,
+         "board_baseline": {"overnight_score": {"composite": 66.65}},
+         "candidates": [
+             {"run_id": "champ_5am", "published": "runner_up",
+              "version_slug": "overnight_runner_up",
+              "overnight_score": {"composite": 67.01}},
+         ]},
+    ]
+    rows = ob.published_block(boards)
+    assert [r["run_id"] for r in rows] == ["champ_a", "champ_5am"]
+    best, runner = rows
+    assert best["tag"] == "best"
+    assert best["generation"] == OLD_GEN
+    assert best["board_baseline_composite"] == pytest.approx(70.75)
+    assert best["delta_same_gen"] == pytest.approx(0.44)
+    # the runner-up's delta comes from ITS generation, not the best's
+    assert runner["generation"] == NEW_GEN
+    assert runner["board_baseline_composite"] == pytest.approx(66.65)
+    assert runner["delta_same_gen"] == pytest.approx(0.36)
+    # nobody's delta is the cross-generation lie
+    assert all(abs(r["delta_same_gen"] - 4.54) > 1.0 for r in rows)
+
+    # a published candidate whose generation had no baseline reports None —
+    # it must never borrow another generation's board
+    boards[0]["board_baseline"] = None
+    rows2 = ob.published_block(boards)
+    assert rows2[0]["delta_same_gen"] is None
+    assert rows2[0]["board_baseline_composite"] is None
+
+
+def test_same_generation_deltas_end_to_end(temp_env):
+    """Two generations; the best candidate lives in the OLDER one whose
+    baseline is HIGHER. Publish notes, brief, latest.json published block,
+    summarize() and the UI table must all report the same-generation delta
+    (+0.44 / +0.36) and never the cross-generation +4.54."""
+    from helpers import overnight_results as onr
+    from helpers.overnight_ui import _leaderboard_frame
+
+    old = _mk_gen(temp_env, gen_id=OLD_GEN,
+                  created="2026-08-20T15:05:00", baseline=70.75)
+    new = _mk_gen(temp_env, gen_id=NEW_GEN,
+                  created="2026-08-21T05:00:00", baseline=66.65)
+    best = _mk_candidate(temp_env, old, "champion_n1_150543", 71.19)
+    n2 = _mk_candidate(temp_env, old, "champion_n2_155622", 69.55)
+    old.candidates = [best, n2]                    # noise arms -> floor 1.64
+    champ5 = _mk_candidate(temp_env, new, "champion_5am_050020", 67.01)
+    champ5["kind"] = "champion"
+    new.candidates = [champ5]
+    gens = [old, new]
+    log = ob.Log(temp_env / "optimizer" / "batch.log")
+
+    notes: list[str] = []
+    ob.publish_top2(gens, log, notes)
+    assert best["published"] == "best"
+    assert n2["published"] == "runner_up"
+    pub_notes = [n for n in notes if n.startswith("published")]
+    assert any("vs its generation's board 70.75 -> +0.44" in n
+               for n in pub_notes)
+    assert any("-> -1.20" in n for n in pub_notes)
+    assert not any("4.54" in n for n in notes)
+
+    ob.write_brief(gens, notes, [], datetime(2026, 8, 20, 15, 5), log)
+    brief = (temp_env / "optimizer" / "brief.md").read_text(encoding="utf-8")
+    assert "4.54" not in brief
+    assert "Δ vs board" in brief
+    for delta in ("+0.44", "-1.20", "+0.36"):      # each vs its OWN board
+        assert delta in brief
+    vs_board = brief.split("## vs your board", 1)[1].split("##", 1)[0]
+    assert "vs its generation's board 70.75 -> +0.44" in vs_board
+    assert "(noise ±1.64) — within noise" in vs_board
+    assert OLD_GEN in vs_board                     # names the generation
+
+    for g in gens:
+        ob.write_leaderboard(g)
+    block = ob.published_block([ob.leaderboard_dict(g) for g in gens])
+    ob.write_latest(new, block)
+    latest = json.loads(
+        (temp_env / "optimizer" / "latest.json").read_text(encoding="utf-8"))
+    assert latest["generation"] == NEW_GEN         # pointer semantics kept
+    assert [(r["tag"], r["generation"], r["delta_same_gen"])
+            for r in latest["published"]] == \
+        [("best", OLD_GEN, 0.44), ("runner_up", OLD_GEN, -1.2)]
+
+    ov = onr.summarize(temp_env, now=datetime(2026, 8, 21, 5, 0))
+    assert ov.best_composite == pytest.approx(71.19)
+    assert ov.board_composite == pytest.approx(70.75)
+    assert ov.delta_vs_board == pytest.approx(0.44)
+    assert ov.published_best["run_id"] == "champion_n1_150543"
+    assert "+0.4 vs its board, 14h ago" in ov.detail
+    assert "4.5" not in ov.detail
+
+    frame_old = _leaderboard_frame(ob.leaderboard_dict(old))
+    assert list(frame_old["Δ vs board"]) == pytest.approx([0.44, -1.2])
+    frame_new = _leaderboard_frame(ob.leaderboard_dict(new))
+    assert list(frame_new["Δ vs board"]) == pytest.approx([0.36])
+    # both generations sit within the ±1.64 floor — the UI says "tie"
+    assert onr.all_within_noise(ob.leaderboard_dict(old), 1.64)
+
+
+# ── regression on the real 2026-08-20/21 night (gitignored fixtures) ───────
+
+REAL_OPT = ROOT / "data" / "optimizer"
+REAL_GENS = ["20260819-1810-486dcb88", "20260820-1505-486dcb88",
+             "20260821-0500-486dcb88"]
+
+
+@pytest.mark.skipif(
+    not all((REAL_OPT / g / "leaderboard.json").exists() for g in REAL_GENS),
+    reason="real overnight generations not present (gitignored data)")
+def test_real_generations_regression(tmp_path):
+    """The night that exposed the bug: published best champion_n1_150543
+    (gen 1505, 71.19) must read +0.44 against ITS generation's board 70.75 —
+    never +4.54 against the 0500 generation's 66.65."""
+    from helpers import overnight_results as onr
+
+    boards = [json.loads((REAL_OPT / g / "leaderboard.json")
+                         .read_text(encoding="utf-8")) for g in REAL_GENS]
+    block = ob.published_block(boards)
+    best = next(r for r in block if r["tag"] == "best")
+    assert best["run_id"] == "champion_n1_150543"
+    assert best["generation"] == "20260820-1505-486dcb88"
+    assert best["board_baseline_composite"] == pytest.approx(70.75)
+    assert best["delta_same_gen"] == pytest.approx(0.44, abs=0.01)
+
+    # stage a copy carrying the published block, as the fixed batch writes it
+    opt = tmp_path / "optimizer"
+    for g in REAL_GENS:
+        (opt / g).mkdir(parents=True)
+        (opt / g / "leaderboard.json").write_text(
+            (REAL_OPT / g / "leaderboard.json").read_text(encoding="utf-8"),
+            encoding="utf-8")
+    latest = json.loads(
+        (REAL_OPT / "latest.json").read_text(encoding="utf-8"))
+    (opt / "latest.json").write_text(
+        json.dumps({**latest, "published": block}), encoding="utf-8")
+
+    ov = onr.summarize(tmp_path, now=datetime(2026, 8, 21, 5, 50))
+    assert ov.best_composite == pytest.approx(71.19)
+    assert ov.board_composite == pytest.approx(70.75)
+    assert ov.delta_vs_board == pytest.approx(0.44, abs=0.01)
+    assert "vs its board" in ov.detail and "ago" in ov.detail
+    assert "4.5" not in ov.detail
+
+    # an old-writer latest.json (no block) falls back to the LATEST
+    # generation's own delta (+0.36) — still same-generation, never +4.54
+    (opt / "latest.json").write_text(json.dumps(latest), encoding="utf-8")
+    ov2 = onr.summarize(tmp_path, now=datetime(2026, 8, 21, 5, 50))
+    assert ov2.delta_vs_board == pytest.approx(0.36, abs=0.01)
+    assert ov2.published_best is None
