@@ -33,7 +33,11 @@ export function computeAdherence(
   const schedByOrder: Record<string, number> = {};
   const demandIds = new Set(demand.map((d) => d.order_id));
   // committed-MO / manual blocks whose order id matches no demand order:
-  // their kg still IS production of that SKU - waterfall it below.
+  // their kg still IS production of that SKU - ALWAYS waterfall it below.
+  // Board kg counts from the board, no matter what credit map arrives —
+  // the old covered mode skipped this and made the ledger the whole
+  // number, unfalsifiable against the calendar it sat on (user mandate
+  // 2026-08-21: the metrics must score calendar_blocks.csv).
   const unmatchedBySku: Record<string, number> = {};
   for (const b of schedule) {
     if (!isProduction(b)) continue;
@@ -42,15 +46,14 @@ export function computeAdherence(
       : (caps[b.line_name]?.[b.sku] ?? 0) * Math.max(0, b.end_hour - b.start_hour);
     if (demandIds.has(b.order_id)) {
       schedByOrder[b.order_id] = (schedByOrder[b.order_id] ?? 0) + kg;
-    } else if (!coveredByOrder) {
+    } else {
       unmatchedBySku[b.sku] = (unmatchedBySku[b.sku] ?? 0) + kg;
     }
   }
-  // Coverage-ledger baseline (committed MOs + kg already MADE by hidden
-  // completed blocks). The SKU waterfall is disabled in this mode — the
-  // ledger already credits committed MOs, and finished production never
-  // reaches the board at all (user report 2026-08-18: W34 read 20.8%
-  // while physically full).
+  // coveredByOrder is NON-BOARD kg ONLY: made kg from completed MOs the
+  // board hides (built server-side with made_only=True). It only ever ADDS
+  // kg no visible block represents; a map with committed-MO kg would
+  // double-count — those ARE board blocks and were counted above.
   if (coveredByOrder) {
     for (const [oid, kg] of Object.entries(coveredByOrder)) {
       if (demandIds.has(oid) && kg > 0) {

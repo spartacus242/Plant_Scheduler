@@ -53,8 +53,9 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   const viewEnd = viewStart + horizon;
 
   const anchor = useMemo(() => new Date(args.config.planning_anchor), [args.config.planning_anchor]);
-  // Coverage-ledger credit (committed MOs + kg already made) — baseline for
-  // every live fulfillment computation in this component.
+  // NON-BOARD credit: made kg from completed MOs the board hides (server
+  // builds it made_only — never committed-MO kg, those ARE board blocks).
+  // Added on top of board kg in every live fulfillment computation.
   const coveredByOrder = useMemo(
     () => args.kpis?.covered_by_order ?? undefined,
     [args.kpis],
@@ -999,15 +1000,18 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   // Per-week chips (user request 2026-08-18): fulfillment vs the demand due
   // that ISO week + changeovers by machine, recomputed live client-side.
   const weekStats = useMemo(() => {
-    const stats: Record<string, { pct: number | null; tl: number; ffs: number; cp: number; ttp: number; board: number; credit: number; target: number }> = {};
+    const stats: Record<string, { boardPct: number | null; madePct: number | null; tl: number; ffs: number; cp: number; ttp: number; board: number; credit: number; target: number }> = {};
+    // MASTER-FILE RULE (user mandate 2026-08-21): the headline number is
+    // BOARD fill — kg of calendar_blocks.csv blocks in the week (per-order
+    // credit capped at target) vs the week's demand target. The board pass
+    // runs with NO credit map (the waterfall still attributes committed-MO
+    // blocks: they ARE board blocks); the credited pass adds ONLY made kg
+    // from completed MOs the board hides, and that addend renders as a
+    // visibly separate "+ made" element — never silently summed into the
+    // headline. A nearly empty week must read as a small board %.
     const rows = computeAdherence(schedule, args.demandTargets, args.capabilities, coveredByOrder);
-    // Second pass with an EMPTY covered map ({} = no ledger credit, waterfall
-    // still off) splits each week's fill into board kg vs coverage-ledger
-    // credit (committed MOs + kg already made). The credit share is invisible
-    // on the board, so without the split a mostly-committed week reads as a
-    // stale number (user report 2026-08-21: "did Refresh, cards didn't move").
     const boardByOrder: Record<string, number> = {};
-    for (const r of computeAdherence(schedule, args.demandTargets, args.capabilities, {})) {
+    for (const r of computeAdherence(schedule, args.demandTargets, args.capabilities)) {
       boardByOrder[r.order_id] = r.scheduled_qty;
     }
     const dem: Record<string, { sched: number; board: number; target: number }> = {};
@@ -1040,7 +1044,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         const to = sorted[i].sku;
         if (from === to) continue;
         const wk = `W${isoWeekAtHour(anchor, sorted[i].start_hour)}`;
-        const st = (stats[wk] ??= { pct: null, tl: 0, ffs: 0, cp: 0, ttp: 0, board: 0, credit: 0, target: 0 });
+        const st = (stats[wk] ??= { boardPct: null, madePct: null, tl: 0, ffs: 0, cp: 0, ttp: 0, board: 0, credit: 0, target: 0 });
         const pi = pairs[`${from}|${to}`] ?? dflt;
         st.tl += pi.tl ?? 0;
         st.ffs += pi.ffs ?? 0;
@@ -1049,11 +1053,12 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       }
     }
     for (const [wk, d] of Object.entries(dem)) {
-      const st = (stats[wk] ??= { pct: null, tl: 0, ffs: 0, cp: 0, ttp: 0, board: 0, credit: 0, target: 0 });
-      st.pct = d.target > 0 ? Math.round((d.sched / d.target) * 1000) / 10 : null;
+      const st = (stats[wk] ??= { boardPct: null, madePct: null, tl: 0, ffs: 0, cp: 0, ttp: 0, board: 0, credit: 0, target: 0 });
       st.board = d.board;
       st.credit = Math.max(0, d.sched - d.board);
       st.target = d.target;
+      st.boardPct = d.target > 0 ? Math.round((d.board / d.target) * 1000) / 10 : null;
+      st.madePct = d.target > 0 ? Math.round((st.credit / d.target) * 1000) / 10 : null;
     }
     // computedAt makes freshness visible on the card row: the cards derive
     // live from the current board + ledger on every edit/rerun — Save is
@@ -1249,7 +1254,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
                 .map(([wk, ws]) => (
                   <div key={wk}
                        title={ws.target > 0
-                         ? `${wk}: board ${Math.round(ws.board).toLocaleString()} kg + committed/made ${Math.round(ws.credit).toLocaleString()} kg, target ${Math.round(ws.target).toLocaleString()} kg`
+                         ? `${wk}: ${Math.round(ws.board).toLocaleString()} kg on the board + ${Math.round(ws.credit).toLocaleString()} kg covered thanks to production already made (hidden completed MOs), target ${Math.round(ws.target).toLocaleString()} kg`
                          : undefined}
                        style={{
                     flex: 1, padding: "6px 12px", borderRadius: 8,
@@ -1257,10 +1262,15 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
                     display: "flex", alignItems: "baseline", gap: 12,
                   }}>
                     <span style={{ fontWeight: 800, fontSize: 14, color: "#455a64" }}>{wk}</span>
-                    {ws.pct !== null && (
+                    {ws.boardPct !== null && (
                       <span style={{ fontWeight: 800, fontSize: 16,
-                                     color: ws.pct < 90 ? "#c62828" : "#2e7d32" }}>
-                        {ws.pct}%<span style={{ fontSize: 10, fontWeight: 600, color: "#888" }}> filled</span>
+                                     color: ws.boardPct < 90 ? "#c62828" : "#2e7d32" }}>
+                        {ws.boardPct}%<span style={{ fontSize: 10, fontWeight: 600, color: "#888" }}> on board</span>
+                      </span>
+                    )}
+                    {ws.madePct !== null && ws.madePct > 0 && (
+                      <span style={{ fontWeight: 700, fontSize: 12, color: "#6a7b8c" }}>
+                        + {ws.madePct}%<span style={{ fontSize: 10, fontWeight: 600, color: "#8a94a0" }}> already made</span>
                       </span>
                     )}
                     <span style={{ fontSize: 11.5, color: "#555", fontWeight: 600 }}>
@@ -1270,9 +1280,12 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
                 ))}
             </div>
             <div style={{ fontSize: 11, color: "#8a94a0", margin: "0 0 4px 50px" }}>
-              Filled % = board kg + committed/made kg (coverage ledger) vs target
-              · computed {weekStats.computedAt} from the current board — live on
-              every edit and refresh, no Save needed. Hover a card for the split.
+              On board % = kg of calendar blocks vs the week&rsquo;s demand target
+              (per-order credit capped at target); &ldquo;+ already made&rdquo; = extra coverage
+              from completed MOs the board hides — shown separately, never summed
+              into the headline. Computed {weekStats.computedAt} from the current
+              board — live on every edit and refresh, no Save needed. Hover a card
+              for the kg split.
             </div>
           </>
         )}

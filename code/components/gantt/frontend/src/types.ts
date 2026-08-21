@@ -99,7 +99,9 @@ export interface ServerKpis {
   per_line_changeovers: Record<string, number>;
   co_pairs: Record<string, CoPairInfo>;
   co_default: CoPairInfo;
-  /** coverage-ledger credit per order: committed MOs + kg already made */
+  /** NON-BOARD credit per order: made kg from completed MOs the board
+   * hides — never committed-MO kg (those ARE board blocks and count from
+   * the board; see build_ledger_from_data(made_only=True)). */
   covered_by_order?: Record<string, number>;
 }
 

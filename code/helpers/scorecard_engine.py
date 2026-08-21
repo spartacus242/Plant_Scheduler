@@ -1349,18 +1349,19 @@ def compute_adherence(
       - the block's own qty_kg (the solver's real decomposition) wins over
         rate x duration; rate x duration is the fallback for unknown kg
       - blocks whose order_id matches no demand order (committed manprg
-        MOs) waterfall onto that SKU's orders earliest-due first, each
-        order taking at most its qty_max — surplus beyond every open order
-        stays uncredited (serves weeks not on the board; the old
+        MOs) ALWAYS waterfall onto that SKU's orders earliest-due first,
+        each order taking at most its qty_max — surplus beyond every open
+        order stays uncredited (serves weeks not on the board; the old
         last-order-takes-remainder rule read 1764% once)
-      - covered_by_order (coverage ledger, order_id -> kg): committed MOs
-        PLUS kg already made by hidden completed blocks. When provided the
-        SKU waterfall is DISABLED (the ledger already credits committed
-        MOs — crediting their board blocks too would double-count) and the
-        ledger kg is the per-order baseline. This is what makes a
-        mid-week board read honestly: finished blocks are hidden from the
-        schedule, but their kg still filled the week (user report
-        2026-08-18: W34 showed 20.8% while physically full)
+      - covered_by_order (order_id -> kg) is NON-BOARD kg ONLY: made kg
+        from completed MOs the board hides (the calendar page builds it
+        with build_ledger_from_data(made_only=True)). Board kg always
+        counts from the board; the credit only ever ADDS kg no visible
+        block represents. The old covered mode disabled the waterfall and
+        made the ledger the whole number — the card was unfalsifiable
+        against the calendar it sat on (user mandate 2026-08-21: the
+        metrics must score calendar_blocks.csv). Passing a map that
+        includes committed-MO kg double-counts by construction.
       - pct is % of TARGET, the (qty_min+qty_max)/2 midpoint — the
         planner's band is 90-110 of target, not of qty_min
       - MET when qty_min <= scheduled <= qty_max (qty_max <= 0 = unbounded)
@@ -1379,7 +1380,7 @@ def compute_adherence(
         oid = str(b.get("order_id", "") or "")
         if oid in demand_ids:
             sched[oid] = sched.get(oid, 0.0) + float(kg)
-        elif covered_by_order is None:
+        else:
             unmatched_by_sku[sku] = unmatched_by_sku.get(sku, 0.0) + float(kg)
 
     if covered_by_order is not None:
@@ -1502,8 +1503,9 @@ def gantt_kpis(
         "per_line_changeovers": co["per_line_transitions"],
         "co_pairs": co_pairs,
         "co_default": co_default,
-        # ledger credit forwarded so the client's LIVE recompute (kpi.ts)
-        # uses the same baseline — committed + already-made kg
+        # NON-BOARD credit (made kg from hidden completed MOs) forwarded so
+        # the client's LIVE recompute (kpi.ts) uses the same baseline —
+        # never committed-MO kg: those ARE board blocks and count as such
         "covered_by_order": covered_by_order or {},
     }
 

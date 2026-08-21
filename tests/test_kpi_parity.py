@@ -98,6 +98,56 @@ CO_MAP = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Covered-mode fixture — the master-file rule (user mandate 2026-08-21):
+# board kg ALWAYS counts from the board (the committed-MO waterfall runs no
+# matter what credit map arrives) and covered_by_order only ADDS non-board
+# kg (made kg from hidden completed MOs). The old covered mode disabled the
+# waterfall entirely — the number was the ledger, unfalsifiable against the
+# calendar it sat on.
+# ---------------------------------------------------------------------------
+
+def covered_fixture_calendar() -> pd.DataFrame:
+    rows = [
+        # demand-matched block: credits O1 directly (rate 100 x 10h = 1000)
+        _block("production", 1, "P10", 0, 10, "SKU_A", "O1"),
+        # committed MO, order id matches no demand order: 700 kg waterfalls
+        _block("production", 1, "P10", 10, 17, "SKU_A", "MO9"),
+    ]
+    return pd.DataFrame(rows)[CALENDAR_COLUMNS]
+
+
+COVERED_DEMAND = [
+    {"order_id": "O1", "sku": "SKU_A", "qty_min": 1200.0, "qty_max": 1600.0},
+    {"order_id": "O4", "sku": "SKU_A", "qty_min": 300.0, "qty_max": 400.0},
+]
+COVERED_MAP = {"O4": 100.0}   # made kg from a hidden completed MO
+
+
+def test_covered_map_adds_to_board_never_replaces_it():
+    """Hand-computed: O1 board 1000; made credit puts O4 at 100; waterfall
+    (ALWAYS on) spreads MO9's 700 kg earliest-due first — O1 takes 600 (to
+    its 1600 cap), the remaining 100 tops O4 up to 200. The old covered
+    mode would have frozen O1 at 1000 and O4 at the ledger's 100."""
+    from helpers.scorecard_engine import compute_adherence
+
+    rows = compute_adherence(covered_fixture_calendar(), COVERED_DEMAND,
+                             CAPS, covered_by_order=COVERED_MAP)
+    by = {r["order_id"]: r for r in rows}
+    assert by["O1"]["scheduled_qty"] == 1600      # 1000 board + 600 waterfall
+    assert by["O1"]["status"] == "MET"
+    assert by["O1"]["pct_adherence"] == 114.3     # 1600 / 1400 target
+    assert by["O4"]["scheduled_qty"] == 200       # 100 made + 100 waterfall
+    assert by["O4"]["status"] == "UNDER"
+    assert by["O4"]["pct_adherence"] == 57.1      # 200 / 350 target
+
+    # board-only pass (no credit map): the waterfall still credits MO9's kg
+    board = compute_adherence(covered_fixture_calendar(), COVERED_DEMAND, CAPS)
+    by_b = {r["order_id"]: r for r in board}
+    assert by_b["O1"]["scheduled_qty"] == 1600
+    assert by_b["O4"]["scheduled_qty"] == 100     # waterfall remainder only
+
+
 @pytest.fixture(scope="module")
 def py_result():
     return gantt_kpis(
@@ -170,7 +220,12 @@ const kpis = kpi.computeKpis(
 const adherence = kpi.computeAdherence(fx.schedule, fx.demand, fx.caps);
 const weekCredits = Object.fromEntries(
   adherence.map((r) => [r.order_id, kpi.weekFulfillmentCredit(r)]));
-process.stdout.write(JSON.stringify({ kpis, adherence, weekCredits }));
+const out = { kpis, adherence, weekCredits };
+if (fx.covered) {
+  out.coveredAdherence = kpi.computeAdherence(
+    fx.covered.schedule, fx.covered.demand, fx.caps, fx.covered.map);
+}
+process.stdout.write(JSON.stringify(out));
 """
 
 # Hand-verified: credit = min(scheduled_qty, target) where target is the
@@ -218,6 +273,7 @@ def _compile_kpi_ts(tmp: Path) -> Path:
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
 def test_ts_matches_python(py_result, tmp_path):
     schedule, windows = calendar_to_gantt_payload(fixture_calendar())
+    cov_schedule, _ = calendar_to_gantt_payload(covered_fixture_calendar())
     fixture = {
         "schedule": schedule,
         "cipWindows": windows,
@@ -225,6 +281,11 @@ def test_ts_matches_python(py_result, tmp_path):
         "caps": CAPS,
         "co_pairs": py_result["co_pairs"],
         "co_default": py_result["co_default"],
+        "covered": {
+            "schedule": cov_schedule,
+            "demand": COVERED_DEMAND,
+            "map": COVERED_MAP,
+        },
     }
     fixture_path = tmp_path / "fixture.json"
     fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
@@ -267,6 +328,18 @@ def test_ts_matches_python(py_result, tmp_path):
     # Week-fulfillment credit: capped at each order's target (finding 7) —
     # the same arithmetic weekly_breakdown applies server-side.
     assert ts["weekCredits"] == pytest.approx(EXPECTED_WEEK_CREDITS)
+
+    # Covered mode: board waterfall ALWAYS on, credit map only ADDS non-board
+    # kg — TS must agree with the Python goldens hand-computed above.
+    from helpers.scorecard_engine import compute_adherence
+    py_cov = compute_adherence(covered_fixture_calendar(), COVERED_DEMAND,
+                               CAPS, covered_by_order=COVERED_MAP)
+    ts_cov = ts["coveredAdherence"]
+    assert [r["order_id"] for r in ts_cov] == [r["order_id"] for r in py_cov]
+    for tr, pr in zip(ts_cov, py_cov):
+        assert tr["scheduled_qty"] == pr["scheduled_qty"]
+        assert tr["status"] == pr["status"]
+        assert tr["pct_adherence"] == pytest.approx(pr["pct_adherence"], abs=1e-9)
 
 
 # ---------------------------------------------------------------------------
