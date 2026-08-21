@@ -16,6 +16,9 @@ from helpers import overnight_results as onr
 
 
 def _leaderboard_frame(board: dict) -> pd.DataFrame:
+    # Δ is same-generation by construction: every candidate in this board
+    # against THIS board's own baseline (never another generation's)
+    base = onr.board_baseline_composite(board)
     rows = []
     for c in sorted(board["candidates"],
                     key=lambda c: c["overnight_score"]["composite"],
@@ -27,6 +30,8 @@ def _leaderboard_frame(board: dict) -> pd.DataFrame:
             "Arm": c["run_id"],
             "Published": onr.published_label(c),
             "Composite": round(float(sc["composite"]), 1),
+            "Δ vs board": (round(float(sc["composite"]) - base, 2)
+                           if base is not None else None),
             "Fill": sc.get("fill"),
             "Changeovers": sc.get("changeovers"),
             "Campaign": sc.get("campaign"),
@@ -54,9 +59,15 @@ def render_overnight_results(dd: Path) -> None:
                f"{when}{stale}")
 
     if ov.board_composite is not None and ov.delta_vs_board is not None:
-        st.caption(
-            f"Board baseline {ov.board_composite:.1f} → best overnight "
-            f"**{ov.best_composite:.1f}** ({ov.delta_vs_board:+.1f}).")
+        line = (f"Board baseline {ov.board_composite:.1f} → best overnight "
+                f"**{ov.best_composite:.1f}** ({ov.delta_vs_board:+.1f}, "
+                "same generation).")
+        if (ov.published_best
+                and ov.published_best.get("generation") != ov.generation):
+            line += (" Published best came from generation "
+                     f"`{ov.published_best['generation']}` — its delta is "
+                     "against THAT generation's board.")
+        st.caption(line)
     if ov.noise_spread is not None:
         runs_txt = (f"{ov.noise_runs} repeat runs of the champion"
                     if ov.noise_runs else "repeat champion runs")
@@ -66,6 +77,9 @@ def render_overnight_results(dd: Path) -> None:
 
     st.dataframe(_leaderboard_frame(ov.board),
                  use_container_width=True, hide_index=True)
+    if onr.all_within_noise(ov.board, ov.noise_spread):
+        st.caption(f"All candidates within the ±{ov.noise_spread:.2f} noise "
+                   "floor of the board — treat the ranking as a tie.")
 
     for c in ov.published:
         slug = c.get("version_slug")

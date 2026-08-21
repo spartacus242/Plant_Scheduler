@@ -185,6 +185,109 @@ def test_summarize_without_baseline_and_noise(tmp_path):
     assert ov.detail == "7 runs · best 84.2 — review"
 
 
+# -- published block (additive latest.json schema) -------------------------
+# Rows carry each published candidate's OWN generation's baseline, so the
+# chip never shows a cross-generation delta (the 2026-08-21 +4.54 lie).
+
+OLDER_GEN = "20260818-2100-deadbeef"
+
+
+def _add_published(dd: Path, rows) -> None:
+    p = dd / "optimizer" / "latest.json"
+    latest = json.loads(p.read_text(encoding="utf-8"))
+    latest["published"] = rows
+    p.write_text(json.dumps(latest), encoding="utf-8")
+
+
+def test_published_block_drives_the_chip_delta(tmp_path):
+    dd = _stage(tmp_path)
+    _add_published(dd, [
+        {"tag": "best", "version_slug": "overnight_best",
+         "run_id": "old_champion", "generation": OLDER_GEN,
+         "composite": 85.0, "board_baseline_composite": 84.4,
+         "delta_same_gen": 0.6},
+    ])
+    ov = onr.summarize(dd, now=CREATED + timedelta(hours=2))
+    assert ov.best_composite == 85.0
+    assert ov.board_composite == 84.4
+    assert ov.delta_vs_board == 0.6
+    assert ov.published_best["run_id"] == "old_champion"
+    # published best from an OLDER generation than latest — the chip says so
+    assert "+0.6 vs its board, 10h ago" in ov.detail
+    # the latest generation's own candidates still fill the leaderboard bits
+    assert ov.best["run_id"] == "champion"
+    assert ov.n_runs == 7
+
+
+def test_published_block_same_generation_needs_no_age_note(tmp_path):
+    dd = _stage(tmp_path)
+    _add_published(dd, [
+        {"tag": "best", "run_id": "champion", "generation": GEN,
+         "composite": 84.2, "board_baseline_composite": 71.4,
+         "delta_same_gen": 12.8},
+    ])
+    ov = onr.summarize(dd, now=CREATED + timedelta(hours=2))
+    assert ov.delta_vs_board == 12.8
+    assert "(+12.8 vs its board)" in ov.detail
+    assert "ago" not in ov.detail
+
+
+def test_published_row_without_delta_falls_back_same_generation(tmp_path):
+    """A published best whose OWN generation had no baseline never borrows
+    the latest generation's board — the chip falls back to the latest
+    generation's best vs its own baseline."""
+    dd = _stage(tmp_path)
+    _add_published(dd, [
+        {"tag": "best", "run_id": "old_champion", "generation": OLDER_GEN,
+         "composite": 96.0, "board_baseline_composite": None,
+         "delta_same_gen": None},
+    ])
+    ov = onr.summarize(dd, now=CREATED + timedelta(hours=2))
+    assert ov.published_best is None
+    assert ov.best_composite == 84.2
+    assert round(ov.delta_vs_board, 1) == 12.8
+    assert "(+12.8 vs board)" in ov.detail
+
+
+def test_malformed_published_block_is_ignored(tmp_path):
+    dd = _stage(tmp_path)
+    for bad in ("not-a-list",
+                [{"tag": "best"}, 42,
+                 {"tag": "best", "generation": GEN, "composite": "84"}]):
+        _add_published(dd, bad)
+        ov = onr.summarize(dd, now=CREATED + timedelta(hours=2))
+        assert ov.published_best is None
+        assert round(ov.delta_vs_board, 1) == 12.8  # same-gen fallback
+
+
+def test_published_entries_validation():
+    good = {"tag": "best", "generation": GEN, "composite": 84.2,
+            "delta_same_gen": 12.8}
+    assert onr.published_entries({"published": [good]}) == [good]
+    assert onr.published_entries(None) == []
+    assert onr.published_entries({}) == []
+    assert onr.published_entries({"published": {}}) == []
+    kept = onr.published_entries({"published": [
+        good, {"generation": 7, "composite": 1.0},
+        {"generation": GEN, "composite": True}, "junk"]})
+    assert kept == [good]
+
+
+# -- same-generation helpers (shared with the Generate table) ---------------
+
+def test_board_baseline_composite_and_all_within_noise():
+    board = {"board_baseline": {"overnight_score": {"composite": 70.0}},
+             "candidates": [{"overnight_score": {"composite": 70.4}},
+                            {"overnight_score": {"composite": 69.1}}]}
+    assert onr.board_baseline_composite(board) == 70.0
+    assert onr.all_within_noise(board, 1.64)
+    assert not onr.all_within_noise(board, 0.5)   # 69.1 is 0.9 off
+    assert not onr.all_within_noise(board, None)
+    assert onr.board_baseline_composite({"board_baseline": None}) is None
+    assert not onr.all_within_noise(
+        {"board_baseline": None, "candidates": []}, 1.0)
+
+
 # -- formatters ------------------------------------------------------------
 
 def test_guards_text():

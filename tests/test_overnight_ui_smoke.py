@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
@@ -78,7 +79,26 @@ def test_generate_section_renders_the_leaderboard(tmp_path):
     assert "Overnight results" in text
     assert "Noise floor" in text
     assert "71.4" in text  # board baseline delta line
+    assert "same generation" in text  # the delta names its frame
     assert "overnight-20260819-best" in text  # published caption → Compare
     assert "overnight-20260819-runner" in text
     frames = [df for df in at.dataframe]
     assert any("Composite" in df.value.columns for df in frames)
+    # same-generation delta column: candidate minus THIS board's baseline
+    lb = next(df.value for df in frames if "Δ vs board" in df.value.columns)
+    assert round(float(lb["Δ vs board"].iloc[0]), 2) == 12.8  # 84.2 - 71.4
+
+
+def test_generate_says_tie_when_all_deltas_sit_inside_noise(tmp_path):
+    """The noise-aware caption: when every candidate's same-generation delta
+    is inside ±spread, the ranking is a tie and the section says so."""
+    shutil.copytree(FIXTURE, tmp_path / "optimizer")
+    lb_path = (tmp_path / "optimizer" / "20260819-0230-9f3a7c21"
+               / "leaderboard.json")
+    board = json.loads(lb_path.read_text(encoding="utf-8"))
+    board["noise_floor"]["spread_composite"] = 20.0  # swallows every delta
+    lb_path.write_text(json.dumps(board), encoding="utf-8")
+    at = _boot("pages/generate.py", tmp_path)
+    text = _texts(at)
+    assert "treat the ranking as a tie" in text
+    assert "±20.00 noise floor" in text
