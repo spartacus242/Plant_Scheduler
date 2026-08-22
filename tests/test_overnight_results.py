@@ -305,3 +305,140 @@ def test_budgets_and_published_text():
     assert onr.published_label({"published": "runner_up"}) == "runner-up"
     assert onr.published_label({"published": None}) == ""
     assert onr.budgets_text({}) == "—"
+
+import pytest  # noqa: E402
+
+
+# -- the phase ledger: an unfinished night ------------------------------------
+# state.json is written by the batch per generation; `published` is the only
+# terminal phase. The 2026-08-22 reboot left 20260821-1900-5d421b01 with six
+# scored arms, no state.json (pre-ledger), nothing published — the chip must
+# name that night instead of reading as merely "stale".
+
+NEWER = "20260820-1900-5d421b01"   # newer than the fixture's 20260819-0230
+NOW = datetime(2026, 8, 22, 16, 0)
+
+
+def _night(dd: Path, phase: str, updated: datetime | None, *,
+           gen_id: str = NEWER, state: bool = True, arms_done: int = 6,
+           arms_planned: int | None = 6) -> Path:
+    gdir = dd / "optimizer" / gen_id
+    gdir.mkdir(parents=True, exist_ok=True)
+    shutil.copy(_board_path(dd), gdir / "leaderboard.json")
+    if state:
+        st = {"generation": gen_id, "phase": phase,
+              "updated": (updated.isoformat(timespec="seconds")
+                          if updated else "garbage"),
+              "arms_done": arms_done, "arms_planned": arms_planned,
+              "batch": [gen_id]}
+        (gdir / "state.json").write_text(json.dumps(st), encoding="utf-8")
+    return gdir
+
+
+def test_interrupted_night_is_the_newest_unfinished_generation(tmp_path):
+    dd = _stage(tmp_path)
+    _night(dd, "arms_done", datetime(2026, 8, 22, 0, 11))   # 16h of silence
+    night = onr.unfinished_night(dd, now=NOW)
+    assert night is not None
+    assert night.generation == NEWER
+    assert night.phase == "arms_done"
+    assert night.interrupted
+    assert night.age_h == pytest.approx(15.82, abs=0.01)
+    assert night.arms_done == 6 and night.arms_planned == 6
+    text = onr.night_text(night)
+    assert "interrupted in phase arms_done" in text
+    assert "6/6 arm(s)" in text and "silent 16h" in text
+    assert onr.resume_command(NEWER) == \
+        f"python scripts/overnight_batch.py --resume {NEWER}"
+    ov = onr.summarize(dd, now=NOW)
+    assert ov.night == night
+    assert ov.detail.startswith(f"⚠ night {NEWER} interrupted")
+    assert "7 runs" in ov.detail   # the published generation's stats follow
+    assert ov.generation == GEN    # the pointer still names the published one
+
+
+def test_running_night_is_not_an_alert(tmp_path):
+    dd = _stage(tmp_path)
+    _night(dd, "arms_running", NOW - timedelta(minutes=40), arms_done=2)
+    night = onr.unfinished_night(dd, now=NOW)
+    assert night is not None and not night.interrupted
+    assert onr.night_text(night) == \
+        "tonight's batch running: arms_running, 2/6 arm(s) done"
+    assert onr.summarize(dd, now=NOW).detail.startswith(
+        "☾ tonight's batch running")
+    # the 5am wait heart-beats every 5 min: a fresh arms_done is sleeping,
+    # not dead
+    _night(dd, "arms_done", NOW - timedelta(minutes=4))
+    assert not onr.unfinished_night(dd, now=NOW).interrupted
+    # ... and STALL_H of silence flips it
+    _night(dd, "arms_done", NOW - timedelta(hours=onr.STALL_H))
+    assert onr.unfinished_night(dd, now=NOW).interrupted
+
+
+def test_finished_or_superseded_nights_are_quiet(tmp_path):
+    dd = _stage(tmp_path)
+    _night(dd, "published", datetime(2026, 8, 22, 5, 30))   # terminal
+    assert onr.unfinished_night(dd, now=NOW) is None
+    shutil.rmtree(dd / "optimizer" / NEWER)
+    # an unfinished generation OLDER than the published pointer is history
+    _night(dd, "arms_done", datetime(2026, 8, 17, 0, 11),
+           gen_id="20260816-1900-00000000")
+    assert onr.unfinished_night(dd, now=NOW) is None
+    # a dir without a leaderboard is not a generation
+    (dd / "optimizer" / "20260823-1900-11111111").mkdir()
+    assert onr.unfinished_night(dd, now=NOW) is None
+    # no optimizer dir at all
+    assert onr.unfinished_night(tmp_path / "nowhere", now=NOW) is None
+    assert onr.summarize(dd, now=NOW).night is None
+    # two unfinished: the newest wins
+    _night(dd, "arms_done", datetime(2026, 8, 21, 0, 11),
+           gen_id="20260820-1900-aaaa0000")
+    _night(dd, "staged", datetime(2026, 8, 22, 0, 11),
+           gen_id="20260821-1900-bbbb0000", arms_done=0)
+    assert onr.unfinished_night(dd, now=NOW).generation == \
+        "20260821-1900-bbbb0000"
+
+
+def test_pre_ledger_generation_reads_as_interrupted_unknown(tmp_path):
+    """The real 2026-08-21 dir: leaderboard + candidates, no state.json."""
+    import os
+    dd = _stage(tmp_path)
+    gdir = _night(dd, "", None, state=False)
+    stamp = datetime(2026, 8, 22, 0, 11).timestamp()
+    os.utime(gdir / "leaderboard.json", (stamp, stamp))
+    night = onr.unfinished_night(dd, now=NOW)
+    assert night.phase == onr.PHASE_UNKNOWN
+    assert night.interrupted
+    assert night.age_h == pytest.approx(15.82, abs=0.01)
+    assert night.arms_done == 7 and night.arms_planned is None
+    assert "after 7 arm(s)" in onr.night_text(night)
+
+
+def test_unreadable_heartbeat_is_interrupted(tmp_path):
+    dd = _stage(tmp_path)
+    _night(dd, "arms_done", None)   # "garbage" updated
+    night = onr.unfinished_night(dd, now=NOW)
+    assert night.interrupted and night.age_h is None
+    assert "no readable heartbeat" in onr.night_text(night)
+    # a phase-less state.json is no state at all -> the pre-ledger rule
+    (dd / "optimizer" / NEWER / "state.json").write_text(
+        json.dumps({"generation": NEWER}), encoding="utf-8")
+    assert onr.load_state(dd, NEWER) is None
+    assert onr.unfinished_night(dd, now=NOW).phase == onr.PHASE_UNKNOWN
+
+
+def test_interrupted_first_night_without_any_pointer(tmp_path):
+    """The first-ever night crashes: no latest.json, so the chip stays
+    NOT_SET — but the night is named, not swallowed."""
+    (tmp_path / "optimizer").mkdir()
+    gdir = tmp_path / "optimizer" / NEWER
+    gdir.mkdir()
+    shutil.copy(FIXTURE / GEN / "leaderboard.json", gdir / "leaderboard.json")
+    (gdir / "state.json").write_text(json.dumps(
+        {"generation": NEWER, "phase": "arms_done",
+         "updated": "2026-08-22T00:11:26", "arms_done": 6}), encoding="utf-8")
+    ov = onr.summarize(tmp_path, now=NOW)
+    assert ov.state == onr.NOT_SET
+    assert ov.night is not None and ov.night.interrupted
+    assert "no overnight generation yet" in ov.detail
+    assert f"⚠ night {NEWER} interrupted" in ov.detail

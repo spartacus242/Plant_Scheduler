@@ -102,3 +102,41 @@ def test_generate_says_tie_when_all_deltas_sit_inside_noise(tmp_path):
     text = _texts(at)
     assert "treat the ranking as a tie" in text
     assert "±20.00 noise floor" in text
+
+
+# -- an interrupted night (state.json never reached `published`) --------------
+
+def _interrupted_night(tmp_path: Path) -> str:
+    shutil.copytree(FIXTURE, tmp_path / "optimizer")
+    gen = "20260820-1900-5d421b01"   # newer than the fixture's generation
+    gdir = tmp_path / "optimizer" / gen
+    gdir.mkdir()
+    shutil.copy(FIXTURE / "20260819-0230-9f3a7c21" / "leaderboard.json",
+                gdir / "leaderboard.json")
+    (gdir / "state.json").write_text(json.dumps(
+        {"generation": gen, "phase": "arms_done",
+         "updated": "2026-08-21T00:11:26", "arms_done": 6,
+         "arms_planned": 6}), encoding="utf-8")
+    return gen
+
+
+def _warnings(at: AppTest) -> str:
+    return "\n".join(str(getattr(el, "value", "")) for el in at.warning)
+
+
+def test_home_chip_names_an_interrupted_night(tmp_path):
+    gen = _interrupted_night(tmp_path)
+    at = _boot("pages/home.py", tmp_path)
+    assert not at.exception
+    text = _texts(at)
+    assert f"night {gen} interrupted in phase arms_done" in text
+    assert "ATTENTION" in text
+    assert f"--resume {gen}" in _warnings(at)
+
+
+def test_generate_section_names_an_interrupted_night(tmp_path):
+    gen = _interrupted_night(tmp_path)
+    at = _boot("pages/generate.py", tmp_path)
+    assert not at.exception
+    assert "Overnight results" in _texts(at)
+    assert f"--resume {gen}" in _warnings(at)

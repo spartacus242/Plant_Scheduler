@@ -172,15 +172,25 @@ for title, page, fn in _STEPS:
 
 # Overnight optimizer — not a numbered step (the batch runs while nobody is
 # here), but the same row grammar so the morning scan stays one pass:
-# NOT SET (no generation yet) / OK (< 26h) / STALE (older).
+# NOT SET (no generation yet) / OK (< 26h) / STALE (older). An interrupted
+# night (state.json never reached `published`, heartbeat silent) is
+# ATTENTION whatever the published generation's age — the crashed
+# 2026-08-22 night must never read as merely "stale".
 _ov = onr.summarize(dd)
+_ov_chip = {onr.OK: "ok", onr.STALE: "warn"}.get(_ov.state, "off")
+_ov_interrupted = _ov.night is not None and _ov.night.interrupted
+if _ov_interrupted:
+    _ov_chip = "warn"
 c1, c2, c3, c4 = st.columns([2, 2, 6, 1.5])
 c1.markdown("**☾ Overnight optimizer**")
-c2.markdown(_CHIP[{onr.OK: "ok", onr.STALE: "warn"}.get(_ov.state, "off")])
+c2.markdown(_CHIP[_ov_chip])
 c3.caption(_ov.detail)
 with c4:
     st.page_link("pages/generate.py", label="Review",
                  icon=":material/arrow_forward:")
+if _ov_interrupted:
+    st.warning(f"{onr.night_text(_ov.night)} — from the repo root: "
+               f"`{onr.resume_command(_ov.night.generation)}`")
 _brief = onr.load_brief(dd) if _ov.state != onr.NOT_SET else None
 if _brief:
     with st.expander("Morning brief (data/optimizer/brief.md)"):
