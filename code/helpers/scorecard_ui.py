@@ -212,7 +212,10 @@ def render_metric_reference(
             ]
         )
         st.markdown("**Category weights**")
-        st.dataframe(wdf, use_container_width=True, hide_index=True)
+        # st.table, not st.dataframe: this renders inside collapsed expanders
+        # (here and via render_scorecard on Compare/Generate) and the glide
+        # grid never mounts when first drawn hidden (see helpers/st_compat).
+        st.table(wdf.set_index("category"))
         st.caption(
             "A category that scores n/a (currently only Service, when demand_plan.csv "
             "is missing) is dropped from the composite and the remaining weights "
@@ -260,7 +263,8 @@ def render_metric_reference(
             )
             if not result:
                 table = table.drop(columns=["value", "flag"])
-            st.dataframe(table, use_container_width=True, hide_index=True)
+            # static table: survives the collapsed-expander mount trap
+            st.table(table.set_index("metric"))
 
         st.divider()
         st.markdown("**Known limitations of draft v0 - read the score with these in mind**")
@@ -277,10 +281,12 @@ def render_contribution(result: ScorecardResult | dict[str, Any]) -> None:
             "Each category score (0–100) × weight → contribution to composite. "
             "Cap saturation means a raw metric is already at/above its draft-v0 cap."
         )
-        st.dataframe(
-            pd.DataFrame(rows)[["category", "score", "weight", "contribution", "cap_saturation"]],
-            use_container_width=True,
-            hide_index=True,
+        # static table: this expander is collapsed by default (and nests
+        # inside other collapsed expanders on Compare/Generate) — st.dataframe
+        # would mount an empty grid there.
+        st.table(
+            pd.DataFrame(rows)[["category", "score", "weight", "contribution", "cap_saturation"]]
+            .set_index("category")
         )
 
 

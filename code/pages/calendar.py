@@ -34,6 +34,7 @@ from helpers.config import load_toml, scorecard_config
 from helpers.downtime_ui import downtime_map_for_calendar, render_side_downtime_editor
 from helpers.lines_model import expand_caps_with_groups, is_double, side_of, sides_of
 from helpers.paths import data_dir, reference_dir
+from helpers.st_compat import deferred_dataframe
 from solver.changeover_cache import load_changeover_setup_nested
 from helpers.scorecard_engine import (
     ScorecardResult,
@@ -183,9 +184,12 @@ with st.expander("🏭 Rebuild calendar from current plant state (manprg + cip_i
                 lambda h: (_horizon.anchor + _td(hours=float(h))).strftime("%a %m-%d %H:%M"))
             _prev["end"] = _prev["end_h"].map(
                 lambda h: (_horizon.anchor + _td(hours=float(h))).strftime("%a %m-%d %H:%M"))
-            st.dataframe(
+            # deferred: a plain st.dataframe here mounts an empty grid because
+            # this expander starts collapsed (see helpers/st_compat).
+            deferred_dataframe(
                 _prev[["line_name", "block_type", "label", "order_id", "start",
                        "end", "locked", "attrs"]],
+                key="cal_plant_state_preview", label="Load the block preview",
                 use_container_width=True, hide_index=True, height=280)
         st.caption("Replacing backs up the current calendar to `data/_backups/` first.")
         if st.button("Replace calendar with current plant state",
@@ -402,12 +406,13 @@ if _active:
             expanded=False):
         _desig = {line: lp.designation for line, lp in _mp.current.items()}
         _nr = sorted(_active, key=lambda r: r["line"])
-        st.dataframe(
+        # st.table: st.dataframe never mounts inside this initially-collapsed
+        # expander (helpers/st_compat); one row per line, so static is fine.
+        st.table(pd.DataFrame(
             [{"Line": r["line"], "MO": r["mo"], "SKU": r["item"],
               "Designation": _desig.get(r["line"], ""),
               "Completion": f"{r['pct']:.1f}%",
-              "Cases left": int(r["left"])} for r in _nr],
-            use_container_width=True, hide_index=True)
+              "Cases left": int(r["left"])} for r in _nr]).set_index("Line"))
 
 # ── Auto-populate holding from the latest scenario solve ─────────────────
 # After a scenario (esp. E) produces a schedule, demand orders left under

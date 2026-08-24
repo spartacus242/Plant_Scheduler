@@ -308,7 +308,9 @@ def _render_file(spec, *, uploadable: bool) -> None:
                         st.error("Missing required column(s): " + ", ".join(gaps))
                     else:
                         st.success(f"Parsed OK: {len(new_df)} rows, {len(new_df.columns)} columns.")
-                        st.dataframe(new_df.head(10), use_container_width=True, hide_index=True)
+                        # st.table: st.dataframe never mounts inside an initially-
+                        # collapsed expander (helpers/st_compat).
+                        st.table(new_df.head(10))
                         if st.button("Overwrite " + spec.filename, key=f"ovr_{spec.key}"):
                             if path.exists():
                                 b = backup(path)
@@ -333,7 +335,9 @@ def _render_file(spec, *, uploadable: bool) -> None:
         # Read-only preview + download. The in-browser cell editor was
         # developer furniture — planner edits happen in Excel and come back
         # through the upload above (every write is backed up first).
-        st.dataframe(df.head(20), use_container_width=True, hide_index=True)
+        # st.table: st.dataframe never mounts inside an initially-collapsed
+        # expander (helpers/st_compat), and every catalog expander starts closed.
+        st.table(df.head(20))
         if len(df) > 20:
             st.caption(f"… {len(df) - 20:,} more row(s) — download to see all.")
         st.download_button(

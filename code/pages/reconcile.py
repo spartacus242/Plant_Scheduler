@@ -20,6 +20,7 @@ from helpers import data_health as dh
 from helpers import reconcile_engine as rec
 from helpers.config import load_toml
 from helpers.paths import data_dir
+from helpers.st_compat import deferred_dataframe
 
 st.header("Reconcile")
 st.caption(
@@ -119,13 +120,16 @@ if ledger is not None and ledger.rows:
                    + (f" {ledger.unknown_kg_blocks} committed block(s) have "
                       "unknown kg and credit nothing."
                       if ledger.unknown_kg_blocks else ""))
-        st.dataframe(
+        # deferred: a plain st.dataframe here mounts an empty grid because
+        # this expander starts collapsed (see helpers/st_compat).
+        deferred_dataframe(
             view.drop(columns=["week_key"]).rename(columns={
                 "week_label": "Week", "order_id": "Order", "sku": "SKU",
                 "gross_kg": "Demand kg", "committed_kg": "Committed kg",
                 "produced_kg": "Made kg", "carry_in_kg": "Carry-in kg",
                 "applied_kg": "Covered kg", "net_kg": "Net to plan",
                 "status": "Status"}),
+            key="rec_ledger_table", label="Load the ledger table",
             use_container_width=True, hide_index=True)
 
 if not findings:
@@ -155,7 +159,8 @@ for sev in (rec.BLOCKING, rec.WARN, rec.INFO):
                     ctx = f.context
                     if "orders" in ctx and isinstance(ctx["orders"], list):
                         import pandas as pd
-                        st.dataframe(pd.DataFrame(ctx["orders"]),
-                                     use_container_width=True, hide_index=True)
+                        # st.table: st.dataframe never mounts inside this
+                        # initially-collapsed expander (helpers/st_compat).
+                        st.table(pd.DataFrame(ctx["orders"]))
                     else:
                         st.json(ctx, expanded=False)

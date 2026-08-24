@@ -312,8 +312,9 @@ with tab_drill:
                          f"**{i['available_total']}** (primary {i['available_primary']})")
                 if i.get("alternates"):
                     st.write("Alternates:")
-                    st.dataframe(pd.DataFrame(i["alternates"]),
-                                 hide_index=True)
+                    # st.table: st.dataframe never mounts inside an initially-
+                    # collapsed expander (helpers/st_compat).
+                    st.table(pd.DataFrame(i["alternates"]))
 
 with tab_item:
     st.subheader("Component → consuming SKUs")

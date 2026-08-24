@@ -27,6 +27,7 @@ from helpers.versions_ui import (
 from helpers.paths import data_dir, reference_dir, seed_dir
 from helpers.scorecard_engine import list_scorecards, save_scorecard, score_calendar
 from helpers.scorecard_ui import render_scorecard, scorecard_table
+from helpers.st_compat import deferred_dataframe
 from helpers.timefmt import with_display_times
 
 st.header("Schedule Scorecard")
@@ -160,4 +161,8 @@ with st.expander("Calendar preview"):
         "`start_h` / `end_h` are horizon hour offsets from the planning anchor "
         f"({anchor}); `start` / `end` are the same moments as date + time."
     )
-    st.dataframe(with_display_times(cal, anchor), use_container_width=True, hide_index=True)
+    # deferred: a plain st.dataframe here mounts an empty grid because this
+    # expander starts collapsed (see helpers/st_compat).
+    deferred_dataframe(with_display_times(cal, anchor),
+                       key="sc_calendar_preview", label="Load the calendar table",
+                       use_container_width=True, hide_index=True)

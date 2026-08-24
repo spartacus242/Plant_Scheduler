@@ -511,14 +511,14 @@ try:
                      hide_index=True)
 
     with st.expander("Full weekly tables (both sides)"):
+        # st.table: st.dataframe never mounts inside this initially-collapsed
+        # expander (helpers/st_compat); one row per ISO week, so static is fine.
         if _wk_left is not None and len(_wk_left):
             st.markdown(f"**{_cname(left_slug)}**")
-            st.dataframe(_wk_left[_wk_cols], use_container_width=True,
-                         hide_index=True)
+            st.table(_wk_left[_wk_cols].set_index("week"))
         if len(_wk_right):
             st.markdown(f"**{_cname(right_slug)}**")
-            st.dataframe(_wk_right[_wk_cols], use_container_width=True,
-                         hide_index=True)
+            st.table(_wk_right[_wk_cols].set_index("week"))
 except Exception as _wbe:  # noqa: BLE001
     st.caption(f"Weekly breakdown unavailable: {_wbe}")
 
