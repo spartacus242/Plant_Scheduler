@@ -103,9 +103,11 @@ def stock_check_report(data_dir: str | Path, vif_folder: str | Path,
             "unk": exp.unk_items, "cycles": exp.cycles,
         })
 
-    # ---- demand view
+    # ---- demand view (explode ONCE — the item-reverse view below reads
+    # the same requirements; a second explosion doubled the report cost)
+    dreqs = demand_requirements(demand, bom, azapart)
     demand_view = []
-    for d in demand_requirements(demand, bom, azapart):
+    for d in dreqs:
         if week_index is not None and d["week_index"] != week_index:
             continue
         exp = d["explosion"]
@@ -136,7 +138,7 @@ def stock_check_report(data_dir: str | Path, vif_folder: str | Path,
 
     # ---- item reverse view: item -> consuming skus (from demand universe)
     item_reverse: dict[str, list[dict]] = {}
-    for d in demand_requirements(demand, bom, azapart):
+    for d in dreqs:
         for g in d["explosion"].requirements:
             entry = {"sku": d["sku"], "week_index": d["week_index"],
                      "need": _f(g.need_qty), "unit": g.unit}

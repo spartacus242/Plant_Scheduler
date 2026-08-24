@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -45,26 +44,33 @@ elif _stale:
     st.warning("**Live data stale:** "
                + "; ".join(f"{h.name} — {h.detail}" for h in _stale))
 
-# --- Stock report: reuse the Stock Check page's settings + cache ----------
-@st.cache_data(ttl=300, show_spinner="Checking component stock…")
-def _stock_report(vif_folder: str, toggles_json: str) -> dict | None:
-    try:
-        from stockcheck.api import stock_check_report
-        return stock_check_report(dd, vif_folder,
-                                  toggles=json.loads(toggles_json) or None)
-    except Exception as exc:  # noqa: BLE001 — VIF share may be unreachable
-        return {"error": str(exc)}
+# --- Stock report: the ONE persisted report every page shares -------------
+# (~35s to compute, milliseconds to load). This page never recomputes on
+# its own: the saved report renders instantly, a stale signature only
+# raises the banner, and the Refresh button recomputes + saves for every
+# surface (Home and Stock Check included). Findings and the ledger derive
+# from the report in well under a second, so they stay live per rerun.
+from helpers.stock_report_cache import load_cached, refresh_report
 
-
-stock_report = None
-# Folder + toggles come from the shared resolver so Home's counts see the
-# SAME stock report (walkthrough 2026-08-17: the two pages disagreed).
-_vif, _toggles = rec.stock_report_inputs(dd)
-if Path(_vif).exists():
-    stock_report = _stock_report(_vif, json.dumps(_toggles, sort_keys=True))
+_btn_l, _btn_r = st.columns([5, 1.3])
+with _btn_r:
+    _refresh = st.button(
+        "Refresh", type="primary",
+        help="Recompute the shared stock report (also feeds Home and Stock "
+             "Check), then re-derive every finding from it.")
+_cached = load_cached(dd)
+if _refresh or _cached is None:
+    with st.spinner("Checking component stock…"):
+        _cached = refresh_report(dd)
+stock_report = _cached.report
+_when = _cached.computed_at.replace("T", " ")
+if _cached.stale:
+    _btn_l.warning(f"Inputs changed since the saved stock report (computed "
+                   f"{_when}) — the findings below still read the saved "
+                   "one. Press **Refresh** to recompute.")
 else:
-    st.caption(f"Stock check skipped — VIF folder not reachable (`{_vif}`). "
-               "Set it on the Stock Check page.")
+    _btn_l.caption(f"Stock report computed {_when} — saved; this page loads "
+                   "instantly until the inputs change.")
 
 # --- Coverage ledger: demand plan vs committed MOs (built once, shared) ---
 try:

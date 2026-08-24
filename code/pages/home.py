@@ -37,25 +37,26 @@ def _health(data_dir_str: str) -> list[dict]:
     return [vars(h) for h in dh.assess(Path(data_dir_str), cfg)]
 
 
-# Reconcile counts must match the Reconcile page's headline numbers, so the
-# stock report is built with the SAME inputs (walkthrough 2026-08-17: Home
-# said "2 blocking, 3 attention" while Reconcile said 3/7/1). Building the
-# VIF snapshot can be slow or fail — then Home falls back to the no-stock
-# counts and SAYS so instead of silently under-counting.
+# Reconcile counts must match the Reconcile page's headline numbers, so both
+# read the ONE persisted stock report (walkthrough 2026-08-17: Home said
+# "2 blocking, 3 attention" while Reconcile said 3/7/1). Home is the AUTO
+# surface: when the inputs moved it recomputes + saves the shared report
+# (~35s, once per data change) — otherwise the saved report loads in
+# milliseconds and the whole assessment stays sub-second. An unreachable
+# VIF share becomes an error report; the counts then say they ran without
+# stock findings.
 @st.cache_data(ttl=60, show_spinner=False)
 def _reconcile_counts(data_dir_str: str) -> tuple[dict[int, int], bool]:
     from helpers import reconcile_engine as rec
+    from helpers.stock_report_cache import get_report
     dd_ = Path(data_dir_str)
-    stock = None
     try:
-        vif, toggles = rec.stock_report_inputs(dd_)
-        if Path(vif).exists():
-            from stockcheck.api import stock_check_report
-            stock = stock_check_report(dd_, vif, toggles=toggles or None)
+        report = get_report(dd_, auto=True).report
     except Exception:  # noqa: BLE001 — a broken VIF share must not take Home down
-        stock = None
-    findings = rec.assess_plan(dd_, cfg, stock_report=stock)
-    return rec.summary(findings), stock is None
+        report = None
+    no_stock = report is None or bool(report.get("error"))
+    findings = rec.assess_plan(dd_, cfg, stock_report=report)
+    return rec.summary(findings), no_stock
 
 
 health = [dh.HealthStatus(**h) for h in _health(str(dd))]
