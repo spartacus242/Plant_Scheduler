@@ -6,6 +6,10 @@
 #                              published candidate with ITS OWN generation's
 #                              baseline and same-generation delta
 #   <gen_id>/leaderboard.json — the generation's candidates + scores + guards
+#   <gen_id>/state.json      — the batch's phase ledger for that generation
+#                              (staged/arms_running/arms_done/consolidated/
+#                              closed/published) with a heartbeat `updated`;
+#                              how a crashed night is told from a quiet one
 #   brief.md                 — deterministic morning summary
 # Home (chip row) and Generate (results table) both render from THIS loader,
 # so the chip and the table can never disagree. Pure module — no Streamlit —
@@ -32,6 +36,17 @@ OK = "ok"
 STALE = "stale"
 
 _PUBLISHED_LABEL = {"best": "★ best", "runner_up": "runner-up"}
+
+# The batch's per-generation phase ledger (scripts/overnight_batch.py
+# write_state). `published` is the only terminal phase; a generation newer
+# than latest.json's that never reached it is an unfinished night —
+# "running" while its heartbeat is fresh, "interrupted" once the heartbeat
+# has been silent for STALL_H (an arm takes ~50 min at full budget; the 5am
+# wait heart-beats every 5 min; the 2026-08-22 reboot left a 16h silence).
+STATE_FILE = "state.json"
+PHASE_PUBLISHED = "published"
+PHASE_UNKNOWN = "unknown"
+STALL_H = 2.0
 
 
 def optimizer_dir(data_dir: Path) -> Path:
@@ -203,6 +218,105 @@ def classify_age(age_h: float | None) -> str:
     return OK if age_h < FRESH_H else STALE
 
 
+# -- the phase ledger: an unfinished night ------------------------------------
+
+def load_state(data_dir: Path, gen_id: str) -> dict | None:
+    """<gen_id>/state.json, or None when absent / corrupt / phase-less."""
+    raw = _read_json(optimizer_dir(data_dir) / str(gen_id) / STATE_FILE)
+    if raw is None or not isinstance(raw.get("phase"), str):
+        return None
+    return raw
+
+
+@dataclass(frozen=True)
+class NightState:
+    generation: str
+    phase: str                   # batch phase, or "unknown" (no state.json)
+    updated: datetime | None     # last heartbeat
+    age_h: float | None
+    arms_done: int
+    arms_planned: int | None
+    interrupted: bool            # heartbeat silent >= STALL_H (or unreadable)
+
+
+def _parse_iso(raw: Any) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def unfinished_night(data_dir: Path,
+                     now: datetime | None = None) -> NightState | None:
+    """The newest generation that never reached the `published` phase AND
+    is newer than the one latest.json points at (an older crash that a
+    later night superseded is history, not an alert). A generation with a
+    leaderboard but no state.json predates phase tracking: its batch wrote
+    candidates and never finalized — reported with phase "unknown" and the
+    leaderboard's mtime as its last sign of life."""
+    opt = optimizer_dir(data_dir)
+    latest = load_latest(data_dir)
+    floor = _gen_stamp(latest["generation"]) if latest else None
+    try:
+        dirs = [p for p in opt.iterdir() if p.is_dir()]
+    except OSError:
+        return None
+    newest: tuple[datetime, Path] | None = None
+    for p in dirs:
+        stamp = _gen_stamp(p.name)
+        if stamp is None or not (p / "leaderboard.json").exists():
+            continue
+        if floor is not None and stamp <= floor:
+            continue
+        state = load_state(data_dir, p.name)
+        if state is not None and state.get("phase") == PHASE_PUBLISHED:
+            continue
+        if newest is None or stamp > newest[0]:
+            newest = (stamp, p)
+    if newest is None:
+        return None
+    _stamp, p = newest
+    state = load_state(data_dir, p.name)
+    if state is None:
+        board = _read_json(p / "leaderboard.json") or {}
+        cands = board.get("candidates")
+        arms = len(cands) if isinstance(cands, list) else 0
+        try:
+            updated: datetime | None = datetime.fromtimestamp(
+                (p / "leaderboard.json").stat().st_mtime)
+        except OSError:
+            updated = None
+        phase, planned = PHASE_UNKNOWN, None
+    else:
+        updated = _parse_iso(state.get("updated"))
+        phase = str(state["phase"])
+        arms = int(state["arms_done"]) if _num(state.get("arms_done")) else 0
+        planned = (int(state["arms_planned"])
+                   if _num(state.get("arms_planned")) else None)
+    age = age_hours(updated, now) if updated is not None else None
+    return NightState(generation=p.name, phase=phase, updated=updated,
+                      age_h=age, arms_done=arms, arms_planned=planned,
+                      interrupted=age is None or age >= STALL_H)
+
+
+def resume_command(gen_id: str) -> str:
+    """What to run from the repo root to finish an interrupted night."""
+    return f"python scripts/overnight_batch.py --resume {gen_id}"
+
+
+def night_text(night: NightState) -> str:
+    """One sentence for the chip / section: what the unfinished night is."""
+    arms = (f"{night.arms_done}/{night.arms_planned}" if night.arms_planned
+            else f"{night.arms_done}")
+    if night.interrupted:
+        silent = (f"silent {_fmt_age(night.age_h)}" if night.age_h is not None
+                  else "no readable heartbeat")
+        return (f"night {night.generation} interrupted in phase "
+                f"{night.phase} after {arms} arm(s), {silent} — nothing "
+                "published; resume it")
+    return (f"tonight's batch running: {night.phase}, {arms} arm(s) done")
+
+
 # -- Small pure formatters (shared by the Home chip and the Generate table) --
 
 def published_label(candidate: dict) -> str:
@@ -259,6 +373,16 @@ class OvernightSummary:
     published: tuple = ()           # candidates tagged best / runner_up
     board: dict | None = None       # the full validated leaderboard
     published_best: dict | None = None  # "published" row the chip used
+    # the newest night that never finalized (newer than the published
+    # generation): interrupted (heartbeat silent) or still running
+    night: NightState | None = None
+
+
+def _with_night(detail: str, night: NightState | None) -> str:
+    if night is None:
+        return detail
+    lead = ("⚠ " if night.interrupted else "☾ ") + night_text(night)
+    return f"{lead} · {detail}"
 
 
 def summarize(data_dir: Path, now: datetime | None = None) -> OvernightSummary:
@@ -267,11 +391,15 @@ def summarize(data_dir: Path, now: datetime | None = None) -> OvernightSummary:
     The delta is always SAME-GENERATION — generations are never mixed. The
     2026-08-21 brief once compared a 1505-generation candidate against the
     0500 generation's board (+4.54 when the honest delta was +0.44)."""
+    night = unfinished_night(data_dir, now)
     board = load_leaderboard(data_dir)
     if board is None:
         return OvernightSummary(
             state=NOT_SET,
-            detail="no overnight generation yet — the batch writes data/optimizer/")
+            detail=_with_night(
+                "no overnight generation yet — the batch writes "
+                "data/optimizer/", night),
+            night=night)
 
     cands = board["candidates"]
     best = max(cands, key=lambda c: c["overnight_score"]["composite"])
@@ -328,8 +456,9 @@ def summarize(data_dir: Path, now: datetime | None = None) -> OvernightSummary:
         (c for c in cands if c.get("published") in _PUBLISHED_LABEL),
         key=lambda c: c.get("published") != "best"))
     return OvernightSummary(
-        state=state, detail=detail, generation=board["generation"],
+        state=state, detail=_with_night(detail, night),
+        generation=board["generation"],
         created=created, age_h=age_h, n_runs=len(cands), best=best,
         best_composite=best_comp, board_composite=board_comp,
         delta_vs_board=delta, noise_runs=runs, noise_spread=spread,
-        published=published, board=board, published_best=pub)
+        published=published, board=board, published_best=pub, night=night)

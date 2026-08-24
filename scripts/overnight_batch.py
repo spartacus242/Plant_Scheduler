@@ -57,6 +57,28 @@ Design decisions (user-approved, final):
 
 latest.json paths are relative to data/optimizer/.
 
+Resume (2026-08-22): a reboot at 00:47 during the "waiting until 05:00"
+sleep lost the 2026-08-21 night — six full-budget arms on disk, nothing
+published, no brief, latest.json still on the previous generation. Every
+generation now keeps a phase ledger, data/optimizer/<gen_id>/state.json
+(staged -> arms_running -> arms_done -> consolidated -> published; closed =
+rotated out mid-night), heart-beaten through the 5am wait, plus a frame/
+snapshot (staged demand + gates) so a late champion can still be scored on
+the generation's own denominator. `--resume <gen_id>` rebuilds the
+generation (and the other generations of the same batch, via state.json's
+"batch" list) from leaderboard.json + candidates/ instead of staging and
+solving, runs the champion consolidation ONLY if the scoring-inputs
+signature and the planning anchor still match (otherwise the brief says
+why it was skipped — a changed board makes the candidates a different
+problem), then performs the normal publish + brief + latest.json steps.
+Publishing is idempotent: a slug already holding the same generation/run
+is left untouched, so a second invocation never re-stamps a version (or
+wipes a planner's rename/notes on it); a resume whose target is OLDER than
+the generation latest.json points at is refused (it would overwrite a
+newer night). The Home chip reads state.json to tell an interrupted night
+from a quiet one and names the resume command. No flag ever re-runs the
+portfolio arms.
+
 Usage:
     python scripts/overnight_batch.py                 # the real nightly run
     python scripts/overnight_batch.py --dry-run       # tiny budgets (60/120s),
@@ -68,12 +90,19 @@ Usage:
                                                       # budgets (small runs)
     python scripts/overnight_batch.py --no-publish    # never publish, beats
                                                       # every other flag
+    python scripts/overnight_batch.py --resume 20260821-1900-5d421b01
+                                                      # finish an interrupted
+                                                      # night from disk: no
+                                                      # staging, no arms; late
+                                                      # champion only if the
+                                                      # inputs still match
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import time
@@ -95,6 +124,7 @@ from helpers.horizon import resolve as resolve_horizon  # noqa: E402
 from helpers.overnight_score import (capacity_bound_kg, demand_orders,  # noqa: E402
                                      iso_week_marks, overnight_score,
                                      solver_fill_blocks, _normalize)
+from helpers.paths import versions_dir  # noqa: E402
 from helpers.plan_fill import pinned_blocks  # noqa: E402
 from helpers.reconcile_engine import stock_report_inputs  # noqa: E402
 from helpers.safe_io import safe_write_json  # noqa: E402
@@ -125,6 +155,20 @@ STEERING_FRESH_H = 24.0
 # subprocess kill ceiling: pass1 + anchor solve (<=120s) + pass2, plus slack
 # for staging, model builds (two of them) and output writing.
 TIMEOUT_SLACK_S = 600.0
+
+# Per-generation phase ledger + frame snapshot (the resume contract,
+# 2026-08-22). `published` is the only terminal phase; the reader in
+# helpers/overnight_results.py mirrors these names.
+STATE_FILE = "state.json"
+FRAME_DIR = "frame"
+PHASE_STAGED = "staged"              # frame computed, no arm finished yet
+PHASE_ARMS_RUNNING = "arms_running"  # >= 1 arm finished, more planned
+PHASE_ARMS_DONE = "arms_done"        # portfolio finished, waiting for 5am
+PHASE_CONSOLIDATED = "consolidated"  # champion_5am ran in this generation
+PHASE_CLOSED = "closed"              # rotated out mid-night (inputs or the
+                                     # anchor moved); still publishes
+PHASE_PUBLISHED = "published"        # finalize ran: publish + brief + latest
+PHASE_UNKNOWN = "unknown"            # generation predates the ledger
 
 F_SCENARIO = next(s for s in SCENARIOS if s["id"] == "F")
 
@@ -559,6 +603,10 @@ class Generation:
     board_note: str
     staging_notes: list[str] = field(default_factory=list)
     candidates: list[dict] = field(default_factory=list)
+    # False when rebuilt from disk WITHOUT a frame/ snapshot (generations
+    # staged before the resume contract): publishable, but a late champion
+    # cannot be scored on the same denominator as its siblings.
+    frame_ok: bool = True
 
     @property
     def dir(self) -> Path:
@@ -648,6 +696,8 @@ def stage_generation(log: Log) -> Generation:
     log(f"[gen] {gid}: net demand {net_demand:,.0f} kg, capacity bound "
         f"{bound:,.0f} kg, {len(gates)} gate(s), anchor {hz.anchor:%Y-%m-%d}")
     write_leaderboard(gen)
+    write_frame(gen)
+    write_state(gen, PHASE_STAGED)
     return gen
 
 
@@ -680,6 +730,171 @@ def append_history(gen: Generation, record: dict) -> None:
             fh.write(json.dumps(record, default=str) + "\n")
     except OSError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# phase ledger + frame snapshot + rebuild-from-disk (the resume contract)
+# ---------------------------------------------------------------------------
+
+def read_state(gen_dir: Path) -> dict | None:
+    """<gen>/state.json as written by write_state, or None (absent/corrupt
+    — generations staged before 2026-08-22 carry none)."""
+    try:
+        raw = json.loads((Path(gen_dir) / STATE_FILE).read_text(
+            encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def write_state(gen: Generation, phase: str, *,
+                batch: list[str] | None = None, **extra: Any) -> dict:
+    """Advance the generation's phase ledger. Keys merge over the previous
+    state (a consolidation record survives the later phase writes); the
+    heartbeat is the `updated` stamp — rewritten on every call, including
+    the 5-minute ticks of the 5am wait, so a reader can tell "still
+    sleeping" (fresh heartbeat) from "the process is gone" (silent).
+    `batch` lists every generation of the same batch invocation, in order
+    — a resume of any one of them reloads the whole night."""
+    state = dict(read_state(gen.dir) or {})
+    state.update({
+        "generation": gen.gen_id,
+        "phase": phase,
+        "updated": datetime.now().isoformat(timespec="seconds"),
+        "arms_done": len(gen.candidates),
+        "arms_scored": sum(1 for c in gen.candidates
+                           if c.get("overnight_score")),
+        "pid": os.getpid(),
+    })
+    state.setdefault("started", gen.created)
+    if batch is not None:
+        state["batch"] = list(batch)
+    state.update(extra)
+    safe_write_json(state, gen.dir / STATE_FILE)
+    return state
+
+
+def write_frame(gen: Generation) -> None:
+    """Snapshot the scoring frame (staged demand + gates) into <gen>/frame/
+    — what a resumed champion consolidation needs to be scored on the SAME
+    denominator as its siblings. Tiny files; the capacity bound and the
+    anchor already live in the leaderboard."""
+    fdir = gen.dir / FRAME_DIR
+    fdir.mkdir(parents=True, exist_ok=True)
+    gen.demand.to_csv(fdir / "demand_plan.csv", index=False)
+    safe_write_json({"gates": gen.gates}, fdir / "fill_gates.json")
+
+
+def load_frame(gen_dir: Path) -> tuple[pd.DataFrame, dict[str, float]] | None:
+    fdir = Path(gen_dir) / FRAME_DIR
+    try:
+        demand = pd.read_csv(fdir / "demand_plan.csv", dtype={"sku": str})
+        raw = json.loads((fdir / "fill_gates.json").read_text(
+            encoding="utf-8"))["gates"]
+        gates = {str(k).upper(): float(v) for k, v in raw.items()}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    return demand, gates
+
+
+def gen_stamp(gen_id: str) -> datetime | None:
+    """The <YYYYMMDD-HHMM> prefix every gen_id carries, or None."""
+    try:
+        return datetime.strptime(str(gen_id)[:13], "%Y%m%d-%H%M")
+    except ValueError:
+        return None
+
+
+def _gates_from(path: Path) -> dict[str, float]:
+    raw = json.loads(path.read_text(encoding="utf-8")).get("gates") or {}
+    return {str(k).upper(): float(v) for k, v in raw.items()}
+
+
+def candidate_gates(cand: dict, gen: Generation) -> dict[str, float]:
+    """The fill gates a rebuilt candidate publishes with (Compare's
+    fill-window verdict reads them off the version): its own sidecar
+    (candidates/<run_id>.gates.json, written by run_arm since the resume
+    contract); else the arm's surviving work dir, accepted only when its
+    fill_gates.json demonstrably belongs to THIS run (written after the
+    generation was created and before the candidate's calendar was saved —
+    a later night re-uses the same F_overnight_<label> dir); else the
+    generation's staged gates."""
+    cdir = gen.dir / "candidates"
+    try:
+        return _gates_from(cdir / f"{cand['run_id']}.gates.json")
+    except (OSError, ValueError, AttributeError):
+        pass
+    # the arm's own work dir first, then the generation's staging dir —
+    # either only when its gates file was written inside this run's window
+    for work in (f"F_overnight_{cand.get('label', '')}", STAGING_ID):
+        work_gates = DATA / WORK_ROOT / work / "fill_gates.json"
+        try:
+            created = datetime.fromisoformat(str(gen.created)).timestamp()
+            g_mtime = work_gates.stat().st_mtime
+            c_mtime = (cdir / f"{cand['run_id']}.calendar.csv").stat().st_mtime
+            if created - 60.0 <= g_mtime <= c_mtime + 1.0:
+                return _gates_from(work_gates)
+        except (OSError, ValueError, AttributeError):
+            continue
+    return dict(gen.gates)
+
+
+def load_generation(gen_id: str, log: Log) -> Generation:
+    """Rebuild a Generation from its on-disk contract — leaderboard.json,
+    candidates/*.calendar.csv|scorecard.json|gates.json and the frame/
+    snapshot — the resume path's substitute for stage_generation. Never
+    stages, never solves. A candidate whose calendar file is gone keeps
+    its leaderboard row but cannot publish (no _calendar_path)."""
+    gdir = OPT_DIR / gen_id
+    board = json.loads((gdir / "leaderboard.json").read_text(encoding="utf-8"))
+    frame = board.get("frame") or {}
+    if not frame.get("anchor"):
+        raise ValueError(f"{gen_id}: leaderboard.json carries no frame "
+                         "(anchor/horizon) — too old to resume")
+    anchor = datetime.strptime(str(frame["anchor"]), "%Y-%m-%d %H:%M:%S")
+    horizon_h = float(frame.get("horizon_h") or 0.0)
+    snap = load_frame(gdir)
+    if snap is None:
+        log(f"[resume] {gen_id}: no frame/ snapshot (staged before the "
+            "resume contract) — publishable, but a late champion cannot be "
+            "scored on this generation's frame")
+        demand, gates = pd.DataFrame(), {}
+    else:
+        demand, gates = snap
+    baseline = board.get("board_baseline")
+    gen = Generation(
+        gen_id=str(board.get("generation") or gen_id),
+        sig=tuple(board.get("inputs_signature") or ()),
+        created=str(board.get("created") or ""),
+        anchor=anchor, horizon_h=horizon_h,
+        week_marks=iso_week_marks(anchor, horizon_h) if horizon_h else [],
+        gates=gates, demand=demand,
+        net_demand_kg=float(board.get("net_demand_kg") or 0.0),
+        capacity_bound=float(board.get("capacity_bound_kg") or 0.0),
+        capacity_detail={}, co_map={},
+        board_baseline=baseline if isinstance(baseline, dict) else None,
+        board_note=("" if isinstance(baseline, dict) else
+                    "the official board had no comparable fill region when "
+                    "this generation staged — board_baseline is null"),
+        frame_ok=snap is not None,
+    )
+    cdir = gdir / "candidates"
+    for raw in board.get("candidates") or []:
+        if not isinstance(raw, dict) or not raw.get("run_id"):
+            continue
+        cand = dict(raw)
+        cal = cdir / f"{cand['run_id']}.calendar.csv"
+        cand["_gen_id"] = gen.gen_id
+        cand["_calendar_path"] = str(cal) if cal.exists() else None
+        cand["_scorecard_path"] = str(cdir / f"{cand['run_id']}.scorecard.json")
+        cand["_fill_gates"] = candidate_gates(cand, gen) if cal.exists() else {}
+        gen.candidates.append(cand)
+    missing = [c["run_id"] for c in gen.candidates
+               if c.get("overnight_score") and not c["_calendar_path"]]
+    if missing:
+        log(f"[resume] {gen_id}: {len(missing)} scored candidate(s) have no "
+            f"calendar file and cannot publish: {', '.join(missing[:4])}")
+    return gen
 
 
 def compute_guards(calendar: pd.DataFrame, gen: Generation,
@@ -844,6 +1059,9 @@ def run_arm(arm: dict, gen: Generation, dns: dict[str, float],
     cand["_scorecard_path"] = str(cdir / f"{run_id}.scorecard.json")
     cand["_fill_gates"] = result.get("fill_gates") or gen.gates
     cand["_gen_id"] = gen.gen_id
+    # gates sidecar: what a rebuilt candidate publishes with (--resume)
+    safe_write_json({"gates": cand["_fill_gates"]},
+                    cdir / f"{run_id}.gates.json")
 
     log(f"[arm {label}] done in {cand['wall_s']:.0f}s: composite "
         f"{score['composite']} (fill {score['fill']}, co "
@@ -884,13 +1102,43 @@ def publishable(pool: list[dict]) -> tuple[list[dict], list[dict]]:
     return eligible, barred
 
 
+def already_published(slug: str, cand: dict) -> bool:
+    """The version at `slug` already IS this candidate (same generation +
+    run) — the idempotency gate: a re-run or resume leaves it untouched
+    instead of re-stamping it (and wiping a planner's rename or notes on
+    it). Reads the `run_id` the batch stamps since the resume contract,
+    falling back to the "<gen> / <run_id>" phrase every publish note has
+    always carried."""
+    try:
+        meta = json.loads((versions_dir(DATA) / slug / "metadata.json")
+                          .read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(meta, dict) or \
+            meta.get("generation") != cand.get("_gen_id"):
+        return False
+    if meta.get("run_id"):
+        return meta["run_id"] == cand["run_id"]
+    return (f"{cand['_gen_id']} / {cand['run_id']}"
+            in str(meta.get("notes") or ""))
+
+
 def publish_top2(generations: list[Generation], log: Log,
                  notes: list[str]) -> None:
     """Cross-generation top-1 + runner-up (guards must pass) -> fixed-slug
     upserts. Updates never consume rolling slots; a first-ever creation at
-    full capacity is caught and reported in the brief."""
+    full capacity is caught and reported in the brief. Idempotent: flags
+    are recomputed from scratch (a resumed generation may carry them from
+    an earlier, finished publish) and a slug that already holds the very
+    same run is left untouched."""
+    for g in generations:
+        for c in g.candidates:
+            c["published"] = None
+            c["version_slug"] = None
+            c.pop("publish_barred", None)
     pool = [c for g in generations for c in g.candidates
             if c.get("overnight_score") and c.get("guards")
+            and c.get("_calendar_path")
             and c["guards"]["overlaps"] == 0 and c["guards"]["pins_ok"]
             and c["guards"]["lock_ok"] and c["guards"]["cip_ok"]]
     if not pool:
@@ -919,6 +1167,14 @@ def publish_top2(generations: list[Generation], log: Log,
              ("runner_up", RUNNER_SLUG, "Overnight runner-up")]
     for (tag, slug, title), cand in zip(slots, pool[:2]):
         gen = next(g for g in generations if g.gen_id == cand["_gen_id"])
+        if already_published(slug, cand):
+            cand["version_slug"] = slug
+            cand["published"] = tag
+            write_leaderboard(gen)
+            notes.append(f"{slug} already holds {cand['run_id']} (generation "
+                         f"{cand['_gen_id']}) — left untouched")
+            log(f"[publish] {notes[-1]}")
+            continue
         cal = load_calendar(Path(cand["_calendar_path"]))
         gates = {str(k).upper(): float(v)
                  for k, v in (cand["_fill_gates"] or {}).items()}
@@ -950,7 +1206,8 @@ def publish_top2(generations: list[Generation], log: Log,
                 source="agent:overnight",
                 extra_meta={"fill_gates": gates,
                             "overnight_score": score,
-                            "generation": cand["_gen_id"]},
+                            "generation": cand["_gen_id"],
+                            "run_id": cand["run_id"]},
             )
         except ValueError as exc:
             # first-ever creation with all 5 slots full — report, don't die
@@ -974,9 +1231,10 @@ def publish_top2(generations: list[Generation], log: Log,
 
 def write_brief(generations: list[Generation], notes: list[str],
                 stock_events: list[str], started: datetime,
-                log: Log) -> None:
+                log: Log, *, resumed: str | None = None) -> None:
     """Deterministic, stats-based morning summary. The future agent
-    overwrites this file with its own narrative.
+    overwrites this file with its own narrative. `resumed` (the --resume
+    path) names the interruption right under the headline.
 
     Every delta here is SAME-GENERATION: a candidate is only ever compared
     against the board baseline its own generation staged. (The 2026-08-21
@@ -998,6 +1256,11 @@ def write_brief(generations: list[Generation], notes: list[str],
         f"Batch started {started:%Y-%m-%d %H:%M}; "
         f"{len(generations)} generation(s), {len(all_cands)} arm(s) tried, "
         f"{len(scored)} scored, {len(all_cands) - len(scored)} failed.",
+    ]
+    if resumed:
+        lines += ["", f"> **Interrupted night, finished by `--resume`.** "
+                      f"{resumed}"]
+    lines += [
         "",
         "## Generations",
         "",
@@ -1146,6 +1409,7 @@ def ensure_generation(gen: Generation | None, generations: list[Generation],
     anchor = resolve_horizon(load_toml()).anchor
     if gen is not None and sig == gen.sig and anchor == gen.anchor:
         return gen
+    why = ""
     if gen is not None:
         why = "inputs signature changed" if sig != gen.sig else \
             "planning anchor rolled"
@@ -1153,7 +1417,214 @@ def ensure_generation(gen: Generation | None, generations: list[Generation],
         write_leaderboard(gen)
     new_gen = stage_generation(log)
     generations.append(new_gen)
+    batch = [g.gen_id for g in generations]
+    write_state(new_gen, PHASE_STAGED, batch=batch)
+    if gen is not None:
+        # the closed generation still publishes with the night; its ledger
+        # points at the successor so a resume of either reloads both
+        write_state(gen, PHASE_CLOSED, batch=batch,
+                    closed_into=new_gen.gen_id, closed_why=why)
     return new_gen
+
+
+def finalize(generations: list[Generation], args: argparse.Namespace,
+             brief_notes: list[str], stock_events: list[str],
+             started: datetime, log: Log, *,
+             resumed: str | None = None,
+             state_extra: dict | None = None) -> None:
+    """The end of every night, normal or resumed: publish (flags
+    permitting), final leaderboards, brief, latest.json pointer, and the
+    terminal `published` phase on every generation of the batch
+    (`state_extra`, e.g. the consolidation record, lands on the last one)."""
+    if args.no_publish:
+        brief_notes.append("publish skipped (--no-publish)")
+        log("[publish] skipped (--no-publish)")
+    elif not args.dry_run or args.publish:
+        publish_top2(generations, log, brief_notes)
+    else:
+        brief_notes.append("dry run: publish skipped (use --publish)")
+        log("[publish] skipped (dry run)")
+    # leaderboards carry the final noise floor + published flags
+    for g in generations:
+        write_leaderboard(g)
+    write_brief(generations, brief_notes, stock_events, started, log,
+                resumed=resumed)
+    write_latest(generations[-1],
+                 published_block([leaderboard_dict(g) for g in generations]))
+    published = [{"tag": c["published"], "slug": c.get("version_slug"),
+                  "run_id": c["run_id"], "generation": g.gen_id}
+                 for g in generations for c in g.candidates
+                 if c.get("published")]
+    published.sort(key=lambda r: r["tag"] != "best")   # best first
+    batch = [g.gen_id for g in generations]
+    finished = datetime.now().isoformat(timespec="seconds")
+    for g in generations:
+        extra = dict(state_extra or {}) if g is generations[-1] else {}
+        write_state(g, PHASE_PUBLISHED, batch=batch, published=published,
+                    finished=finished, **extra)
+
+
+def interruption_note(gen: Generation, state: dict | None) -> str:
+    """One sentence naming what the interrupted night got done — the
+    brief's headline for a resumed generation."""
+    scored = sum(1 for c in gen.candidates if c.get("overnight_score"))
+    if state is None:
+        return (f"Generation {gen.gen_id} never reached publish and carries "
+                "no state.json (it predates phase tracking): the leaderboard "
+                f"holds {len(gen.candidates)} arm(s), {scored} scored, none "
+                "published.")
+    return (f"Generation {gen.gen_id} stopped in phase "
+            f"'{state.get('phase')}' — last heartbeat {state.get('updated')}, "
+            f"{state.get('arms_done', len(gen.candidates))} arm(s) finished, "
+            f"{scored} scored, nothing published.")
+
+
+def run_resume(args: argparse.Namespace, log: Log) -> int:
+    """--resume <gen_id>: finish an interrupted night from disk. No
+    staging, no portfolio arms — the late champion is the only solve, and
+    only when the generation's inputs signature + anchor still match the
+    live ones. Returns 0 on success, 2 when there is nothing to resume,
+    3 when a newer generation already owns latest.json."""
+    gen_id = str(args.resume).strip()
+    if not (OPT_DIR / gen_id / "leaderboard.json").exists():
+        log(f"[resume] {gen_id}: no leaderboard.json under {OPT_DIR} — "
+            "nothing to resume")
+        return 2
+    try:
+        latest = json.loads((OPT_DIR / "latest.json").read_text(
+            encoding="utf-8"))
+    except (OSError, ValueError):
+        latest = {}
+    current = (str(latest.get("generation") or "")
+               if isinstance(latest, dict) else "")
+    t_stamp, c_stamp = gen_stamp(gen_id), gen_stamp(current)
+    if t_stamp is not None and c_stamp is not None and c_stamp > t_stamp:
+        log(f"[resume] REFUSED: latest.json already points at a newer "
+            f"generation ({current}); resuming {gen_id} would overwrite "
+            "that night's published versions, brief and pointer")
+        return 3
+
+    state = read_state(OPT_DIR / gen_id)
+    batch_ids = [g for g in ((state or {}).get("batch") or [])
+                 if isinstance(g, str)]
+    if gen_id not in batch_ids:
+        batch_ids.append(gen_id)
+    batch_ids.sort(key=lambda g: gen_stamp(g) or datetime.min)
+    generations: list[Generation] = []
+    for gid in batch_ids:
+        if not (OPT_DIR / gid / "leaderboard.json").exists():
+            log(f"[resume] batch generation {gid}: no leaderboard.json — "
+                "skipped")
+            continue
+        try:
+            generations.append(load_generation(gid, log))
+        except Exception:  # noqa: BLE001 — one unreadable sibling must not block the target
+            log(f"[resume] {gid}: load FAILED:\n"
+                + traceback.format_exc(limit=3))
+    if not generations:
+        log("[resume] no generation could be loaded — nothing to resume")
+        return 2
+    # the LAST generation of the batch is where the night actually stopped
+    # (a 5am rotation closes the target into a successor); its ledger is
+    # the authority for "finalized" and "consolidated"
+    gen = generations[-1]
+    batch_ids = [g.gen_id for g in generations]
+    log(f"[resume] loaded {len(generations)} generation(s): "
+        + ", ".join(f"{g.gen_id} ({len(g.candidates)} arm(s))"
+                    for g in generations))
+    gen_state = read_state(gen.dir)
+    finalized = (gen_state or {}).get("phase") == PHASE_PUBLISHED
+    if finalized:
+        when = gen_state.get("finished") or gen_state.get("updated")
+        resumed = (f"Generation {gen.gen_id} had already been finalized "
+                   f"({when}); this re-run is idempotent — versions already "
+                   "holding these runs are left untouched, brief and "
+                   "pointer rewritten.")
+    else:
+        resumed = (interruption_note(gen, gen_state)
+                   + f" Resumed {datetime.now():%Y-%m-%d %H:%M}.")
+    log(f"[resume] {resumed}")
+
+    started: datetime | None = None
+    first_state = read_state(generations[0].dir) or {}
+    for src in (first_state.get("started"), generations[0].created):
+        try:
+            started = datetime.fromisoformat(str(src))
+            break
+        except (TypeError, ValueError):
+            continue
+    started = started or datetime.now()
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    for g in generations:
+        g_state = read_state(g.dir) or {}
+        phase = str(g_state.get("phase") or PHASE_UNKNOWN)
+        write_state(g, phase, batch=batch_ids,
+                    resumed={"at": now_iso, "from_phase": phase,
+                             "last_heartbeat": g_state.get("updated")})
+
+    brief_notes: list[str] = []
+    stock_events: list[str] = []
+
+    # ── late champion: only on the generation's own, still-live frame ────
+    prior = (gen_state or {}).get("consolidation")
+    prior = prior if isinstance(prior, dict) else None
+    skip: str | None = None
+    if prior is not None:
+        skip = (f"already recorded ({prior.get('status')}: "
+                f"{prior.get('note')})")
+    elif finalized:
+        skip = "generation already finalized"
+    elif args.dry_run:
+        skip = "dry run"
+    elif not gen.frame_ok:
+        skip = ("no frame/ snapshot for this generation (staged before the "
+                "resume contract) — a late champion could not be scored on "
+                "the same denominator as its siblings")
+    else:
+        cur_sig = generation_signature(DATA)
+        cur_anchor = resolve_horizon(load_toml()).anchor
+        if list(cur_sig) != list(gen.sig):
+            skip = ("the scoring inputs changed since the generation staged "
+                    "(board / reference / toml moved) — a late champion "
+                    "would solve a different problem than the candidates "
+                    "on this leaderboard")
+        elif cur_anchor != gen.anchor:
+            skip = (f"the planning anchor rolled ({gen.anchor:%Y-%m-%d} -> "
+                    f"{cur_anchor:%Y-%m-%d}) — the generation's frame no "
+                    "longer matches the live one")
+    consolidation: dict | None
+    if skip:
+        # a record the night already made (5am champion ran, or an earlier
+        # resume decided) survives verbatim — never rewritten by a re-run
+        consolidation = prior or {"status": "skipped", "note": skip}
+        brief_notes.append(f"late champion consolidation skipped: {skip}")
+        log(f"[resume] {brief_notes[-1]}")
+    else:
+        log("[resume] inputs signature + anchor unchanged — running the "
+            "late champion on this generation's frame")
+        try:
+            gen.co_map = _co_lookup(_load_changeovers(DATA / "reference"))
+            dns, sc_notes = fresh_stock_check(log)
+            stock_events.extend(sc_notes)
+            champion = {"label": "champion_5am", "kind": "champion",
+                        "params": {}, "budgets": dict(CHAMPION_BUDGETS)}
+            apply_budget_overrides([champion], args.pass1_s, args.pass2_s)
+            cand = run_arm(champion, gen, dns, log)
+            consolidation = {"status": "done",
+                             "note": "late champion via --resume",
+                             "run_id": cand.get("run_id")}
+            write_state(gen, PHASE_CONSOLIDATED, batch=batch_ids,
+                        consolidation=consolidation)
+        except Exception:  # noqa: BLE001
+            log("[resume] late champion FAILED:\n"
+                + traceback.format_exc(limit=5))
+            brief_notes.append("late champion consolidation FAILED")
+            consolidation = {"status": "failed",
+                             "note": "late champion crashed — see batch.log"}
+
+    finalize(generations, args, brief_notes, stock_events, started, log,
+             resumed=resumed, state_extra={"consolidation": consolidation})
+    return 0
 
 
 def main() -> int:
@@ -1177,11 +1648,26 @@ def main() -> int:
                          "(small-run testing); default: per-arm budgets")
     ap.add_argument("--consolidate-at", default="05:00",
                     help="HH:MM for the final champion run (default 05:00)")
+    ap.add_argument("--resume", metavar="GEN_ID", default=None,
+                    help="finish an interrupted night from data/optimizer/"
+                         "GEN_ID: no staging, no portfolio arms; the late "
+                         "champion runs only if the scoring inputs and the "
+                         "anchor still match; then the normal publish / "
+                         "brief / latest.json steps (idempotent — safe to "
+                         "run twice; refuses to overwrite a newer night)")
     args = ap.parse_args()
 
     OPT_DIR.mkdir(parents=True, exist_ok=True)
     log = Log(OPT_DIR / "batch.log")
     started = datetime.now()
+    if args.resume:
+        log(f"=== overnight batch RESUME {args.resume} "
+            f"(dry_run={args.dry_run}) ===")
+        set_below_normal_priority(log)
+        rc = run_resume(args, log)
+        log("=== overnight batch resume "
+            + ("done" if rc == 0 else f"aborted (rc={rc})") + " ===")
+        return rc
     log(f"=== overnight batch start (dry_run={args.dry_run}) ===")
     set_below_normal_priority(log)
     consolidate_target = next_occurrence(args.consolidate_at, started)
@@ -1216,6 +1702,9 @@ def main() -> int:
     stock_events: list[str] = []
     prev_dns: dict[str, float] | None = None
 
+    def batch_ids() -> list[str]:
+        return [g.gen_id for g in generations]
+
     for arm in arms:
         try:
             gen = ensure_generation(gen, generations, log)
@@ -1239,15 +1728,26 @@ def main() -> int:
                     + ", ".join(freed))
         prev_dns = dns
         run_arm(arm, gen, dns, log)
+        write_state(gen, PHASE_ARMS_RUNNING, batch=batch_ids(),
+                    arms_planned=len(arms))
+    if gen is not None:
+        write_state(gen, PHASE_ARMS_DONE, batch=batch_ids(),
+                    arms_planned=len(arms))
 
     # ── ~5am champion consolidation on the freshest data ──────────────────
     # A supervised run (budgets overridden) is someone at the desk watching:
     # sleeping 17h for the 5am step would hold the brief hostage. Finalize
     # immediately instead; the no-flag nightly path is unchanged.
     supervised = args.pass1_s is not None or args.pass2_s is not None
+    consolidation: dict | None = None
     if supervised and not args.dry_run:
         log("[consolidate] supervised run (budget overrides) — 5am "
             "consolidation skipped, finalizing now")
+        consolidation = {"status": "skipped",
+                         "note": "supervised run (budget overrides) — "
+                                 "finalized immediately"}
+    if args.dry_run:
+        consolidation = {"status": "skipped", "note": "dry run"}
     if not args.dry_run and not supervised:
         now = datetime.now()
         if now < consolidate_target:
@@ -1258,6 +1758,11 @@ def main() -> int:
                 time.sleep(min(300.0,
                                (consolidate_target
                                 - datetime.now()).total_seconds() + 1))
+                if gen is not None:
+                    # heartbeat: the ledger tells "still sleeping" from
+                    # "the process is gone" (the 2026-08-22 reboot)
+                    write_state(gen, PHASE_ARMS_DONE, batch=batch_ids(),
+                                arms_planned=len(arms))
         if not args.skip_pull:
             live_pull(log)
         try:
@@ -1268,27 +1773,21 @@ def main() -> int:
                         "params": {}, "budgets": dict(CHAMPION_BUDGETS)}
             # --pass1-s/--pass2-s override EVERY arm, the 5am one included
             apply_budget_overrides([champion], args.pass1_s, args.pass2_s)
-            run_arm(champion, gen, dns, log)
+            cand = run_arm(champion, gen, dns, log)
+            consolidation = {"status": "done", "note": "5am champion",
+                             "run_id": cand.get("run_id")}
+            write_state(gen, PHASE_CONSOLIDATED, batch=batch_ids(),
+                        consolidation=consolidation)
         except Exception:  # noqa: BLE001
             log("[consolidate] FAILED:\n" + traceback.format_exc(limit=5))
             brief_notes.append("5am champion consolidation FAILED")
+            consolidation = {"status": "failed",
+                             "note": "5am champion crashed — see batch.log"}
 
     if generations:
-        if args.no_publish:
-            brief_notes.append("publish skipped (--no-publish)")
-            log("[publish] skipped (--no-publish)")
-        elif not args.dry_run or args.publish:
-            publish_top2(generations, log, brief_notes)
-        else:
-            brief_notes.append("dry run: publish skipped (use --publish)")
-            log("[publish] skipped (dry run)")
-        # leaderboards carry the final noise floor + published flags
-        for g in generations:
-            write_leaderboard(g)
-        write_brief(generations, brief_notes, stock_events, started, log)
-        write_latest(generations[-1],
-                     published_block([leaderboard_dict(g)
-                                      for g in generations]))
+        finalize(generations, args, brief_notes, stock_events, started, log,
+                 state_extra=({"consolidation": consolidation}
+                              if consolidation else None))
     else:
         log("no generation was staged — nothing to publish or brief")
 

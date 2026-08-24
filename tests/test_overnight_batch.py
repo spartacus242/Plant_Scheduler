@@ -794,3 +794,458 @@ def test_real_generations_regression(tmp_path):
     ov2 = onr.summarize(tmp_path, now=datetime(2026, 8, 21, 5, 50))
     assert ov2.delta_vs_board == pytest.approx(0.36, abs=0.01)
     assert ov2.published_best is None
+
+
+# ---------------------------------------------------------------------------
+# Resume — the 2026-08-22 reboot: all six arms of 20260821-1900-5d421b01
+# finished, the batch died in the "waiting until 05:00" sleep, nothing was
+# published and latest.json stayed on the previous generation. --resume
+# rebuilds the night from disk and finishes it; the phase ledger
+# (state.json) is how the Home chip tells that night from a quiet one.
+# ---------------------------------------------------------------------------
+
+import argparse  # noqa: E402
+import os  # noqa: E402
+import shutil  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+CRASHED_GEN = "20260821-1900-5d421b01"
+PRIOR_GEN = "20260821-1047-486dcb88"
+
+
+def _resume_args(gen_id: str, **over) -> argparse.Namespace:
+    base = dict(resume=gen_id, dry_run=False, publish=False,
+                no_publish=False, skip_pull=True, pass1_s=None,
+                pass2_s=None, consolidate_at="05:00")
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+def _log(data: Path) -> "ob.Log":
+    return ob.Log(data / "optimizer" / "batch.log")
+
+
+def _crashed_night(data: Path, *, state: bool = True,
+                   heartbeat: str = "2026-08-22T00:11:26") -> "ob.Generation":
+    """A generation dir exactly as the reboot left it: leaderboard +
+    candidates + frame snapshot, ledger in arms_done with a 16h-old
+    heartbeat, latest.json still pointing at the previous generation."""
+    gen = _mk_gen(data, gen_id=CRASHED_GEN, created="2026-08-21T19:00:07")
+    gen.candidates = [_mk_candidate(data, gen, "champion_n1_190030", 65.54),
+                      _mk_candidate(data, gen, "seed_2_204549", 69.38),
+                      _mk_candidate(data, gen, "cold_start_222906", 66.54)]
+    ob.write_leaderboard(gen)
+    ob.write_frame(gen)
+    if state:
+        ob.write_state(gen, ob.PHASE_ARMS_DONE, batch=[gen.gen_id],
+                       arms_planned=3)
+        st = json.loads((gen.dir / "state.json").read_text(encoding="utf-8"))
+        st["updated"] = heartbeat
+        (gen.dir / "state.json").write_text(json.dumps(st), encoding="utf-8")
+    opt = data / "optimizer"
+    (opt / PRIOR_GEN).mkdir(parents=True, exist_ok=True)
+    (opt / "latest.json").write_text(json.dumps({
+        "generation": PRIOR_GEN,
+        "leaderboard": f"{PRIOR_GEN}/leaderboard.json",
+        "brief": "brief.md", "published": []}), encoding="utf-8")
+    return gen
+
+
+def test_state_ledger_merges_and_heartbeats(temp_env):
+    gen = _mk_gen(temp_env)
+    s1 = ob.write_state(gen, ob.PHASE_STAGED, batch=[gen.gen_id])
+    assert s1["phase"] == "staged"
+    assert s1["started"] == gen.created
+    assert s1["arms_done"] == 0 and s1["arms_scored"] == 0
+    gen.candidates.append(_mk_candidate(temp_env, gen, "a", 60.0))
+    gen.candidates.append({"run_id": "crashed", "overnight_score": None})
+    s2 = ob.write_state(gen, ob.PHASE_CONSOLIDATED,
+                        consolidation={"status": "done", "note": "x"})
+    assert s2["arms_done"] == 2 and s2["arms_scored"] == 1
+    assert s2["updated"] >= s1["updated"]
+    # later phase writes MERGE: the consolidation record and the batch list
+    # survive the terminal write
+    s3 = ob.write_state(gen, ob.PHASE_PUBLISHED, published=[])
+    assert s3["phase"] == ob.PHASE_PUBLISHED
+    assert s3["consolidation"] == {"status": "done", "note": "x"}
+    assert s3["batch"] == [gen.gen_id]
+    assert ob.read_state(gen.dir) == s3
+    assert ob.read_state(temp_env / "nowhere") is None
+    (gen.dir / "state.json").write_text("{bad", encoding="utf-8")
+    assert ob.read_state(gen.dir) is None
+    assert ob.gen_stamp(CRASHED_GEN) == datetime(2026, 8, 21, 19, 0)
+    assert ob.gen_stamp("garbage") is None
+
+
+def test_load_generation_rebuilds_candidate_plumbing(temp_env):
+    from helpers.version_manager import list_versions
+    data = temp_env
+    gen = _mk_gen(data, baseline=64.0)
+    a = _mk_candidate(data, gen, "a", 60.0)
+    b = _mk_candidate(data, gen, "b", 70.0)
+    gen.candidates = [a, b]
+    ob.write_leaderboard(gen)
+    ob.write_frame(gen)
+    # b carries the gates sidecar run_arm writes; a's calendar file is gone
+    (gen.dir / "candidates" / "b.gates.json").write_text(
+        json.dumps({"gates": {"p09": 33.0}}), encoding="utf-8")
+    (gen.dir / "candidates" / "a.calendar.csv").unlink()
+
+    loaded = ob.load_generation(gen.gen_id, _log(data))
+    assert loaded.gen_id == gen.gen_id
+    assert loaded.sig == (1.0,)
+    assert loaded.anchor == gen.anchor
+    assert loaded.horizon_h == 504.0
+    assert loaded.capacity_bound == 5000.0
+    assert loaded.net_demand_kg == 1000.0
+    assert loaded.frame_ok
+    assert loaded.gates == {"P09": 10.0}
+    assert list(loaded.demand["order_id"]) == ["O1"]
+    assert ob.baseline_composite(loaded.board_baseline) == 64.0
+    by = {c["run_id"]: c for c in loaded.candidates}
+    assert by["b"]["_gen_id"] == gen.gen_id
+    assert by["b"]["_calendar_path"].endswith("b.calendar.csv")
+    assert by["b"]["_fill_gates"] == {"P09": 33.0}  # sidecar beats the frame
+    assert by["a"]["_calendar_path"] is None        # gone -> cannot publish
+    notes: list[str] = []
+    ob.publish_top2([loaded], _log(data), notes)
+    assert {v["slug"] for v in list_versions(data)} == {"overnight_best"}
+    assert by["b"]["published"] == "best"
+    assert by["a"]["published"] is None
+    lb = json.loads((gen.dir / "leaderboard.json").read_text(encoding="utf-8"))
+    assert not any(k.startswith("_") for c in lb["candidates"] for k in c)
+
+    # a leaderboard written before the frame contract cannot be resumed
+    fixture = ROOT / "tests" / "fixtures" / "optimizer" / "20260819-0230-9f3a7c21"
+    shutil.copytree(fixture, data / "optimizer" / fixture.name)
+    with pytest.raises(ValueError, match="no frame"):
+        ob.load_generation(fixture.name, _log(data))
+
+
+def test_candidate_gates_fall_back_to_a_surviving_work_dir(temp_env):
+    """No sidecar (pre-contract candidate): the arm's work dir is trusted
+    only when its gates were written inside this run's window — a later
+    night re-uses the same F_overnight_<label> dir."""
+    data = temp_env
+    gen = _mk_gen(data, created="2026-08-21T19:00:07")
+    cand = _mk_candidate(data, gen, "seed_2_204549", 69.38)
+    created = datetime.fromisoformat(gen.created).timestamp()
+    cal = gen.dir / "candidates" / "seed_2_204549.calendar.csv"
+    os.utime(cal, (created + 3600, created + 3600))
+    work = data / ob.WORK_ROOT / "F_overnight_seed_2_204549" / "fill_gates.json"
+    work.parent.mkdir(parents=True)
+    work.write_text(json.dumps({"gates": {"P09": 42.0}}), encoding="utf-8")
+
+    os.utime(work, (created + 600, created + 600))       # inside the window
+    assert ob.candidate_gates(cand, gen) == {"P09": 42.0}
+    os.utime(work, (created + 7200, created + 7200))     # after the save: a later night's
+    assert ob.candidate_gates(cand, gen) == {"P09": 10.0}  # generation gates
+    os.utime(work, (created - 3600, created - 3600))     # before staging
+    assert ob.candidate_gates(cand, gen) == {"P09": 10.0}
+    # the staging dir is the second fallback, same window rule
+    stage = data / ob.WORK_ROOT / ob.STAGING_ID / "fill_gates.json"
+    stage.parent.mkdir(parents=True)
+    stage.write_text(json.dumps({"gates": {"P09": 7.0}}), encoding="utf-8")
+    os.utime(stage, (created + 5, created + 5))
+    assert ob.candidate_gates(cand, gen) == {"P09": 7.0}
+    # nothing on disk and no frame gates -> honest empty gates
+    gen.gates = {}
+    os.utime(stage, (created + 9999, created + 9999))
+    assert ob.candidate_gates(cand, gen) == {}
+
+
+def test_resume_finishes_an_arms_done_night(temp_env, monkeypatch):
+    """The reboot case, inputs + anchor still matching: the late champion
+    runs on the generation's own frame, the night publishes, the brief
+    names the interruption, latest.json moves to the generation and the
+    ledger reaches `published`."""
+    from helpers.version_manager import list_versions
+    data = temp_env
+    gen = _crashed_night(data)
+    monkeypatch.setattr(ob, "generation_signature", lambda d: (1.0,))
+    monkeypatch.setattr(ob, "fresh_stock_check", lambda log: ({}, []))
+    monkeypatch.setattr(ob, "_load_changeovers", lambda ref: pd.DataFrame())
+    ran: list[str] = []
+
+    def fake_run_arm(arm, g, dns, log):
+        ran.append(arm["label"])
+        assert arm["budgets"] == ob.CHAMPION_BUDGETS
+        assert g.gen_id == CRASHED_GEN and g.frame_ok
+        cand = _mk_candidate(data, g, "champion_5am_120000", 71.0)
+        cand["kind"] = "champion"
+        g.candidates.append(cand)
+        ob.write_leaderboard(g)
+        return cand
+
+    monkeypatch.setattr(ob, "run_arm", fake_run_arm)
+    assert ob.run_resume(_resume_args(CRASHED_GEN), _log(data)) == 0
+    assert ran == ["champion_5am"]
+
+    vs = {v["slug"]: v for v in list_versions(data)}
+    assert set(vs) == {"overnight_best", "overnight_runner_up"}
+    assert "score 71.0" in vs["overnight_best"]["name"]
+    assert "score 69.38" in vs["overnight_runner_up"]["name"]
+    assert vs["overnight_best"]["run_id"] == "champion_5am_120000"
+    assert vs["overnight_best"]["generation"] == CRASHED_GEN
+    assert vs["overnight_runner_up"]["run_id"] == "seed_2_204549"
+
+    latest = json.loads((data / "optimizer" / "latest.json")
+                        .read_text(encoding="utf-8"))
+    assert latest["generation"] == CRASHED_GEN
+    assert [(r["tag"], r["run_id"]) for r in latest["published"]] == \
+        [("best", "champion_5am_120000"), ("runner_up", "seed_2_204549")]
+
+    brief = (data / "optimizer" / "brief.md").read_text(encoding="utf-8")
+    assert "Interrupted night, finished by `--resume`" in brief
+    assert f"Generation {CRASHED_GEN} stopped in phase 'arms_done'" in brief
+    assert "last heartbeat 2026-08-22T00:11:26" in brief
+    assert "3 arm(s) finished, 3 scored, nothing published" in brief
+    assert "Batch started 2026-08-21 19:00" in brief   # the night's, not now
+    assert "4 arm(s) tried, 4 scored" in brief
+
+    state = ob.read_state(gen.dir)
+    assert state["phase"] == ob.PHASE_PUBLISHED
+    assert state["consolidation"] == {
+        "status": "done", "note": "late champion via --resume",
+        "run_id": "champion_5am_120000"}
+    assert state["resumed"]["from_phase"] == ob.PHASE_ARMS_DONE
+    assert state["resumed"]["last_heartbeat"] == "2026-08-22T00:11:26"
+    assert [(r["tag"], r["slug"], r["run_id"]) for r in state["published"]] \
+        == [("best", "overnight_best", "champion_5am_120000"),
+            ("runner_up", "overnight_runner_up", "seed_2_204549")]
+    assert state["batch"] == [CRASHED_GEN]
+    lb = json.loads((gen.dir / "leaderboard.json").read_text(encoding="utf-8"))
+    assert {c["run_id"]: c.get("published") for c in lb["candidates"]} == {
+        "champion_n1_190030": None, "seed_2_204549": "runner_up",
+        "cold_start_222906": None, "champion_5am_120000": "best"}
+
+
+@pytest.mark.parametrize("why", ["signature", "anchor", "no_frame"])
+def test_resume_skips_the_late_champion_when_the_problem_moved(
+        temp_env, monkeypatch, why):
+    """A changed board / reference / toml, a rolled anchor, or a generation
+    without a frame snapshot: the late champion would solve a DIFFERENT
+    problem than the leaderboard's candidates, so it is skipped and the
+    brief says why. The candidates themselves still publish — they are
+    exactly the problem their generation staged."""
+    from helpers.version_manager import list_versions
+    data = temp_env
+    gen = _crashed_night(data)
+    monkeypatch.setattr(ob, "generation_signature",
+                        lambda d: (2.0,) if why == "signature" else (1.0,))
+    if why == "anchor":
+        rolled = SimpleNamespace(anchor=gen.anchor + timedelta(days=1))
+        monkeypatch.setattr(ob, "resolve_horizon", lambda cfg=None: rolled)
+    if why == "no_frame":
+        shutil.rmtree(gen.dir / "frame")
+    monkeypatch.setattr(
+        ob, "run_arm",
+        lambda *a, **k: pytest.fail("the late champion must not run"))
+
+    assert ob.run_resume(_resume_args(CRASHED_GEN), _log(data)) == 0
+    assert {v["slug"] for v in list_versions(data)} == \
+        {"overnight_best", "overnight_runner_up"}
+    expected = {"signature": "the scoring inputs changed",
+                "anchor": "the planning anchor rolled",
+                "no_frame": "no frame/ snapshot"}[why]
+    brief = (data / "optimizer" / "brief.md").read_text(encoding="utf-8")
+    assert "late champion consolidation skipped: " + expected in brief
+    assert "Interrupted night, finished by `--resume`" in brief
+    state = ob.read_state(gen.dir)
+    assert state["phase"] == ob.PHASE_PUBLISHED
+    assert state["consolidation"]["status"] == "skipped"
+    assert expected in state["consolidation"]["note"]
+
+
+def test_resume_twice_never_republishes(temp_env, monkeypatch):
+    """Idempotency: the second invocation for the same generation upserts
+    nothing — the slugs already hold these runs — so a planner's rename on
+    the published version survives and the timestamps do not move."""
+    from helpers.version_manager import list_versions, rename_version
+    data = temp_env
+    gen = _crashed_night(data)
+    monkeypatch.setattr(ob, "generation_signature", lambda d: (2.0,))
+    upserts: list[str] = []
+    real = ob.upsert_version
+
+    def counting(slug, *a, **k):
+        upserts.append(slug)
+        return real(slug, *a, **k)
+
+    monkeypatch.setattr(ob, "upsert_version", counting)
+    assert ob.run_resume(_resume_args(CRASHED_GEN), _log(data)) == 0
+    assert upserts == ["overnight_best", "overnight_runner_up"]
+    vs1 = {v["slug"]: v for v in list_versions(data)}
+    rename_version("overnight_best", "Seed 2 — looks right", data)
+
+    assert ob.run_resume(_resume_args(CRASHED_GEN), _log(data)) == 0
+    assert upserts == ["overnight_best", "overnight_runner_up"]  # no new ones
+    vs2 = {v["slug"]: v for v in list_versions(data)}
+    assert set(vs2) == {"overnight_best", "overnight_runner_up"}
+    assert vs2["overnight_best"]["name"] == "Seed 2 — looks right"
+    assert vs2["overnight_runner_up"]["timestamp"] == \
+        vs1["overnight_runner_up"]["timestamp"]
+    brief = (data / "optimizer" / "brief.md").read_text(encoding="utf-8")
+    assert "had already been finalized" in brief
+    assert "overnight_best already holds seed_2_204549" in brief
+    assert "overnight_runner_up already holds cold_start_222906" in brief
+    lb = json.loads((gen.dir / "leaderboard.json").read_text(encoding="utf-8"))
+    assert {c["run_id"]: c.get("published") for c in lb["candidates"]} == {
+        "champion_n1_190030": None, "seed_2_204549": "best",
+        "cold_start_222906": "runner_up"}
+    state = ob.read_state(gen.dir)
+    assert state["phase"] == ob.PHASE_PUBLISHED
+    # the first run's consolidation record survives the re-run verbatim
+    assert state["consolidation"]["status"] == "skipped"
+    assert "the scoring inputs changed" in state["consolidation"]["note"]
+    latest = json.loads((data / "optimizer" / "latest.json")
+                        .read_text(encoding="utf-8"))
+    assert latest["generation"] == CRASHED_GEN
+
+
+def test_main_path_publish_is_idempotent_too(temp_env):
+    """publish_top2 itself skips a slug that already holds the same run —
+    and re-assigns when the ranking moved (a late champion displacing the
+    old best overwrites overnight_best and demotes it to runner-up)."""
+    from helpers.version_manager import list_versions
+    data = temp_env
+    gen = _mk_gen(data)
+    b = _mk_candidate(data, gen, "b", 70.0)
+    c = _mk_candidate(data, gen, "c", 65.0)
+    gen.candidates = [b, c]
+    notes: list[str] = []
+    ob.publish_top2([gen], _log(data), notes)
+    first = {v["slug"]: v for v in list_versions(data)}
+    notes.clear()
+    ob.publish_top2([gen], _log(data), notes)
+    again = {v["slug"]: v for v in list_versions(data)}
+    assert again == first
+    assert sum("already holds" in n for n in notes) == 2
+    # ranking moves: a new best arrives
+    d = _mk_candidate(data, gen, "d", 80.0)
+    gen.candidates.append(d)
+    notes.clear()
+    ob.publish_top2([gen], _log(data), notes)
+    moved = {v["slug"]: v for v in list_versions(data)}
+    assert moved["overnight_best"]["run_id"] == "d"
+    assert moved["overnight_runner_up"]["run_id"] == "b"
+    assert (d["published"], b["published"], c["published"]) == \
+        ("best", "runner_up", None)
+    assert c["version_slug"] is None
+
+
+def test_resume_refuses_to_overwrite_a_newer_night(temp_env):
+    from helpers.version_manager import list_versions
+    data = temp_env
+    gen = _crashed_night(data)
+    newer = "20260822-1900-ffffffff"
+    (data / "optimizer" / newer).mkdir()
+    pointer = {"generation": newer, "leaderboard": f"{newer}/leaderboard.json",
+               "brief": "brief.md"}
+    (data / "optimizer" / "latest.json").write_text(json.dumps(pointer),
+                                                    encoding="utf-8")
+    assert ob.run_resume(_resume_args(CRASHED_GEN), _log(data)) == 3
+    assert list_versions(data) == []
+    assert json.loads((data / "optimizer" / "latest.json")
+                      .read_text(encoding="utf-8")) == pointer
+    assert not (data / "optimizer" / "brief.md").exists()
+    assert ob.read_state(gen.dir)["phase"] == ob.PHASE_ARMS_DONE  # untouched
+    # an unknown generation is a clean "nothing to resume"
+    assert ob.run_resume(_resume_args("20260801-0000-00000000"),
+                         _log(data)) == 2
+
+
+def test_resume_a_generation_without_state_json(temp_env, monkeypatch):
+    """The real 2026-08-21 shape: leaderboard + candidates, no state.json,
+    no frame/. Publishable; no late champion; the brief says the
+    generation predates phase tracking."""
+    from helpers.version_manager import list_versions
+    data = temp_env
+    gen = _crashed_night(data, state=False)
+    shutil.rmtree(gen.dir / "frame")
+    monkeypatch.setattr(
+        ob, "run_arm", lambda *a, **k: pytest.fail("no frame -> no champion"))
+    assert ob.run_resume(_resume_args(CRASHED_GEN), _log(data)) == 0
+    vs = {v["slug"]: v for v in list_versions(data)}
+    assert vs["overnight_best"]["run_id"] == "seed_2_204549"
+    assert vs["overnight_runner_up"]["run_id"] == "cold_start_222906"
+    brief = (data / "optimizer" / "brief.md").read_text(encoding="utf-8")
+    assert "carries no state.json (it predates phase tracking)" in brief
+    assert "3 arm(s), 3 scored, none published" in brief
+    assert "no frame/ snapshot" in brief
+    state = ob.read_state(gen.dir)
+    assert state["phase"] == ob.PHASE_PUBLISHED
+    assert state["resumed"]["from_phase"] == ob.PHASE_UNKNOWN
+    assert state["resumed"]["last_heartbeat"] is None
+    assert state["started"] == "2026-08-21T19:00:07"
+
+
+def test_resume_reloads_every_generation_of_the_batch(temp_env, monkeypatch):
+    """A 5am rotation closed generation A into B and the crash came after
+    B's champion: resuming EITHER id reloads both, publishes across them
+    (same-generation deltas intact), points latest.json at B and keeps
+    the consolidation record B already made."""
+    from helpers.version_manager import list_versions
+    data = temp_env
+    a = _mk_gen(data, gen_id="20260821-1900-aaaa1111",
+                created="2026-08-21T19:00:07", baseline=66.0)
+    a.candidates = [_mk_candidate(data, a, "seed_2_204549", 69.38),
+                    _mk_candidate(data, a, "champion_n1_190030", 65.54)]
+    b = _mk_gen(data, gen_id="20260822-0500-bbbb2222",
+                created="2026-08-22T05:00:10", baseline=67.0)
+    b.candidates = [_mk_candidate(data, b, "champion_5am_050010", 68.0)]
+    for g in (a, b):
+        ob.write_leaderboard(g)
+        ob.write_frame(g)
+    batch = [a.gen_id, b.gen_id]
+    ob.write_state(a, ob.PHASE_CLOSED, batch=batch, closed_into=b.gen_id)
+    ob.write_state(b, ob.PHASE_CONSOLIDATED, batch=batch,
+                   consolidation={"status": "done", "note": "5am champion",
+                                  "run_id": "champion_5am_050010"})
+    monkeypatch.setattr(
+        ob, "run_arm",
+        lambda *a_, **k: pytest.fail("consolidation already recorded"))
+
+    assert ob.run_resume(_resume_args(a.gen_id), _log(data)) == 0
+    vs = {v["slug"]: v for v in list_versions(data)}
+    assert vs["overnight_best"]["generation"] == a.gen_id
+    assert vs["overnight_runner_up"]["generation"] == b.gen_id
+    latest = json.loads((data / "optimizer" / "latest.json")
+                        .read_text(encoding="utf-8"))
+    assert latest["generation"] == b.gen_id
+    assert [(r["generation"], r["delta_same_gen"])
+            for r in latest["published"]] == [(a.gen_id, 3.38), (b.gen_id, 1.0)]
+    for g in (a, b):
+        st = ob.read_state(g.dir)
+        assert st["phase"] == ob.PHASE_PUBLISHED
+        assert st["batch"] == batch
+        assert st["resumed"]["at"]
+    assert ob.read_state(b.dir)["consolidation"]["run_id"] == \
+        "champion_5am_050010"
+    assert "consolidation" not in ob.read_state(a.dir)
+    brief = (data / "optimizer" / "brief.md").read_text(encoding="utf-8")
+    assert f"Generation {b.gen_id} stopped in phase 'consolidated'" in brief
+    assert "already recorded (done: 5am champion)" in brief
+    assert "Batch started 2026-08-21 19:00" in brief
+    assert "2 generation(s), 3 arm(s) tried" in brief
+
+
+def test_resume_honours_no_publish_and_dry_run(temp_env, monkeypatch):
+    from helpers.version_manager import list_versions
+    data = temp_env
+    gen = _crashed_night(data)
+    monkeypatch.setattr(ob, "generation_signature", lambda d: (1.0,))
+    monkeypatch.setattr(
+        ob, "run_arm", lambda *a, **k: pytest.fail("dry run: no champion"))
+    assert ob.run_resume(_resume_args(CRASHED_GEN, dry_run=True),
+                         _log(data)) == 0
+    assert list_versions(data) == []
+    brief = (data / "optimizer" / "brief.md").read_text(encoding="utf-8")
+    assert "dry run: publish skipped" in brief
+    assert "late champion consolidation skipped: dry run" in brief
+    # the dry run finalized the ledger: nothing to resume twice, but a
+    # --no-publish re-run is still safe
+    assert ob.read_state(gen.dir)["phase"] == ob.PHASE_PUBLISHED
+    assert ob.run_resume(_resume_args(CRASHED_GEN, no_publish=True),
+                         _log(data)) == 0
+    assert list_versions(data) == []

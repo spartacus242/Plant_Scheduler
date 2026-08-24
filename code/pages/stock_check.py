@@ -121,7 +121,16 @@ with mid:
                                else wk.week_index_label(x, _dem_anchor)))
 with right:
     refresh = st.button("Refresh from VIF", type="primary",
-                        help="Re-imports only if source files changed.")
+                        help="Recompute the stock report (source files are "
+                             "re-imported only if they changed). The page "
+                             "otherwise renders the saved report instantly.")
+
+# A folder edit must reach the shared resolver (stock_report_inputs) —
+# otherwise Home and Reconcile keep reading the old folder and the pages
+# disagree (walkthrough 2026-08-17).
+if vif_folder != settings.get("vif_folder", _default_vif_folder()):
+    settings["vif_folder"] = vif_folder
+    _save_settings(settings)
 
 if not ENGINE_OK:
     st.warning(f"Stock-check engine unavailable: {ENGINE_ERR}")
@@ -130,7 +139,9 @@ if not ENGINE_OK:
 # ------------------------------------------------------- availability toggles
 with st.expander("Availability — which stock counts?", expanded=False):
     st.caption("Default: only **Ava** (available). `Loc` = QC/warehouse-hold — "
-               "opt in per depot if you know it will release.")
+               "opt in per depot if you know it will release. Changing a "
+               "toggle saves it and marks the report stale — press "
+               "**Refresh from VIF** to apply.")
     toggles = settings.get("toggles", cov.default_toggles())
     depots = ["M01", "SB1", "SC1", "SF1", "M02", "SFG", "M21"]
     cols = st.columns(len(depots))
@@ -150,22 +161,33 @@ with st.expander("Availability — which stock counts?", expanded=False):
     toggles = new_toggles
 
 # ---------------------------------------------------------------- report
-@st.cache_data(ttl=300, show_spinner="Crunching BOMs…")
-def _report(vif_folder: str, toggles_json: str, week_index):
-    return stock_check_report(DATA, vif_folder,
-                              toggles=json.loads(toggles_json),
-                              week_index=week_index)
+# One persisted report shared with Home and Reconcile (~35s to compute,
+# milliseconds to load): this page NEVER recomputes on its own — the saved
+# report renders instantly and only the Refresh button (or a first-ever
+# visit with nothing saved yet) crunches the BOMs. The demand-week filter
+# is applied in-page, so one saved report serves every week choice.
+from helpers.stock_report_cache import load_cached, refresh_report
 
-
-if refresh:
-    st.cache_data.clear()
-
-rep = _report(vif_folder, json.dumps(toggles, sort_keys=True), week_index)
+cached = load_cached(DATA)
+if refresh or cached is None:
+    with st.spinner("Crunching BOMs…"):
+        cached = refresh_report(DATA)
+rep = cached.report
 
 if "error" in rep:
     st.error(f"Import failed: {rep['error']}")
     st.json(rep.get("import_errors", []))
     st.stop()
+
+_when = cached.computed_at.replace("T", " ")
+_cost = f" in {cached.elapsed_s:.0f}s" if cached.elapsed_s else ""
+if cached.stale:
+    st.warning(f"Board / demand / VIF inputs changed since this report "
+               f"(computed {_when}{_cost}) — press **Refresh from VIF** to "
+               "recompute. Showing the saved report.")
+else:
+    st.caption(f"Report computed {_when}{_cost} — saved; loads instantly "
+               "until the inputs change.")
 
 # source freshness strip
 src = rep.get("source_files", {})
@@ -176,14 +198,22 @@ if rep.get("import_errors"):
     st.warning("Some files failed to import: " +
                "; ".join(rep["import_errors"]))
 
-# receiving appointments
+# receiving appointments (xlsm parse — cached on the file's mtime)
+@st.cache_data(show_spinner=False)
+def _receiving(path_str: str, mtime: float):
+    return parse_receiving_schedule(Path(path_str))
+
+
 _recv = _receiving_path()
-appts, appt_errors = parse_receiving_schedule(_recv) if _recv.exists() else ([], [])
+appts, appt_errors = (_receiving(str(_recv), _recv.stat().st_mtime)
+                      if _recv.exists() else ([], []))
 po_appts = {a["po"]: a for a in appts if a["po"]}
 
 # ---------------------------------------------------------------- metrics
 sv = rep["schedule_view"]
 dv = rep["demand_view"]
+if week_index is not None:
+    dv = [d for d in dv if d.get("week_index") == week_index]
 n_blocks_risk = sum(1 for b in sv if b["status"] in ("AT_RISK", "TIGHT"))
 n_dns = sum(1 for d in dv if d["status"] == "DO_NOT_SCHEDULE")
 n_dem_risk = sum(1 for d in dv if d["status"] in ("AT_RISK",))
@@ -289,7 +319,9 @@ with tab_item:
     st.subheader("Component → consuming SKUs")
     items = sorted(rep["item_reverse"].keys())
     item = st.selectbox("Component item", items)
-    cons = pd.DataFrame(rep["item_reverse"][item])
+    # an empty report (nothing scheduled/demanded) leaves the selectbox on
+    # None — there is no row to look up
+    cons = pd.DataFrame(rep["item_reverse"][item] if item else [])
     if "week_index" in cons.columns:
         # Sort on week_index (monotonic in real time), THEN label — sorting
         # on the ISO week number would put next January's W01 before W52.
@@ -326,13 +358,21 @@ with tab_dq:
                "in the BOM exports (ediact 3.csv / ediact 4.csv). Either "
                "remove them from sku_info.csv or add their recipes to the "
                "BOM export.")
-    try:
-        si = pd.read_csv(DATA / "reference" / "sku_info.csv", dtype={"sku": str})
-        from stockcheck.vif_import import import_vif_folder  # local already
+    @st.cache_data(show_spinner=False)
+    def _no_bom_all(vif_folder: str, sources_key: str) -> list[str]:
+        # keyed on the report's source mtimes: the full catalog scan reuses
+        # the mtime-guarded snapshot instead of re-importing the VIF folder
+        # on every rerun (that import alone cost seconds per visit)
+        si = pd.read_csv(DATA / "reference" / "sku_info.csv",
+                         dtype={"sku": str})
+        from stockcheck.api import refresh_vif_snapshot
         from stockcheck.bom import BomGraph
-        snap = import_vif_folder(vif_folder)
+        snap = refresh_vif_snapshot(vif_folder, DATA)
         bom_all = BomGraph(snap.frames["ediact 3.csv"])
-        no_bom_all = sorted(s for s in si["sku"] if not bom_all.has_bom(s))
+        return sorted(s for s in si["sku"] if not bom_all.has_bom(s))
+
+    try:
+        no_bom_all = _no_bom_all(vif_folder, json.dumps(src, sort_keys=True))
     except Exception:
         no_bom_all = []
     st.code(", ".join(no_bom_all) or "none")

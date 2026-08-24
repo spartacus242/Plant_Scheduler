@@ -48,10 +48,24 @@ def _leaderboard_frame(board: dict) -> pd.DataFrame:
 def render_overnight_results(dd: Path) -> None:
     """Leaderboard + noise floor + baseline delta; silent when absent."""
     ov = onr.summarize(dd)
-    if ov.state == onr.NOT_SET:
+    if ov.state == onr.NOT_SET and ov.night is None:
         return
     st.divider()
     st.subheader("Overnight results")
+    # An unfinished night outranks the published generation below it: a
+    # crashed batch (the 2026-08-22 reboot) must be named, not hidden
+    # behind a quietly stale chip.
+    if ov.night is not None:
+        if ov.night.interrupted:
+            st.warning(
+                f"{onr.night_text(ov.night)}. From the repo root:\n\n"
+                f"`{onr.resume_command(ov.night.generation)}`\n\n"
+                "No arm is re-solved: the night's candidates publish as "
+                "sandbox versions and the brief names the interruption.")
+        else:
+            st.caption(onr.night_text(ov.night))
+    if ov.state == onr.NOT_SET:
+        return
     when = f"{ov.created:%a %Y-%m-%d %H:%M}" if ov.created else "unknown time"
     stale = (" — **stale**: no fresh batch has landed since"
              if ov.state == onr.STALE else "")
