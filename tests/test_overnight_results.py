@@ -107,6 +107,45 @@ def test_schema_violations_read_as_none(tmp_path):
     assert onr.load_leaderboard(dd) is None
 
 
+# -- unscorable arms ---------------------------------------------------------
+#
+# json.dump writes a bare NaN for float('nan'), so an arm the engine failed to
+# score arrives as a real float that poisons max() and formats as "nan".
+
+def test_nan_arm_is_dropped_but_the_board_survives(tmp_path):
+    dd = _stage(tmp_path)
+    board = json.loads(_board_path(dd).read_text(encoding="utf-8"))
+    board["candidates"][0]["overnight_score"]["composite"] = float("nan")
+    _board_path(dd).write_text(json.dumps(board), encoding="utf-8")
+
+    ov = onr.summarize(dd, now=CREATED + timedelta(hours=2))
+    assert ov.state == onr.OK
+    assert ov.n_runs == 6                      # champion dropped, 6 remain
+    assert ov.best["run_id"] == "noise-1"      # next-highest real score
+    assert ov.best_composite == 83.9
+    assert "nan" not in ov.detail
+
+
+def test_board_of_only_unscorable_arms_reads_as_not_set(tmp_path):
+    dd = _stage(tmp_path)
+    board = json.loads(_board_path(dd).read_text(encoding="utf-8"))
+    for c in board["candidates"]:
+        c["overnight_score"]["composite"] = float("nan")
+    _board_path(dd).write_text(json.dumps(board), encoding="utf-8")
+    assert onr.load_leaderboard(dd) is None
+    assert onr.summarize(dd).state == onr.NOT_SET
+
+
+def test_nan_baseline_yields_no_delta(tmp_path):
+    dd = _stage(tmp_path)
+    board = json.loads(_board_path(dd).read_text(encoding="utf-8"))
+    board["board_baseline"]["overnight_score"]["composite"] = float("inf")
+    _board_path(dd).write_text(json.dumps(board), encoding="utf-8")
+    ov = onr.summarize(dd, now=CREATED + timedelta(hours=2))
+    assert ov.board_composite is None and ov.delta_vs_board is None
+    assert ov.detail == "7 runs · best 84.2 · noise ±0.6 — review"
+
+
 # -- brief ---------------------------------------------------------------
 
 def test_load_brief(tmp_path):

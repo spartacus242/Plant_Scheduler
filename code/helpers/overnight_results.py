@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -85,7 +86,18 @@ def _num(x: Any) -> bool:
 
 
 def _score_ok(score: Any) -> bool:
-    return isinstance(score, dict) and _num(score.get("composite"))
+    if not isinstance(score, dict):
+        return False
+    comp = score.get("composite")
+    # NaN/inf must fail here, not just non-numbers: json.dump writes a bare
+    # NaN for float('nan'), so an arm that failed to score would otherwise
+    # poison max() and print "best nan" under a green chip.
+    return _num(comp) and math.isfinite(comp)
+
+
+def _candidate_ok(c: Any) -> bool:
+    return (isinstance(c, dict) and isinstance(c.get("run_id"), str)
+            and _score_ok(c.get("overnight_score")))
 
 
 # -- the additive latest.json "published" block ------------------------------
@@ -157,28 +169,26 @@ def all_within_noise(board: dict | None, spread: float | None) -> bool:
 
 
 def _valid_leaderboard(board: Any) -> bool:
-    if not isinstance(board, dict):
-        return False
-    if not isinstance(board.get("generation"), str):
-        return False
-    cands = board.get("candidates")
-    if not isinstance(cands, list) or not cands:
-        return False
-    for c in cands:
-        if not isinstance(c, dict) or not isinstance(c.get("run_id"), str):
-            return False
-        if not _score_ok(c.get("overnight_score")):
-            return False
-    return True
+    return (isinstance(board, dict)
+            and isinstance(board.get("generation"), str)
+            and isinstance(board.get("candidates"), list)
+            and any(_candidate_ok(c) for c in board["candidates"]))
 
 
 def load_leaderboard(data_dir: Path) -> dict | None:
-    """The generation latest.json points at, or None unless it validates."""
+    """The generation latest.json points at, or None unless it validates.
+
+    Unscorable arms are dropped rather than sinking the whole board: one
+    engine-side misscore shouldn't hide the night's other runs.
+    """
     latest = load_latest(data_dir)
     if latest is None:
         return None
     board = _read_json(_resolve(latest["leaderboard"], data_dir))
-    return board if _valid_leaderboard(board) else None
+    if not _valid_leaderboard(board):
+        return None
+    return dict(board,
+                candidates=[c for c in board["candidates"] if _candidate_ok(c)])
 
 
 def load_brief(data_dir: Path) -> str | None:
