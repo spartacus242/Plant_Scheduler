@@ -132,7 +132,7 @@ from helpers.scenario_runner import (SCENARIOS, _overlay_fill,  # noqa: E402
                                      _prepare_work_dir,
                                      _set_work_scheduler_flag, run_scenario)
 from helpers.scorecard_engine import (_co_lookup, _load_changeovers,  # noqa: E402
-                                      score_calendar,
+                                      cip_last_clean_hours, score_calendar,
                                       scoring_inputs_signature)
 from helpers.version_manager import upsert_version  # noqa: E402
 from helpers.week_lock import locked_through_h, read_lock  # noqa: E402
@@ -913,16 +913,36 @@ def compute_guards(calendar: pd.DataFrame, gen: Generation,
         if len(fills):
             starts = pd.to_numeric(fills["start_h"], errors="coerce")
             lock_ok = bool((starts >= lock_h - 1e-6).all())
+    # Seed each line's clean clock from cip_info's PreviousCIP: a clean
+    # recorded mid-batch by the live pull exists only as history (the
+    # projected grid anchors on it, no block is drawn), and the
+    # calendar-only walk read phantom dirty time — 2026-08-24 it barred
+    # four legal 76-78 candidates on P15. The seed is a LENIENCY, so an
+    # unreadable cip_info (garbage bytes, a torn live-pull copy) degrades
+    # to no seed — the pre-fix status quo — never to a failed guard.
+    try:
+        last_clean = cip_last_clean_hours(
+            DATA / "reference", gen.anchor, max_h=gen.horizon_h)
+    except Exception as exc:  # noqa: BLE001
+        log(f"[guards] cip_info seed unavailable, scoring without: {exc}")
+        last_clean = {}
     try:
         windowed = score_calendar(
             calendar, week_label="guards", data_dir=DATA,
-            fill_gates=gen.gates)
+            fill_gates=gen.gates, cip_last_clean=last_clean)
         cip_ok = int(windowed.cip.get("cip_overdue", 0) or 0) == 0
+        # cip_req_after (2026-08-26): flagged SKU pairs without a clean
+        # between runs. Recorded for the leaderboard; deliberately NOT in
+        # the publish pass-set yet (soft rule — planner decides).
+        cip_req_ok = int(
+            windowed.changeovers.get("cip_req_violations", 0) or 0) == 0
     except Exception as exc:  # noqa: BLE001 — a broken guard is a failed guard
         log(f"[guards] cip check failed: {exc}")
         cip_ok = False
+        cip_req_ok = False
     return {"overlaps": int(overlaps), "pins_ok": bool(pins_ok),
-            "lock_ok": bool(lock_ok), "cip_ok": bool(cip_ok)}
+            "lock_ok": bool(lock_ok), "cip_ok": bool(cip_ok),
+            "cip_req_ok": bool(cip_req_ok)}
 
 
 def run_arm(arm: dict, gen: Generation, dns: dict[str, float],
