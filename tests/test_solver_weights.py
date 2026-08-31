@@ -134,6 +134,7 @@ WEIGHT_CASES = [
     ("co_conv_org_weight", {}),
     ("co_cinn_weight", {}),
     ("co_flavor_weight", {}),
+    ("co_cip_req_weight", {}),
 ]
 
 
@@ -345,6 +346,7 @@ KNOB_TO_PARAM = {
     "conv_org_weight": ("changeover", "co_conv_org_weight", 31),
     "cinn_weight": ("changeover", "co_cinn_weight", 23),
     "flavor_weight": ("changeover", "co_flavor_weight", 8),
+    "cip_req_weight": ("changeover", "co_cip_req_weight", 1999),
     "min_run_hours": ("scheduler", "min_run_hours", 5),
     "min_run_pct_of_qty": ("scheduler", "min_run_pct_of_qty", 0.35),
     "max_lines_per_order": ("scheduler", "max_lines_per_order", 4),

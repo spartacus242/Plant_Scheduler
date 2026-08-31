@@ -40,8 +40,14 @@ def _csv_rows(path: Path) -> int:
 
 
 def _direct_dicts(path: Path):
-    """Replicate the legacy inline build (pre-cache) for an equivalence check."""
+    """Replicate the legacy inline build (pre-cache) for an equivalence check.
+    Applies the same plant-export column aliases as the cache (2026-08-26 —
+    the live file ships tpld_change/cspkr_change/... headers)."""
+    from solver.changeover_cache import _COLUMN_ALIASES
+
     chg = pd.read_csv(path)
+    chg = chg.rename(columns={a: c for a, c in _COLUMN_ALIASES.items()
+                              if a in chg.columns and c not in chg.columns})
     chg["from_sku"] = chg["from_sku"].astype(str)
     chg["to_sku"] = chg["to_sku"].astype(str)
     chg["setup_rounded"] = chg["setup_hours"].apply(
@@ -59,6 +65,7 @@ def _direct_dicts(path: Path):
             "conv_to_org": int(r["conv_to_org_change"]),
             "cinn_to_non": int(r["cinn_to_non"]),
             "added_flavors": int(r["added_flavors"]),
+            "cip_req_after": int(r.get("cip_req_after", 0) or 0),
         }
         mc[pair] = m
         ctype[pair] = f"{m['ttp']}-{m['ffs']}-{m['topload']}-{m['casepacker']}"
@@ -72,13 +79,19 @@ def test_load_changeover_dicts_matches_legacy(tmp_path):
     assert got[0] == expected[0]
     assert got[1] == expected[1]
     assert got[2] == expected[2]
-    assert len(got[0]) == _csv_rows(wd / "changeovers.csv")  # dense matrix preserved
+    # dense matrix preserved — DISTINCT pairs: the 2026-08-26 plant export
+    # carries exact-duplicate rows (466 observed), deduped last-wins.
+    distinct = len(pd.read_csv(
+        wd / "changeovers.csv", dtype=str,
+        usecols=["from_sku", "to_sku"]).drop_duplicates())
+    assert len(got[0]) == distinct
 
 
 def test_nested_matches_legacy(tmp_path):
     wd = _stage_workdir(tmp_path)
     nested = load_changeover_setup_nested(wd / "changeovers.csv")
-    chg = pd.read_csv(wd / "changeovers.csv")
+    chg = pd.read_csv(wd / "changeovers.csv",
+                      dtype={"from_sku": str, "to_sku": str})
     for _, r in chg.iterrows():
         assert nested[str(r["from_sku"])][str(r["to_sku"])] == float(
             int(math.floor(float(r["setup_hours"]) + 0.5))
@@ -157,3 +170,35 @@ def test_data_loader_uses_cache_and_preserves_shape(tmp_path):
     # families derived from sku_info and stored on Data
     assert d.sku_family
     assert "280121" in d.sku_family
+
+
+def test_plant_export_aliases_and_cip_req_flow(tmp_path):
+    """The plant's own export names flag columns differently (tpld_change,
+    cspkr_change, conv_to_org, cinn_to_non_cinn) and carries cip_req_after
+    (2026-08-26). Both must normalize to canonical names and reach the
+    solver dicts — before the alias layer, has_machine_cols read False and
+    every flag silently degraded to the setup>0 fallback."""
+    p = tmp_path / "changeovers.csv"
+    p.write_text(
+        "from_sku,to_sku,setup_hours,ttp_change,ffs_change,tpld_change,"
+        "cspkr_change,conv_to_org,cinn_to_non_cinn,added_flavors,cip_req_after\n"
+        "A,B,2,0,1,1,0,1,0,0,1\n"
+        "B,A,2,1,0,0,1,0,1,2,0\n",
+        encoding="utf-8")
+    _, mc, _ = load_changeover_dicts(p)
+    assert mc[("A", "B")] == {"ttp": 0, "ffs": 1, "topload": 1,
+                              "casepacker": 0, "conv_to_org": 1,
+                              "cinn_to_non": 0, "added_flavors": 0,
+                              "cip_req_after": 1}
+    assert mc[("B", "A")]["cip_req_after"] == 0
+    assert mc[("B", "A")]["casepacker"] == 1
+
+
+def test_cip_req_absent_column_defaults_zero(tmp_path):
+    p = tmp_path / "changeovers.csv"
+    p.write_text(
+        "from_sku,to_sku,setup_hours,ttp_change,ffs_change,topload_change,"
+        "casepacker_change\nA,B,2,1,0,0,0\n",
+        encoding="utf-8")
+    _, mc, _ = load_changeover_dicts(p)
+    assert mc[("A", "B")]["cip_req_after"] == 0

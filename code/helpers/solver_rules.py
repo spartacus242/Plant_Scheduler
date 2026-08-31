@@ -173,6 +173,18 @@ _RULES: list[dict[str, Any]] = [
                 "removing flavors). Pair cost never goes below 0.",
     ),
     dict(
+        id="cip_req_weight", group=GROUP_KNOB, ui="exposed",
+        name="Required-CIP violation cost",
+        config="changeover.cip_req_weight", default=2000,
+        where="model_builder.py weighted CO cost + CIP-window waiver; "
+              "[changeover]",
+        planner="Penalty for running a cip_req_after SKU pair (protein "
+                "hygiene) without a clean between the runs. The ENTIRE "
+                "changeover cost is waived when the transition sits at a "
+                "CIP window. Soft rule: the solver avoids it hard, the "
+                "planner can still accept a violating board.",
+    ),
+    dict(
         id="min_run_hours", group=GROUP_KNOB, ui="exposed",
         name="Minimum run length",
         config="scheduler.min_run_hours", default=4,

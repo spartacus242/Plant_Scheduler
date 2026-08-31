@@ -369,6 +369,8 @@ def params_from_config(
         P.co_cinn_weight = int(_cfg_co["cinn_weight"])
     if _cfg_co.get("flavor_weight") is not None:
         P.co_flavor_weight = int(_cfg_co["flavor_weight"])
+    if _cfg_co.get("cip_req_weight") is not None:
+        P.co_cip_req_weight = int(_cfg_co["cip_req_weight"])
     if sched.get("use_sku_rates") is not None:
         P.use_sku_rates = bool(sched["use_sku_rates"])
     # Solve rules ([scheduler]): CLI override beats toml beats Params default.
@@ -1339,6 +1341,7 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         co_conv_org_weight=P.co_conv_org_weight,
         co_cinn_weight=P.co_cinn_weight,
         co_flavor_weight=P.co_flavor_weight,
+        co_cip_req_weight=P.co_cip_req_weight,
     )
     data0 = Data(P0, F)
     data0.load()
@@ -1509,6 +1512,7 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         co_conv_org_weight=P.co_conv_org_weight,
         co_cinn_weight=P.co_cinn_weight,
         co_flavor_weight=P.co_flavor_weight,
+        co_cip_req_weight=P.co_cip_req_weight,
     )
     data1 = Data(P1, F_week1)
     data1.load()

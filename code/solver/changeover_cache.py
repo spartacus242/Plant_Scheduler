@@ -33,6 +33,21 @@ _MEMO: Dict[Tuple[str, int], object] = {}
 
 _MACHINE_COLS = ("ttp_change", "ffs_change", "topload_change", "casepacker_change")
 _NEW_COLS = ("conv_to_org_change", "cinn_to_non", "added_flavors")
+# The plant's own export names several flag columns differently (observed in
+# the 2026-08-26 bridge file that introduced cip_req_after). Renamed to the
+# canonical names above at load; canonical passes through untouched. KEEP IN
+# SYNC with helpers/scorecard_engine.CO_COLUMN_ALIASES (duplicated on purpose
+# — solver modules stay import-independent of helpers).
+_COLUMN_ALIASES = {
+    "tpld_change": "topload_change",
+    "cspkr_change": "casepacker_change",
+    "conv_to_org": "conv_to_org_change",
+    "cinn_to_non_cinn": "cinn_to_non",
+}
+# Bump when _norm_df's output schema changes (aliases, new columns): the
+# parquet cache is keyed by source mtime only, so a code-side schema change
+# must not resurrect a stale cache written by older code.
+_SCHEMA_V = 2
 _DEFAULT_FAMILY_COLS = (
     "ediact_sku_format",
     "format",
@@ -53,6 +68,10 @@ def round_half_up(x: float) -> int:
 def _norm_df(src: Path) -> pd.DataFrame:
     """Read the raw CSV and build the exact column set the model consumes."""
     chg = pd.read_csv(src)
+    ren = {a: c for a, c in _COLUMN_ALIASES.items()
+           if a in chg.columns and c not in chg.columns}
+    if ren:
+        chg = chg.rename(columns=ren)
     chg["from_sku"] = chg["from_sku"].astype(str)
     chg["to_sku"] = chg["to_sku"].astype(str)
     chg["setup_hours"] = pd.to_numeric(chg["setup_hours"], errors="coerce").fillna(0.0)
@@ -67,19 +86,25 @@ def _norm_df(src: Path) -> pd.DataFrame:
         chg["added_flavors"] = pd.to_numeric(
             chg["added_flavors"], errors="coerce"
         ).fillna(0).astype(int)
+    # Hygiene rule (2026-08-26): a CIP is REQUIRED between these SKUs unless
+    # the transition sits at a CIP window. Absent column -> 0 everywhere.
+    if "cip_req_after" in chg.columns:
+        chg["cip_req_after"] = pd.to_numeric(
+            chg["cip_req_after"], errors="coerce"
+        ).fillna(0).astype(int)
     return chg
 
 
 def _cache_path(src: Path, mtime_ns: int) -> Path:
     h = hashlib.sha1(str(src.resolve()).encode("utf-8")).hexdigest()[:16]
-    return _CACHE_ROOT / f"co_{h}_{mtime_ns}.parquet"
+    return _CACHE_ROOT / f"co_{h}_{mtime_ns}_v{_SCHEMA_V}.parquet"
 
 
 def _prune(src: Path, keep_mtime_ns: int) -> None:
     h = hashlib.sha1(str(src.resolve()).encode("utf-8")).hexdigest()[:16]
     try:
         for p in _CACHE_ROOT.glob(f"co_{h}_*.parquet"):
-            if p.stem != f"co_{h}_{keep_mtime_ns}":
+            if p.stem != f"co_{h}_{keep_mtime_ns}_v{_SCHEMA_V}":
                 try:
                     p.unlink()
                 except OSError:
@@ -152,6 +177,8 @@ def load_changeover_dicts(path) -> Tuple[dict, dict, dict]:
             mc["conv_to_org"] = 0
             mc["cinn_to_non"] = 0
             mc["added_flavors"] = 0
+        mc["cip_req_after"] = (
+            int(r["cip_req_after"]) if "cip_req_after" in chg.columns else 0)
         machine_changes[pair] = mc
         changeover_type[pair] = (
             f"{mc['ttp']}-{mc['ffs']}-{mc['topload']}-{mc['casepacker']}"

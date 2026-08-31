@@ -91,6 +91,12 @@ class Params:
     co_cinn_weight: int = 20
     # Per-added-flavor penalty (negative added_flavors = reward)
     co_flavor_weight: int = 5
+    # cip_req_after pairs (2026-08-26): a CIP is REQUIRED between these
+    # SKUs. Soft rule — this weight prices running the pair without a
+    # clean; the full pair cost is waived when the transition sits at a
+    # committed CIP window (model_builder). Sized to dominate every other
+    # changeover weight combined.
+    co_cip_req_weight: int = 2000
     # Soft demand (Scenario F): instead of hard qty_min (all-or-nothing via
     # the relax ladder), every kg short of qty_min costs shortfall_weight in
     # the objective. Filling always pays; shortage is reported, never hidden.

@@ -541,6 +541,10 @@ def build_model(
     succ = {}           # (l, i_idx, j_idx) -> BoolVar: j immediately follows i
     weighted_co_cost_per_line = []  # list of IntVars (one per line)
     cip_absorbable = []  # (l, i_idx, j_idx, succ_key, delta) for CIP absorption
+    # cip_req_after pairs whose full cost is waived by a FIXED committed-CIP
+    # window (Scenario F: solver CIPs stand down; projected CIPs arrive as
+    # downtime rows with a CIP reason): (l, i_idx, j_idx, succ_key, full_cost)
+    cip_window_waivable = []
 
     if (phase in ("sanity3", "full")) and (not ignore_co):
         # Per-machine changeover weights
@@ -552,6 +556,7 @@ def build_model(
         W_conv_org = P.co_conv_org_weight
         W_cinn = P.co_cinn_weight
         W_flavor = P.co_flavor_weight
+        W_cip_req = P.co_cip_req_weight
 
         for l in lines:
             elig = [
@@ -749,6 +754,7 @@ def build_model(
                     )
                     # added_flavors can be negative (reward for removing flavors)
                     flavor_cost = W_flavor * mc.get("added_flavors", 0)
+                    cip_req_cost = W_cip_req * mc.get("cip_req_after", 0)
                     pair_cost = max(0, (
                         W_base
                         + W_top * mc["topload"]
@@ -758,15 +764,25 @@ def build_model(
                         + W_conv_org * mc.get("conv_to_org", 0)
                         + W_cinn * mc.get("cinn_to_non", 0)
                         + flavor_cost
+                        + cip_req_cost
                     ))
                     if pair_cost > 0:
                         co_cost_terms.append(succ[key] * pair_cost)
                         # Track pairs where a CIP between orders can absorb
-                        # conv→org / cinn→non penalties.
-                        absorb_delta = (
-                            W_conv_org * mc.get("conv_to_org", 0)
-                            + W_cinn * mc.get("cinn_to_non", 0)
-                        )
+                        # conv→org / cinn→non penalties. cip_req_after pairs
+                        # (a CIP is REQUIRED between them, 2026-08-26) waive
+                        # their ENTIRE cost at a clean — retooling happens
+                        # during the CIP.
+                        if mc.get("cip_req_after", 0):
+                            absorb_delta = pair_cost
+                            cip_window_waivable.append(
+                                (l, i_idx, j_idx, key, pair_cost)
+                            )
+                        else:
+                            absorb_delta = (
+                                W_conv_org * mc.get("conv_to_org", 0)
+                                + W_cinn * mc.get("cinn_to_non", 0)
+                            )
                         if absorb_delta > 0:
                             cip_absorbable.append(
                                 (l, i_idx, j_idx, key, absorb_delta)
@@ -775,6 +791,7 @@ def build_model(
             if co_cost_terms:
                 max_possible = len(elig) * (
                     W_base + W_top + W_ttp + W_ffs + W_cp + W_conv_org + W_cinn
+                    + W_cip_req
                 )
                 co_cost_l = model.NewIntVar(
                     0, max_possible, f"co_cost_l{l}"
@@ -1211,6 +1228,38 @@ def build_model(
                 model.Add(sum(absorb_vars) <= 1)
                 for ab in absorb_vars:
                     cip_absorb_bonus_terms.append(ab * delta)
+
+    # Fixed committed-CIP windows also waive required-CIP pairs (2026-08-26):
+    # a cip_req_after transition straddling such a window is clean, so its
+    # ENTIRE pair cost is refunded. Only lines WITHOUT solver CIP variables
+    # take this path — on lines with them, the absorb block above already
+    # carries the full-cost delta, so one pair can never be refunded twice.
+    if cip_window_waivable:
+        fixed_cips: Dict[int, list] = {}
+        for dt in data.downtimes:
+            if "cip" not in str(dt.get("reason", "")).lower():
+                continue
+            s = max(0, int(dt["start"]))
+            e = min(H, int(dt["end"]))
+            if e > s:
+                fixed_cips.setdefault(dt["line_id"], []).append((s, e))
+        for l_w, i_w, j_w, skey, full_cost in cip_window_waivable:
+            if cip_model_vars.get(l_w):
+                continue
+            wins = fixed_cips.get(l_w, [])
+            if not wins:
+                continue
+            w_vars = []
+            for k, (s, e) in enumerate(wins):
+                w = model.NewBoolVar(f"cipWin_l{l_w}_o{i_w}_{j_w}_k{k}")
+                model.AddImplication(w, succ[skey])
+                model.Add(eff_end[(l_w, i_w)] <= s).OnlyEnforceIf(w)
+                model.Add(seg_a_start[(l_w, j_w)] >= e).OnlyEnforceIf(w)
+                w_vars.append(w)
+            if w_vars:
+                model.Add(sum(w_vars) <= 1)
+                for w in w_vars:
+                    cip_absorb_bonus_terms.append(w * full_cost)
 
     # ── Line compactness (idle-time penalty) ──────────────────────────────
     #

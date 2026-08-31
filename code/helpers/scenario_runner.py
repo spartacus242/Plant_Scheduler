@@ -69,6 +69,12 @@ _CO_WEIGHT_KNOBS = [
         "config": "changeover.flavor_weight",
         "effect": "Extra cost for a plain flavour-to-flavour switch.",
     },
+    {
+        "param": "changeover.cip_req_weight",
+        "config": "changeover.cip_req_weight",
+        "effect": ("Penalty for running a cip_req_after SKU pair without a "
+                   "CIP between the runs (fully waived at a CIP window)."),
+    },
 ]
 
 # Terms present in every objective branch.
@@ -216,6 +222,7 @@ OVERRIDE_SECTIONS: dict[str, str] = {
     "conv_org_weight": "changeover",
     "cinn_weight": "changeover",
     "flavor_weight": "changeover",
+    "cip_req_weight": "changeover",
     # Solve rules (hard constraints), not objective weights. They ride the
     # same toml patch: [scheduler] -> phase2_scheduler.params_from_config -> P.
     "min_run_hours": "scheduler",
@@ -253,6 +260,7 @@ SOLVER_DEFAULTS: dict[str, float] = {
     "changeover.conv_org_weight": 30,
     "changeover.cinn_weight": 20,
     "changeover.flavor_weight": 5,
+    "changeover.cip_req_weight": 2000,
 }
 
 CUSTOM_SCENARIO_ID = "X"
@@ -1115,12 +1123,18 @@ def _greedy_seed(work: Path) -> list[str]:
         "ttp_change": float(cw.get("ttp_weight", 5)),
         "conv_to_org_change": float(cw.get("conv_org_weight", 30)),
         "cinn_to_non": float(cw.get("cinn_weight", 30)),
+        # required-CIP pairs: steer the greedy seed away from unclean
+        # protein transitions just like the model does
+        "cip_req_after": float(cw.get("cip_req_weight", 2000)),
     }
     _base_w = float(cw.get("base_changeover_weight", 5))
     _flavor_w = float(cw.get("flavor_weight", 5))
     co_cost: dict[str, dict[str, float]] = {}
-    co_df = _pd.read_csv(work / "changeovers.csv",
-                         dtype={"from_sku": str, "to_sku": str})
+    from helpers.scorecard_engine import normalize_co_columns
+
+    co_df = normalize_co_columns(
+        _pd.read_csv(work / "changeovers.csv",
+                     dtype={"from_sku": str, "to_sku": str}))
     for _r in co_df.itertuples(index=False):
         _c = _base_w + sum(
             w for col, w in _w.items()
