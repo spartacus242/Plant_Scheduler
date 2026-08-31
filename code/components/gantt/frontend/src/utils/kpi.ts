@@ -13,7 +13,7 @@ import { isWindowBlock } from "../types";
 
 /** Fallback when no co_pairs/co_default were passed (e.g. dev harness):
  * mirrors scorecard_config defaults base 0.5 + recipe 1.0. */
-const CO_DEFAULT_FALLBACK: CoPairInfo = { recipe: 1, format: 0, hours: 1.5 };
+const CO_DEFAULT_FALLBACK: CoPairInfo = { recipe: 1, format: 0, hours: 1.5, cip_req: 0 };
 
 /** Production only — trials produce no saleable qty and, per scorecard rules,
  * do not count as changeover transitions either (Python's _production). */
@@ -158,12 +158,18 @@ export interface ChangeoverCounts {
   format: number;
   hours: number;
   perLine: Record<string, number>;
+  /** Flagged (cip_req) transitions with NO CIP in the gap — hygiene rule. */
+  cipReqViolations: number;
+  /** Transitions fully waived because a CIP sits in the gap (the plant
+   * retools during the clean) — excluded from every count above. */
+  transitionsAtCip: number;
 }
 
 export function countChangeovers(
   schedule: ScheduleBlock[],
   coPairs: Record<string, CoPairInfo> = {},
   coDefault: CoPairInfo = CO_DEFAULT_FALLBACK,
+  cipWindows: ScheduleBlock[] = [],
 ): ChangeoverCounts {
   // Group by line_id (not line_name) exactly like score_changeovers; the
   // per-line display map is keyed by line_name, summed across ids sharing it.
@@ -173,29 +179,56 @@ export function countChangeovers(
     (byLineId[b.line_id] ??= []).push(b);
   }
 
+  // Per-line CIP intervals: a transition whose gap fully contains a CIP
+  // block is WAIVED from every changeover metric (the plant retools during
+  // the clean — user rule 2026-08-26), and it satisfies cip_req.
+  const cipsByLineId: Record<number, [number, number][]> = {};
+  for (const c of cipWindows) {
+    if (c.block_type !== "cip") continue;
+    (cipsByLineId[c.line_id] ??= []).push([c.start_hour, c.end_hour]);
+  }
+  const cipBetween = (lineId: number, aEnd: number, bStart: number): boolean =>
+    (cipsByLineId[lineId] ?? []).some(
+      ([cs, ce]) => cs >= aEnd - 1e-6 && ce <= bStart + 1e-6,
+    );
+
   const perLine: Record<string, number> = {};
   let total = 0;
   let recipe = 0;
   let format = 0;
   let hours = 0;
+  let cipReqViolations = 0;
+  let transitionsAtCip = 0;
   for (const blocks of Object.values(byLineId)) {
     const sorted = [...blocks].sort((a, b) => a.start_hour - b.start_hour);
     const lineName = sorted[0].line_name ?? "";
     let lineCount = 0;
     for (let i = 1; i < sorted.length; i++) {
-      const from = sorted[i - 1].sku;
-      const to = sorted[i].sku;
+      const a = sorted[i - 1];
+      const b = sorted[i];
+      const from = a.sku;
+      const to = b.sku;
       if (from === to) continue;
+      const pair = coPairs[`${from}|${to}`] ?? coDefault;
+      if (cipBetween(a.line_id, a.end_hour, b.start_hour)) {
+        // Fully waived: the clean subsumes the changeover work.
+        transitionsAtCip++;
+        continue;
+      }
+      if ((pair.cip_req ?? 0) === 1) cipReqViolations++;
       total++;
       lineCount++;
-      const pair = coPairs[`${from}|${to}`] ?? coDefault;
       recipe += pair.recipe;
       format += pair.format;
       hours += pair.hours;
     }
     perLine[lineName] = (perLine[lineName] ?? 0) + lineCount;
   }
-  return { total, recipe, format, hours: Math.round(hours * 100) / 100, perLine };
+  return {
+    total, recipe, format,
+    hours: Math.round(hours * 100) / 100,
+    perLine, cipReqViolations, transitionsAtCip,
+  };
 }
 
 export function computeKpis(
@@ -210,7 +243,7 @@ export function computeKpis(
   const adherence = computeAdherence(schedule, demand, caps, coveredByOrder);
   const met = adherence.filter((r) => r.status === "MET").length;
   const pct = adherence.length > 0 ? Math.round((met / adherence.length) * 1000) / 10 : 100;
-  const co = countChangeovers(schedule, coPairs, coDefault);
+  const co = countChangeovers(schedule, coPairs, coDefault, cipWindows);
   return {
     pctAdherence: pct,
     ordersMet: met,

@@ -36,8 +36,10 @@ KPI_TS = FRONTEND / "src" / "utils" / "kpi.ts"
 # ---------------------------------------------------------------------------
 # Fixture: covers met/under/over/unscheduled/no-min orders, a trial block
 # (excluded from qty and changeovers), a CIP, a same-SKU adjacency (no
-# transition), standards rows with setup_hours>0 and setup_hours==0, and a
-# SKU pair with no standards row (default classification).
+# transition), standards rows with setup_hours>0 and setup_hours==0, a
+# SKU pair with no standards row (default classification), a transition
+# fully waived by a CIP in its gap (2026-08-26 rule), and a cip_req_after
+# pair with no CIP in the gap (hygiene violation).
 # ---------------------------------------------------------------------------
 
 
@@ -70,6 +72,14 @@ def fixture_calendar() -> pd.DataFrame:
         _block("production", 2, "P11", 8, 12, "SKU_C", "O3"),  # same SKU: no CO
         _block("production", 3, "P12", 0, 5, "SKU_D", "O5"),
         _block("production", 3, "P12", 5, 9, "SKU_E", "O6"),  # pair not in standards
+        # P13 exercises the CIP rules (no demand orders — adherence untouched):
+        # F→G has the CIP fully in its gap → transition WAIVED everywhere and
+        # the cip_req_after flag is satisfied; G→F is flagged with no CIP →
+        # counted as a normal (recipe) transition PLUS a cip_req violation.
+        _block("production", 4, "P13", 0, 6, "SKU_F"),
+        _block("cip", 4, "P13", 6, 12, "CIP"),
+        _block("production", 4, "P13", 12, 18, "SKU_G"),
+        _block("production", 4, "P13", 18, 22, "SKU_F"),
     ]
     return pd.DataFrame(rows)[CALENDAR_COLUMNS]
 
@@ -95,6 +105,10 @@ CO_MAP = {
     # setup_hours == 0 falls back to per-type defaults: format 2.0 + recipe 1.0.
     ("SKU_B", "SKU_A"): {"setup_hours": 0.0, "ffs_change": 1},
     # (SKU_D, SKU_E) has no row: default = recipe, base 0.5 + recipe 1.0.
+    # cip_req_after pairs (2026-08-26): F→G is satisfied by the CIP in its
+    # gap (and waived); G→F has no CIP → violation, priced as plain recipe.
+    ("SKU_F", "SKU_G"): {"cip_req_after": 1},
+    ("SKU_G", "SKU_F"): {"cip_req_after": 1},
 }
 
 
@@ -166,11 +180,23 @@ def test_python_golden_values(py_result):
     assert py_result["pct_adherence"] == 50.0
 
     co = py_result["changeovers"]
-    assert co["sku_transitions"] == 3            # A→B, B→A, D→E
-    assert co["recipe_changes"] == 3
+    assert co["sku_transitions"] == 4            # A→B, B→A, D→E, G→F (F→G waived at CIP)
+    assert co["recipe_changes"] == 4
     assert co["format_changes"] == 2             # both standards rows flag ffs
-    assert co["total_co_hours"] == 7.5           # 3.0 + (2.0 + 1.0) + (0.5 + 1.0)
-    assert py_result["per_line_changeovers"] == {"P10": 2, "P11": 0, "P12": 1}
+    assert co["total_co_hours"] == 9.0           # 3.0 + (2.0 + 1.0) + (0.5 + 1.0) + (0.5 + 1.0)
+    assert py_result["per_line_changeovers"] == {"P10": 2, "P11": 0, "P12": 1, "P13": 1}
+
+    # CIP rules on this fixture (score_changeovers, the engine gantt_kpis
+    # wraps): F→G swallowed by the P13 CIP; flagged G→F with no CIP in the
+    # gap is the one violation. Pinned node-free so the TS parity below has
+    # canonical numbers to match.
+    from helpers.scorecard_engine import score_changeovers
+
+    co_full = score_changeovers(fixture_calendar(), scorecard_config({}), CO_MAP)
+    assert co_full["transitions_at_cip"] == 1
+    assert co_full["cip_req_violations"] == 1
+    assert co_full["cip_req_detail"] == [
+        {"line": "P13", "from_sku": "SKU_G", "to_sku": "SKU_F", "at_h": 18.0}]
 
     by_order = {r["order_id"]: r for r in py_result["adherence"]}
     assert by_order["O1"]["status"] == "MET" and by_order["O1"]["scheduled_qty"] == 1500
@@ -185,13 +211,19 @@ def test_python_golden_values(py_result):
     # co_pairs classification map the frontend consumes
     assert py_result["co_pairs"]["SKU_A|SKU_B"] == {
         "recipe": 1, "format": 1, "hours": 3.0,
-        "tl": 0, "ffs": 1, "cp": 0, "ttp": 0}
+        "tl": 0, "ffs": 1, "cp": 0, "ttp": 0, "cip_req": 0}
     assert py_result["co_pairs"]["SKU_B|SKU_A"] == {
         "recipe": 1, "format": 1, "hours": 3.0,
-        "tl": 0, "ffs": 1, "cp": 0, "ttp": 0}
+        "tl": 0, "ffs": 1, "cp": 0, "ttp": 0, "cip_req": 0}
+    assert py_result["co_pairs"]["SKU_F|SKU_G"] == {
+        "recipe": 1, "format": 0, "hours": 1.5,
+        "tl": 0, "ffs": 0, "cp": 0, "ttp": 0, "cip_req": 1}
+    assert py_result["co_pairs"]["SKU_G|SKU_F"] == {
+        "recipe": 1, "format": 0, "hours": 1.5,
+        "tl": 0, "ffs": 0, "cp": 0, "ttp": 0, "cip_req": 1}
     assert py_result["co_default"] == {
         "recipe": 1, "format": 0, "hours": 1.5,
-        "tl": 0, "ffs": 0, "cp": 0, "ttp": 0}
+        "tl": 0, "ffs": 0, "cp": 0, "ttp": 0, "cip_req": 0}
 
     # trial qty must NOT count: O2 scheduled is 800 (10h * 80), not 800 + trial
     assert by_order["O2"]["scheduled_qty"] == 800
@@ -220,7 +252,9 @@ const kpis = kpi.computeKpis(
 const adherence = kpi.computeAdherence(fx.schedule, fx.demand, fx.caps);
 const weekCredits = Object.fromEntries(
   adherence.map((r) => [r.order_id, kpi.weekFulfillmentCredit(r)]));
-const out = { kpis, adherence, weekCredits };
+const changeovers = kpi.countChangeovers(
+  fx.schedule, fx.co_pairs, fx.co_default, fx.cipWindows);
+const out = { kpis, adherence, weekCredits, changeovers };
 if (fx.covered) {
   out.coveredAdherence = kpi.computeAdherence(
     fx.covered.schedule, fx.covered.demand, fx.caps, fx.covered.map);
@@ -312,6 +346,15 @@ def test_ts_matches_python(py_result, tmp_path):
     assert ts["kpis"]["formatChanges"] == co["format_changes"]
     assert ts["kpis"]["totalCoHours"] == pytest.approx(co["total_co_hours"], abs=1e-9)
     assert ts["kpis"]["perLineChangeovers"] == py_result["per_line_changeovers"]
+
+    # CIP rules (2026-08-26): the TS port must waive the F→G transition at
+    # the P13 CIP and flag G→F as the one cip_req violation — the exact
+    # score_changeovers numbers.
+    from helpers.scorecard_engine import score_changeovers
+    py_co = score_changeovers(fixture_calendar(), scorecard_config({}), CO_MAP)
+    assert ts["changeovers"]["transitionsAtCip"] == py_co["transitions_at_cip"]
+    assert ts["changeovers"]["cipReqViolations"] == py_co["cip_req_violations"]
+    assert ts["changeovers"]["total"] == py_co["sku_transitions"]
 
     # Adherence rows: same order (codepoint SKU sort), same values.
     py_rows = py_result["adherence"]

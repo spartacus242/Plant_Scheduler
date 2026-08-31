@@ -80,6 +80,9 @@ export interface CoPairInfo {
   ffs?: number;
   cp?: number;
   ttp?: number;
+  /** a CIP is required between these SKUs (0/1) — satisfied (and the whole
+   * transition waived) when a CIP block sits fully in the gap. */
+  cip_req?: number;
 }
 
 /** Canonical KPI payload from helpers/scorecard_engine.gantt_kpis (Python is

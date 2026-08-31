@@ -593,13 +593,23 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     (e: React.MouseEvent, blockId: string) => {
       const block = [...schedule, ...cipWindows].find((b) => b.id === blockId);
       if (!block) return;
+      // Plain right-click on a SKU/trial block toggles the SKU highlight —
+      // same effect as clicking its row in the adherence list; right-click
+      // again (any block of that SKU) clears it. Works on locked/committed
+      // blocks too: highlighting is read-only. Shift+right-click keeps the
+      // Split/Remove menu; windows (CIP/downtime) keep the plain menu.
+      const sku = (block as ScheduleBlock).sku;
+      if (!e.shiftKey && (block.block_type === "sku" || block.block_type === "trial") && sku) {
+        setHighlightSku((prev) => (prev === sku ? null : sku));
+        return;
+      }
       if (isBlockLocked(block)) {
         reject(lockReason(block));
         return;
       }
       openMenu(e.clientX, e.clientY, blockId, block.block_type, block.start_hour, block.end_hour);
     },
-    [schedule, cipWindows, openMenu, reject, isBlockLocked, lockReason],
+    [schedule, cipWindows, openMenu, reject, isBlockLocked, lockReason, setHighlightSku],
   );
 
   const [popover, setPopover] = useState<{ block: ScheduleBlock; x: number; y: number } | null>(null);
@@ -1000,7 +1010,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   // Per-week chips (user request 2026-08-18): fulfillment vs the demand due
   // that ISO week + changeovers by machine, recomputed live client-side.
   const weekStats = useMemo(() => {
-    const stats: Record<string, { boardPct: number | null; madePct: number | null; tl: number; ffs: number; cp: number; ttp: number; board: number; credit: number; target: number }> = {};
+    const stats: Record<string, { boardPct: number | null; madePct: number | null; tl: number; ffs: number; cp: number; ttp: number; cipReq: number; board: number; credit: number; target: number }> = {};
     // MASTER-FILE RULE (user mandate 2026-08-21): the headline number is
     // BOARD fill — kg of calendar_blocks.csv blocks in the week (per-order
     // credit capped at target) vs the week's demand target. The board pass
@@ -1037,23 +1047,37 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     }
     const pairs = args.kpis?.co_pairs ?? {};
     const dflt = args.kpis?.co_default ?? { recipe: 1, format: 0, hours: 1.5 };
+    // Same CIP rules as countChangeovers (score_changeovers is the source of
+    // truth): a CIP fully inside the gap waives the transition entirely; a
+    // cip_req-flagged pair with no CIP in the gap is a hygiene violation.
+    const cipsByLineId: Record<number, [number, number][]> = {};
+    for (const c of cipWindows) {
+      if (c.block_type !== "cip") continue;
+      (cipsByLineId[c.line_id] ??= []).push([c.start_hour, c.end_hour]);
+    }
     for (const blocks of Object.values(byLine)) {
       const sorted = [...blocks].sort((a, b) => a.start_hour - b.start_hour);
       for (let i = 1; i < sorted.length; i++) {
-        const from = sorted[i - 1].sku;
+        const prev = sorted[i - 1];
+        const from = prev.sku;
         const to = sorted[i].sku;
         if (from === to) continue;
+        const waived = (cipsByLineId[prev.line_id] ?? []).some(
+          ([cs, ce]) => cs >= prev.end_hour - 1e-6 && ce <= sorted[i].start_hour + 1e-6,
+        );
+        if (waived) continue;
         const wk = `W${isoWeekAtHour(anchor, sorted[i].start_hour)}`;
-        const st = (stats[wk] ??= { boardPct: null, madePct: null, tl: 0, ffs: 0, cp: 0, ttp: 0, board: 0, credit: 0, target: 0 });
+        const st = (stats[wk] ??= { boardPct: null, madePct: null, tl: 0, ffs: 0, cp: 0, ttp: 0, cipReq: 0, board: 0, credit: 0, target: 0 });
         const pi = pairs[`${from}|${to}`] ?? dflt;
         st.tl += pi.tl ?? 0;
         st.ffs += pi.ffs ?? 0;
         st.cp += pi.cp ?? 0;
         st.ttp += pi.ttp ?? 0;
+        if ((pi.cip_req ?? 0) === 1) st.cipReq += 1;
       }
     }
     for (const [wk, d] of Object.entries(dem)) {
-      const st = (stats[wk] ??= { boardPct: null, madePct: null, tl: 0, ffs: 0, cp: 0, ttp: 0, board: 0, credit: 0, target: 0 });
+      const st = (stats[wk] ??= { boardPct: null, madePct: null, tl: 0, ffs: 0, cp: 0, ttp: 0, cipReq: 0, board: 0, credit: 0, target: 0 });
       st.board = d.board;
       st.credit = Math.max(0, d.sched - d.board);
       st.target = d.target;
@@ -1064,7 +1088,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     // live from the current board + ledger on every edit/rerun — Save is
     // never required for them to be accurate.
     return { byWeek: stats, computedAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) };
-  }, [schedule, args.demandTargets, args.capabilities, args.kpis, anchor, coveredByOrder]);
+  }, [schedule, cipWindows, args.demandTargets, args.capabilities, args.kpis, anchor, coveredByOrder]);
 
   const zoomIn = useCallback(() => {
     userZoomed.current = true;
@@ -1276,6 +1300,16 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
                     <span style={{ fontSize: 11.5, color: "#555", fontWeight: 600 }}>
                       TL {ws.tl} · FFS {ws.ffs} · CP {ws.cp} · TTP {ws.ttp}
                     </span>
+                    {ws.cipReq > 0 && (
+                      <span
+                        title={`${ws.cipReq} transition${ws.cipReq === 1 ? "" : "s"} this week require${ws.cipReq === 1 ? "s" : ""} a CIP between the SKUs but no CIP block sits in the gap — schedule a clean or resequence`}
+                        style={{
+                          fontSize: 11, fontWeight: 800, color: "#fff",
+                          background: "#c62828", borderRadius: 10, padding: "1px 8px",
+                        }}>
+                        CIP req {ws.cipReq}
+                      </span>
+                    )}
                   </div>
                 ))}
             </div>
