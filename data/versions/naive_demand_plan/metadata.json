@@ -1,38 +1,37 @@
 {
   "name": "Naive (demand plan as-is)",
-  "timestamp": "2026-08-19T10:33:16",
+  "timestamp": "2026-08-21T17:54:41",
   "source": "naive_demand_plan",
   "pros": "",
   "cons": "",
   "notes": "Strawman: demand plan laid out as-is (AZAP week honoured, fastest capable line, no changeover/CIP/optimization).",
   "scorecard": {
     "week_label": "Naive (demand plan as-is)",
-    "scored_at": "2026-08-19T10:33:16",
+    "scored_at": "2026-08-21T17:54:41",
     "changeovers": {
-      "recipe_changes": 82,
-      "format_changes": 82,
+      "recipe_changes": 90,
+      "format_changes": 90,
       "topload_changes": 44,
-      "ffs_changes": 6,
-      "casepacker_changes": 18,
-      "ttp_changes": 79,
+      "ffs_changes": 4,
+      "casepacker_changes": 20,
+      "ttp_changes": 89,
       "recipe_only_changes": 0,
-      "weighted_co": 265.0,
-      "total_co_hours": 210.0,
-      "sku_transitions": 82,
+      "weighted_co": 273.0,
+      "total_co_hours": 242.0,
+      "sku_transitions": 90,
       "per_line_transitions": {
-        "P09": 3,
-        "P19": 3,
-        "P20": 18,
-        "P21": 2,
-        "P22": 3,
+        "P09": 4,
+        "P19": 5,
+        "P20": 20,
+        "P21": 4,
+        "P22": 5,
         "P11": 7,
-        "P12": 7,
         "P13": 3,
-        "P14": 0,
+        "P14": 2,
         "P15": 9,
-        "P16": 4,
-        "P17": 7,
-        "P18": 16
+        "P16": 3,
+        "P17": 14,
+        "P18": 14
       }
     },
     "cip": {
@@ -40,7 +39,7 @@
       "cip_hours": 0.0,
       "cip_forfeited_h": 0.0,
       "cip_forfeited_kg": 0.0,
-      "cip_overdue": 69
+      "cip_overdue": 79
     },
     "trials": {
       "trial_hours": 0.0,
@@ -48,33 +47,33 @@
       "available": false
     },
     "campaigns": {
-      "avg_run_h": 38.61,
+      "avg_run_h": 34.09,
       "short_run_count": 0,
-      "production_blocks": 96,
-      "total_prod_h": 3706.49
+      "production_blocks": 103,
+      "total_prod_h": 3511.24
     },
     "service": {
-      "orders_at_risk": 0,
-      "orders_late": 144,
+      "orders_at_risk": 15,
+      "orders_late": 225,
       "excess_inventory_kg": 0.0,
       "excess_inventory_kg_estimated": false,
       "available": true,
-      "orders_total": 144
+      "orders_total": 271
     },
     "category_scores": {
       "changeovers": 0.0,
       "cip": 0.0,
       "trials": null,
       "campaigns": 100.0,
-      "service": 66.7
+      "service": 41.7
     },
-    "composite": 43.8,
+    "composite": 34.4,
     "formulas": {
       "weighted_co": "Severity-weighted changeover load. Each transition is counted per machine it touches: FFS x3, topload x3, casepacker x2, TTP x1; a recipe-only change (no machine flags) counts x1.",
       "recipe_changes": "Count of adjacent production transitions on the same line where recipe/SKU family differs (changeover flags: flavor/organic/cinnamon; else SKU change that is not format-only).",
       "format_changes": "Count of adjacent production transitions with packaging format change (topload / TTP / FFS / casepacker flags from changeover standards).",
       "total_co_hours": "Sum of estimated changeover hours per transition from standards table, else configurable defaults by CO type. Idle gaps alone are not counted.",
-      "cip_count": "Number of CIP blocks in the horizon.",
+      "cip_count": "Number of CIP blocks in the horizon. REPORTED ONLY - every CIP is mandated by cip_info, so the count is the same on any compliant schedule and cannot be optimized.",
       "cip_hours": "Sum of CIP block durations (end_h - start_h).",
       "cip_forfeited_h": "For each CIP: max(0, line_cip_interval_h - run_hours_since_last_cip). Cleaning earlier than the interval forfeits unused dirty-time budget. REPORTED ONLY - the scored version of this metric is cip_forfeited_kg.",
       "cip_forfeited_kg": "Forfeited CIP dirty-time converted to KILOGRAMS of lost production, valuing each forfeited hour at that line's average run rate (kg/h).",
@@ -88,5 +87,5 @@
     },
     "notes": []
   },
-  "planning_anchor": "2026-08-19 00:00:00"
+  "planning_anchor": "2026-08-21 00:00:00"
 }

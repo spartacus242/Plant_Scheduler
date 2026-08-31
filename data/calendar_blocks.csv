@@ -1,202 +1,104 @@
 block_id,block_type,line_id,line_name,start_h,end_h,label,order_id,sku,sku_description,qty_kg,locked,attrs
-cs_6d6c184b4a,production,0,P09,3.667,48.649,280264,29992,280264,6X12X90 WALMRT F&V PEC-BER-STB,30002.4,True,current_state:running;pct=14.0;started=2026-08-19T03:40
-cs_7620ae542f,production,0,P09,48.649,55.75,280323,30033,280323,1X32X90 APL GGS,5766.78,False,current_state:queued;pct=0.0;split
-cs_f61f18742b,cip,0,P09,55.75,61.75,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_7620ae542f,production,0,P09,61.75,127.299,280323,30033,280323,1X32X90 APL GGS,53232.9,False,current_state:queued;pct=0.0;split
-cs_1578c1e313,cip,0,P09,175.75,181.75,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_7305ede009,cip,0,P09,295.75,301.75,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_56df405a54,cip,0,P09,415.75,421.75,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_a66068ffd0,production,1,P10,0.0,119.3,280351,29993,280351,1X24X90 KIRK ORG STBSPN-MANPEC,117109.34,True,current_state:running;pct=25.9;started=2026-08-16T03:38;clamped_to_anchor;split
-cs_feae3a42bd,cip,1,P10,119.3,125.3,CIP (projected),,,anti-static needs worked on during CIP. WO#569452,0.0,False,current_state:cip_projected
-cs_a66068ffd0,production,1,P10,125.3,167.798,280351,29993,280351,1X24X90 KIRK ORG STBSPN-MANPEC,41717.62,True,current_state:running;pct=25.9;started=2026-08-16T03:38;clamped_to_anchor;split
-cs_883cb62bd2,cip,1,P10,263.3,269.3,CIP (projected),,,anti-static needs worked on during CIP. WO#569452,0.0,False,current_state:cip_projected
-cs_e988abf053,cip,1,P10,407.3,413.3,CIP (projected),,,anti-static needs worked on during CIP. WO#569452,0.0,False,current_state:cip_projected
-cs_73cd520373,cip,2,P11,144.0,150.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_d2d96bb3c0,cip,2,P11,288.0,294.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_a070b6280a,cip,2,P11,432.0,438.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_3be024c2d9,cip,3,P12,120.0,126.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_836ccafa4c,cip,3,P12,240.0,246.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_2c5a074734,cip,3,P12,360.0,366.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_24fdfab8c4,cip,3,P12,480.0,486.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_0343b17f55,cip,4,P13,144.0,150.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_a1b2c300fa,cip,4,P13,288.0,294.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_6e7acda780,cip,4,P13,432.0,438.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_e496a1b8b9,production,5,P14,0.0,35.0,120437,29994,120437,6X12X90 ASTB GGS,33702.48,True,current_state:running;pct=41.5;started=2026-08-18T09:26;clamped_to_anchor;split
-cs_552a061840,cip,5,P14,35.0,41.0,CIP,,,,0.0,True,current_state:cip_scheduled
-cs_acc1db556f,production,5,P14,41.0,80.516,280572,29995,280572,6X10X90 ACIN GGS,30002.4,False,current_state:queued;pct=0.0
-cs_172d0bf68f,production,5,P14,80.516,94.576,280090,30034,280090,12X4X90 ABLB GGS CAN,10549.44,False,current_state:queued;pct=0.0
-cs_d719f2e2dc,production,5,P14,94.576,112.196,120532,29997,120532,12X4X90 ASTB GGS CAN,13214.88,False,current_state:queued;pct=0.0
-cs_fde2f7eab4,production,5,P14,112.196,142.856,280478,29998,280478,2X22X90 APL GGS CAN,22999.68,False,current_state:queued;pct=0.0
-cs_0b09242ca1,cip,5,P14,155.0,161.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_6cdd644e3d,cip,5,P14,275.0,281.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_f597b657f0,cip,5,P14,395.0,401.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_2643d28039,production,6,P15,0.0,17.504,280622,30051,280622,9X4X120 ACTCHU TROP GGS,14999.04,True,current_state:running;pct=83.7;started=2026-08-17T09:02;clamped_to_anchor
-cs_b39a47f48a,cip,6,P15,25.0,31.0,CIP,,,,0.0,True,current_state:cip_scheduled
-cs_484ac15d9a,production,6,P15,31.0,39.484,280612,30052,280612,9X4X100 SLY STBLEM GGS,9000.0,False,current_state:queued;pct=0.0
-cs_27389e9eec,production,6,P15,39.484,71.474,280698,30053,280698,1X40X100 SLY BLURSB FS,24000.0,False,current_state:queued;pct=0.0
-cs_5b552418c6,cip,6,P15,169.0,175.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_6917bbf4f6,cip,6,P15,313.0,319.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_f744fb1f12,cip,6,P15,457.0,463.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_2d2dc4c04d,production,7,P16,0.0,25.192,280591,30001,280591,1X24X90 VP APL-BAN-STB GGS,19038.24,True,current_state:running;pct=56.9;started=2026-08-18T09:05;clamped_to_anchor
-cs_8cdd7cec59,production,7,P16,25.192,61.0,280264,30002,280264,6X12X90 WALMRT F&V PEC-BER-STB,29995.54,False,current_state:queued;pct=0.0;split
-cs_a204319768,cip,7,P16,61.0,67.0,CIP,,,,0.0,True,current_state:cip_scheduled
-cs_8cdd7cec59,production,7,P16,67.0,82.642,280264,30002,280264,6X12X90 WALMRT F&V PEC-BER-STB,13102.94,False,current_state:queued;pct=0.0;split
-cs_d104a177df,production,7,P16,82.642,111.702,280348,30003,280348,1X48X90 VP APL-CIN GGS,21798.72,False,current_state:queued;pct=0.0
-cs_a3bd04e47b,cip,7,P16,205.0,211.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_063baf616f,cip,7,P16,349.0,355.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_b877a60a07,cip,7,P16,493.0,499.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_164bea08dc,production,8,P17,0.0,41.093,280480,30006,280480,1X28X90 ORG VP APL-CIN-PEC-STB,88000.92,True,current_state:running;pct=54.2;started=2026-08-17T18:14;clamped_to_anchor
-cs_2494409230,cip,8,P17,53.117,59.117,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_11dae877c3,cip,8,P17,173.117,179.117,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_366a9584c1,cip,8,P17,293.117,299.117,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_74b0965e6b,cip,8,P17,413.117,419.117,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_96d127b723,production,9,P18,0.0,37.781,280451,30058,280451,2X20X90 PINPAS-STB-PER-MAN CAN,113000.4,True,current_state:running;pct=68.8;started=2026-08-16T11:46;clamped_to_anchor
-cs_c17a9ee558,production,9,P18,37.781,85.041,280453,30007,280453,2X20X90 VP APL-GRA-BER CAN,70898.4,False,current_state:queued;pct=0.0
-cs_7ad19eb6f3,production,9,P18,85.041,101.783,570223,30008,570223,2X20X90 AP-MANGVA-PEC DINO CAN,31065.96,False,current_state:queued;pct=0.0;split
-cs_fc2ac4564a,cip,9,P18,101.783,107.783,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_7ad19eb6f3,production,9,P18,107.783,116.371,570223,30008,570223,2X20X90 AP-MANGVA-PEC DINO CAN,15935.64,False,current_state:queued;pct=0.0;split
-cs_a6d1416a33,production,9,P18,116.371,140.031,280452,30009,280452,2X20X90 VP MANGVA-PEC-BLB CAN,35499.6,False,current_state:queued;pct=0.0
-cs_866ca2dec8,production,9,P18,140.031,163.361,280324,30045,280324,1X32X90 VP APL-CIN-STB-GM5 GGS,35000.64,False,current_state:queued;pct=0.0
-cs_1b57c9382b,cip,9,P18,221.783,227.783,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_f9639f9179,cip,9,P18,341.783,347.783,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_ba30b01d7e,cip,9,P18,461.783,467.783,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_08123bd410,production,10,P19,0.0,23.0,280256,30011,280256,1X24X90 KIRKLAND ORG UNSWT APL,94353.66,True,current_state:running;pct=75.1;started=2026-08-16T00:55;clamped_to_anchor;split
-cs_33175194c1,cip,10,P19,23.0,29.0,CIP,,,,0.0,True,current_state:cip_scheduled
-cs_08123bd410,production,10,P19,29.0,50.447,280256,30011,280256,1X24X90 KIRKLAND ORG UNSWT APL,87982.74,True,current_state:running;pct=75.1;started=2026-08-16T00:55;clamped_to_anchor;split
-cs_2997b3f07d,production,10,P19,64.0,95.33,280351,30012,280351,1X24X90 KIRK ORG STBSPN-MANPEC,46999.44,False,current_state:queued;pct=0.0
-cs_56d46653fe,cip,10,P19,143.0,149.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_0a90402309,cip,10,P19,263.0,269.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_fce6c3f349,cip,10,P19,383.0,389.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_3cd02b718f,cip,10,P19,503.0,504.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_dd8b61aa7f,production,11,P20,0.0,36.02,280480,30014,280480,1X28X90 ORG VP APL-CIN-PEC-STB,145000.8,True,current_state:running;pct=77.5;started=2026-08-16T00:05;clamped_to_anchor
-cs_e7387dd458,cip,11,P20,59.0,65.0,CIP,,,,0.0,True,current_state:cip_scheduled
-cs_4fac6aaea2,production,11,P20,65.0,113.34,280586,30013,280586,4X16X90 VP APL-PEC-GM5 GGS,80000.64,False,current_state:queued;pct=0.0
-cs_b75ffb59f7,production,11,P20,113.34,133.33,280585,30039,280585,4X16X90 VP APL-BAN-STB GGS,29998.08,False,current_state:queued;pct=0.0
-cs_bb0842b634,cip,11,P20,179.0,185.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_ab88d00866,cip,11,P20,299.0,305.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_ef3fbcfb1f,cip,11,P20,419.0,425.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_6333156631,production,12,P21,0.0,100.8,280480,30017,280480,1X28X90 ORG VP APL-CIN-PEC-STB,245988.65,True,current_state:running;pct=43.3;started=2026-08-16T00:09;clamped_to_anchor;split
-cs_e2d93366f7,cip,12,P21,100.8,106.8,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_6333156631,production,12,P21,106.8,111.722,280480,30017,280480,1X28X90 ORG VP APL-CIN-PEC-STB,12011.47,True,current_state:running;pct=43.3;started=2026-08-16T00:09;clamped_to_anchor;split
-cs_ed1656a842,production,12,P21,111.722,158.382,280490,30016,280490,1X28X90 FV VP ASTBZUC-APERCAR,70000.56,False,current_state:queued;pct=0.0
-cs_da6e065fa4,production,12,P21,158.382,178.382,280212,30059,280212,1X24X90 ORG VP APL-CIN-BAN-STB,30000.24,False,current_state:queued;pct=0.0
-cs_04aa7fef64,cip,12,P21,220.8,226.8,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_e3f08e1384,cip,12,P21,340.8,346.8,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_c5c8825b19,cip,12,P21,460.8,466.8,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_b9a5fc54f0,production,13,P22,0.0,28.707,120448,30018,120448,6X12X90 ACIN GGS,104263.2,True,current_state:running;pct=79.2;started=2026-08-16T00:04;clamped_to_anchor
-cs_5694ebf26e,production,13,P22,30.0,50.0,241283,30020,241283,6X12X90 ORG VP APL-BAN-STB GGS,30002.4,False,current_state:queued;pct=0.0
-cs_8406fa76c2,production,13,P22,50.0,70.0,280324,30041,280324,1X32X90 VP APL-CIN-STB-GM5 GGS,30000.96,False,current_state:queued;pct=0.0
-cs_6137034957,production,13,P22,70.0,99.99,280480,30021,280480,1X28X90 ORG VP APL-CIN-PEC-STB,44999.64,False,current_state:queued;pct=0.0
-cs_6c68a11d18,cip,13,P22,123.217,129.217,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_20abe20256,cip,13,P22,243.217,249.217,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_386ccfec21,cip,13,P22,363.217,369.217,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_acd22169ab,cip,13,P22,483.217,489.217,CIP (projected),,,,0.0,False,current_state:cip_projected
-prod_a8db984341,production,0,P09,422.0,445.0,251200,251200-W4,251200,6X12X90 VP APL-STB GGS CAN,16951.0,False,
-prod_0af81cbc7a,production,0,P09,395.0,415.0,280318,280318-W4,280318,GGS VP APL-MNG-RSPLEM 6x12x90g CAN,14740.0,False,
-prod_ba01d4930a,production,0,P09,205.0,289.0,280351,280351-W4,280351,KIRKLAND OFV VP STBSPN-MANPECCA 1x24x90g,61908.0,False,
-prod_98f8e4472a,production,0,P09,302.0,369.0,280583,280583-W4,280583,GGS APL 4x16x3.2oz,49379.0,False,
-prod_a0093341df,production,0,P09,183.0,204.0,280323,280323-W5,280323,GGS APL APL 1x32x3.2oz,15477.0,False,
-prod_bc4dee8803,production,0,P09,369.0,384.0,280421,280421-W5,280421,GGS VP APL-STB-BAN-PEC 2x20x90g - CAN,11055.0,False,
-prod_c2a1730dfa,production,0,P09,445.0,456.0,280578,280578-W5,280578,GGS VP APL-GM5 6x10x3.2oz,8107.0,False,
-prod_54dc5a98ec,production,0,P09,384.0,395.0,570468,570468-W5,570468,GGS VP APL-BAN 2x22x90g CAN,8107.0,False,
-prod_a2d54be5fd,production,3,P12,246.0,261.0,120437,120437-W3,120437,6X12X90 ASTB GGS,9435.0,False,
-prod_4f8d8f3858,production,3,P12,218.0,240.0,120532,120532-W3,120532,GGS APL STB 12x4x90g CAN,13838.0,False,
-prod_88b4394d0c,production,3,P12,208.0,218.0,120536,120536-W3,120536,GGS APL BER 12x4x90g CAN,6290.0,False,
-prod_c87307ab7f,production,3,P12,195.0,203.0,120451,120451-W4,120451,12X4X90 ORG ASTB GGS,5032.0,False,
-prod_935a938396,production,3,P12,174.0,194.0,120532,120532-W4,120532,GGS APL STB 12x4x90g CAN,12580.0,False,
-prod_265842ddc5,production,3,P12,158.0,174.0,280090,280090-W4,280090,12X4X90 ABLB GGS CAN,10064.0,False,
-prod_52231d47bf,production,3,P12,127.0,157.0,280613,280613-W4,280613,GGS SLY BLURSB 6x10x100g,18870.0,False,
-prod_0136df8560,production,3,P12,262.0,316.0,280610,280610-W4,280610,GGS ACTCHU ACIN 1x36x120g FS,33966.0,False,
-prod_84f1e635b0,production,3,P12,388.0,402.0,280698,280698-W4,280698,GGS SLY BLURSB 1x40x100g FS,8806.0,False,
-prod_2f14e4eec6,production,3,P12,403.0,480.0,120437,120437-W5,120437,6X12X90 ASTB GGS,48433.0,False,
-prod_8e0e62887e,production,3,P12,318.0,343.0,280436,280436-W5,280436,GUTZY ORG BANAPLBLBPOM 6x4x110g,15725.0,False,
-prod_1e3a6355ef,production,3,P12,366.0,388.0,280613,280613-W5,280613,GGS SLY BLURSB 6x10x100g,13838.0,False,
-prod_04f26c38d6,production,3,P12,344.0,360.0,280614,280614-W5,280614,GGS SLY STBLEM 6x10x100g,10064.0,False,
-prod_f6a6a9838a,production,5,P14,233.0,275.0,280581,280581-W3,280581,GGS FV VP APECSWP-ASTBZUC 6x10x3.2oz,29820.0,False,
-prod_dce4bc2cb7,production,5,P14,222.0,233.0,280602,280602-W3,280602,GGS FV ABERCAR 6x4x3.2oz,7810.0,False,
-prod_73286f640c,production,5,P14,401.0,407.0,120451,120451-W4,120451,12X4X90 ORG ASTB GGS,4260.0,False,
-prod_f6627e5250,production,5,P14,349.0,366.0,280345,280345-W4,280345,GGS APL APL 6x4x3.2oz,12070.0,False,
-prod_9eee3ad485,production,5,P14,212.0,222.0,280347,280347-W4,280347,GGS APL STB 6x4x3.2oz,7100.0,False,
-prod_46bab2801e,production,5,P14,281.0,349.0,280580,280580-W4,280580,GGS FV VP APERCAR-ABERCAR 6x10x3.2oz,48280.0,False,
-prod_6474eb4c69,production,5,P14,163.0,212.0,280581,280581-W4,280581,GGS FV VP APECSWP-ASTBZUC 6x10x3.2oz,34790.0,False,
-prod_e2697cf1e8,production,5,P14,366.0,391.0,280601,280601-W4,280601,GGS FV APERCAR 6x4x3.2oz,17750.0,False,
-prod_5b25873dd3,production,5,P14,391.0,395.0,280602,280602-W4,280602,GGS FV ABERCAR 6x4x3.2oz,2840.0,False,
-prod_39b402b271,production,5,P14,407.0,468.0,280572,280572-W5,280572,GGS ACIN 6x10x3.2oz,43310.0,False,
-prod_0841816a4b,production,5,P14,468.0,480.0,280578,280578-W5,280578,GGS VP APL-GM5 6x10x3.2oz,8520.0,False,
-prod_e89243095c,production,5,P14,480.0,492.0,570468,570468-W5,570468,GGS VP APL-BAN 2x22x90g CAN,8520.0,False,
-prod_1ce9e8db64,production,6,P15,73.0,120.0,280264,280264-W2,280264,6X12X90 WALMRT F&V PEC-BER-STB,30550.0,False,
-prod_13251f34e6,production,6,P15,138.0,154.0,120437,120437-W3,120437,6X12X90 ASTB GGS,10400.0,False,
-prod_e3b9a312cc,production,6,P15,258.0,288.0,280104,280104-W3,280104,2X20X90 VP APL-CIN GGS,19500.0,False,
-prod_7033dfe7ef,production,6,P15,120.0,138.0,280121,280121-W3,280121,6X12X90 VP APL-BLB GGS CAN,11700.0,False,
-prod_cc05b67eaa,production,6,P15,175.0,192.0,280212,280212-W3,280212,GGS ORG VP APL-CIN-BAN-STB 1X24x3.2oz,11050.0,False,
-prod_f3693cc1df,production,6,P15,154.0,169.0,280324,280324-W3,280324,GGS VP APL-CIN-STB-GM5 1x32x3.2oz,9750.0,False,
-prod_34291d3873,production,6,P15,192.0,258.0,280351,280351-W3,280351,KIRKLAND OFV VP STBSPN-MANPECCA 1x24x90g,42900.0,False,
-prod_c31daf6710,production,7,P16,171.0,175.0,120448,120448-W3,120448,6X12X90 ACIN GGS,3240.0,False,
-prod_87c8fd86a6,production,7,P16,161.0,171.0,280121,280121-W3,280121,6X12X90 VP APL-BLB GGS CAN,8100.0,False,
-prod_82a95b57b6,production,7,P16,175.0,205.0,570560,570560-W3,570560,GGS APL 1x48x90g CAN FS,24300.0,False,
-prod_192286e6fe,production,7,P16,426.0,439.0,280563,280563-W4,280563,WALMART FV VP PEC-BER-STBAN-PER 1x24x90g,10530.0,False,
-prod_2b339ee8f8,production,7,P16,355.0,426.0,280686,280686-W4,280686,MM ORG APL 1x24x90g,57510.0,False,
-prod_5a73702e42,production,7,P16,131.0,161.0,280264,280264-W5,280264,6X12X90 WALMRT F&V PEC-BER-STB,24300.0,False,
-prod_f15525a5b0,production,7,P16,211.0,349.0,280351,280351-W5,280351,KIRKLAND OFV VP STBSPN-MANPECCA 1x24x90g,111780.0,False,
-prod_9ac7ddb2a4,production,8,P17,60.0,120.0,570261,570261-W2,570261,GGS ORG VP APL-STB-BAN-CIN 1x28x90g CAN,89700.0,False,
-prod_b89996a47c,production,8,P17,124.0,142.0,120448,120448-W3,120448,6X12X90 ACIN GGS,26910.0,False,
-prod_cee301cb35,production,8,P17,222.0,253.0,280103,280103-W3,280103,2X20X90 VP APL-BAN-STB GGS,46345.0,False,
-prod_1911104458,production,8,P17,193.0,222.0,280421,280421-W3,280421,GGS VP APL-STB-BAN-PEC 2x20x90g - CAN,43355.0,False,
-prod_ac45425326,production,8,P17,258.0,274.0,280490,280490-W3,280490,GGS F&V VP ASTBZUC-APERCAR 1x28x3.2oz,23920.0,False,
-prod_278bf83bb7,production,8,P17,180.0,193.0,280563,280563-W3,280563,WALMART FV VP PEC-BER-STBAN-PER 1x24x90g,19435.0,False,
-prod_eb31968183,production,8,P17,300.0,360.0,120448,120448-W4,120448,6X12X90 ACIN GGS,89700.0,False,
-prod_345007eb63,production,8,P17,276.0,293.0,280323,280323-W4,280323,GGS APL APL 1x32x3.2oz,25415.0,False,
-prod_0042ed6eed,production,8,P17,360.0,403.0,280324,280324-W4,280324,GGS VP APL-CIN-STB-GM5 1x32x3.2oz,64285.0,False,
-prod_7abf8a5686,production,8,P17,253.0,258.0,280344,280344-W5,280344,GGS F&V VP BER-PEC-PER 2x20x3.2oz DINO,7475.0,False,
-prod_448cf3ad30,production,8,P17,120.0,124.0,280490,280490-W5,280490,GGS F&V VP ASTBZUC-APERCAR 1x28x3.2oz,5980.0,False,
-prod_3954f38e31,production,8,P17,142.0,166.0,280591,280591-W5,280591,GGS VP APL-BAN-STB 1x24x3.2oz,35880.0,False,
-prod_a4e510f814,production,9,P18,205.0,221.0,280104,280104-W3,280104,2X20X90 VP APL-CIN GGS,24432.0,False,
-prod_73a67bb8a9,production,9,P18,188.0,205.0,280103,280103-W4,280103,2X20X90 VP APL-BAN-STB GGS,25959.0,False,
-prod_a158ce76b4,production,9,P18,168.0,188.0,280421,280421-W4,280421,GGS VP APL-STB-BAN-PEC 2x20x90g - CAN,30540.0,False,
-prod_c5d8a1a133,production,9,P18,228.0,341.0,280480,280480-W4,280480,GGS ORG VP APL-CIN-PEC-STB 1x28x3.2oz,172551.0,False,
-prod_58a96eaa50,production,9,P18,381.0,387.0,280563,280563-W4,280563,WALMART FV VP PEC-BER-STBAN-PER 1x24x90g,9162.0,False,
-prod_be772c63c4,production,9,P18,387.0,408.0,280564,280564-W4,280564,WALMART VP UNSWT APL-CIN-STB 1x24x90g,32067.0,False,
-prod_7916ed7c8c,production,9,P18,422.0,451.0,280103,280103-W5,280103,2X20X90 VP APL-BAN-STB GGS,44283.0,False,
-prod_2fe0e0515e,production,9,P18,468.0,502.0,280104,280104-W5,280104,2X20X90 VP APL-CIN GGS,51918.0,False,
-prod_08bd4571ea,production,9,P18,348.0,381.0,280324,280324-W5,280324,GGS VP APL-CIN-STB-GM5 1x32x3.2oz,50391.0,False,
-prod_8698fbd132,production,9,P18,451.0,461.0,280344,280344-W5,280344,GGS F&V VP BER-PEC-PER 2x20x3.2oz DINO,15270.0,False,
-prod_4332f0766f,production,9,P18,408.0,422.0,280563,280563-W5,280563,WALMART FV VP PEC-BER-STBAN-PER 1x24x90g,21378.0,False,
-prod_6a2571959c,production,10,P19,106.0,119.0,280490,280490-W2,280490,GGS F&V VP ASTBZUC-APERCAR 1x28x3.2oz,19435.0,False,
-prod_f043224a1d,production,10,P19,149.0,255.0,280256,280256-W3,280256,KIRKLAND ORG APL 1x24x90g,158470.0,False,
-prod_20ef0f4d04,production,10,P19,255.0,263.0,280351,280351-W3,280351,KIRKLAND OFV VP STBSPN-MANPECCA 1x24x90g,11960.0,False,
-prod_4722619d7b,production,10,P19,269.0,383.0,280256,280256-W4,280256,KIRKLAND ORG APL 1x24x90g,170430.0,False,
-prod_42362300c9,production,10,P19,389.0,421.0,280351,280351-W4,280351,KIRKLAND OFV VP STBSPN-MANPECCA 1x24x90g,47840.0,False,
-prod_53d3ca5da6,production,10,P19,421.0,502.0,280256,280256-W5,280256,KIRKLAND ORG APL 1x24x90g,121095.0,False,
-prod_d1083f9dee,production,10,P19,120.0,143.0,280351,280351-W5,280351,KIRKLAND OFV VP STBSPN-MANPECCA 1x24x90g,34385.0,False,
-prod_bb9dc14e9c,production,11,P20,171.0,179.0,280264,280264-W3,280264,6X12X90 WALMRT F&V PEC-BER-STB,12128.0,False,
-prod_bdd56c8d19,production,11,P20,213.0,228.0,280584,280584-W3,280584,GGS FV VP BER-PEC-PER 4x16x3.2oz DINO,22740.0,False,
-prod_bc19146dc1,production,11,P20,228.0,280.0,280585,280585-W3,280585,GGS VP APL-BAN-STB 4x16x3.2oz,78832.0,False,
-prod_0e7fade667,production,11,P20,163.0,171.0,280566,280566-W3,280566,WALMART FV VP PERZU-MANPU-STBSQ 6x12x90g,12128.0,False,
-prod_f8605937d1,production,11,P20,425.0,441.0,280103,280103-W4,280103,2X20X90 VP APL-BAN-STB GGS,24256.0,False,
-prod_2f69117d3d,production,11,P20,280.0,299.0,280584,280584-W4,280584,GGS FV VP BER-PEC-PER 4x16x3.2oz DINO,28804.0,False,
-prod_1b84ea8f77,production,11,P20,305.0,359.0,570261,570261-W4,570261,GGS ORG VP APL-STB-BAN-CIN 1x28x90g CAN,81864.0,False,
-prod_38e3202c3f,production,11,P20,185.0,192.0,251200,251200-W5,251200,6X12X90 VP APL-STB GGS CAN,10612.0,False,
-prod_64b4cd717a,production,11,P20,381.0,400.0,280264,280264-W5,280264,6X12X90 WALMRT F&V PEC-BER-STB,28804.0,False,
-prod_005f112288,production,11,P20,377.0,381.0,280318,280318-W5,280318,GGS VP APL-MNG-RSPLEM 6x12x90g CAN,6064.0,False,
-prod_814cf4ffba,production,11,P20,359.0,377.0,280490,280490-W5,280490,GGS F&V VP ASTBZUC-APERCAR 1x28x3.2oz,27288.0,False,
-prod_5a4bf1ce91,production,11,P20,192.0,213.0,280583,280583-W5,280583,GGS APL 4x16x3.2oz,31836.0,False,
-prod_79b967e5d2,production,11,P20,401.0,419.0,570261,570261-W5,570261,GGS ORG VP APL-STB-BAN-CIN 1x28x90g CAN,27288.0,False,
-prod_9bcbdf22a8,production,11,P20,442.0,496.0,280686,280686-W5,280686,MM ORG APL 1x24x90g,81864.0,False,
-prod_c16431c8a7,production,12,P21,227.0,280.0,280590,280590-W3,280590,GGS APL 1x24x3.2oz,78069.0,False,
-prod_dd2e70eaf7,production,12,P21,179.0,220.0,570261,570261-W3,570261,GGS ORG VP APL-STB-BAN-CIN 1x28x90g CAN,60393.0,False,
-prod_6ca71c057a,production,12,P21,280.0,298.0,280591,280591-W5,280591,GGS VP APL-BAN-STB 1x24x3.2oz,26514.0,False,
-prod_f09db22db8,production,13,P22,195.0,218.0,241283,241283-W3,241283,6X12X90 ORG VP APL-BAN-STB GGS,32154.0,False,
-prod_66b64eb40d,production,13,P22,218.0,223.0,251200,251200-W3,251200,6X12X90 VP APL-STB GGS CAN,6990.0,False,
-prod_542dd5cb67,production,13,P22,145.0,155.0,280212,280212-W3,280212,GGS ORG VP APL-CIN-BAN-STB 1X24x3.2oz,13980.0,False,
-prod_d08395f74c,production,13,P22,250.0,265.0,280478,280478-W3,280478,GGS APL APL 2x22x90g CAN,20970.0,False,
-prod_e45d9d2f91,production,13,P22,223.0,230.0,280478,280478-W4,280478,GGS APL APL 2x22x90g CAN,9786.0,False,
-prod_fde1797866,production,13,P22,230.0,243.0,280493,280493-W4,280493,GGS VP APL-FRTY4 2x20x3.2oz,18174.0,False,
-prod_20b3dc28d7,production,13,P22,155.0,188.0,280591,280591-W4,280591,GGS VP APL-BAN-STB 1x24x3.2oz,46134.0,False,
-prod_5ba04b82d6,production,13,P22,406.0,420.0,120448,120448-W5,120448,6X12X90 ACIN GGS,19572.0,False,
-prod_1a2d694879,production,13,P22,188.0,194.0,251200,251200-W5,251200,6X12X90 VP APL-STB GGS CAN,8388.0,False,
-prod_ff9b72e319,production,13,P22,370.0,406.0,280169,280169-W5,280169,GGS F&V VP APECSWP-ASTBZUC 6x12x3.2oz,50328.0,False,
-prod_0ca5171c6f,production,13,P22,265.0,323.0,280323,280323-W5,280323,GGS APL APL 1x32x3.2oz,81084.0,False,
-prod_111f90bbba,production,13,P22,323.0,363.0,280324,280324-W5,280324,GGS VP APL-CIN-STB-GM5 1x32x3.2oz,55920.0,False,
-prod_0903f862ef,production,13,P22,130.0,145.0,570261,570261-W5,570261,GGS ORG VP APL-STB-BAN-CIN 1x28x90g CAN,20970.0,False,
-down_56ab40f180,line_down,2,P11,0.0,504.0,Down,,,,,False,Down
-down_874835178e,line_down,4,P13,0.0,504.0,Down,,,,,False,Down
+cs_f62c4df768,production,0,P09,0.0,25.778,280421,30221,280421,2X20X90 VP APL-STB-BAN-PEC CAN · ends Tue 01:46 re-forecast from actual rate (manprg said Mon 23:32 — running 18% slow),29998.8,True,current_state:running;pct=73.6;started=2026-08-30T01:17;clamped_to_anchor;reforecast=ends Tue 01:46 re-forecast from actual rate (manprg said Mon 23:32 — running 18% slow)
+cs_48534793de,production,0,P09,25.778,56.438,280451,30142,280451,2X20X90 PINPAS-STB-PER-MAN CAN,23000.4,False,current_state:queued;pct=0.0
+cs_0f4d7644d4,production,0,P09,56.438,96.428,280421,30143,280421,2X20X90 VP APL-STB-BAN-PEC CAN,29998.8,False,current_state:queued;pct=0.0
+cs_b00c689903,production,0,P09,96.428,120.418,280493,30144,280493,2X20X90 VP APL-FRTY4 GGS,18000.0,False,current_state:queued;pct=0.0
+cs_5fae0f9ad3,production,0,P09,120.418,121.0,280581,30145,280581,6X10X90 FV VP APECSWP-ASTBZUC,501.07,False,current_state:queued;pct=0.0;split
+cs_e793751284,cip,0,P09,121.0,127.0,CIP,,,,0.0,True,current_state:cip_scheduled
+cs_5fae0f9ad3,production,0,P09,127.0,167.068,280581,30145,280581,6X10X90 FV VP APECSWP-ASTBZUC,34496.33,False,current_state:queued;pct=0.0;split
+cs_7585609db8,production,0,P09,167.068,185.728,280264,30146,280264,6X12X90 WALMRT F&V PEC-BER-STB,13996.8,False,current_state:queued;pct=0.0
+cs_363e00acf7,cip,0,P09,241.0,247.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_c0949f2ce0,cip,0,P09,361.0,367.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_8eaa13de0c,cip,0,P09,481.0,487.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_6af09fe691,production,1,P10,0.0,143.733,280351,30147,280351,1X24X90 KIRK ORG STBSPN-MANPEC · ends Thu 21:32 re-forecast from actual rate (manprg said Sun 04:13 — running 77% slow),27281.52,True,current_state:running;pct=5.7;started=2026-08-30T01:39;clamped_to_anchor;reforecast=ends Thu 21:32 re-forecast from actual rate (manprg said Sun 04:13 — running 77% slow);split
+cs_3ee0902728,cip,1,P10,143.733,149.733,CIP,,,anti-static needs worked on during CIP. WO#569452,0.0,True,current_state:cip_scheduled
+cs_6af09fe691,production,1,P10,149.733,287.733,280351,30147,280351,1X24X90 KIRK ORG STBSPN-MANPEC · ends Thu 21:32 re-forecast from actual rate (manprg said Sun 04:13 — running 77% slow),26193.36,True,current_state:running;pct=5.7;started=2026-08-30T01:39;clamped_to_anchor;reforecast=ends Thu 21:32 re-forecast from actual rate (manprg said Sun 04:13 — running 77% slow);split
+cs_1ace50e17f,cip,1,P10,287.733,293.733,CIP (projected),,,anti-static needs worked on during CIP. WO#569452,0.0,False,current_state:cip_projected
+cs_6af09fe691,production,1,P10,293.733,431.733,280351,30147,280351,1X24X90 KIRK ORG STBSPN-MANPEC · ends Thu 21:32 re-forecast from actual rate (manprg said Sun 04:13 — running 77% slow),26193.36,True,current_state:running;pct=5.7;started=2026-08-30T01:39;clamped_to_anchor;reforecast=ends Thu 21:32 re-forecast from actual rate (manprg said Sun 04:13 — running 77% slow);split
+cs_10456d5ae1,cip,1,P10,431.733,437.733,CIP (projected),,,anti-static needs worked on during CIP. WO#569452,0.0,False,current_state:cip_projected
+cs_6af09fe691,production,1,P10,437.733,597.537,280351,30147,280351,1X24X90 KIRK ORG STBSPN-MANPEC · ends Thu 21:32 re-forecast from actual rate (manprg said Sun 04:13 — running 77% slow),30331.92,True,current_state:running;pct=5.7;started=2026-08-30T01:39;clamped_to_anchor;reforecast=ends Thu 21:32 re-forecast from actual rate (manprg said Sun 04:13 — running 77% slow);split
+cs_311e628446,cip,2,P11,85.0,91.0,CIP,,,,0.0,True,current_state:cip_scheduled
+cs_b9addda15d,cip,2,P11,229.0,235.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_93dc587826,cip,2,P11,373.0,379.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_a9efd94891,cip,3,P12,120.0,126.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_3520452501,cip,3,P12,240.0,246.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_2cd8fd9d81,cip,3,P12,360.0,366.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_5610981a62,cip,3,P12,480.0,486.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_6e7acda780,cip,4,P13,144.0,150.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_84bae10590,cip,4,P13,288.0,294.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_b5ca3ce249,cip,4,P13,432.0,438.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_e7a7178c13,production,5,P14,0.0,66.174,280478,30148,280478,2X22X90 APL GGS CAN · ends Wed 18:10 re-forecast from actual rate (manprg said Wed 00:42 — running 33% slow),45393.48,True,current_state:running;pct=41.0;started=2026-08-30T00:05;clamped_to_anchor;reforecast=ends Wed 18:10 re-forecast from actual rate (manprg said Wed 00:42 — running 33% slow)
+cs_c28e9f6cc0,production,5,P14,66.174,80.864,280345,30149,280345,6X4X90 APL APL GGS,11018.16,False,current_state:queued;pct=0.0
+cs_75994f479e,production,5,P14,80.864,92.864,280347,30150,280347,6X4X90 APL STB GGS,9000.72,False,current_state:queued;pct=0.0
+cs_0c9c36f43d,production,5,P14,92.864,114.724,280601,30151,280601,6X4X90 FV APERCAR GGS,16400.88,False,current_state:queued;pct=0.0
+cs_35b3a58f26,production,5,P14,114.724,121.0,120451,30155,120451,12X4X90 ORG ASTB GGS,8998.56,False,current_state:queued;pct=0.0;split
+cs_21d6c8132e,cip,5,P14,121.0,127.0,CIP,,,,0.0,True,current_state:cip_scheduled
+cs_3e7f0514a3,production,5,P14,127.0,138.724,120450,30154,120450,12X4X90 ORG APL GGS,8998.56,False,current_state:queued;pct=0.0
+cs_a54998eefc,production,5,P14,138.724,155.524,120532,30152,120532,12X4X90 ASTB GGS CAN,12601.44,False,current_state:queued;pct=0.0
+cs_d0995095b8,production,5,P14,155.524,168.854,280090,30153,280090,12X4X90 ABLB GGS CAN,10000.8,False,current_state:queued;pct=0.0
+cs_679772575e,cip,5,P14,241.0,247.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_4f8f71e5eb,cip,5,P14,361.0,367.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_ff657caf0f,cip,5,P14,481.0,487.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_ba92eacb59,production,6,P15,0.0,85.0,280617,30156,280617,1X18X100 SLY VP BLURSB-STBLEM · ends Thu 18:07 re-forecast from actual rate (manprg said Thu 17:31 — running 1% slow),83755.8,True,current_state:running;pct=31.3;started=2026-08-30T01:48;clamped_to_anchor;reforecast=ends Thu 18:07 re-forecast from actual rate (manprg said Thu 17:31 — running 1% slow);split
+cs_eac189402b,cip,6,P15,85.0,91.0,CIP,,,,0.0,True,current_state:cip_scheduled
+cs_d2d0796b0f,cip,6,P15,229.0,235.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_dacaa681fc,cip,6,P15,373.0,379.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_aa5471aac3,production,7,P16,12.998,43.918,120437,30157,120437,6X12X90 ASTB GGS,23198.4,False,current_state:queued;pct=0.0
+cs_3a70a95fc4,production,7,P16,43.918,67.918,251200,30158,251200,6X12X90 VP APL-STB GGS CAN,18001.44,False,current_state:queued;pct=0.0
+cs_d64f3544d2,production,7,P16,67.918,82.35,280425,30159,280425,6X12X90 ORG FV ABERCAR-APECSWP,14433.15,False,current_state:queued;pct=0.0;split
+cs_bd9d9fbd7f,cip,7,P16,82.35,88.35,CIP,,,Maintenance will have 5 hours for PM's at Volpak during this CIP. Plan to hand the filler over by 11am. No Caustic before PM's. We will CIP post maintenance work. NK,0.0,True,current_state:cip_scheduled
+cs_d64f3544d2,production,7,P16,88.35,91.918,280425,30159,280425,6X12X90 ORG FV ABERCAR-APECSWP,3568.29,False,current_state:queued;pct=0.0;split
+cs_6b443e84a3,production,7,P16,91.918,139.908,280264,30160,280264,6X12X90 WALMRT F&V PEC-BER-STB,36002.88,False,current_state:queued;pct=0.0
+cs_286f0b7391,production,7,P16,139.908,166.568,280563,30161,280563,1X24X90 WMT FV PEC-BER-STB-PER,19999.44,False,current_state:queued;pct=0.0
+cs_26638dcb7a,cip,7,P16,226.35,232.35,CIP (projected),,,Maintenance will have 5 hours for PM's at Volpak during this CIP. Plan to hand the filler over by 11am. No Caustic before PM's. We will CIP post maintenance work. NK,0.0,False,current_state:cip_projected
+cs_fc3c6571ac,cip,7,P16,370.35,376.35,CIP (projected),,,Maintenance will have 5 hours for PM's at Volpak during this CIP. Plan to hand the filler over by 11am. No Caustic before PM's. We will CIP post maintenance work. NK,0.0,False,current_state:cip_projected
+cs_49b4123dd9,production,8,P17,0.0,11.0,570261,30162,570261,1X28X90 ORG VP AP-ST-CI-BA CAN · ends Tue 07:13 re-forecast from actual rate (manprg said Tue 17:23 — running 20% fast),39667.2,True,current_state:running;pct=63.9;started=2026-08-30T04:46;clamped_to_anchor;reforecast=ends Tue 07:13 re-forecast from actual rate (manprg said Tue 17:23 — running 20% fast);split
+cs_c3b51353a5,cip,8,P17,11.0,17.0,CIP,,,,0.0,True,current_state:cip_scheduled
+cs_49b4123dd9,production,8,P17,17.0,31.223,570261,30162,570261,1X28X90 ORG VP AP-ST-CI-BA CAN · ends Tue 07:13 re-forecast from actual rate (manprg said Tue 17:23 — running 20% fast),51289.68,True,current_state:running;pct=63.9;started=2026-08-30T04:46;clamped_to_anchor;reforecast=ends Tue 07:13 re-forecast from actual rate (manprg said Tue 17:23 — running 20% fast);split
+cs_13684b4cab,production,8,P17,78.6,131.0,280686,30163,280686,1X24X90 MEMBERS MARK ORG APL,85110.01,False,current_state:queued;pct=0.0;split
+cs_f3639115ba,cip,8,P17,131.0,137.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_13684b4cab,production,8,P17,137.0,157.25,280686,30163,280686,1X24X90 MEMBERS MARK ORG APL,32890.79,False,current_state:queued;pct=0.0;split
+cs_2ddaf4e1c3,cip,8,P17,251.0,257.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_eabbf69a90,cip,8,P17,371.0,377.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_9cbfca8f2a,cip,8,P17,491.0,497.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_0f961a8930,production,9,P18,0.0,19.087,280104,30164,280104,2X20X90 VP APL-CIN GGS,62431.2,True,current_state:running;pct=85.8;started=2026-08-30T00:12;clamped_to_anchor
+cs_4c778156b5,production,9,P18,19.087,23.0,280564,30166,280564,1X24X90 WALMART VP APL-CIN-STB,7329.81,False,current_state:queued;pct=0.0;split
+cs_0a1f6d646d,cip,9,P18,23.0,29.0,CIP,,,,0.0,True,current_state:cip_scheduled
+cs_4c778156b5,production,9,P18,29.0,49.217,280564,30166,280564,1X24X90 WALMART VP APL-CIN-STB,37870.35,False,current_state:queued;pct=0.0;split
+cs_b590cb59b6,production,9,P18,50.117,104.767,280323,30190,280323,1X32X90 APL GGS,81999.36,False,current_state:queued;pct=0.0
+cs_08a4deacdd,production,9,P18,104.767,131.427,280324,30191,280324,1X32X90 VP APL-CIN-STB-GM5 GGS,40000.32,False,current_state:queued;pct=0.0
+cs_1db02d75df,cip,9,P18,143.0,149.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_2c32acba2d,cip,9,P18,263.0,269.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_b98c8040ad,cip,9,P18,383.0,389.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_c8ae3c3c81,cip,9,P18,503.0,504.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_2a7686e85f,production,10,P19,0.0,49.553,280256,30167,280256,1X24X90 KIRKLAND ORG UNSWT APL · ends Wed 01:33 re-forecast from actual rate (manprg said Wed 11:19 — running 14% fast),120070.08,True,current_state:running;pct=48.0;started=2026-08-30T03:18;clamped_to_anchor;reforecast=ends Wed 01:33 re-forecast from actual rate (manprg said Wed 11:19 — running 14% fast)
+cs_9b66bdd882,cip,10,P19,92.3,98.3,CIP (projected),,,CIP validation. Run caustic then swabs will be collected.,0.0,False,current_state:cip_projected
+cs_44c4bde023,production,10,P19,98.3,155.5,280351,30168,280351,1X24X90 KIRK ORG STBSPN-MANPEC,89499.6,False,current_state:queued;pct=0.0
+cs_6195f4e9a0,cip,10,P19,212.3,218.3,CIP (projected),,,CIP validation. Run caustic then swabs will be collected.,0.0,False,current_state:cip_projected
+cs_105a5889e9,cip,10,P19,332.3,338.3,CIP (projected),,,CIP validation. Run caustic then swabs will be collected.,0.0,False,current_state:cip_projected
+cs_78f67fcfa2,cip,10,P19,452.3,458.3,CIP (projected),,,CIP validation. Run caustic then swabs will be collected.,0.0,False,current_state:cip_projected
+cs_9c2a46d981,production,11,P20,0.0,11.0,120448,30218,120448,6X12X90 ACIN GGS · ends Mon 15:39 re-forecast from actual rate (manprg said Mon 13:44 — running 72% slow),16504.56,True,current_state:running;pct=93.3;started=2026-08-30T00:02;clamped_to_anchor;reforecast=ends Mon 15:39 re-forecast from actual rate (manprg said Mon 13:44 — running 72% slow);split
+cs_ab88d00866,cip,11,P20,11.0,17.0,CIP,,,,0.0,True,current_state:cip_scheduled
+cs_bbc174bc7a,production,11,P20,17.0,48.299,280583,30233,280583,4X16X90 APL GGS,48977.28,False,current_state:queued;pct=0.0
+cs_a459df827f,production,11,P20,100.55,131.0,280583,30173,280583,4X16X90 APL GGS,48977.28,False,current_state:queued;pct=0.0;split
+cs_ef3fbcfb1f,cip,11,P20,131.0,137.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_ee4ed70688,production,11,P20,137.0,157.85,280584,30174,280584,4X16X90 FV VP BER-PEC-PER DINO,37002.24,False,current_state:queued;pct=0.0
+cs_f1113b936b,cip,11,P20,251.0,257.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_1d3b2addd7,cip,11,P20,371.0,377.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_45576f4f5a,cip,11,P20,491.0,497.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_95a12f3c69,production,12,P21,0.0,26.813,280480,30175,280480,1X28X90 ORG VP APL-CIN-PEC-STB · ends Tue 02:48 re-forecast from actual rate (manprg said Tue 08:15 — running 11% fast),82945.8,True,current_state:running;pct=72.3;started=2026-08-30T00:58;clamped_to_anchor;reforecast=ends Tue 02:48 re-forecast from actual rate (manprg said Tue 08:15 — running 11% fast)
+cs_31e3fb59b8,production,12,P21,26.813,35.0,280324,30176,280324,1X32X90 VP APL-CIN-STB-GM5 GGS,13380.79,False,current_state:queued;pct=0.0;split
+cs_2f3b399b01,cip,12,P21,35.0,41.0,CIP,,,,0.0,True,current_state:cip_scheduled
+cs_31e3fb59b8,production,12,P21,41.0,155.0,280324,30176,280324,1X32X90 VP APL-CIN-STB-GM5 GGS,186320.99,False,current_state:queued;pct=0.0;split
+cs_dcda716390,cip,12,P21,155.0,161.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_31e3fb59b8,production,12,P21,161.0,173.113,280324,30176,280324,1X32X90 VP APL-CIN-STB-GM5 GGS,19797.42,False,current_state:queued;pct=0.0;split
+cs_588105b1e8,cip,12,P21,275.0,281.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_66d93b23c1,cip,12,P21,395.0,401.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_af82da4d79,production,13,P22,0.0,23.189,280590,30177,280590,1X24X90 APL GGS · ends Mon 23:11 re-forecast from actual rate (manprg said Tue 08:38 — running 22% fast),77718.96,True,current_state:running;pct=75.9;started=2026-08-30T04:50;clamped_to_anchor;reforecast=ends Mon 23:11 re-forecast from actual rate (manprg said Tue 08:38 — running 22% fast)
+cs_0976ce72bd,production,13,P22,53.333,67.5,280591,30178,280591,1X24X90 VP APL-BAN-STB GGS,23228.15,False,current_state:queued;pct=0.0;split
+cs_3a79224340,cip,13,P22,67.5,73.5,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_0976ce72bd,production,13,P22,73.5,123.983,280591,30178,280591,1X24X90 VP APL-BAN-STB GGS,82771.69,False,current_state:queued;pct=0.0;split
+cs_e54f5b1632,production,13,P22,124.0,144.0,280592,30179,280592,1X24X90 VP APL-CIN GGS,30000.24,False,current_state:queued;pct=0.0
+cs_b12c556c68,cip,13,P22,187.5,193.5,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_afac643392,cip,13,P22,307.5,313.5,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_7b642ec400,cip,13,P22,427.5,433.5,CIP (projected),,,,0.0,False,current_state:cip_projected
