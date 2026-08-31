@@ -410,6 +410,27 @@ def _changeover_quality(dd: Path, cfg: dict) -> list[HealthStatus]:
             detail=f"{zeros} of {len(df)} changeover rows have setup_hours ≤ 0 (fallback applies).",
             source="semantic",
         ))
+    # Duplicate (from,to) rows: benign when identical (loaders dedupe
+    # last-wins), dangerous when they conflict — the surviving row is
+    # arbitrary. Seen first in the 2026-08-26 plant export (466 exact dupes).
+    if {"from_sku", "to_sku"}.issubset(df.columns):
+        dup_mask = df.duplicated(subset=["from_sku", "to_sku"], keep=False)
+        if dup_mask.any():
+            n_dup_rows = int(df.duplicated(
+                subset=["from_sku", "to_sku"]).sum())
+            n_conflict = int((df[dup_mask].groupby(
+                ["from_sku", "to_sku"]).nunique() > 1).any(axis=1).sum())
+            out.append(HealthStatus(
+                key="changeover_dupes", name="Changeover duplicate pairs",
+                state=STALE if n_conflict else OK,
+                detail=(f"{n_dup_rows} duplicate from/to row(s)"
+                        + (f", {n_conflict} pair(s) with CONFLICTING values "
+                           "— the loaded row is arbitrary (last wins)."
+                           if n_conflict else " (exact copies — harmless).")),
+                actions=("De-duplicate data/reference/changeovers.csv in the "
+                         "source export",) if n_conflict else (),
+                source="semantic",
+            ))
     return out
 
 

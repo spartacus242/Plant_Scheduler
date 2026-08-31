@@ -434,3 +434,43 @@ def test_assess_plan_excludes_past_demand_weeks_via_source_json(tmp_path):
     assert f"222-W{iso_now:02d}" in blk[0].detail   # relabelled to ISO week
     assert "111" not in blk[0].detail               # past week excluded
     assert any(f.key == "coverage_past_weeks" for f in findings)
+
+
+def test_cip_transition_finding_flags_unclean_flagged_pairs(tmp_path, monkeypatch):
+    """A cip_req_after pair on the board without a CIP between runs raises a
+    WARN finding with per-transition detail; with a CIP in the gap it stays
+    silent. (2026-08-26)"""
+    import pandas as pd
+
+    from helpers.calendar_io import CALENDAR_COLUMNS
+    from helpers.reconcile_engine import assess_plan
+
+    dd = tmp_path
+    ref = dd / "reference"
+    ref.mkdir()
+    (ref / "changeovers.csv").write_text(
+        "from_sku,to_sku,setup_hours,cip_req_after\nP1,X1,2,1\n",
+        encoding="utf-8")
+
+    def _cal(rows):
+        df = pd.DataFrame(rows, columns=CALENDAR_COLUMNS)
+        df.to_csv(dd / "calendar_blocks.csv", index=False)
+
+    def _row(bid, btype, s, e, sku):
+        return {"block_id": bid, "block_type": btype, "line_id": "9",
+                "line_name": "P09", "start_h": s, "end_h": e, "label": sku,
+                "order_id": "O1", "sku": sku, "sku_description": "",
+                "qty_kg": 0, "locked": False, "attrs": ""}
+
+    _cal([_row("a", "production", 0, 10, "P1"),
+          _row("b", "production", 12, 20, "X1")])
+    findings = assess_plan(dd)
+    hit = [f for f in findings if f.key == "cip_transition"]
+    assert len(hit) == 1
+    assert hit[0].context["orders"][0]["from_sku"] == "P1"
+
+    _cal([_row("a", "production", 0, 10, "P1"),
+          _row("c", "cip", 10, 16, ""),
+          _row("b", "production", 16, 20, "X1")])
+    findings = assess_plan(dd)
+    assert not [f for f in findings if f.key == "cip_transition"]

@@ -710,6 +710,42 @@ def assess_plan(
             anchor=hz.anchor, now=hz.now, horizon_h=float(hz.hours))
     guard("cip", _cip)
 
+    # CIP-REQUIRED TRANSITIONS (cip_req_after, 2026-08-26): flagged SKU
+    # pairs on the board running without a clean between them. Soft rule —
+    # WARN, planner decides; the scorecard gates the CIP category on it.
+    def _cip_transition():
+        from helpers.scorecard_engine import (_co_lookup, _load_changeovers,
+                                              score_changeovers,
+                                              scorecard_config)
+        co_map = _co_lookup(_load_changeovers(ref))
+        if not co_map:
+            return []
+        co = score_changeovers(calendar, scorecard_config(cfg.get("scorecard")
+                                                          or {}), co_map)
+        n = int(co.get("cip_req_violations") or 0)
+        if n == 0:
+            return []
+        rows = co.get("cip_req_detail") or []
+        # nearest upcoming CIP per violation line, as the pull-forward hint
+        cips = calendar[calendar["block_type"] == "cip"]
+        for r in rows:
+            later = [float(s) for s, ln in zip(cips["start_h"],
+                                               cips["line_name"])
+                     if str(ln) == str(r["line"]) and float(s) > r["at_h"]]
+            r["next_cip_h"] = round(min(later), 1) if later else None
+        return [Finding(
+            key="cip_transition", category=CIP, severity=WARN,
+            title=f"{n} transition(s) need a CIP between runs",
+            detail=("Flagged SKU pairs (cip_req_after) are scheduled without "
+                    "a clean in between. Resequence them onto a CIP boundary "
+                    "or pull the next CIP forward — the scorecard's CIP "
+                    "category reads 0 until resolved."),
+            action="Open the calendar and move the block to a CIP boundary",
+            page="pages/calendar.py",
+            context={"orders": rows},
+        )]
+    guard("cip_transition", _cip_transition)
+
     # CAPABILITY
     def _capability():
         from helpers.capability_check import (check_capabilities,

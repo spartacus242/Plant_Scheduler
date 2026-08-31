@@ -115,7 +115,9 @@ CATALOG: tuple = (
         name="Changeovers",
         subdir="reference",
         filename="changeovers.csv",
-        blurb="Setup hours and change flags for every SKU-to-SKU transition.",
+        blurb=("Setup hours and change flags for every SKU-to-SKU transition. "
+               "Optional cip_req_after column: 1 = a CIP is required between "
+               "these SKUs (protein hygiene)."),
         key_columns=("from_sku", "to_sku", "setup_hours"),
         bridge_synced=True,
     ),
