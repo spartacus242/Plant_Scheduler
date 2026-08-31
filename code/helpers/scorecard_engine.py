@@ -180,7 +180,11 @@ METRIC_DOCS: dict[str, dict[str, Any]] = {
         ),
         "direction": "lower",
         "cap_key": "cap_co_hours",
-        "scoring": "score = clamp(100 * (1 - total_co_hours / cap_co_hours), 0, 100)",
+        "scoring": (
+            "Reported only — NOT scored (2026-08-25): the setup_hours "
+            "standards in changeovers.csv aren't trusted yet, so the "
+            "changeovers category scores on weighted_co alone."
+        ),
         "category": "changeovers",
         "why": (
             "This is the headline number: hours of line capacity consumed by changing "
@@ -270,6 +274,34 @@ METRIC_DOCS: dict[str, dict[str, Any]] = {
             "kilograms prices CIP discipline in the only unit the plant sells in, "
             "so cleaning early on a fast line is correctly flagged as the more "
             "expensive mistake."
+        ),
+    },
+    "cip_req_violations": {
+        "definition": (
+            "SKU-to-SKU transitions flagged cip_req_after in changeovers.csv "
+            "(protein hygiene) that run WITHOUT a CIP block between them."
+        ),
+        "formula": (
+            "Per line, for each adjacent production pair whose changeovers.csv "
+            "row has cip_req_after == 1: violation unless a CIP block lies "
+            "fully inside the gap between the two runs. A transition at a CIP "
+            "is fully waived from all changeover metrics (retooling happens "
+            "during the clean)."
+        ),
+        "direction": "lower",
+        "cap_key": None,
+        "scoring": (
+            "Compliance GATES the CIP category: any cip_overdue or "
+            "cip_req_violations event -> category 0. When compliant, the "
+            "category is the cip_forfeited_kg score (the capacity price of "
+            "early cleans)."
+        ),
+        "category": "cip",
+        "why": (
+            "Running a flagged pair without a clean is a hygiene violation, "
+            "not a preference. The fix is sequencing to an existing CIP "
+            "boundary, or pulling the next CIP forward - which costs "
+            "forfeited kilograms, priced by the other half of this category."
         ),
     },
     # --- trials ------------------------------------------------------------
@@ -534,6 +566,27 @@ class ScorecardResult:
         )
 
 
+# The plant's own export names several flag columns differently (observed in
+# the 2026-08-26 bridge file that introduced cip_req_after — without this
+# rename, topload/casepacker/conv/cinn flags silently read 0). KEEP IN SYNC
+# with solver/changeover_cache._COLUMN_ALIASES (duplicated on purpose — the
+# solver stays import-independent of helpers).
+CO_COLUMN_ALIASES = {
+    "tpld_change": "topload_change",
+    "cspkr_change": "casepacker_change",
+    "conv_to_org": "conv_to_org_change",
+    "cinn_to_non_cinn": "cinn_to_non",
+}
+
+
+def normalize_co_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Rename plant-export flag columns to the canonical names every reader
+    keys on. Canonical columns pass through untouched."""
+    ren = {a: c for a, c in CO_COLUMN_ALIASES.items()
+           if a in df.columns and c not in df.columns}
+    return df.rename(columns=ren) if ren else df
+
+
 def _load_changeovers(ref: Path) -> pd.DataFrame:
     path = ref / "changeovers.csv"
     if not path.exists():
@@ -542,7 +595,7 @@ def _load_changeovers(ref: Path) -> pd.DataFrame:
         path = alt if alt.exists() else path
     if not path.exists():
         return pd.DataFrame()
-    df = pd.read_csv(path)
+    df = normalize_co_columns(pd.read_csv(path))
     df["from_sku"] = df["from_sku"].astype(str)
     df["to_sku"] = df["to_sku"].astype(str)
     return df
@@ -657,6 +710,41 @@ def _load_cip_intervals(ref: Path, fallback: float) -> dict[str, float]:
     return mapping
 
 
+def cip_last_clean_hours(
+    ref: Path, anchor: datetime, max_h: float | None = None,
+) -> dict[str, float]:
+    """Per-line hours-since-anchor of the last RECORDED clean (cip_info's
+    PreviousCIP), for seeding score_cip's clean clock. A clean that lands
+    INSIDE the horizon exists only as history here — the projected-CIP grid
+    anchors on it but never draws it as a calendar block, so a calendar-only
+    walk reads phantom dirty time (2026-08-24: four legal 76-78 schedules
+    failed cip_ok on a clean recorded mid-batch by the live pull).
+
+    Cleans at or before the anchor return nothing for that line: the walk's
+    legacy "clean at horizon start" seed (0.0) already covers them, and
+    seeding negative hours would strictly tighten the guard for real
+    pre-anchor dirty carryover — a separate decision, not taken here.
+
+    `max_h` (pass the frame's horizon) drops seeds at or beyond it: a
+    "clean" dated past the horizon can't have preceded any block in it, and
+    a mis-keyed future PreviousCIP would otherwise excuse every block on
+    the line — the seed must never be able to disable the guard.
+    """
+    from helpers.cip_import import read_cip_info
+
+    out: dict[str, float] = {}
+    for line, info in read_cip_info(ref / "cip_info.csv").by_line.items():
+        prev = info.previous_cip
+        if prev is None or pd.isna(prev):
+            continue
+        if prev.tzinfo is not None:  # feed writes naive wall time; tolerate
+            prev = prev.tz_localize(None)
+        h = (prev.to_pydatetime() - anchor).total_seconds() / 3600.0
+        if h > 0 and (max_h is None or h < float(max_h)):
+            out[line] = h
+    return out
+
+
 def _production(df: pd.DataFrame) -> pd.DataFrame:
     return df[df["block_type"] == "production"].copy()
 
@@ -728,7 +816,22 @@ def _co_transition_hours(flags: dict | None, from_sku: str, to_sku: str, cfg: di
     return h
 
 
-def score_changeovers(calendar: pd.DataFrame, cfg: dict, co_map: dict) -> dict[str, Any]:
+def score_changeovers(
+    calendar: pd.DataFrame,
+    cfg: dict,
+    co_map: dict,
+    week_bounds: list[tuple[float, int]] | None = None,
+    horizon_h: float | None = None,
+) -> dict[str, Any]:
+    """Changeover counts, machine severity, and hours over the calendar.
+
+    `week_bounds` ([(start_hour, iso_week), ...], see _iso_week_bounds) adds
+    a "weekly" block bucketing every transition into the ISO week the
+    INCOMING block starts (same rule as weekly_breakdown) — the input to
+    the per-week category score. Totals are unchanged either way.
+    """
+    import bisect
+
     prod = _production(calendar)
     recipe = 0
     fmt = 0
@@ -741,6 +844,39 @@ def score_changeovers(calendar: pd.DataFrame, cfg: dict, co_map: dict) -> dict[s
     machine = {"topload": 0, "ffs": 0, "casepacker": 0, "ttp": 0}
     recipe_only = 0
     per_line: dict[str, int] = {}
+
+    # Per-line CIP intervals: a transition whose gap fully contains a CIP
+    # block is WAIVED from every changeover metric (the plant retools during
+    # the clean — user rule 2026-08-26), and it satisfies cip_req_after.
+    cips_by_line: dict[Any, list[tuple[float, float]]] = {}
+    for _, c in _by_type(calendar, "cip").iterrows():
+        cips_by_line.setdefault(c["line_id"], []).append(
+            (float(c["start_h"]), float(c["end_h"])))
+
+    def _cip_between(line_id: Any, a_end: float, b_start: float) -> bool:
+        return any(cs >= a_end - 1e-6 and ce <= b_start + 1e-6
+                   for cs, ce in cips_by_line.get(line_id, ()))
+
+    cip_req_violations = 0
+    transitions_at_cip = 0
+    cip_req_detail: list[dict[str, Any]] = []
+
+    marks: list[float] = [b for b, _ in (week_bounds or [])]
+    wk_acc: dict[int, dict[str, float]] = {}
+
+    def _acc(idx: int) -> dict[str, float]:
+        return wk_acc.setdefault(idx, {
+            "transitions": 0, "recipe": 0, "fmt": 0, "recipe_only": 0,
+            "hours": 0.0, "prod_h": 0.0,
+            "topload": 0, "ffs": 0, "casepacker": 0, "ttp": 0})
+
+    def _wk_end(idx: int) -> float:
+        if idx + 1 < len(marks):
+            return marks[idx + 1]
+        if horizon_h is not None:
+            return float(horizon_h)
+        return marks[idx] + 168.0
+
     for _, grp in prod.sort_values(["line_id", "start_h"]).groupby("line_id"):
         rows = grp.to_dict("records")
         line_name = str(rows[0].get("line_name", "") or "")
@@ -750,13 +886,36 @@ def score_changeovers(calendar: pd.DataFrame, cfg: dict, co_map: dict) -> dict[s
             from_sku, to_sku = str(a.get("sku", "")), str(b.get("sku", ""))
             if from_sku == to_sku:
                 continue
+            flags = co_map.get((from_sku, to_sku))
+            cip_req = bool(flags) and int(flags.get("cip_req_after", 0) or 0) == 1
+            if _cip_between(a.get("line_id"),
+                            float(a["end_h"]), float(b["start_h"])):
+                # Fully waived: the clean subsumes the changeover work.
+                transitions_at_cip += 1
+                continue
+            if cip_req:
+                cip_req_violations += 1
+                if len(cip_req_detail) < 50:
+                    cip_req_detail.append({
+                        "line": line_name,
+                        "from_sku": from_sku,
+                        "to_sku": to_sku,
+                        "at_h": round(float(b["start_h"]), 2),
+                    })
             transitions += 1
             line_count += 1
-            flags = co_map.get((from_sku, to_sku))
+            wk = (_acc(max(0, bisect.bisect_right(marks, float(b["start_h"])) - 1))
+                  if marks else None)
+            if wk is not None:
+                wk["transitions"] += 1
             if _is_recipe_change(flags, from_sku, to_sku):
                 recipe += 1
+                if wk is not None:
+                    wk["recipe"] += 1
             if _is_format_change(flags):
                 fmt += 1
+                if wk is not None:
+                    wk["fmt"] += 1
             touched = False
             for flag_key, name in (("topload_change", "topload"),
                                    ("ffs_change", "ffs"),
@@ -764,19 +923,68 @@ def score_changeovers(calendar: pd.DataFrame, cfg: dict, co_map: dict) -> dict[s
                                    ("ttp_change", "ttp")):
                 if flags and int(flags.get(flag_key, 0) or 0) == 1:
                     machine[name] += 1
+                    if wk is not None:
+                        wk[name] += 1
                     touched = True
             if not touched:
                 recipe_only += 1
-            hours += _co_transition_hours(flags, from_sku, to_sku, cfg)
+                if wk is not None:
+                    wk["recipe_only"] += 1
+            t_hours = _co_transition_hours(flags, from_sku, to_sku, cfg)
+            hours += t_hours
+            if wk is not None:
+                wk["hours"] += t_hours
         per_line[line_name] = per_line.get(line_name, 0) + line_count
-    weighted = (
-        float(cfg.get("co_weight_topload", 3.0)) * machine["topload"]
-        + float(cfg.get("co_weight_ffs", 3.0)) * machine["ffs"]
-        + float(cfg.get("co_weight_casepacker", 2.0)) * machine["casepacker"]
-        + float(cfg.get("co_weight_ttp", 1.0)) * machine["ttp"]
-        + float(cfg.get("co_weight_recipe_only", 1.0)) * recipe_only
-    )
+
+    if marks:
+        # production hours per week (overlap share) — a week with no
+        # production is excluded from the per-week score, not gifted 100.
+        for _, p in prod.iterrows():
+            ps, pe = float(p["start_h"]), float(p["end_h"])
+            for i, m in enumerate(marks):
+                ov = max(0.0, min(pe, _wk_end(i)) - max(ps, m))
+                if ov > 0:
+                    _acc(i)["prod_h"] += ov
+    def _weighted(top: float, f: float, csp: float, t: float, ronly: float) -> float:
+        return (
+            float(cfg.get("co_weight_topload", 3.0)) * top
+            + float(cfg.get("co_weight_ffs", 3.0)) * f
+            + float(cfg.get("co_weight_casepacker", 2.0)) * csp
+            + float(cfg.get("co_weight_ttp", 1.0)) * t
+            + float(cfg.get("co_weight_recipe_only", 1.0)) * ronly
+        )
+
+    weighted = _weighted(machine["topload"], machine["ffs"],
+                         machine["casepacker"], machine["ttp"], recipe_only)
+
+    weekly: list[dict[str, Any]] | None = None
+    if marks:
+        weekly = []
+        for i in sorted(wk_acc):
+            a = wk_acc[i]
+            weekly.append({
+                "week": int(week_bounds[i][1]),
+                "start_h": round(marks[i], 2),
+                "span_h": round(_wk_end(i) - marks[i], 2),
+                "prod_h": round(a["prod_h"], 2),
+                "sku_transitions": int(a["transitions"]),
+                "recipe_changes": int(a["recipe"]),
+                "format_changes": int(a["fmt"]),
+                "weighted_co": round(_weighted(
+                    a["topload"], a["ffs"], a["casepacker"], a["ttp"],
+                    a["recipe_only"]), 1),
+                "co_hours": _round_half_up(a["hours"], 2),
+            })
+
     return {
+        **({"weekly": weekly} if weekly is not None else {}),
+        # Hygiene rule: flagged pairs without a CIP in the gap. Detail rows
+        # feed the Reconcile finding and the guards.
+        "cip_req_violations": cip_req_violations,
+        "cip_req_detail": cip_req_detail,
+        # Transitions fully waived because a CIP sits in the gap (retooling
+        # happens during the clean) — excluded from every metric above.
+        "transitions_at_cip": transitions_at_cip,
         "recipe_changes": recipe,
         "format_changes": fmt,
         "topload_changes": machine["topload"],
@@ -798,13 +1006,25 @@ def score_cip(
     cfg: dict,
     intervals: dict[str, float],
     rates: dict[str, float] | None = None,
+    last_clean: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """CIP discipline. `rates` maps line_name -> average kg/h (see
     _load_line_avg_rates); forfeited dirty-time hours are converted to
     forfeited KILOGRAMS of lost production at that line's average run rate.
     A missing rate contributes 0 kg rather than raising.
+
+    `last_clean` maps line_name/line_id -> hours-since-anchor of the last
+    recorded clean (see cip_last_clean_hours). It seeds each line's clean
+    clock so a clean that exists only in cip_info history — never as a
+    calendar block — still resets the walk. None/absent lines keep the
+    legacy "clean at horizon start" seed of 0.0.
     """
     rates = rates or {}
+    last_clean = last_clean or {}
+
+    def _seed(line_name: str, line_id: Any) -> float:
+        return float(last_clean.get(line_name)
+                     or last_clean.get(str(line_id)) or 0.0)
     cips = _by_type(calendar, "cip").sort_values(["line_id", "start_h"])
     prod = _production(calendar)
     count = len(cips)
@@ -828,7 +1048,7 @@ def score_cip(
         )
         rate = float(rates.get(line_name) or rates.get(str(line_id)) or 0.0)
         line_prod = prod[prod["line_id"] == line_id].sort_values("start_h")
-        last_cip_end = 0.0  # assume clean at horizon start
+        last_cip_end = _seed(line_name, line_id)
         for _, cip in cip_grp.iterrows():
             cip_start = float(cip["start_h"])
             run_since = 0.0
@@ -842,7 +1062,9 @@ def score_cip(
             lost_h = max(0.0, interval - run_since)
             forfeited += lost_h
             forfeited_kg += lost_h * rate
-            last_cip_end = float(cip["end_h"])
+            # max(): a stale calendar block (drawn from a pre-refresh
+            # cip_info) may END before the recorded clean it duplicates.
+            last_cip_end = max(last_cip_end, float(cip["end_h"]))
 
     # Overdue pass: for lines that have production but few/no CIPs, walk the
     # whole horizon and count how many times clock-since-last-CIP exceeds the
@@ -860,7 +1082,7 @@ def score_cip(
             or cfg["cip_interval_fallback_h"]
         )
         line_cips = cips[cips["line_id"] == line_id].sort_values("start_h")
-        last_cip_end = 0.0
+        last_cip_end = _seed(line_name, line_id)
         cip_idx = 0
         cip_starts = [float(c["start_h"]) for _, c in line_cips.iterrows()]
         cip_ends = [float(c["end_h"]) for _, c in line_cips.iterrows()]
@@ -868,7 +1090,7 @@ def score_cip(
             ps, pe = float(p["start_h"]), float(p["end_h"])
             # apply any CIPs that start before this production block
             while cip_idx < len(cip_starts) and cip_starts[cip_idx] <= ps:
-                last_cip_end = cip_ends[cip_idx]
+                last_cip_end = max(last_cip_end, cip_ends[cip_idx])
                 cip_idx += 1
             clock_at_end = pe - last_cip_end
             if clock_at_end > interval + 12:
@@ -1084,20 +1306,47 @@ def category_scores(raw: dict[str, dict], cfg: dict) -> dict[str, float | None]:
     camp = raw["campaigns"]
     svc = raw["service"]
 
+    # Per-ISO-week changeover score (2026-08-25): the caps are ONE-WEEK
+    # calibrations, and a multi-week horizon's TOTALS saturate them (112
+    # recipe changes vs cap 40 pinned the category at 0 — no discrimination
+    # between schedules). Each production week scores against its pro-rated
+    # cap (span/168), is floored at co_week_score_floor, and the weeks
+    # combine as a decay-weighted geometric product (weight ~ decay^i): the
+    # near week dominates and one blown week cannot be averaged away by
+    # clean ones. Falls back to flat totals for scorecards saved before the
+    # weekly block existed.
+    co_week_score: float | None = None
+    co_weeks = [w for w in (co.get("weekly") or [])
+                if float(w.get("prod_h") or 0.0) > 0.0]
+    # total_co_hours is REPORTED but not scored (2026-08-25): it prices
+    # transitions from changeovers.csv setup_hours, which the plant does
+    # not yet trust. The scored signal is the weighted severity count.
+    if co_weeks:
+        lam = float(cfg.get("co_week_decay", 0.6) or 0.6)
+        floor_pts = 100.0 * float(cfg.get("co_week_score_floor", 0.05) or 0.0)
+        cap_w = float(cfg.get("cap_weighted_co") or 120)
+        decay = [lam ** i for i in range(len(co_weeks))]
+        wsum = sum(decay) or 1.0
+        log_score = 0.0
+        for i, w in enumerate(co_weeks):
+            frac = max(float(w.get("span_h") or 168.0) / 168.0, 1e-6)
+            s_w = _score_lower_better(w.get("weighted_co"), cap_w * frac)
+            s = max(s_w if s_w is not None else 100.0, floor_pts, 1e-9)
+            log_score += (decay[i] / wsum) * math.log(s / 100.0)
+        co_week_score = 100.0 * math.exp(log_score)
+        co_s: list[float | None] = []
     # Severity-weighted changeover score (2026-08-14): FFS/topload count 3x,
     # casepacker 2x, TTP 1x, recipe-only 1x. Falls back to the legacy
     # recipe/format pair for scorecards saved before weighted_co existed.
-    if co.get("weighted_co") is not None:
+    elif co.get("weighted_co") is not None:
         co_s = [
             _score_lower_better(
                 co["weighted_co"], float(cfg.get("cap_weighted_co") or 120)),
-            _score_lower_better(co["total_co_hours"], cfg["cap_co_hours"]),
         ]
     else:
         co_s = [
             _score_lower_better(co["recipe_changes"], cfg["cap_recipe_changes"]),
             _score_lower_better(co["format_changes"], cfg["cap_format_changes"]),
-            _score_lower_better(co["total_co_hours"], cfg["cap_co_hours"]),
         ]
     # CIPs are MANDATORY and cannot be late/overdue — they are a hard hygiene
     # compliance requirement, not a soft preference. So the CIP category is
@@ -1108,11 +1357,28 @@ def category_scores(raw: dict[str, dict], cfg: dict) -> dict[str, float | None]:
     # cip_forfeited_kg are reported for diagnostics but deliberately NOT
     # averaged in, because "fewer CIPs = higher score" rewarded a schedule
     # that never cleaned a line at all.
-    cip_s = [
-        _score_lower_better(
-            cip.get("cip_overdue"), float(cfg.get("cap_cip_overdue") or 1)
-        ),
-    ]
+    #
+    # 2026-08-26 (cip_req_after): the category is now COMPLIANCE blended
+    # with FORFEITED KG. Compliance = no overdue lines AND no required-CIP
+    # violations (a flagged SKU pair run without a clean between). Forfeited
+    # kg prices the capacity cost of cleaning early — pulling a CIP forward
+    # to satisfy a flagged transition is legal but not free. CIP count stays
+    # reported-only (same reason as ever). Old scorecards lack
+    # cip_req_violations -> treated as 0, so compliance reduces to the
+    # legacy overdue check.
+    _viol = int(co.get("cip_req_violations") or 0)
+    _overdue = cip.get("cip_overdue")
+    if _overdue is not None and (int(_overdue or 0) > 0 or _viol > 0):
+        # Compliance GATES the category: hygiene failure -> 0, full stop.
+        cip_s: list[float | None] = [0.0]
+    else:
+        cip_s = [
+            _score_lower_better(
+                cip.get("cip_forfeited_kg"),
+                float(cfg.get("cap_cip_forfeited_kg") or 0)),
+            # None forfeited data (very old scorecards) -> compliance alone.
+            *([] if cip.get("cip_forfeited_kg") is not None else [100.0]),
+        ]
     # Trials score only when there IS trial data (calendar trial blocks).
     # Without it the category is None -- the
     # composite drops it and the page greys it out -- because a 0-hour, 0-
@@ -1153,7 +1419,7 @@ def category_scores(raw: dict[str, dict], cfg: dict) -> dict[str, float | None]:
         return round(sum(vals) / len(vals), 1) if vals else 0.0
 
     return {
-        "changeovers": avg(co_s),
+        "changeovers": co_week_score if co_week_score is not None else avg(co_s),
         "cip": avg(cip_s),
         "trials": None if not trial_s else avg(trial_s),
         "campaigns": avg(camp_parts),
@@ -1479,6 +1745,8 @@ def gantt_kpis(
             "ffs": 1 if int(flags.get("ffs_change", 0) or 0) == 1 else 0,
             "cp": 1 if int(flags.get("casepacker_change", 0) or 0) == 1 else 0,
             "ttp": 1 if int(flags.get("ttp_change", 0) or 0) == 1 else 0,
+            # a CIP is required between these SKUs (waived at a CIP window)
+            "cip_req": 1 if int(flags.get("cip_req_after", 0) or 0) == 1 else 0,
         }
     # A pair with no standards row: recipe by definition, unknown format,
     # base + recipe default hours (exactly the score_changeovers fallback).
@@ -1486,7 +1754,7 @@ def gantt_kpis(
         "recipe": 1,
         "format": 0,
         "hours": _round_half_up(_co_transition_hours(None, "_from", "_to", cfg), 4),
-        "tl": 0, "ffs": 0, "cp": 0, "ttp": 0,
+        "tl": 0, "ffs": 0, "cp": 0, "ttp": 0, "cip_req": 0,
     }
 
     return {
@@ -1517,6 +1785,7 @@ def score_calendar(
     data_dir: Path | None = None,
     cfg: dict | None = None,
     fill_gates: dict[str, float] | None = None,
+    cip_last_clean: dict[str, float] | None = None,
 ) -> ScorecardResult:
     cfg = cfg or scorecard_config()
     ref = reference_dir(data_dir) if data_dir else reference_dir()
@@ -1565,9 +1834,39 @@ def score_calendar(
             f"by committed production ({n_covered} fully-covered order(s) "
             "left to the plant's own plan).")
 
+    # ISO-week bounds for the per-week changeover score. Same frame rule as
+    # weekly_breakdown (rolling anchor from the live toml); a resolve
+    # failure degrades to flat totals, never takes scoring down.
+    try:
+        from helpers import horizon as _hzmod
+
+        _hz = _hzmod.resolve(load_toml())
+        _week_bounds = _iso_week_bounds(_hz.anchor, float(_hz.hours))
+        _horizon_h = float(_hz.hours)
+    except Exception:  # noqa: BLE001
+        _hz, _week_bounds, _horizon_h = None, None, None
+
+    # Default the CIP clean-clock seed from cip_info history. A clean the
+    # live pull records mid-day exists only as PreviousCIP — the projected
+    # grid anchors on it but draws no calendar block — so a seedless walk
+    # reads phantom dirty time, and with the category gated on
+    # cip_overdue == 0 that zeroes CIP on every UI rescore. Only
+    # compute_guards passed the seed explicitly; every page path scored
+    # seedless. An explicit argument (compute_guards, including its {} =
+    # "score without seed" failure path) still wins; the seed is a
+    # LENIENCY, so any failure here degrades to seedless, never to a
+    # failed score.
+    if cip_last_clean is None and data_dir is not None and _hz is not None:
+        try:
+            cip_last_clean = cip_last_clean_hours(
+                ref, _hz.anchor, max_h=_horizon_h)
+        except Exception:  # noqa: BLE001
+            cip_last_clean = None
+
     raw = {
-        "changeovers": score_changeovers(calendar, cfg, co_map),
-        "cip": score_cip(calendar, cfg, intervals, rates),
+        "changeovers": score_changeovers(
+            calendar, cfg, co_map, _week_bounds, _horizon_h),
+        "cip": score_cip(calendar, cfg, intervals, rates, cip_last_clean),
         "trials": score_trials(calendar, co_map),
         "campaigns": score_campaigns(calendar, cfg),
         "service": score_service(calendar, cfg, demand, data_dir, rates),
@@ -1595,6 +1894,9 @@ SCORING_INPUT_FILES = (
     # line_rates.csv is the rate source when use_sku_rates = false (the live
     # config) — it prices cip_forfeited_kg, a scored metric (review 2026-08-19).
     "line_rates.csv",
+    # cip_info.csv seeds the CIP clean clock (cip_last_clean_hours default in
+    # score_calendar) — a live-pull refresh must invalidate cached scores.
+    "cip_info.csv",
 )
 
 
@@ -1712,7 +2014,8 @@ def contribution_breakdown(
         "changeovers": [
             ("recipe_changes", "cap_recipe_changes"),
             ("format_changes", "cap_format_changes"),
-            ("total_co_hours", "cap_co_hours"),
+            # total_co_hours dropped 2026-08-25: reported, not scored, so a
+            # saturated cap is not a scoring problem worth hinting about.
         ],
         "cip": [
             ("cip_hours", "cap_cip_hours"),

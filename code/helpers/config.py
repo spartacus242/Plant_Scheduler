@@ -70,6 +70,16 @@ def scorecard_config(cfg: dict | None = None) -> dict[str, Any]:
         "co_weight_ttp": 1.0,
         "co_weight_recipe_only": 1.0,
         "cap_weighted_co": 150.0,
+        # Per-ISO-week changeover scoring (2026-08-25): cap_weighted_co is
+        # a ONE-WEEK calibration. Each production week scores weighted_co
+        # against its pro-rated cap (span/168), floored at
+        # co_week_score_floor, and the weeks combine as a geometric product
+        # weighted by co_week_decay^i — the near week dominates, one blown
+        # week can't be averaged away. total_co_hours is reported but NOT
+        # scored (setup_hours standards not yet trusted); cap_co_hours is
+        # retained for display only.
+        "co_week_decay": 0.6,
+        "co_week_score_floor": 0.05,
         "cap_cip_hours": 120,
         "cap_cip_forfeited": 200,
         # Forfeited CIP is scored in kg of lost production (hours x line avg

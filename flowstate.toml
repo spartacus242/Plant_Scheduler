@@ -1,7 +1,7 @@
 # Flowstate configuration — operational truth → twin → optimizer
 
 [scheduler]
-planning_start_date = "2026-08-19 00:00:00"
+planning_start_date = "2026-08-31 00:00:00"
 # Rolling horizon (handoff WW32 #1). "today" = the Plant Calendar opens on the
 # current day and offers to re-base stored blocks onto it; "fixed" keeps the
 # legacy behaviour of always opening on planning_start_date.
@@ -61,6 +61,11 @@ casepacker_weight = 20
 conv_org_weight = 30
 cinn_weight = 20
 flavor_weight = 5
+# cip_req_after pairs (changeovers.csv, 2026-08-26): a CIP is REQUIRED
+# between these SKUs. This is the solver's soft-violation price — sized to
+# dominate all other changeover weights combined; the full pair cost is
+# waived when the transition sits at a committed CIP window.
+cip_req_weight = 2000
 
 # Draft v0 scorecard formulas — tune with the plant; shown in the UI.
 [scorecard]
@@ -87,6 +92,17 @@ co_weight_casepacker = 2.0
 co_weight_ttp = 1.0
 co_weight_recipe_only = 1.0
 cap_weighted_co = 150.0
+# Per-ISO-week changeover scoring: cap_weighted_co is a ONE-WEEK
+# calibration — a 3-week horizon's totals saturated the caps (112 recipe
+# changes vs cap 40 read as score 0). Each production week now scores
+# weighted_co against its pro-rated cap (span/168h), is floored at
+# co_week_score_floor, and weeks combine as a geometric product weighted
+# co_week_decay^i (W+0 heaviest; one blown week can't be averaged away).
+# total_co_hours (setup_hours-priced) is REPORTED but NOT scored — the
+# standards in changeovers.csv aren't trusted yet (2026-08-25);
+# cap_co_hours is retained only for display alongside the reported number.
+co_week_decay = 0.6
+co_week_score_floor = 0.05
 cap_cip_hours = 120
 # Forfeited CIP hours cap. Retained only for the reported (unscored)
 # cip_forfeited_h metric - the SCORED metric is cip_forfeited_kg below.

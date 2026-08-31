@@ -434,3 +434,344 @@ def test_reconcile_is_a_noop_without_a_produced_map():
     reconcile(rows, {})
 
     assert rows[0]["qty_kg"] == 123
+
+
+# --------------------------------------------------------------------------
+# CIP clean-clock seeding: a clean recorded in cip_info (PreviousCIP) that is
+# never drawn as a calendar block must still reset the overdue walk.
+# 2026-08-24: the live pull moved P15's clean into PreviousCIP mid-batch and
+# four legal 76-78 candidates failed cip_ok on phantom dirty time.
+# --------------------------------------------------------------------------
+def test_cip_phantom_cleared_by_last_clean_seed():
+    """Production ends 161.6 h in with no CIP block: 161.6 > 144+12 reads
+    overdue -- unless the line's recorded clean at 17.63 h seeds the clock
+    (161.6 - 17.63 = 143.97 <= 156). Mirrors the real P15 incident."""
+    cal = _calendar([_block(start_h=15.0, end_h=161.6)])
+    dirty = score_cip(cal, CFG, {"P09": 144.0})
+    assert dirty["cip_overdue"] == 1
+    clean = score_cip(cal, CFG, {"P09": 144.0}, None, {"P09": 17.63})
+    assert clean["cip_overdue"] == 0
+    # line_id fallback works like the intervals lookup does
+    by_id = score_cip(cal, CFG, {"P09": 144.0}, None, {"9": 17.63})
+    assert by_id["cip_overdue"] == 0
+
+
+def test_cip_seed_for_another_line_keeps_legacy_zero_seed():
+    cal = _calendar([_block(start_h=15.0, end_h=161.6)])
+    raw = score_cip(cal, CFG, {"P09": 144.0}, None, {"P15": 17.63})
+    assert raw["cip_overdue"] == 1
+
+
+def test_cip_seed_not_lowered_by_earlier_stale_block():
+    """A stale calendar CIP (drawn from a pre-refresh cip_info) ends at 17.0,
+    BEFORE the recorded clean at 17.63. The walk must keep the later seed:
+    production ending exactly at 17.63+144+12 passes on the seed clock and
+    would trip on the stale block's clock."""
+    cal = _calendar([
+        _block(block_id="c1", block_type="cip", start_h=11.0, end_h=17.0,
+               order_id="", sku=""),
+        _block(block_id="b1", start_h=20.0, end_h=173.63),
+    ])
+    raw = score_cip(cal, CFG, {"P09": 144.0}, None, {"P09": 17.63})
+    assert raw["cip_overdue"] == 0
+
+
+def test_cip_genuinely_dirty_line_still_trips_with_seed():
+    cal = _calendar([_block(start_h=20.0, end_h=17.63 + 144.0 + 12.1)])
+    raw = score_cip(cal, CFG, {"P09": 144.0}, None, {"P09": 17.63})
+    assert raw["cip_overdue"] == 1
+
+
+def test_cip_last_clean_hours_reads_previous_cip(tmp_path):
+    """Only cleans AFTER the anchor land in the map; pre-anchor and NULL
+    lines are absent (legacy 0.0 seed covers them); missing file -> {}."""
+    from datetime import datetime
+
+    from helpers.scorecard_engine import cip_last_clean_hours
+
+    anchor = datetime(2026, 8, 24, 0, 0, 0)
+    ref = tmp_path
+    (ref / "cip_info.csv").write_text(
+        "ID,LineEquipment,PreviousCIP,MaxHoursBetweenCIP,ScheduledCIP,Notes\n"
+        "1,P15,2026-08-24 17:38,144,NULL,\n"
+        "2,P09,2026-08-20 06:00,120,NULL,\n"
+        "3,P10,NULL,120,NULL,\n",
+        encoding="utf-8-sig")
+    got = cip_last_clean_hours(ref, anchor)
+    assert set(got) == {"P15"}
+    assert abs(got["P15"] - (17.0 + 38.0 / 60.0)) < 1e-6
+
+    assert cip_last_clean_hours(tmp_path / "nowhere", anchor) == {}
+
+
+def test_cip_last_clean_hours_hardened_against_bad_feed(tmp_path):
+    """A tz-suffixed PreviousCIP parses as wall time instead of raising, and
+    a future-dated one at/beyond max_h is dropped — a mis-keyed clean must
+    never be able to excuse every block on a line."""
+    from datetime import datetime
+
+    from helpers.scorecard_engine import cip_last_clean_hours
+
+    anchor = datetime(2026, 8, 24, 0, 0, 0)
+    (tmp_path / "cip_info.csv").write_text(
+        "ID,LineEquipment,PreviousCIP,MaxHoursBetweenCIP,ScheduledCIP,Notes\n"
+        "1,P15,2026-08-24 17:38:00+02:00,144,NULL,\n"
+        "2,P16,2026-09-15 00:00,144,NULL,\n",
+        encoding="utf-8-sig")
+    got = cip_last_clean_hours(tmp_path, anchor, max_h=504.0)
+    assert abs(got["P15"] - (17.0 + 38.0 / 60.0)) < 1e-6
+    assert "P16" not in got  # 528 h >= 504 h horizon -> dropped
+    unbounded = cip_last_clean_hours(tmp_path, anchor)
+    assert "P16" in unbounded  # no max_h -> caller opted out of the clamp
+
+
+# --------------------------------------------------------------------------
+# score_calendar must apply the cip_info seed BY DEFAULT: every UI rescore
+# (scorecard / compare / calendar what-if / versions) calls it without an
+# explicit seed, and with the CIP category gated on cip_overdue == 0 a
+# phantom event zeroed the category on the board. Only compute_guards
+# passed the seed before 2026-08-28.
+# --------------------------------------------------------------------------
+def _seed_data_dir(tmp_path):
+    """data_dir with a P09 clean recorded at 17.63 h (inside the horizon,
+    never drawn as a calendar block) and a 144 h interval."""
+    ref = tmp_path / "reference"
+    ref.mkdir()
+    (ref / "cip_info.csv").write_text(
+        "ID,LineEquipment,PreviousCIP,MaxHoursBetweenCIP,ScheduledCIP,Notes\n"
+        "1,P09,2026-08-24 17:38,144,NULL,\n",
+        encoding="utf-8-sig")
+    (ref / "line_cip_hrs.csv").write_text(
+        "line_name,line_id,max_cip_hrs\nP09,9,144\n", encoding="utf-8")
+    return tmp_path
+
+
+def _pin_horizon(monkeypatch, anchor, hours=504):
+    from datetime import timedelta
+
+    from helpers import horizon as hzmod
+
+    hz = hzmod.Horizon(anchor=anchor, start=anchor,
+                       end=anchor + timedelta(hours=hours), now=anchor,
+                       mode="fixed", hours=hours, config_anchor=anchor)
+    monkeypatch.setattr(hzmod, "resolve", lambda *a, **k: hz)
+
+
+def test_score_calendar_seeds_cip_clock_from_cip_info_by_default(
+        tmp_path, monkeypatch):
+    """data_dir alone must wire the seed: production ending 161.6 h in reads
+    overdue on the legacy hour-0 clock (161.6 > 144+12) but clean on the
+    recorded 17.63 h seed (143.97 <= 156). An explicit {} (compute_guards'
+    unreadable-cip_info path) still means "score without seed"."""
+    from datetime import datetime
+
+    _pin_horizon(monkeypatch, datetime(2026, 8, 24))
+    _seed_data_dir(tmp_path)
+    cal = _calendar([_block(start_h=15.0, end_h=161.6)])
+
+    seeded = score_calendar(cal, week_label="t", data_dir=tmp_path, cfg=CFG)
+    assert seeded.cip["cip_overdue"] == 0
+    assert seeded.category_scores["cip"] == 100.0
+
+    seedless = score_calendar(cal, week_label="t", data_dir=tmp_path,
+                              cfg=CFG, cip_last_clean={})
+    assert seedless.cip["cip_overdue"] == 1
+    assert seedless.category_scores["cip"] == 0.0
+
+
+def test_score_calendar_explicit_seed_overrides_cip_info(
+        tmp_path, monkeypatch):
+    """An explicit seed wins over the file: 5.0 h leaves 161.6 - 5.0 > 156
+    overdue even though cip_info's own 17.63 h clean would clear it."""
+    from datetime import datetime
+
+    _pin_horizon(monkeypatch, datetime(2026, 8, 24))
+    _seed_data_dir(tmp_path)
+    cal = _calendar([_block(start_h=15.0, end_h=161.6)])
+
+    res = score_calendar(cal, week_label="t", data_dir=tmp_path, cfg=CFG,
+                         cip_last_clean={"P09": 5.0})
+    assert res.cip["cip_overdue"] == 1
+
+
+def test_score_calendar_seed_degrades_when_horizon_unresolvable(
+        tmp_path, monkeypatch):
+    """No resolvable frame -> no seed (the pre-fix status quo), never a
+    crash: the seed is a leniency and must not take scoring down."""
+    from helpers import horizon as hzmod
+
+    def _boom(*a, **k):
+        raise RuntimeError("no frame")
+
+    monkeypatch.setattr(hzmod, "resolve", _boom)
+    _seed_data_dir(tmp_path)
+    cal = _calendar([_block(start_h=15.0, end_h=161.6)])
+
+    res = score_calendar(cal, week_label="t", data_dir=tmp_path, cfg=CFG)
+    assert res.cip["cip_overdue"] == 1
+
+
+# --------------------------------------------------------------------------
+# Per-ISO-week changeover scoring: caps are one-week calibrations, so weeks
+# score against pro-rated caps and combine as a decay-weighted geometric
+# product (2026-08-25). Totals in the raw dict stay unchanged.
+# --------------------------------------------------------------------------
+def _alt_blocks(n_transitions, *, start_h=0.0, spacing=2.0, first_parity=0):
+    """n_transitions+1 alternating-SKU 1h blocks on P09 from start_h."""
+    return [
+        _block(block_id=f"t{start_h}_{i}", start_h=start_h + i * spacing,
+               end_h=start_h + i * spacing + 1.0,
+               sku=f"S{(i + first_parity) % 2}", label="x")
+        for i in range(n_transitions + 1)
+    ]
+
+
+def _co_cat(calendar, week_bounds, horizon_h):
+    raw = _raw(calendar)
+    raw["changeovers"] = score_changeovers(
+        calendar, CFG, {}, week_bounds, horizon_h)
+    return category_scores(raw, CFG)["changeovers"], raw["changeovers"]
+
+
+def test_co_weekly_prorated_cap_makes_partial_week_fair():
+    """20 transitions over a full 168h week and 10 over an 84h half-week are
+    the same RATE -> identical category score under pro-rated caps."""
+    full, co_full = _co_cat(_calendar(_alt_blocks(20)), [(0.0, 33)], 168.0)
+    half, co_half = _co_cat(_calendar(_alt_blocks(10)), [(0.0, 33)], 84.0)
+    assert co_full["weekly"][0]["sku_transitions"] == 20
+    assert co_half["weekly"][0]["span_h"] == 84.0
+    assert full is not None and abs(full - half) < 1e-6
+    # totals are untouched by the weekly machinery
+    assert co_full["sku_transitions"] == 20
+
+
+def test_co_week_decay_penalizes_early_bad_week_more():
+    """30 transitions in W+0 and 5 in W+1 must score WORSE than the mirror
+    image: decay weights make the near week dominate."""
+    bounds, hz = [(0.0, 33), (168.0, 34)], 336.0
+    bad_first = _calendar(_alt_blocks(30) + _alt_blocks(5, start_h=168.0))
+    bad_last = _calendar(_alt_blocks(5) + _alt_blocks(30, start_h=168.0,
+                                                      first_parity=1))
+    s_first, _ = _co_cat(bad_first, bounds, hz)
+    s_last, _ = _co_cat(bad_last, bounds, hz)
+    assert s_first < s_last
+
+
+def test_co_week_floor_keeps_blown_week_discriminating():
+    """A week at hard 0 (both metrics over their pro-rated caps) floors at
+    co_week_score_floor instead of zeroing the whole product: the clean
+    second week still shows through."""
+    heavy = {("S0", "S1"): {"topload_change": 1, "format_change": 1},
+             ("S1", "S0"): {"topload_change": 1, "format_change": 1}}
+    cal = _calendar(
+        _alt_blocks(60) +  # weighted 3*60=180 > 150; hours 60*2=120 > 80
+        [_block(block_id="w2", start_h=200.0, end_h=300.0, sku="S0")])
+    raw = _raw(cal)
+    raw["changeovers"] = score_changeovers(
+        cal, CFG, heavy, [(0.0, 33), (168.0, 34)], 336.0)
+    wk = raw["changeovers"]["weekly"]
+    assert wk[0]["weighted_co"] >= 150.0 and wk[0]["co_hours"] >= 80.0
+    score = category_scores(raw, CFG)["changeovers"]
+    assert 0.0 < score < 50.0
+
+
+def test_co_no_bounds_means_no_weekly_and_legacy_path():
+    co = score_changeovers(_calendar(_alt_blocks(20)), CFG, {})
+    assert "weekly" not in co
+    raw = _raw(_calendar(_alt_blocks(20)))
+    raw["changeovers"] = co
+    assert category_scores(raw, CFG)["changeovers"] is not None
+
+
+def test_co_hours_are_reported_but_never_scored():
+    """setup_hours-priced CO hours (untrusted standards, 2026-08-25) must not
+    move the category: two calendars identical except for setup_hours score
+    identically, and the hours still land in the raw dict + weekly rows."""
+    cheap = {("S0", "S1"): {"setup_hours": 0.1},
+             ("S1", "S0"): {"setup_hours": 0.1}}
+    dear = {("S0", "S1"): {"setup_hours": 50.0},
+            ("S1", "S0"): {"setup_hours": 50.0}}
+    cal = _calendar(_alt_blocks(4))
+    bounds, hz = [(0.0, 33)], 168.0
+    scores = {}
+    for name, cmap in (("cheap", cheap), ("dear", dear)):
+        raw = _raw(cal)
+        raw["changeovers"] = score_changeovers(cal, CFG, cmap, bounds, hz)
+        scores[name] = category_scores(raw, CFG)["changeovers"]
+        assert raw["changeovers"]["weekly"][0]["co_hours"] > 0
+    assert scores["dear"] == scores["cheap"]
+    # dear's total blows cap_co_hours (200 >> 80) yet the score is unmoved
+    assert 4 * 50.0 > CFG["cap_co_hours"]
+
+
+# --------------------------------------------------------------------------
+# cip_req_after (2026-08-26): flagged SKU pairs need a CIP between runs.
+# A transition with a CIP in the gap is FULLY waived from all changeover
+# metrics; a flagged pair without one is a violation that gates the CIP
+# category to 0.
+# --------------------------------------------------------------------------
+_CIP_REQ_MAP = {("S0", "S1"): {"cip_req_after": 1},
+                ("S1", "S0"): {"cip_req_after": 1}}
+
+
+def test_transition_at_cip_is_fully_waived():
+    """S0 -> CIP -> S1: no transition counted anywhere, and the flagged pair
+    is satisfied (no violation)."""
+    cal = _calendar([
+        _block(block_id="p1", start_h=0, end_h=10, sku="S0"),
+        _block(block_id="c1", block_type="cip", start_h=10, end_h=16,
+               sku="", order_id=""),
+        _block(block_id="p2", start_h=16, end_h=30, sku="S1"),
+    ])
+    co = score_changeovers(cal, CFG, _CIP_REQ_MAP)
+    assert co["sku_transitions"] == 0
+    assert co["total_co_hours"] == 0
+    assert co["transitions_at_cip"] == 1
+    assert co["cip_req_violations"] == 0
+
+
+def test_flagged_pair_without_cip_is_a_violation_and_gates_cip_category():
+    cal = _calendar([
+        _block(block_id="p1", start_h=0, end_h=10, sku="S0"),
+        _block(block_id="p2", start_h=12, end_h=30, sku="S1"),
+    ])
+    co = score_changeovers(cal, CFG, _CIP_REQ_MAP)
+    assert co["cip_req_violations"] == 1
+    assert co["sku_transitions"] == 1  # still a real changeover
+    assert co["cip_req_detail"][0]["from_sku"] == "S0"
+    raw = _raw(cal)
+    raw["changeovers"] = co
+    assert category_scores(raw, CFG)["cip"] == 0.0
+
+
+def test_unflagged_pair_without_cip_is_not_a_violation():
+    cal = _calendar([
+        _block(block_id="p1", start_h=0, end_h=10, sku="S0"),
+        _block(block_id="p2", start_h=12, end_h=30, sku="S1"),
+    ])
+    co = score_changeovers(cal, CFG, {})
+    assert co["cip_req_violations"] == 0
+    assert co["sku_transitions"] == 1
+
+
+def test_compliant_cip_category_scores_on_forfeited_kg():
+    """No overdue, no violations -> category equals the forfeited-kg score
+    (100 here: no CIPs drawn, so nothing forfeited)."""
+    cal = _calendar([_block(start_h=0, end_h=30, sku="S0", qty_kg=1000.0)])
+    raw = _raw(cal)
+    assert raw["cip"]["cip_overdue"] == 0
+    assert category_scores(raw, CFG)["cip"] == 100.0
+
+
+def test_cip_between_only_counts_when_fully_inside_gap():
+    """A CIP overlapping the incoming run (not fully in the gap) does not
+    waive the transition and does not satisfy the flag."""
+    cal = _calendar([
+        _block(block_id="p1", start_h=0, end_h=10, sku="S0"),
+        _block(block_id="c1", block_type="cip", start_h=11, end_h=17,
+               sku="", order_id=""),
+        _block(block_id="p2", start_h=14, end_h=30, sku="S1"),
+    ])
+    co = score_changeovers(cal, CFG, _CIP_REQ_MAP)
+    assert co["cip_req_violations"] == 1
+    assert co["transitions_at_cip"] == 0
