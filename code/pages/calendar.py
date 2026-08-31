@@ -210,6 +210,111 @@ with st.expander("🏭 Rebuild calendar from current plant state (manprg + cip_i
                        "Reloading…")
             st.rerun()
 
+# --- Floating blocks: MO drift chip + link management (2026-08-28) --------
+# A block with an "after:<anchor>:<gap>" attrs token follows its anchor's
+# end. Running-MO ends re-forecast from actual cases (manprg); the board
+# NEVER moves silently (master-file invariant) — this chip previews the
+# drift and one click applies + saves.
+from helpers.calendar_io import (apply_float_links, clear_float_link,
+                                 float_link_of, set_float_link)
+
+_cal_now = load_calendar(cal_path)
+_float_n = int(sum(1 for _, _r in _cal_now.iterrows()
+                   if float_link_of(_r.get("attrs"))))
+if _cs is not None and not _cal_now.empty:
+    # Fresh MO starts/ends from the live rebuild, matched by (line, MO).
+    _fresh: dict = {}
+    for _b in _cs.blocks.to_dict("records") if hasattr(_cs.blocks, "to_dict") \
+            else _cs.blocks:
+        _tok = str(_b.get("attrs") or "")
+        if "current_state:running" in _tok or "current_state:queued" in _tok:
+            _fresh[(str(_b.get("line_name", "")).upper(),
+                    str(_b.get("order_id", "")))] = (
+                float(_b["start_h"]), float(_b["end_h"]))
+    _drift = _cal_now.copy()
+    _ids = _drift["block_id"].astype(str)
+    _n_drift = 0
+    for _i, _r in _drift.iterrows():
+        _tok = str(_r.get("attrs") or "")
+        if not ("current_state:running" in _tok or "current_state:queued" in _tok):
+            continue
+        _key = (str(_r.get("line_name", "")).upper(), str(_r.get("order_id", "")))
+        if _key not in _fresh:
+            continue
+        _ns, _ne = _fresh[_key]
+        if abs(_ne - float(_r["end_h"])) > 0.05 or abs(_ns - float(_r["start_h"])) > 0.05:
+            _drift.loc[_i, "start_h"] = _ns
+            _drift.loc[_i, "end_h"] = _ne
+            _n_drift += 1
+    _synced, _float_notes = apply_float_links(_drift)
+    if _n_drift or _float_notes:
+        _msg = []
+        if _n_drift:
+            _msg.append(f"{_n_drift} MO block(s) drifted vs live manprg")
+        _msg.extend(_float_notes[:4])
+        st.warning("⛓ " + " · ".join(_msg))
+        if st.button("Apply MO drift & float sync", key="float_sync_apply"):
+            from datetime import datetime as _dt3
+            _bdir3 = dd / "_backups"
+            _bdir3.mkdir(parents=True, exist_ok=True)
+            (_bdir3 / f"calendar_blocks.{_dt3.now():%Y%m%d-%H%M%S}.csv"
+             ).write_bytes(cal_path.read_bytes())
+            save_calendar(_synced, cal_path)
+            st.session_state["cal_reset_gen"] = (
+                st.session_state.get("cal_reset_gen", 0) + 1)
+            st.success("Board synced to live MO ends; floating blocks followed.")
+            st.rerun()
+
+with st.expander(f"⛓ Float links ({_float_n} active)"):
+    st.caption(
+        "Tie a block's START to another block's END: when a running MO's "
+        "end re-forecasts from actual cases, its follower moves by the same "
+        "amount (gap at link time is preserved; linking also pins the "
+        "block). The chip above previews drift — the board only moves when "
+        "you apply.")
+    _prod = _cal_now[(_cal_now["block_type"] == "production")
+                     & ~_cal_now["attrs"].astype(str).str.contains(
+                         "current_state:", regex=False)]
+    if _prod.empty:
+        st.caption("No linkable production blocks on the board.")
+    else:
+        def _blabel(r) -> str:
+            return (f"{r['line_name']} · {r.get('label') or r.get('sku')} "
+                    f"@ {float(r['start_h']):.1f}h")
+        _by_id = {str(r["block_id"]): r for _, r in _cal_now.iterrows()}
+        _opts = {_blabel(r): str(r["block_id"]) for _, r in _prod.iterrows()}
+        _sel = st.selectbox("Block", list(_opts), key="float_pick")
+        _bid = _opts[_sel]
+        _cur = float_link_of(_by_id[_bid].get("attrs"))
+        if _cur:
+            _a = _by_id.get(_cur[0])
+            st.caption(f"Currently follows: "
+                       f"{_blabel(_a) if _a is not None else _cur[0]} "
+                       f"(gap {_cur[1]:+.2f}h)")
+            if st.button("Unlink", key="float_unlink"):
+                save_calendar(clear_float_link(_cal_now, _bid), cal_path)
+                st.rerun()
+        else:
+            _row = _by_id[_bid]
+            _prev = _cal_now[
+                (_cal_now["line_id"].astype(str) == str(_row["line_id"]))
+                & (_cal_now["block_type"] == "production")
+                & (_cal_now["end_h"].astype(float)
+                   <= float(_row["start_h"]) + 1e-6)
+                & (_cal_now["block_id"].astype(str) != _bid)]
+            if _prev.empty:
+                st.caption("No preceding production block on this line.")
+            else:
+                _fl_anchor = _prev.sort_values("end_h").iloc[-1]
+                st.caption(f"Will follow: {_blabel(_fl_anchor)}")
+                if st.button("Link to preceding block", key="float_link"):
+                    try:
+                        save_calendar(set_float_link(
+                            _cal_now, _bid, str(_fl_anchor["block_id"])), cal_path)
+                        st.rerun()
+                    except ValueError as _exc:
+                        st.error(str(_exc))
+
 # --- Start of day: downtime + view options --------------------------------
 # One compact strip instead of scattered controls — the Gantt is the page.
 # Hidden past rows are held aside and merged back on save (never destroyed).
