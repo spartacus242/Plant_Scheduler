@@ -164,7 +164,10 @@ def test_data_loader_uses_cache_and_preserves_shape(tmp_path):
     d = Data(P, F)
     d.load()
     expected = load_changeover_dicts(wd / "changeovers.csv")
-    assert d.setup == expected[0]
+    # Data.load applies the cip_req_after setup floor (2026-09-01): flagged
+    # pairs carry at least one CIP duration so the solver leaves the slot.
+    from solver.changeover_cache import apply_cip_req_setup_floor
+    assert d.setup == apply_cip_req_setup_floor(expected[0], expected[1], int(P.cip_duration_h))
     assert d.machine_changes == expected[1]
     assert d.changeover_type == expected[2]
     # families derived from sku_info and stored on Data

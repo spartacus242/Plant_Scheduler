@@ -934,15 +934,22 @@ def compute_guards(calendar: pd.DataFrame, gen: Generation,
         # cip_req_after (2026-08-26): flagged SKU pairs without a clean
         # between runs. Recorded for the leaderboard; deliberately NOT in
         # the publish pass-set yet (soft rule — planner decides).
-        cip_req_ok = int(
-            windowed.changeovers.get("cip_req_violations", 0) or 0) == 0
+        # Solver-controllable violations only (2026-09-01): pairs inside the
+        # plant's committed manprg sequence are hygiene debt the solver
+        # cannot resequence — counted separately, never a guard failure.
+        _viol = int(windowed.changeovers.get("cip_req_violations", 0) or 0)
+        _inh = int(windowed.changeovers.get("cip_req_inherited", 0) or 0)
+        cip_req_ok = (_viol - _inh) <= 0
+        cip_req_inherited = _inh
     except Exception as exc:  # noqa: BLE001 — a broken guard is a failed guard
         log(f"[guards] cip check failed: {exc}")
         cip_ok = False
         cip_req_ok = False
+        cip_req_inherited = 0
     return {"overlaps": int(overlaps), "pins_ok": bool(pins_ok),
             "lock_ok": bool(lock_ok), "cip_ok": bool(cip_ok),
-            "cip_req_ok": bool(cip_req_ok)}
+            "cip_req_ok": bool(cip_req_ok),
+            "cip_req_inherited": int(cip_req_inherited)}
 
 
 def run_arm(arm: dict, gen: Generation, dns: dict[str, float],

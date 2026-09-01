@@ -223,6 +223,24 @@ def build_sku_families(
     return fam
 
 
+def apply_cip_req_setup_floor(setup: dict, machine_changes: dict, cip_h: int) -> dict:
+    """The clean modeled as TIME (user rule 2026-09-01): a cip_req_after pair
+    needs a CIP between its runs, so its setup floor becomes at least the
+    CIP duration. The solver then leaves the 6h slot when it sequences such
+    a pair (and prefers landing it on an existing CIP window, where a
+    blocked window already satisfies the gap for free); the fill pipeline
+    materializes a real CIP block into the slot afterwards. Physical
+    standards in changeovers.csv stay untouched — only the loaded dict."""
+    out = dict(setup)
+    floor = int(max(0, cip_h))
+    if floor <= 0:
+        return out
+    for pair, mc in machine_changes.items():
+        if int(mc.get("cip_req_after", 0) or 0) == 1:
+            out[pair] = max(int(out.get(pair, 0)), floor)
+    return out
+
+
 def compress_machine_changes(
     machine_changes: dict, sku_family: Dict[str, str]
 ) -> dict:

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import pandas as pd
 
@@ -50,6 +51,103 @@ def pinned_blocks(calendar: pd.DataFrame) -> pd.DataFrame:
         & (calendar["block_type"].astype(str) == "production")
     )
     return calendar[mask]
+
+
+def planner_cip_blocks(calendar: pd.DataFrame) -> pd.DataFrame:
+    """CIP blocks the PLANNER placed on the Plant Calendar (block popup /
+    gap picker, 2026-09-01) — including the re-forecast projected cleans
+    they trigger (attrs token planner:cip_projected). Committed windows the
+    solver plans around, exactly like pinned production. Plant-derived CIPs
+    (current_state:* tokens) and display overlays (cipinfo_/dt_ ids) are
+    excluded: those are re-staged from cip_info / downtimes.csv."""
+    if calendar is None or calendar.empty or "attrs" not in calendar.columns:
+        return (calendar.iloc[0:0] if calendar is not None
+                else pd.DataFrame())
+    attrs = calendar["attrs"].astype(str)
+    ids = calendar["block_id"].astype(str)
+    mask = (
+        (calendar["block_type"].astype(str) == "cip")
+        & ~attrs.str.contains("current_state:", regex=False)
+        & ~ids.str.startswith(("cipinfo_", "dt_"))
+    )
+    return calendar[mask]
+
+
+def materialize_required_cips(
+    calendar: pd.DataFrame,
+    co_map: dict,
+    cip_h: float,
+    *,
+    attrs: str = "solver:cip_req",
+) -> tuple[pd.DataFrame, list[str]]:
+    """Draw the clean the solver left room for (user rule 2026-09-01).
+
+    For every adjacent production pair on a line whose changeovers.csv row
+    is cip_req_after == 1 and whose gap holds no CIP block, insert a cip
+    block at the earlier run's end. The solver's setup floor (data_loader)
+    guarantees the slot; a gap that still comes up short (committed
+    boundaries, rounding) is REPORTED, never filled with an overlapping
+    block. Gap containment mirrors score_changeovers' waiver rule exactly,
+    so what this draws is precisely what the scorecard then waives.
+    Returns (calendar with the new rows, human notes).
+    """
+    import uuid
+
+    notes: list[str] = []
+    if calendar is None or calendar.empty:
+        return calendar, notes
+    cal = calendar.copy()
+    cips: dict[Any, list[tuple[float, float]]] = {}
+    for _, c in cal[cal["block_type"].astype(str) == "cip"].iterrows():
+        cips.setdefault(c["line_id"], []).append(
+            (float(c["start_h"]), float(c["end_h"])))
+    prod = cal[cal["block_type"].astype(str) == "production"].sort_values(
+        ["line_id", "start_h"])
+    new_rows: list[dict] = []
+    for line_id, grp in prod.groupby("line_id"):
+        rows = grp.to_dict("records")
+        line_cips = list(cips.get(line_id, []))
+        for i in range(1, len(rows)):
+            a, b = rows[i - 1], rows[i]
+            fs, ts = str(a.get("sku", "")), str(b.get("sku", ""))
+            if fs == ts:
+                continue
+            flags = co_map.get((fs, ts))
+            if not flags or int(flags.get("cip_req_after", 0) or 0) != 1:
+                continue
+            a_end, b_start = float(a["end_h"]), float(b["start_h"])
+            if any(cs >= a_end - 1e-6 and ce <= b_start + 1e-6
+                   for cs, ce in line_cips):
+                continue
+            gap = b_start - a_end
+            if gap + 1e-6 < cip_h:
+                notes.append(
+                    f"{a.get('line_name')}: {fs}->{ts} at {a_end:.1f}h needs a "
+                    f"{cip_h:g}h clean but the gap is {gap:.1f}h — left for the "
+                    "planner")
+                continue
+            new_rows.append({
+                "block_id": "cip_" + uuid.uuid4().hex[:10],
+                "block_type": "cip",
+                "line_id": a.get("line_id"),
+                "line_name": a.get("line_name"),
+                "start_h": a_end,
+                "end_h": a_end + float(cip_h),
+                "label": "CIP",
+                "order_id": "",
+                "sku": "CIP",
+                "sku_description": f"required clean {fs}->{ts}",
+                "qty_kg": None,
+                "locked": False,
+                "attrs": attrs,
+            })
+            line_cips.append((a_end, a_end + float(cip_h)))
+            notes.append(f"{a.get('line_name')}: CIP drawn at {a_end:.1f}h "
+                         f"for {fs}->{ts}")
+    if new_rows:
+        cal = pd.concat([cal, pd.DataFrame(new_rows, columns=cal.columns)],
+                        ignore_index=True)
+    return cal, notes
 
 
 def committed_windows(blocks: pd.DataFrame, horizon_h: float) -> list[dict]:

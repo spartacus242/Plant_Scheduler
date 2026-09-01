@@ -92,11 +92,12 @@ class Params:
     # Per-added-flavor penalty (negative added_flavors = reward)
     co_flavor_weight: int = 5
     # cip_req_after pairs (2026-08-26): a CIP is REQUIRED between these
-    # SKUs. Soft rule — this weight prices running the pair without a
-    # clean; the full pair cost is waived when the transition sits at a
-    # committed CIP window (model_builder). Sized to dominate every other
-    # changeover weight combined.
-    co_cip_req_weight: int = 2000
+    # SKUs; waived when the transition sits at a committed CIP window
+    # (model_builder). Since 2026-09-01 the clean's HOURS are modeled as
+    # setup time (Data.load setup floor), so this weight is only its
+    # chemical/labor cost on top — modest by design, about a quarter of an
+    # FFS change under Scenario F.
+    co_cip_req_weight: int = 150
     # Soft demand (Scenario F): instead of hard qty_min (all-or-nothing via
     # the relax ladder), every kg short of qty_min costs shortfall_weight in
     # the objective. Filling always pays; shortage is reported, never hidden.
@@ -233,6 +234,15 @@ class Data:
             self.machine_changes,
             self.changeover_type,
         ) = load_changeover_dicts(self.F.chg)
+        # cip_req_after pairs (2026-09-01): setup floor = CIP duration, so the
+        # solver leaves the clean's slot; the fill pipeline then draws the
+        # CIP into it (changeover_cache.apply_cip_req_setup_floor).
+        try:
+            from changeover_cache import apply_cip_req_setup_floor
+        except ImportError:  # imported as solver.data_loader (tests, helpers)
+            from solver.changeover_cache import apply_cip_req_setup_floor
+        self.setup = apply_cip_req_setup_floor(
+            self.setup, self.machine_changes, int(self.P.cip_duration_h))
         # Initial states
         init = pd.read_csv(self.F.init)
         for c, d in {

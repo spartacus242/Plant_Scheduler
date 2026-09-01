@@ -420,7 +420,42 @@ if dem_path.exists():
             "due_end_hour": float(r.get("due_end_hour", 0) or 0) + _dem_shift_h,
         })
 
+# Downtimes are CONSTRAINTS, not schedule (user rule 2026-09-01): the
+# export (calendar_blocks.csv) never carries them — the plant is simply not
+# scheduled there. downtimes.csv (the Start-of-day strip) is the single
+# source; the board DRAWS its rows as locked windows on every load and
+# strips them on every save (drop_display_overlays). Rows minted by older
+# imports (down_/maint_) are purged the same way.
+from helpers.calendar_io import DISPLAY_ONLY_PREFIXES as _DT_PREFIXES
+from helpers.calendar_io import downtime_block_type as _dt_btype
+from helpers.downtime_store import load_downtimes as _load_dt
+cal = cal[~cal["block_id"].astype(str).str.startswith(_DT_PREFIXES)].copy()
 schedule, windows = calendar_to_gantt_payload(cal)
+try:
+    _dt_rows = _load_dt(dd, anchor=_anchor)
+except Exception as _exc:  # noqa: BLE001
+    _dt_rows = None
+    st.caption(f"Downtimes not drawn: {_exc}")
+if _dt_rows is not None and len(_dt_rows):
+    _now_h_dt = (_horizon.now - _anchor).total_seconds() / 3600.0
+    for _i, _r in _dt_rows.iterrows():
+        try:
+            _s, _e = float(_r["start_hour"]), float(_r["end_hour"])
+        except (TypeError, ValueError):
+            continue
+        if pd.isna(_s) or pd.isna(_e) or _e <= _s or _e <= 0:
+            continue
+        if _hide_past and _e <= _now_h_dt:
+            continue
+        _reason = str(_r.get("reason", "") or "Down")
+        windows.append({
+            "id": f"dt_{_i}", "line_id": int(_r.get("line_id", 0) or 0),
+            "line_name": str(_r.get("line_name", "")), "order_id": "",
+            "sku": "", "sku_description": _reason,
+            "start_hour": _s, "end_hour": _e, "run_hours": _e - _s,
+            "is_trial": False, "block_type": _dt_btype(_r.get("type"), _reason),
+            "label": _reason, "locked": True, "attrs": "ref_downtime",
+        })
 
 # ---- Live ops overlay: MO completion (manprg) + CIP schedule (cip_info) ----
 from helpers.cip_import import read_cip_info
@@ -751,6 +786,12 @@ state = gantt_calendar(
     config={
         "planning_anchor": f"{_anchor:%Y-%m-%d %H:%M:%S}",
         "cip_duration_h": int(cip_cfg.get("duration_h", 6)),
+        # Per-line MaxHoursBetweenCIP (cip_info) so the board can re-forecast
+        # later projected cleans when the planner inserts a CIP (2026-09-01).
+        "cip_interval_h": {str(_l): float(_ci.max_hours_between or 0)
+                           for _l, _ci in _cip.by_line.items()
+                           if (_ci.max_hours_between or 0) > 0},
+        "cip_interval_default_h": float(cip_cfg.get("interval_h", 120)),
         "min_run_hours": int(sched_cfg.get("min_run_hours", 4)),
         "horizon_hours": int(_horizon.hours),
         "locked_through_h": None if _lock_h is None else float(_lock_h),

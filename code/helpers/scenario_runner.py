@@ -260,7 +260,7 @@ SOLVER_DEFAULTS: dict[str, float] = {
     "changeover.conv_org_weight": 30,
     "changeover.cinn_weight": 20,
     "changeover.flavor_weight": 5,
-    "changeover.cip_req_weight": 2000,
+    "changeover.cip_req_weight": 150,
 }
 
 CUSTOM_SCENARIO_ID = "X"
@@ -907,6 +907,25 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
               caps_path=dd / "reference" / "capabilities_rates.csv")
     blocks = cs.blocks
 
+    # Planner-placed CIPs (Plant Calendar popup / gap picker, 2026-09-01):
+    # committed windows like pinned production. Where the planner has a CIP
+    # on a line, the plant-projected cleans for that line are dropped —
+    # the planner's clean re-forecasts the grid, and the board already
+    # regenerated its later projected CIPs from it (staged below too).
+    from helpers.calendar_io import load_calendar as _lcal
+    from helpers.plan_fill import planner_cip_blocks as _pcb
+    cal_path = dd / "calendar_blocks.csv"
+    pcips = _pcb(_lcal(cal_path)) if cal_path.exists() else None
+    if pcips is not None and len(pcips) and "attrs" in blocks.columns:
+        _pl = {str(x).upper() for x in pcips["line_name"]}
+        _drop = ((blocks["block_type"].astype(str) == "cip")
+                 & blocks["attrs"].astype(str).str.contains("cip_projected", regex=False)
+                 & blocks["line_name"].astype(str).str.upper().isin(_pl))
+        blocks = blocks[~_drop]
+        notes.append(f"{len(pcips)} planner CIP(s) held FIXED; plant-projected "
+                     f"cleans on {', '.join(sorted(_pl))} replaced by the "
+                     "planner's re-forecast")
+
     # Planner-pinned demand blocks (Plant Calendar popup: "Fix for solver").
     # A pinned block is committed line-time exactly like a manprg MO — a
     # blocked window the solver plans around, its kg crediting the demand
@@ -915,8 +934,6 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
     # deep in the fill region must not gate the whole line before it, and
     # the changeover base belongs to the committed TAIL, not to a mid-
     # horizon pin.
-    from helpers.calendar_io import load_calendar as _lcal
-    cal_path = dd / "calendar_blocks.csv"
     pinned = pinned_blocks(_lcal(cal_path)) if cal_path.exists() else None
     if pinned is not None and len(pinned):
         blocks_all = _pd.concat([blocks, pinned], ignore_index=True)
@@ -925,6 +942,8 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
             "(blocked windows + demand credit); the solver fills around them")
     else:
         blocks_all = blocks
+    if pcips is not None and len(pcips):
+        blocks_all = _pd.concat([blocks_all, pcips], ignore_index=True)
 
     # 1. committed windows -> downtimes (existing line-downs kept). The
     # TRUE committed blocks are stashed alongside so the proposal calendar
@@ -1603,6 +1622,24 @@ def _collect_result(
         )
         calendar = (_pd2.concat([committed, fill_part], ignore_index=True)
                     if committed is not None and len(committed) else fill_part)
+        # Draw the cleans the solver left room for (user rule 2026-09-01):
+        # cip_req_after pairs carry a setup floor of one CIP duration, so
+        # every such transition without a CIP window in its gap now gets a
+        # real CIP block — into the proposal, the leaderboard, Promote and
+        # the ERP export. What this draws is exactly what the scorecard
+        # waives (same gap-containment rule).
+        try:
+            from helpers.config import load_toml as _lt_cip
+            from helpers.plan_fill import materialize_required_cips as _mrc
+            from helpers.scorecard_engine import (_co_lookup as _col_cip,
+                                                  _load_changeovers as _lco_cip)
+            _cip_h = float((_lt_cip().get("cip") or {}).get("duration_h", 6) or 6)
+            calendar, _cip_notes = _mrc(
+                calendar, _col_cip(_lco_cip(Path(data_dir) / "reference")), _cip_h)
+            if _cip_notes:
+                log = str(log) + "\n" + "\n".join(f"[cip_req] {n}" for n in _cip_notes)
+        except Exception as _exc:  # noqa: BLE001 — never lose a solve over a clean
+            log = str(log) + f"\n[cip_req] materialization skipped: {_exc}"
     else:
         calendar = import_solver_schedule(
             sched,
