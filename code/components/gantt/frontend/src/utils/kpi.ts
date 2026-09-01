@@ -39,17 +39,17 @@ export function computeAdherence(
   // number, unfalsifiable against the calendar it sat on (user mandate
   // 2026-08-21: the metrics must score calendar_blocks.csv).
   const unmatchedBySku: Record<string, number> = {};
-  const unmatchedBlocks: Array<{ sku: string; kg: number; s: number; e: number }> = [];
+  // EVERY block keeps its position for pass 1; a matching order id is a
+  // PREFERENCE for leftover kg, not a bypass (2026-09-01: a 280256-W37 run
+  // scheduled mostly in W38 hours credited W37 outright, W38 read 0%).
+  const blocks: Array<{ sku: string; kg: number; s: number; e: number; own: string }> = [];
   for (const b of schedule) {
     if (!isProduction(b)) continue;
     const kg = b.qty_kg && b.qty_kg > 0
       ? b.qty_kg
       : (caps[b.line_name]?.[b.sku] ?? 0) * Math.max(0, b.end_hour - b.start_hour);
-    if (demandIds.has(b.order_id)) {
-      schedByOrder[b.order_id] = (schedByOrder[b.order_id] ?? 0) + kg;
-    } else {
-      unmatchedBlocks.push({ sku: b.sku, kg, s: b.start_hour, e: b.end_hour });
-    }
+    blocks.push({ sku: b.sku, kg, s: b.start_hour, e: b.end_hour,
+                  own: demandIds.has(b.order_id) ? b.order_id : "" });
   }
   // coveredByOrder is NON-BOARD kg ONLY: made kg from completed MOs the
   // board hides (built server-side with made_only=True). It only ever ADDS
@@ -68,13 +68,18 @@ export function computeAdherence(
     skuOrders.sort((a, b2) => (a.due_start_hour ?? 0) - (b2.due_start_hour ?? 0));
   }
   // Pass 1 — POSITION-AWARE (user rule 2026-09-01, exact port of
-  // compute_adherence): an unmatched (MO-id) block first credits orders
-  // whose due windows OVERLAP its own hours, pro-rated by overlap share of
-  // the block's duration, capped at each order's max. Before this the
-  // waterfall below routed a W37 placement's every kg into W36.
+  // compute_adherence), EVERY block: it first credits same-SKU orders whose
+  // due windows OVERLAP its own hours, pro-rated by overlap share of the
+  // block's duration, capped at each order's max; kg the windows could not
+  // take goes to the block's OWN order if it has room (the order id is the
+  // planner's intent and wins where position is silent), then to the SKU
+  // pool. Zero-width windows (no due hours) reduce this to the legacy
+  // order-id credit.
+  const capByOid: Record<string, number> = {};
+  for (const d of demand) capByOid[d.order_id] = Math.max(d.qty_max, d.qty_min);
   const leftoverBySku: Record<string, number> = {};
-  unmatchedBlocks.sort((a, b2) => a.s - b2.s || a.e - b2.e);
-  for (const blk of unmatchedBlocks) {
+  blocks.sort((a, b2) => a.s - b2.s || a.e - b2.e);
+  for (const blk of blocks) {
     let remaining = blk.kg;
     const dur = Math.max(blk.e - blk.s, 1e-9);
     for (const d of bySku[blk.sku] ?? []) {
@@ -83,12 +88,17 @@ export function computeAdherence(
       const ov = Math.max(0, Math.min(blk.e, de) - Math.max(blk.s, ds));
       if (ov <= 0) continue;
       const have = schedByOrder[d.order_id] ?? 0;
-      const cap = Math.max(d.qty_max, d.qty_min);
-      const take = Math.min(blk.kg * (ov / dur), Math.max(0, cap - have), remaining);
+      const take = Math.min(blk.kg * (ov / dur), Math.max(0, capByOid[d.order_id] - have), remaining);
       if (take > 0) {
         schedByOrder[d.order_id] = have + take;
         remaining -= take;
       }
+    }
+    if (remaining > 1e-9 && blk.own) {
+      // UNCAPPED, like the legacy direct credit: an over-booked order must
+      // read OVER, not shed kg into the pool.
+      schedByOrder[blk.own] = (schedByOrder[blk.own] ?? 0) + remaining;
+      remaining = 0;
     }
     if (remaining > 1e-9) {
       leftoverBySku[blk.sku] = (leftoverBySku[blk.sku] ?? 0) + remaining;

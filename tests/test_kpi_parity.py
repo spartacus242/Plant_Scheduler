@@ -196,7 +196,8 @@ def test_python_golden_values(py_result):
     assert co_full["transitions_at_cip"] == 1
     assert co_full["cip_req_violations"] == 1
     assert co_full["cip_req_detail"] == [
-        {"line": "P13", "from_sku": "SKU_G", "to_sku": "SKU_F", "at_h": 18.0}]
+        {"line": "P13", "from_sku": "SKU_G", "to_sku": "SKU_F", "at_h": 18.0,
+         "committed": False}]
 
     by_order = {r["order_id"]: r for r in py_result["adherence"]}
     assert by_order["O1"]["status"] == "MET" and by_order["O1"]["scheduled_qty"] == 1500

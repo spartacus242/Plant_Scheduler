@@ -831,3 +831,56 @@ def test_position_credit_respects_caps_and_spills():
     rows = {r["order_id"]: r for r in compute_adherence(cal, _targets_2w(), {})}
     assert rows["S1-W1"]["scheduled_qty"] == 110.0  # capped at qty_max
     assert rows["S1-W0"]["scheduled_qty"] == 90.0   # spill, capped at 110
+
+
+# --------------------------------------------------------------------------
+# Position-aware crediting for MATCHED blocks too (2026-09-01): the order id
+# is a preference for leftover kg, not a bypass — a 280256-W37 run scheduled
+# mostly in W38 hours must credit W38 for those hours.
+# --------------------------------------------------------------------------
+def test_matched_block_credits_the_weeks_it_actually_runs_in():
+    cal = _calendar([_block(block_id="b", order_id="S1-W0", sku="S1",
+                            start_h=148, end_h=188, qty_kg=100.0)])
+    rows = {r["order_id"]: r for r in compute_adherence(cal, _targets_2w(), {})}
+    assert rows["S1-W0"]["scheduled_qty"] == 50.0
+    assert rows["S1-W1"]["scheduled_qty"] == 50.0
+
+
+def test_matched_block_inside_its_own_window_is_unchanged():
+    cal = _calendar([_block(block_id="b", order_id="S1-W0", sku="S1",
+                            start_h=10, end_h=50, qty_kg=100.0)])
+    rows = {r["order_id"]: r for r in compute_adherence(cal, _targets_2w(), {})}
+    assert rows["S1-W0"]["scheduled_qty"] == 100.0
+    assert rows["S1-W1"]["scheduled_qty"] == 0.0
+
+
+def test_matched_block_run_a_week_late_credits_that_week():
+    """Honest, not comfortable: a W0-labelled run placed entirely in W1
+    hours covers W1 and leaves W0 uncovered — the planner sees the slip."""
+    cal = _calendar([_block(block_id="b", order_id="S1-W0", sku="S1",
+                            start_h=200, end_h=260, qty_kg=100.0)])
+    rows = {r["order_id"]: r for r in compute_adherence(cal, _targets_2w(), {})}
+    assert rows["S1-W1"]["scheduled_qty"] == 100.0
+    assert rows["S1-W0"]["scheduled_qty"] == 0.0
+
+
+def test_own_order_takes_leftover_beyond_windows():
+    """Hours outside every due window fall to the block's OWN order first
+    (capped), then the waterfall — the legacy order-id credit survives
+    wherever position is silent."""
+    cal = _calendar([_block(block_id="b", order_id="S1-W1", sku="S1",
+                            start_h=400, end_h=460, qty_kg=100.0)])
+    rows = {r["order_id"]: r for r in compute_adherence(cal, _targets_2w(), {})}
+    assert rows["S1-W1"]["scheduled_qty"] == 100.0
+    assert rows["S1-W0"]["scheduled_qty"] == 0.0
+
+
+def test_zero_width_windows_keep_pure_order_id_credit():
+    """Callers without due hours (Generate page) see exactly the old rule."""
+    targets = [{"order_id": "S1-W0", "sku": "S1", "qty_min": 90.0, "qty_max": 110.0},
+               {"order_id": "S1-W1", "sku": "S1", "qty_min": 90.0, "qty_max": 110.0}]
+    cal = _calendar([_block(block_id="b", order_id="S1-W1", sku="S1",
+                            start_h=10, end_h=50, qty_kg=100.0)])
+    rows = {r["order_id"]: r for r in compute_adherence(cal, targets, {})}
+    assert rows["S1-W1"]["scheduled_qty"] == 100.0
+    assert rows["S1-W0"]["scheduled_qty"] == 0.0

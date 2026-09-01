@@ -858,6 +858,7 @@ def score_changeovers(
                    for cs, ce in cips_by_line.get(line_id, ()))
 
     cip_req_violations = 0
+    cip_req_inherited = 0
     transitions_at_cip = 0
     cip_req_detail: list[dict[str, Any]] = []
 
@@ -895,12 +896,20 @@ def score_changeovers(
                 continue
             if cip_req:
                 cip_req_violations += 1
+                # Inherited = BOTH runs are committed manprg blocks: the
+                # plant's own sequence, which neither the solver nor the
+                # planner can resequence. Guards count only the rest.
+                _inh = ("current_state:" in str(a.get("attrs") or "")
+                        and "current_state:" in str(b.get("attrs") or ""))
+                if _inh:
+                    cip_req_inherited += 1
                 if len(cip_req_detail) < 50:
                     cip_req_detail.append({
                         "line": line_name,
                         "from_sku": from_sku,
                         "to_sku": to_sku,
                         "at_h": round(float(b["start_h"]), 2),
+                        "committed": bool(_inh),
                     })
             transitions += 1
             line_count += 1
@@ -981,6 +990,9 @@ def score_changeovers(
         # Hygiene rule: flagged pairs without a CIP in the gap. Detail rows
         # feed the Reconcile finding and the guards.
         "cip_req_violations": cip_req_violations,
+        # ...of which both runs are committed manprg blocks (plant's own
+        # sequence — reported as hygiene debt, excluded from solver guards).
+        "cip_req_inherited": cip_req_inherited,
         "cip_req_detail": cip_req_detail,
         # Transitions fully waived because a CIP sits in the gap (retooling
         # happens during the clean) — excluded from every metric above.
@@ -1634,8 +1646,11 @@ def compute_adherence(
     """
     prod = _production(calendar)
     sched: dict[str, float] = {}
-    # (sku, kg, start_h, end_h) — positions kept for pass 1 below.
-    unmatched_blocks: list[tuple[str, float, float, float]] = []
+    # (sku, kg, start_h, end_h, own_order_id or "") — EVERY block keeps its
+    # position for pass 1; a matching order id is a PREFERENCE for leftover
+    # kg, not a bypass (2026-09-01: a 280256-W37 run scheduled mostly in
+    # W38 hours credited W37 outright and W38 read 0%).
+    blocks: list[tuple[str, float, float, float, str]] = []
     demand_ids = {str(d.get("order_id", "")) for d in demand_targets}
     for _, b in prod.iterrows():
         line = str(b.get("line_name", "") or "")
@@ -1645,11 +1660,8 @@ def compute_adherence(
             rate = float((caps.get(line) or {}).get(sku, 0) or 0)
             kg = rate * max(0.0, float(b["end_h"]) - float(b["start_h"]))
         oid = str(b.get("order_id", "") or "")
-        if oid in demand_ids:
-            sched[oid] = sched.get(oid, 0.0) + float(kg)
-        else:
-            unmatched_blocks.append((sku, float(kg),
-                                     float(b["start_h"]), float(b["end_h"])))
+        blocks.append((sku, float(kg), float(b["start_h"]), float(b["end_h"]),
+                       oid if oid in demand_ids else ""))
 
     if covered_by_order is not None:
         for oid, kg in covered_by_order.items():
@@ -1662,17 +1674,24 @@ def compute_adherence(
     for orders in by_sku.values():
         orders.sort(key=lambda d: float(d.get("due_start_hour", 0) or 0))
 
-    # Pass 1 — POSITION-AWARE (user rule 2026-09-01): an unmatched (MO-id)
-    # block first credits the orders whose due windows OVERLAP its own
-    # hours, each offered the block's kg pro-rated by overlap share of the
-    # block's duration and capped at the order's max. Before this, the
-    # earliest-due waterfall below routed a W37 placement's every kg into
-    # W36 (its cap absorbed the lot) — moving blocks on the board changed
-    # nothing. Due windows must be in the CALENDAR's hour frame (the page
-    # shifts demand-frame hours via demand_source_anchor); a caller that
-    # skips the shift degrades toward pass 2, never crashes.
+    # Pass 1 — POSITION-AWARE (user rule 2026-09-01), EVERY block: it first
+    # credits the same-SKU orders whose due windows OVERLAP its own hours,
+    # each offered the block's kg pro-rated by overlap share of the block's
+    # duration and capped at the order's max. Kg the windows could not take
+    # (hours outside every window, or a full week) then goes to the block's
+    # OWN order if it has one with room — the order id is the planner's
+    # intent and wins where position is silent — and only after that joins
+    # the SKU pool for pass 2. Due windows must be in the CALENDAR's hour
+    # frame (the page shifts demand-frame hours via demand_source_anchor;
+    # load_demand does the same); zero-width windows (callers that carry no
+    # due hours) make pass 1 a no-op and the own-order credit the whole
+    # story — exactly the legacy behavior.
+    caps_by_oid = {
+        str(d.get("order_id", "")): max(float(d.get("qty_max", 0) or 0),
+                                        float(d.get("qty_min", 0) or 0))
+        for d in demand_targets}
     leftover_by_sku: dict[str, float] = {}
-    for sku, kg, s, e in sorted(unmatched_blocks, key=lambda t: (t[2], t[3])):
+    for sku, kg, s, e, own in sorted(blocks, key=lambda t: (t[2], t[3])):
         remaining = kg
         dur = max(e - s, 1e-9)
         for d in by_sku.get(sku, []):
@@ -1683,12 +1702,16 @@ def compute_adherence(
                 continue
             oid = str(d.get("order_id", ""))
             have = sched.get(oid, 0.0)
-            cap = max(float(d.get("qty_max", 0) or 0),
-                      float(d.get("qty_min", 0) or 0))
-            take = min(kg * (ov / dur), max(0.0, cap - have), remaining)
+            take = min(kg * (ov / dur), max(0.0, caps_by_oid[oid] - have), remaining)
             if take > 0:
                 sched[oid] = have + take
                 remaining -= take
+        if remaining > 1e-9 and own:
+            # UNCAPPED, exactly like the legacy direct credit: an order the
+            # planner over-books must read OVER, not silently shed kg into
+            # the pool (parity golden O3: 600 kg on a 550 cap is OVER).
+            sched[own] = sched.get(own, 0.0) + remaining
+            remaining = 0.0
         if remaining > 1e-9:
             leftover_by_sku[sku] = leftover_by_sku.get(sku, 0.0) + remaining
 
