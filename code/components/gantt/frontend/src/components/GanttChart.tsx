@@ -67,14 +67,21 @@ const LineRow: React.FC<{
   index: number;
   svgWidth: number;
   isCapable: boolean | null;
-}> = ({ row, index, svgWidth, isCapable }) => {
-  const { setNodeRef: setDropRef, isOver } = useDroppable({ id: `line_${row.name}` });
+  /** True when the LIVE drop geometry (planDrop → dropGhost) targets this
+   * row. The old dnd-kit isOver highlight went stale after any scroll
+   * (SVG ancestors are invisible to its rect bookkeeping) and could light
+   * a DIFFERENT line than the one the drop would actually hit — the
+   * highlight now follows the same source as the ghost and the drop
+   * (user rule 2026-09-01: highlighted line + dotted preview = same line). */
+  isDragTarget?: boolean;
+}> = ({ row, index, svgWidth, isCapable, isDragTarget = false }) => {
+  const { setNodeRef: setDropRef } = useDroppable({ id: `line_${row.name}` });
   const setNodeRef = setDropRef as unknown as React.Ref<SVGGElement>;
   const y = HEADER_HEIGHT + index * LINE_HEIGHT;
   const half = LINE_HEIGHT / 2;
 
   let fill: string;
-  if (isOver) {
+  if (isDragTarget) {
     fill = isCapable === false ? "#e57373" : "#66bb6a";
   } else if (isCapable === true) {
     fill = "#a5d6a7";
@@ -263,7 +270,8 @@ export const GanttChart: React.FC<Props> = ({
             layer="body"
           />
 
-          {/* Line rows (droppable zones) */}
+          {/* Line rows (droppable zones); highlight follows the drop ghost's
+              live target row, never dnd-kit's stale collision rects. */}
           {rows.map((row, i) => (
             <LineRow
               key={row.name}
@@ -271,6 +279,7 @@ export const GanttChart: React.FC<Props> = ({
               index={i}
               svgWidth={svgWidth}
               isCapable={capableLines ? capableLines.has(row.name) : null}
+              isDragTarget={dropGhost != null && rowIndexOf(rows, dropGhost.lineName) === i}
             />
           ))}
 

@@ -24,6 +24,14 @@ export interface ScheduleStateActions {
   splitBlock: (id: string, splitHour: number) => void;
   removeToHolding: (id: string) => void;
   restoreFromHolding: (id: string, lineName: string, lineId: number, startHour: number, duration: number) => void;
+  /** Resize-to-fit restore (user rule 2026-09-01): place only placedH of the
+   * card (its full on-line duration would be fullDurOnLine) and keep the
+   * remainder in holding, kg apportioned by hour share so card + block
+   * always sum back to the original tonnage. */
+  restorePartialFromHolding: (
+    id: string, lineName: string, lineId: number, startHour: number,
+    placedH: number, fullDurOnLine: number,
+  ) => void;
   addToHolding: (orderId: string, sku: string, runHours: number, qtyKg?: number) => void;
   /** Blank-space SKU picker: place a NEW production run as contiguous
    * per-order segments (ONE undo step). Order ids must be real demand orders
@@ -223,6 +231,40 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
     setLastAction(`Removed ${found.order_id} to holding`);
   }, [pushUndo, schedule, cipWindows]);
 
+  const restorePartialFromHolding = useCallback((
+    id: string, lineName: string, lineId: number, startHour: number,
+    placedH: number, fullDurOnLine: number,
+  ) => {
+    const found = holdingArea.find((b) => b.id === id);
+    if (!found || placedH <= 0 || fullDurOnLine <= 0 || placedH >= fullDurOnLine) return;
+    pushUndo();
+    // splitBlock's apportioning rule: the placed segment takes its hour
+    // share of the card's kg, the card keeps the EXACT remainder. Shares
+    // are in TARGET-line hours (fullDurOnLine) — the card's own run_hours
+    // may be priced at a different line's rate.
+    const frac = placedH / fullDurOnLine;
+    const kgPlaced = found.qty_kg ? Math.round(found.qty_kg * frac * 10) / 10 : found.qty_kg;
+    const kgRest = found.qty_kg ? Math.round((found.qty_kg - (kgPlaced as number)) * 10) / 10 : found.qty_kg;
+    const remCardH = Math.max(0.1, Math.round(found.run_hours * (1 - frac) * 10) / 10);
+    const placed: ScheduleBlock = {
+      ...found,
+      id: `blk_${_nextId++}`,
+      line_name: lineName,
+      line_id: lineId,
+      start_hour: startHour,
+      end_hour: startHour + placedH,
+      run_hours: placedH,
+      qty_kg: kgPlaced,
+    };
+    setSchedule((prev) => [...prev, placed]);
+    setHoldingArea((prev) => prev.map((b) => b.id === id
+      ? { ...b, start_hour: 0, end_hour: remCardH, run_hours: remCardH, qty_kg: kgRest }
+      : b));
+    setLastAction(
+      `Placed ${placedH.toFixed(1)}h of ${found.order_id} on ${lineName} — `
+      + `${remCardH.toFixed(1)}h stays in holding`);
+  }, [pushUndo, holdingArea]);
+
   const restoreFromHolding = useCallback((id: string, lineName: string, lineId: number, startHour: number, duration: number) => {
     const found = holdingArea.find((b) => b.id === id);
     if (!found) return;
@@ -369,7 +411,8 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
   const data: ScheduleStateData = { schedule, cipWindows, holdingArea, lastAction };
   const actions: ScheduleStateActions = {
     updateBlock, insertShift, moveBlock, resizeBlock, splitBlock,
-    removeToHolding, restoreFromHolding, addToHolding, addProduction,
+    removeToHolding, restoreFromHolding, restorePartialFromHolding,
+    addToHolding, addProduction,
     addCip, addTrial, addWindowBlock,
     reportAction, setHoldingFromServer,
     undo, redo,

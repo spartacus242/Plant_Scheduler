@@ -20,7 +20,7 @@ import { planDrop, type DropPlan } from "./utils/dropPlan";
 import { isDouble, groupOf, sideOf } from "./utils/abLines";
 import { buildRows } from "./utils/ganttRows";
 import { skuColor, skuTextColor, blockLabel } from "./utils/colors";
-import { coFlagsForPair, planPlacement, remainingDemandBySku, splitPlacementByOrders } from "./utils/skuPicker";
+import { coFlagsForPair, planPlacement, remainingDemandBySku, splitPlacementByOrders, type PlacementPlan } from "./utils/skuPicker";
 import { setComponentValue, setFrameHeight } from "./streamlit";
 
 import { GanttChart } from "./components/GanttChart";
@@ -29,6 +29,7 @@ import { Palette } from "./components/Palette";
 import { AdherenceTable } from "./components/AdherenceTable";
 import { ContextMenu } from "./components/ContextMenu";
 import { BlockPopover } from "./components/BlockPopover";
+import { HoldingPlacePopover, type HoldingPlaceRow } from "./components/HoldingPlacePopover";
 import { SkuPickerPopover, type PickerRowData } from "./components/SkuPickerPopover";
 import { DragPreviewBadge } from "./components/DragPreviewBadge";
 
@@ -431,14 +432,38 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           reject(`Cannot drop into the locked window (committed through ${hourToStamp(lockedThroughH ?? 0, anchor)})`);
           return;
         }
-        const endHour = startHour + dur;
         const allBlocks = [...schedule, ...cipWindows];
-        if (findOverlapsOnLine(allBlocks, targetLineName, block.id, startHour, endHour)) {
+        // Resize-to-fit (user rule 2026-09-01): an oversized card no longer
+        // bounces off the next block/CIP. Room = from the drop point to the
+        // next obstruction on the line minus the changeover into it; the
+        // card fills what fits and the remainder stays in holding. A drop
+        // whose START sits inside an existing block is still refused.
+        const onLine = allBlocks
+          .filter((b) => b.id !== block.id && b.line_name === targetLineName)
+          .sort((a, b2) => a.start_hour - b2.start_hour);
+        if (onLine.some((b) => b.start_hour <= startHour + 1e-6
+                               && b.end_hour > startHour + 1e-6)) {
           reject(`Overlap on ${targetLineName} at ${hourToStamp(startHour, anchor)}`);
           return;
         }
+        const nextBlk = onLine.find((b) => b.start_hour > startHour + 1e-6);
+        const roomEnd = nextBlk
+          ? nextBlk.start_hour - setupBetween(block, nextBlk)
+          : Number.POSITIVE_INFINITY;
+        const room = Math.floor((roomEnd - startHour) * 10) / 10;
+        const minRunH = Number(args.config.min_run_hours || 0);
+        if (room < Math.max(minRunH, 0.1)) {
+          reject(`Gap on ${targetLineName} is only ${Math.max(room, 0).toFixed(1)}h — `
+                 + `smaller than the ${Math.max(minRunH, 0.1)}h minimum run`);
+          return;
+        }
         setErrorMsg(null);
-        actions.restoreFromHolding(blockId, targetLine.line_name, targetLine.line_id, startHour, dur);
+        if (dur <= room + 1e-6) {
+          actions.restoreFromHolding(blockId, targetLine.line_name, targetLine.line_id, startHour, dur);
+        } else {
+          actions.restorePartialFromHolding(
+            blockId, targetLine.line_name, targetLine.line_id, startHour, room, dur);
+        }
         return;
       }
 
@@ -643,6 +668,92 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       setPicker({ lineName, lineId, hour, x: e.clientX, y: e.clientY });
     },
     [closeMenu],
+  );
+
+  // ── Holding-card placement menu (user request 2026-09-01) ──
+  // RIGHT-click a holding card: one row per line that can run its SKU, with
+  // the earliest snap-left gap, changeover chips, and a Place button. An
+  // oversized card places what fits; the remainder stays in holding.
+  const [holdMenu, setHoldMenu] = useState<{ block: ScheduleBlock; x: number; y: number } | null>(null);
+
+  const holdMenuRows = useMemo<HoldingPlaceRow[]>(() => {
+    if (!holdMenu) return [];
+    const block = holdMenu.block;
+    const cardKg = block.qty_kg && block.qty_kg > 0 ? block.qty_kg : 0;
+    const nowH = (Date.now() - anchor.getTime()) / 3600_000;
+    const base = Math.max(0, nowH, lockedThroughH ?? 0);
+    const rows: HoldingPlaceRow[] = [];
+    for (const ln of lines) {
+      const rate = getRate(ln.line_name, block.sku, caps);
+      if (!(rate > 0)) continue;
+      const group = groupOf(ln.line_name);
+      const blocksOnLine = [...schedule, ...cipWindows].filter(
+        (b) => groupOf(b.line_name) === group &&
+          !(isWindowBlock(b.block_type) && sideOf(b.line_name)),
+      );
+      // No gap enumerator exists — probe snap-left at the horizon start and
+      // just after each block's end; the first plan without a reason wins.
+      const probes = [base, ...blocksOnLine.map((b) => b.end_hour + 0.05)]
+        .filter((h) => h >= base - 1e-6)
+        .sort((a, b) => a - b);
+      let plan: PlacementPlan | null = null;
+      for (const h of probes) {
+        const p = planPlacement({
+          clickHour: h,
+          sku: block.sku,
+          rate,
+          remainingKg: cardKg > 0 ? cardKg : rate * block.run_hours,
+          blocksOnLine,
+          changeovers: args.changeovers ?? {},
+          lockedThroughH,
+          nowH,
+          horizonH: horizon,
+          minRunH: args.config.min_run_hours,
+          lineGroup: group,
+          downtime,
+        });
+        if (p.reason === null) { plan = p; break; }
+      }
+      if (!plan) continue;
+      rows.push({
+        lineName: ln.line_name,
+        lineId: ln.line_id,
+        plan,
+        inFlags: plan.prevSku ? coFlagsForPair(args.coFlags, plan.prevSku, block.sku) : [],
+        outFlags: plan.nextSku ? coFlagsForPair(args.coFlags, block.sku, plan.nextSku) : [],
+      });
+    }
+    rows.sort((a, b) => a.plan.startHour - b.plan.startHour);
+    return rows;
+  }, [holdMenu, schedule, cipWindows, lines, args.changeovers, args.coFlags,
+      anchor, lockedThroughH, horizon, caps, downtime, args.config.min_run_hours]);
+
+  const handleHoldingPlace = useCallback(
+    (row: HoldingPlaceRow) => {
+      if (!holdMenu || row.plan.reason) return;
+      const block = holdMenu.block;
+      const { startHour, durationH } = row.plan;
+      const allBlocks = [...schedule, ...cipWindows];
+      if (findOverlapsOnLine(allBlocks, row.lineName, block.id, startHour, startHour + durationH)) {
+        reject(`Overlap on ${row.lineName} at ${hourToStamp(startHour, anchor)}`);
+        setHoldMenu(null);
+        return;
+      }
+      const rate = getRate(row.lineName, block.sku, caps);
+      const cardKg = block.qty_kg && block.qty_kg > 0 ? block.qty_kg : 0;
+      const fullDur = rate > 0 && cardKg > 0
+        ? Math.ceil((cardKg / rate) * 10) / 10
+        : block.run_hours;
+      setErrorMsg(null);
+      if (durationH >= fullDur - 1e-6) {
+        actions.restoreFromHolding(block.id, row.lineName, row.lineId, startHour, fullDur);
+      } else {
+        actions.restorePartialFromHolding(
+          block.id, row.lineName, row.lineId, startHour, durationH, fullDur);
+      }
+      setHoldMenu(null);
+    },
+    [holdMenu, schedule, cipWindows, caps, anchor, actions, reject],
   );
 
   const pickerRows = useMemo<PickerRowData[]>(() => {
@@ -950,10 +1061,10 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   // Remaining demand for a SKU by week (popup helper): target minus what
   // the CURRENT board schedules per order, from the same adherence rules.
   const demandLeftForSku = useCallback(
-    (sku: string): { week: string; left_kg: number; total_kg: number }[] => {
+    (sku: string): { week: string; left_kg: number; total_kg: number; scheduled_kg: number }[] => {
       const rows = computeAdherence(schedule, args.demandTargets, args.capabilities, coveredByOrder);
       const bySku = rows.filter((r) => r.sku === sku);
-      const out: { week: string; left_kg: number; total_kg: number }[] = [];
+      const out: { week: string; left_kg: number; total_kg: number; scheduled_kg: number }[] = [];
       const nowIso = isoWeekAtHour(new Date(), 0);
       for (const r of bySku) {
         const m = /-W(\d+)$/.exec(r.order_id);
@@ -967,6 +1078,10 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           week: wk,
           left_kg: Math.max(0, Math.round(target - r.scheduled_qty)),
           total_kg: Math.round(target),
+          // Unclamped board credit: the popup shows % covered and the kg
+          // OVER target — 100 kg over reads very differently from 10,000
+          // (user request 2026-09-01).
+          scheduled_kg: Math.round(r.scheduled_qty),
         });
       }
       return out;
@@ -1169,7 +1284,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     const handler = (e: KeyboardEvent) => {
       if (e.ctrlKey && e.key === "z") { e.preventDefault(); actions.undo(); }
       if (e.ctrlKey && e.key === "y") { e.preventDefault(); actions.redo(); }
-      if (e.key === "Escape") { closeMenu(); setPopover(null); setPicker(null); setHighlightSku(null); setErrorMsg(null); }
+      if (e.key === "Escape") { closeMenu(); setPopover(null); setPicker(null); setHoldMenu(null); setHighlightSku(null); setErrorMsg(null); }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -1204,7 +1319,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     <div
       ref={containerRef}
       style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}
-      onClick={() => { closeMenu(); setPopover(null); setPicker(null); }}
+      onClick={() => { closeMenu(); setPopover(null); setPicker(null); setHoldMenu(null); }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <div style={{ flex: 1 }}>
@@ -1354,12 +1469,15 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         )}
 
         <div style={{ marginTop: 8 }}>
-          <HoldingArea blocks={holdingArea} anchor={anchor} skuFormats={args.skuFormats ?? {}} />
+          <HoldingArea blocks={holdingArea} anchor={anchor} skuFormats={args.skuFormats ?? {}}
+            onCardContextMenu={pickerEnabled
+              ? (block, cx, cy) => { closeMenu(); setPopover(null); setPicker(null); setHoldMenu({ block, x: cx, y: cy }); }
+              : undefined} />
         </div>
 
         <DragOverlay dropAnimation={null}>
           {activeDragBlock ? (
-            <div style={{ pointerEvents: "none" }}>
+            <div style={{ pointerEvents: "none", position: "relative" }}>
               <div
                 style={{
                   background: ghostBg,
@@ -1425,6 +1543,18 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         anchor={anchor}
       />
 
+      {holdMenu && (
+        <HoldingPlacePopover
+          block={holdMenu.block}
+          x={holdMenu.x}
+          y={holdMenu.y}
+          rows={holdMenuRows}
+          anchor={anchor}
+          onPlace={handleHoldingPlace}
+          onClose={() => setHoldMenu(null)}
+        />
+      )}
+
       {picker && (
         <SkuPickerPopover
           lineName={picker.lineName}
@@ -1449,6 +1579,10 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           onApply={isBlockLocked(popover.block) ? undefined : handleApplyEdit}
           onSnap={isBlockLocked(popover.block) ? undefined : handleSnap}
           onFill={isBlockLocked(popover.block) ? undefined : handleFill}
+          onRemove={isBlockLocked(popover.block) ? undefined : (id) => {
+            actions.removeToHolding(id);
+            setPopover(null);
+          }}
           demandLeft={popover.block.block_type === "sku"
             ? demandLeftForSku(popover.block.sku) : undefined}
           onTogglePin={

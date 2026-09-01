@@ -31,7 +31,11 @@ export const DragPreviewBadge: React.FC<Props> = ({ preview, anchor }) => {
     <div
       data-testid="drag-preview-badge"
       style={{
-        marginTop: 6,
+        // Above the ghost chip, not below (user report 2026-09-01): the
+        // badge sat exactly over the dotted landing cell and hid it.
+        position: "absolute",
+        bottom: "calc(100% + 6px)",
+        left: 0,
         background: valid ? "rgba(28,32,38,0.94)" : "rgba(140,20,20,0.95)",
         color: "#fff",
         border: `1px solid ${valid ? "#3a4250" : "#ff8a80"}`,

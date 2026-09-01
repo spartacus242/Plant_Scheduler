@@ -44,7 +44,7 @@ const TD: React.CSSProperties = {
   whiteSpace: "nowrap", verticalAlign: "top",
 };
 
-const Chips: React.FC<{
+export const Chips: React.FC<{
   flags: string[] | null; setupH: number; against: string | null;
   /** Neighbour block_type when it is a window (CIP etc.) — no setup needed. */
   neighbourType: string | null; arrow: "in" | "out";
@@ -134,12 +134,15 @@ export const SkuPickerPopover: React.FC<Props> = ({
           <table style={{ borderCollapse: "collapse", width: "100%" }}>
             <thead>
               <tr>
+                {/* Place lives in the FIRST column (user request 2026-09-01):
+                    the row can overflow horizontally and the button must be
+                    clickable without scrolling. */}
+                <th style={TH}></th>
                 <th style={TH}>SKU</th>
                 <th style={{ ...TH, textAlign: "right" }}>Demand left</th>
                 <th style={TH}>← changeover</th>
                 <th style={TH}>changeover →</th>
                 <th style={TH}>Placement</th>
-                <th style={TH}></th>
               </tr>
             </thead>
             <tbody>
@@ -147,6 +150,23 @@ export const SkuPickerPopover: React.FC<Props> = ({
                 const blocked = r.plan.reason !== null;
                 return (
                   <tr key={r.sku} style={{ opacity: blocked ? 0.45 : 1 }} title={r.plan.reason ?? undefined}>
+                    <td style={TD}>
+                      <button
+                        disabled={blocked}
+                        title={blocked ? r.plan.reason ?? "" : `Place ${r.sku} snapped left`}
+                        style={{
+                          fontSize: 11.5, padding: "3px 10px", borderRadius: 4,
+                          fontWeight: 700,
+                          border: blocked ? "1px solid #ccc" : "1px solid #0a8",
+                          background: blocked ? "#f5f5f5" : "#00c896",
+                          color: blocked ? "#999" : "#fff",
+                          cursor: blocked ? "not-allowed" : "pointer",
+                        }}
+                        onClick={() => onPlace(r)}
+                      >
+                        Place
+                      </button>
+                    </td>
                     <td style={TD}>
                       <span style={{ fontWeight: 700 }}>{r.sku}</span>
                       {r.desc && (
@@ -173,23 +193,6 @@ export const SkuPickerPopover: React.FC<Props> = ({
                         : `${hourToStamp(r.plan.startHour, anchor)} · ` +
                           `${r.plan.durationH.toFixed(1)}h · ` +
                           `${Math.round(r.plan.qtyKg).toLocaleString()} kg`}
-                    </td>
-                    <td style={TD}>
-                      <button
-                        disabled={blocked}
-                        title={blocked ? r.plan.reason ?? "" : `Place ${r.sku} snapped left`}
-                        style={{
-                          fontSize: 11.5, padding: "3px 10px", borderRadius: 4,
-                          fontWeight: 700,
-                          border: blocked ? "1px solid #ccc" : "1px solid #0a8",
-                          background: blocked ? "#f5f5f5" : "#00c896",
-                          color: blocked ? "#999" : "#fff",
-                          cursor: blocked ? "not-allowed" : "pointer",
-                        }}
-                        onClick={() => onPlace(r)}
-                      >
-                        Place
-                      </button>
                     </td>
                   </tr>
                 );

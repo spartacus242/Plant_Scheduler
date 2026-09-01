@@ -38,12 +38,14 @@ interface Props {
   /** Pin/unpin for the solver. Present only on production blocks the planner
    * may pin (not locked, not completed, not inside the frozen window). */
   onTogglePin?: (blockId: string, pinned: boolean) => void;
+  /** Remove the block to the holding area; absent when the block is locked. */
+  onRemove?: (blockId: string) => void;
   /** Fill the empty space next to the block (setup hours respected).
    * Same contract as onSnap: null = done, string = why not. */
   onFill?: (blockId: string, dir: "left" | "right" | "both") => string | null;
   /** Remaining demand for this SKU by ISO week (target - board-scheduled),
    * so tonnage edits are made knowing what still needs filling. */
-  demandLeft?: { week: string; left_kg: number; total_kg: number }[];
+  demandLeft?: { week: string; left_kg: number; total_kg: number; scheduled_kg?: number }[];
 }
 
 const LABEL: React.CSSProperties = { color: "#888", paddingRight: 12 };
@@ -70,7 +72,7 @@ function fromLocalInput(anchor: Date, value: string): number | null {
 
 const round1 = (v: number) => Math.round(v * 10) / 10;
 
-export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClose, onApply, onSnap, onTogglePin, onFill, demandLeft }) => {
+export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClose, onApply, onSnap, onTogglePin, onFill, onRemove, demandLeft }) => {
   // Draft field state, (re)seeded whenever a different block is opened.
   const [draft, setDraft] = useState<{ id: string; start: string; dur: string; qty: string } | null>(null);
   const [applyError, setApplyError] = useState<string | null>(null);
@@ -162,8 +164,23 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClo
     >
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
         <strong>{block.block_type === "cip" ? "CIP" : displayOrderId(block.order_id, anchor)}</strong>
-        <span style={{ cursor: "pointer", fontWeight: 700, color: "#888" }} onClick={onClose}>
-          ×
+        <span style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          {/* Remove-to-holding (user request 2026-09-01: plain right-click
+              now toggles the SKU highlight, so delete lives here). Same
+              action as the Shift+right-click menu: the block leaves the
+              board and its kg lands back in the holding area, undoable. */}
+          {onRemove && (
+            <span
+              style={{ cursor: "pointer", fontSize: 14 }}
+              title="Remove this block — its tonnage returns to the holding area (undoable)"
+              onClick={() => onRemove(block.id)}
+            >
+              🗑
+            </span>
+          )}
+          <span style={{ cursor: "pointer", fontWeight: 700, color: "#888" }} onClick={onClose}>
+            ×
+          </span>
         </span>
       </div>
       <table style={{ fontSize: 12, lineHeight: 1.8 }}>
@@ -352,17 +369,26 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClo
           </div>
           <table style={{ fontSize: 11, marginTop: 2, borderCollapse: "collapse" }}>
             <tbody>
-              {demandLeft.map((r) => (
+              {demandLeft.map((r) => {
+                const sched = r.scheduled_kg ?? Math.max(0, r.total_kg - r.left_kg);
+                const pct = r.total_kg > 0 ? Math.round((sched / r.total_kg) * 100) : 100;
+                const over = sched - r.total_kg;
+                return (
                 <tr key={r.week}>
                   <td style={{ paddingRight: 10, color: "#888" }}>{r.week}</td>
                   <td style={{ textAlign: "right", paddingRight: 6,
                                fontWeight: 600,
                                color: r.left_kg > 0 ? "#b71c1c" : "#2e7d32" }}>
-                    {r.left_kg > 0 ? `${r.left_kg.toLocaleString()} kg left` : "covered"}
+                    {r.left_kg > 0
+                      ? `${r.left_kg.toLocaleString()} kg left · ${pct}%`
+                      : over > 0
+                        ? `+${Math.round(over).toLocaleString()} kg over · ${pct}%`
+                        : "covered · 100%"}
                   </td>
                   <td style={{ color: "#aaa" }}>of {r.total_kg.toLocaleString()}</td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
