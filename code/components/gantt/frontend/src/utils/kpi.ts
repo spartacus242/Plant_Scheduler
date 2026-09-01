@@ -39,6 +39,7 @@ export function computeAdherence(
   // number, unfalsifiable against the calendar it sat on (user mandate
   // 2026-08-21: the metrics must score calendar_blocks.csv).
   const unmatchedBySku: Record<string, number> = {};
+  const unmatchedBlocks: Array<{ sku: string; kg: number; s: number; e: number }> = [];
   for (const b of schedule) {
     if (!isProduction(b)) continue;
     const kg = b.qty_kg && b.qty_kg > 0
@@ -47,7 +48,7 @@ export function computeAdherence(
     if (demandIds.has(b.order_id)) {
       schedByOrder[b.order_id] = (schedByOrder[b.order_id] ?? 0) + kg;
     } else {
-      unmatchedBySku[b.sku] = (unmatchedBySku[b.sku] ?? 0) + kg;
+      unmatchedBlocks.push({ sku: b.sku, kg, s: b.start_hour, e: b.end_hour });
     }
   }
   // coveredByOrder is NON-BOARD kg ONLY: made kg from completed MOs the
@@ -61,15 +62,41 @@ export function computeAdherence(
       }
     }
   }
-  // Waterfall: committed production credits the EARLIEST-due open order of
-  // its SKU first (plant logic: what is running now covers the nearest due),
-  // spilling forward; any remainder lands on the last order of that SKU.
   const bySku: Record<string, DemandTarget[]> = {};
   for (const d of demand) (bySku[d.sku] ??= []).push(d);
   for (const skuOrders of Object.values(bySku)) {
     skuOrders.sort((a, b2) => (a.due_start_hour ?? 0) - (b2.due_start_hour ?? 0));
   }
-  for (const [sku, kg0] of Object.entries(unmatchedBySku)) {
+  // Pass 1 — POSITION-AWARE (user rule 2026-09-01, exact port of
+  // compute_adherence): an unmatched (MO-id) block first credits orders
+  // whose due windows OVERLAP its own hours, pro-rated by overlap share of
+  // the block's duration, capped at each order's max. Before this the
+  // waterfall below routed a W37 placement's every kg into W36.
+  const leftoverBySku: Record<string, number> = {};
+  unmatchedBlocks.sort((a, b2) => a.s - b2.s || a.e - b2.e);
+  for (const blk of unmatchedBlocks) {
+    let remaining = blk.kg;
+    const dur = Math.max(blk.e - blk.s, 1e-9);
+    for (const d of bySku[blk.sku] ?? []) {
+      const ds = d.due_start_hour ?? 0;
+      const de = d.due_end_hour ?? 0;
+      const ov = Math.max(0, Math.min(blk.e, de) - Math.max(blk.s, ds));
+      if (ov <= 0) continue;
+      const have = schedByOrder[d.order_id] ?? 0;
+      const cap = Math.max(d.qty_max, d.qty_min);
+      const take = Math.min(blk.kg * (ov / dur), Math.max(0, cap - have), remaining);
+      if (take > 0) {
+        schedByOrder[d.order_id] = have + take;
+        remaining -= take;
+      }
+    }
+    if (remaining > 1e-9) {
+      leftoverBySku[blk.sku] = (leftoverBySku[blk.sku] ?? 0) + remaining;
+    }
+  }
+  // Pass 2 — legacy earliest-due waterfall for what pass 1 could not place
+  // positionally (plant logic: what is running now covers the nearest due).
+  for (const [sku, kg0] of Object.entries(leftoverBySku)) {
     let kg = kg0;
     const orders = bySku[sku] ?? [];
     for (let i = 0; i < orders.length && kg > 1e-9; i++) {

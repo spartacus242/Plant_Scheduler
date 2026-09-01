@@ -775,3 +775,59 @@ def test_cip_between_only_counts_when_fully_inside_gap():
     co = score_changeovers(cal, CFG, _CIP_REQ_MAP)
     assert co["cip_req_violations"] == 1
     assert co["transitions_at_cip"] == 0
+
+
+# --------------------------------------------------------------------------
+# Position-aware crediting (user rule 2026-09-01): an unmatched (MO-id)
+# block credits the demand orders whose due windows overlap its hours
+# first, pro-rated by overlap share; only the remainder waterfalls
+# earliest-due. Mirrored exactly in kpi.ts — change both or neither.
+# --------------------------------------------------------------------------
+from helpers.scorecard_engine import compute_adherence
+
+
+def _targets_2w(sku="S1"):
+    return [
+        {"order_id": f"{sku}-W0", "sku": sku, "qty_min": 90.0,
+         "qty_max": 110.0, "due_start_hour": 0.0, "due_end_hour": 168.0},
+        {"order_id": f"{sku}-W1", "sku": sku, "qty_min": 90.0,
+         "qty_max": 110.0, "due_start_hour": 168.0, "due_end_hour": 336.0},
+    ]
+
+
+def test_unmatched_block_credits_its_own_week_not_earliest():
+    """An MO block sitting fully inside W1's window credits W1 — the old
+    waterfall gave every kg to W0 (the 280351 bug: a W37 placement moved
+    neither the tile nor holding)."""
+    cal = _calendar([_block(block_id="mo", order_id="30147", sku="S1",
+                            start_h=200, end_h=260, qty_kg=100.0)])
+    rows = {r["order_id"]: r for r in compute_adherence(cal, _targets_2w(), {})}
+    assert rows["S1-W1"]["scheduled_qty"] == 100.0
+    assert rows["S1-W0"]["scheduled_qty"] == 0.0
+
+
+def test_unmatched_block_prorates_across_straddled_weeks():
+    """A block straddling the W0/W1 boundary splits by overlap share."""
+    cal = _calendar([_block(block_id="mo", order_id="30147", sku="S1",
+                            start_h=148, end_h=188, qty_kg=100.0)])
+    rows = {r["order_id"]: r for r in compute_adherence(cal, _targets_2w(), {})}
+    assert rows["S1-W0"]["scheduled_qty"] == 50.0
+    assert rows["S1-W1"]["scheduled_qty"] == 50.0
+
+
+def test_unmatched_block_outside_all_windows_waterfalls_earliest():
+    """No overlap anywhere -> legacy earliest-due waterfall, capped."""
+    cal = _calendar([_block(block_id="mo", order_id="30147", sku="S1",
+                            start_h=400, end_h=460, qty_kg=100.0)])
+    rows = {r["order_id"]: r for r in compute_adherence(cal, _targets_2w(), {})}
+    assert rows["S1-W0"]["scheduled_qty"] == 100.0
+
+
+def test_position_credit_respects_caps_and_spills():
+    """Overlap credit caps at the order's max; the capped excess joins the
+    waterfall pool and lands on the earliest order with room."""
+    cal = _calendar([_block(block_id="mo", order_id="30147", sku="S1",
+                            start_h=200, end_h=260, qty_kg=200.0)])
+    rows = {r["order_id"]: r for r in compute_adherence(cal, _targets_2w(), {})}
+    assert rows["S1-W1"]["scheduled_qty"] == 110.0  # capped at qty_max
+    assert rows["S1-W0"]["scheduled_qty"] == 90.0   # spill, capped at 110

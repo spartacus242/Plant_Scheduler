@@ -1634,7 +1634,8 @@ def compute_adherence(
     """
     prod = _production(calendar)
     sched: dict[str, float] = {}
-    unmatched_by_sku: dict[str, float] = {}
+    # (sku, kg, start_h, end_h) — positions kept for pass 1 below.
+    unmatched_blocks: list[tuple[str, float, float, float]] = []
     demand_ids = {str(d.get("order_id", "")) for d in demand_targets}
     for _, b in prod.iterrows():
         line = str(b.get("line_name", "") or "")
@@ -1647,7 +1648,8 @@ def compute_adherence(
         if oid in demand_ids:
             sched[oid] = sched.get(oid, 0.0) + float(kg)
         else:
-            unmatched_by_sku[sku] = unmatched_by_sku.get(sku, 0.0) + float(kg)
+            unmatched_blocks.append((sku, float(kg),
+                                     float(b["start_h"]), float(b["end_h"])))
 
     if covered_by_order is not None:
         for oid, kg in covered_by_order.items():
@@ -1659,7 +1661,42 @@ def compute_adherence(
         by_sku.setdefault(str(d.get("sku", "")), []).append(d)
     for orders in by_sku.values():
         orders.sort(key=lambda d: float(d.get("due_start_hour", 0) or 0))
-    for sku, kg in unmatched_by_sku.items():
+
+    # Pass 1 — POSITION-AWARE (user rule 2026-09-01): an unmatched (MO-id)
+    # block first credits the orders whose due windows OVERLAP its own
+    # hours, each offered the block's kg pro-rated by overlap share of the
+    # block's duration and capped at the order's max. Before this, the
+    # earliest-due waterfall below routed a W37 placement's every kg into
+    # W36 (its cap absorbed the lot) — moving blocks on the board changed
+    # nothing. Due windows must be in the CALENDAR's hour frame (the page
+    # shifts demand-frame hours via demand_source_anchor); a caller that
+    # skips the shift degrades toward pass 2, never crashes.
+    leftover_by_sku: dict[str, float] = {}
+    for sku, kg, s, e in sorted(unmatched_blocks, key=lambda t: (t[2], t[3])):
+        remaining = kg
+        dur = max(e - s, 1e-9)
+        for d in by_sku.get(sku, []):
+            ds = float(d.get("due_start_hour", 0) or 0)
+            de = float(d.get("due_end_hour", 0) or 0)
+            ov = max(0.0, min(e, de) - max(s, ds))
+            if ov <= 0:
+                continue
+            oid = str(d.get("order_id", ""))
+            have = sched.get(oid, 0.0)
+            cap = max(float(d.get("qty_max", 0) or 0),
+                      float(d.get("qty_min", 0) or 0))
+            take = min(kg * (ov / dur), max(0.0, cap - have), remaining)
+            if take > 0:
+                sched[oid] = have + take
+                remaining -= take
+        if remaining > 1e-9:
+            leftover_by_sku[sku] = leftover_by_sku.get(sku, 0.0) + remaining
+
+    # Pass 2 — legacy earliest-due waterfall for whatever pass 1 could not
+    # place positionally (plant logic: what is running covers the nearest
+    # due). Caps unchanged; surplus beyond every order's max stays
+    # uncredited (serves weeks not on this board).
+    for sku, kg in leftover_by_sku.items():
         for d in by_sku.get(sku, []):
             if kg <= 1e-9:
                 break

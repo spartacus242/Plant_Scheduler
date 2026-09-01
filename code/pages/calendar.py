@@ -398,6 +398,14 @@ if co_path.exists():
 demand_targets = []
 dem_path = reference_dir(dd) / "demand_plan.csv"
 if dem_path.exists():
+    # Due windows shift from the demand file's OWN frame into the board's
+    # (demand_plan.source.json anchor vs the storage anchor) — the
+    # position-aware credit pass overlaps them against block hours, so a
+    # frame skew (24h after an anchor roll) would misplace credit.
+    from helpers.demand_coverage import demand_source_anchor as _dsa
+    _dem_anchor0 = _dsa(dd)
+    _dem_shift_h = ((_dem_anchor0 - _anchor).total_seconds() / 3600.0
+                    if _dem_anchor0 else 0.0)
     ddf = pd.read_csv(dem_path)
     for _, r in ddf.iterrows():
         target = float(r.get("qty_target", 0) or 0)
@@ -408,8 +416,8 @@ if dem_path.exists():
             "sku": str(r["sku"]),
             "qty_min": target * lo,
             "qty_max": target * hi,
-            "due_start_hour": float(r.get("due_start_hour", 0) or 0),
-            "due_end_hour": float(r.get("due_end_hour", 0) or 0),
+            "due_start_hour": float(r.get("due_start_hour", 0) or 0) + _dem_shift_h,
+            "due_end_hour": float(r.get("due_end_hour", 0) or 0) + _dem_shift_h,
         })
 
 schedule, windows = calendar_to_gantt_payload(cal)
@@ -619,11 +627,16 @@ if st.session_state.get("cal_holding_stamp") != _board_stamp:
         b for b in st.session_state.get("cal_holding", [])
         if not str(b.get("id", "")).startswith("hold_")]
 
-_existing_ids = {b.get("id") for b in st.session_state.get("cal_holding", [])}
-for _hb in st.session_state.get("cal_holding_from_solve", []):
-    if _hb.get("id") not in _existing_ids:
-        st.session_state.setdefault("cal_holding", []).append(_hb)
-        _existing_ids.add(_hb.get("id"))
+# Merge: fresh auto cards REPLACE same-id survivors (a stale component
+# snapshot re-inserts pre-rebuild hold_* cards on the rerun after a
+# rebuild — the old skip-if-present merge then kept the stale tonnage
+# forever, review 2026-09-01). Planner-parked blocks (non-fresh ids) keep
+# their place untouched.
+_fresh_cards = st.session_state.get("cal_holding_from_solve", [])
+_fresh_ids = {b.get("id") for b in _fresh_cards}
+st.session_state["cal_holding"] = (
+    [b for b in st.session_state.get("cal_holding", [])
+     if b.get("id") not in _fresh_ids] + list(_fresh_cards))
 
 # Past demand weeks never belong in holding (user rule 2026-08-17): a week
 # that is over cannot be scheduled — its unmet tonnage is a MISS, tracked by
@@ -711,8 +724,13 @@ _co_flags = build_co_flags(co_path, _dem_skus, _board_skus)
 
 # Canonical KPI payload — same engine (scorecard_engine) as the scorecard
 # rendered below, so the Gantt KPI bar and the scorecard cannot disagree.
+# Scored from the last PUSHED board when one exists (2026-09-01): the disk
+# board is stale the moment the planner edits, and the tiles must follow
+# "Refresh checks", not Save.
+_kpi_wrk = st.session_state.get("cal_working_records")
 server_kpis = gantt_kpis(
-    cal, demand_targets, caps, cfg=scorecard_config(cfg), data_dir=dd,
+    pd.DataFrame(_kpi_wrk) if _kpi_wrk else cal,
+    demand_targets, caps, cfg=scorecard_config(cfg), data_dir=dd,
     covered_by_order=_made_credit,
 )
 
@@ -747,19 +765,20 @@ holding = st.session_state.get("cal_holding", [])
 if state and state.get("schedule") is not None:
     working = gantt_payload_to_calendar(state.get("schedule") or [], state.get("cipWindows") or [])
     holding = state.get("holdingArea") or []
-    st.session_state["cal_holding"] = holding
     if state.get("lastAction"):
         st.caption(f"Last action: {state['lastAction']}")
 
-# Fingerprint the pushed board state (order_id + kg of production rows).
-# When it changes — the planner clicked "Refresh checks" after edits —
-# store it and rerun ONCE so the holding area re-derives from the new
-# tonnage (cards clear when an order is now fulfilled, reappear when
-# tonnage was cut).
+# Fingerprint the pushed board state: order_id + kg + LINE + START of
+# production rows. Positions are in the hash deliberately (2026-09-01):
+# crediting is position-aware now, and a pure MOVE previously left the
+# fingerprint unchanged — "Refresh checks" recomputed the same stale
+# holding. When it changes, store it and rerun ONCE so holding re-derives.
 try:
     _wp = working[working["block_type"] == "production"]
     _sig = hash(tuple(sorted(
         (str(r.get("order_id", "")),
+         str(r.get("line_id", "")),
+         round(float(r.get("start_h", 0) or 0), 1),
          round(float(pd.to_numeric(pd.Series([r.get("qty_kg")]),
                                    errors="coerce").iloc[0] or 0), 1))
         for _, r in _wp.iterrows())))
@@ -768,6 +787,10 @@ except Exception:  # noqa: BLE001
 if _sig is not None and st.session_state.get("cal_board_sig") != _sig:
     st.session_state["cal_board_sig"] = _sig
     st.session_state["cal_working_records"] = working.to_dict("records")
+    # The component's holding snapshot is adopted ONLY on a real push —
+    # on any other rerun it is the PREVIOUS push's state and would
+    # resurrect pre-rebuild cards (review 2026-09-01).
+    st.session_state["cal_holding"] = holding
     st.rerun()
 
 n_holding = len(holding)
