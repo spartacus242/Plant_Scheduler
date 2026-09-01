@@ -98,7 +98,7 @@ def side_downtime_summary(dd: Path) -> pd.DataFrame:
     df = load_downtimes(dd)
     if df.empty:
         return pd.DataFrame(columns=["line_name", "group", "side",
-                                     "start_datetime", "end_datetime", "reason"])
+                                     "start_datetime", "end_datetime", "reason", "type"])
     out = pd.DataFrame({
         "line_name": df["line_name"],
         "group": [group_of(v) for v in df["line_name"]],
@@ -106,6 +106,7 @@ def side_downtime_summary(dd: Path) -> pd.DataFrame:
         "start_datetime": df["start_datetime"],
         "end_datetime": df["end_datetime"],
         "reason": df["reason"],
+        "type": df["type"] if "type" in df.columns else "",
     })
     return out
 
@@ -151,7 +152,15 @@ def render_side_downtime_editor(dd: Path, *, key_prefix: str = "dt") -> None:
     with d2:
         end_date = st.date_input("End date", value=(anchor).date(), key=f"{key_prefix}_edate")
         end_time = st.time_input("End time", value=datetime(anchor.year, anchor.month, anchor.day, 23, 59).time(), key=f"{key_prefix}_etime")
-    reason = st.text_input("Reason", value="Down", key=f"{key_prefix}_reason")
+    _tc1, _tc2 = st.columns([1, 2])
+    with _tc1:
+        dtype = st.selectbox("Type", ["Downtime", "Maintenance", "Contractor"],
+                             key=f"{key_prefix}_type",
+                             help="Downtimes are constraints, not schedule: the board "
+                                  "draws them as locked windows and the export "
+                                  "(calendar_blocks.csv) never carries them.")
+    with _tc2:
+        reason = st.text_input("Reason", value="Down", key=f"{key_prefix}_reason")
 
     start_dt = datetime.combine(start_date, start_time)
     end_dt = datetime.combine(end_date, end_time)
@@ -176,6 +185,7 @@ def render_side_downtime_editor(dd: Path, *, key_prefix: str = "dt") -> None:
                 "start_datetime": start_dt.strftime(DT_FMT),
                 "end_datetime": end_dt.strftime(DT_FMT),
                 "reason": reason or "Down",
+                "type": dtype,
             }
             df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
             path = downtimes_path(dd)
@@ -193,7 +203,9 @@ def render_side_downtime_editor(dd: Path, *, key_prefix: str = "dt") -> None:
 
     disp = summary.copy()
     disp = disp.rename(columns={"start_datetime": "start", "end_datetime": "end"})
-    disp = disp[["line_name", "group", "side", "start", "end", "reason"]]
+    if "type" not in disp.columns:
+        disp["type"] = ""
+    disp = disp[["line_name", "group", "side", "start", "end", "reason", "type"]]
     st.caption("Scheduled downtime on record (edit or delete rows, then Save). "
                "Dates are wall-clock, `YYYY-MM-DD HH:MM`:")
     # The glide grid (st.data_editor, same widget as st.dataframe) never
@@ -235,6 +247,7 @@ def render_side_downtime_editor(dd: Path, *, key_prefix: str = "dt") -> None:
                 "start_datetime": s_dt.strftime(DT_FMT),
                 "end_datetime": e_dt.strftime(DT_FMT),
                 "reason": rec.get("reason", "") or "Down",
+                "type": rec.get("type", "") or "",
             })
         if problems:
             st.error("Nothing saved -- fix these rows first:\n\n- "

@@ -44,7 +44,10 @@ LOG = logging.getLogger(__name__)
 DT_FMT = "%Y-%m-%d %H:%M"
 
 # On-disk schema (source of truth).
-STORE_COLUMNS = ["line_id", "line_name", "start_datetime", "end_datetime", "reason"]
+# `type` (2026-09-01): Downtime | Maintenance | Contractor — how the board
+# draws the window. Older files lack it; loaders fill "" and the reason
+# keyword heuristic (calendar_io.downtime_block_type) takes over.
+STORE_COLUMNS = ["line_id", "line_name", "start_datetime", "end_datetime", "reason", "type"]
 # In-memory schema returned by the loaders: STORE_COLUMNS plus hours derived
 # against the requested anchor. start_hour/end_hour are floats (NaN when the
 # datetime cell cannot be parsed -- consumers already guard float()).

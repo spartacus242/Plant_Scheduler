@@ -104,6 +104,23 @@ def _opt_kg(v: Any) -> float | None:
     return f
 
 
+def downtime_block_type(dtype, reason) -> str:
+    """Board window type for a downtimes.csv row: the explicit `type` column
+    (Downtime / Maintenance / Contractor, strip selector 2026-09-01) wins;
+    older files without it fall back to the reason-keyword heuristic."""
+    t = str(dtype or "").strip().lower()
+    if t in ("line_down", "downtime", "down"):
+        return "line_down"
+    if t == "maintenance":
+        return "maintenance"
+    if t == "contractor":
+        return "contractor"
+    r = str(reason or "").lower()
+    if "contractor" in r:
+        return "contractor"
+    return "line_down" if "down" in r else "maintenance"
+
+
 def import_solver_schedule(
     schedule_path: Path,
     cip_path: Path | None = None,
@@ -179,7 +196,7 @@ def import_solver_schedule(
             dt = pd.read_csv(downtimes_path)
         for _, r in dt.iterrows():
             reason = str(r.get("reason", "Down") or "Down")
-            btype = "line_down" if "down" in reason.lower() else "maintenance"
+            btype = downtime_block_type(r.get("type"), reason)
             start = float(r.get("start_hour", 0))
             end = float(r.get("end_hour", start))
             if pd.isna(start) or pd.isna(end):
@@ -523,6 +540,15 @@ def build_line_capable_skus(
     return out
 
 
+# Ids the board draws but never stores. cipinfo_ = cip_info ScheduledCIP
+# overlay; dt_ = downtimes.csv windows drawn on load; down_/maint_ = the
+# legacy rows older imports minted from that same file. Downtimes are
+# CONSTRAINTS, not schedule (user rule 2026-09-01): calendar_blocks.csv is
+# the production export the ERP ingests, and the plant is simply not
+# scheduled during a downtime — downtimes.csv is their single source.
+DISPLAY_ONLY_PREFIXES = ("cipinfo_", "dt_", "down_", "maint_")
+
+
 def drop_display_overlays(df: pd.DataFrame) -> pd.DataFrame:
     """Remove display-only overlay blocks before a save.
 
@@ -536,7 +562,7 @@ def drop_display_overlays(df: pd.DataFrame) -> pd.DataFrame:
     """
     if df is None or df.empty or "block_id" not in df.columns:
         return df
-    return df[~df["block_id"].astype(str).str.startswith("cipinfo_")]
+    return df[~df["block_id"].astype(str).str.startswith(DISPLAY_ONLY_PREFIXES)]
 
 
 def load_lines(path: Path) -> pd.DataFrame:
