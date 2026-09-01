@@ -13,14 +13,19 @@ interface Props {
   blocks: ScheduleBlock[];
   anchor: Date;
   skuFormats: Record<string, string>;
-  /** Right-click on a card: open the line/placement menu. */
-  onCardContextMenu?: (block: ScheduleBlock, x: number, y: number) => void;
+  /** Right-click on a card: plain = toggle the SKU highlight, Shift = the
+   * placement menu (same convention as calendar blocks, 2026-09-01). */
+  onCardContextMenu?: (block: ScheduleBlock, x: number, y: number, shiftKey: boolean) => void;
+  /** SKU currently highlighted on the chart: matching cards get the same
+   * gold ring, the rest dim — one highlight, both surfaces. */
+  highlightSku?: string | null;
 }
 
 const HoldingCard: React.FC<{
   block: ScheduleBlock; anchor: Date; skuFormats: Record<string, string>;
-  onCardContextMenu?: (block: ScheduleBlock, x: number, y: number) => void;
-}> = ({ block, anchor, skuFormats, onCardContextMenu }) => {
+  onCardContextMenu?: (block: ScheduleBlock, x: number, y: number, shiftKey: boolean) => void;
+  highlightSku?: string | null;
+}> = ({ block, anchor, skuFormats, onCardContextMenu, highlightSku }) => {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `holding_${block.id}`,
     data: { block, fromHolding: true },
@@ -32,6 +37,8 @@ const HoldingCard: React.FC<{
   // border, only the COLOR is proportional, and the text rides the full
   // width in black. Unfilled area stays light so the text remains legible.
   const fillPct = Math.max(2, Math.min(100, (block.run_hours / FILL_CEILING_H) * 100));
+  const isHighlighted = Boolean(highlightSku) && block.sku === highlightSku;
+  const isDimmed = Boolean(highlightSku) && block.sku !== highlightSku;
 
   return (
     <div
@@ -39,13 +46,14 @@ const HoldingCard: React.FC<{
       {...listeners}
       {...attributes}
       onContextMenu={(e) => {
-        // Right-click: line/placement menu (user request 2026-09-01).
+        // Right-click: plain toggles the SKU highlight, Shift opens the
+        // placement menu — the sandbox decides (user requests 2026-09-01).
         // preventDefault also keeps the browser menu away; dnd-kit's
         // PointerSensor ignores non-primary buttons, so no drag conflict.
         if (!onCardContextMenu) return;
         e.preventDefault();
         e.stopPropagation();
-        onCardContextMenu(block, e.clientX, e.clientY);
+        onCardContextMenu(block, e.clientX, e.clientY, e.shiftKey);
       }}
       style={{
         position: "relative",
@@ -56,7 +64,9 @@ const HoldingCard: React.FC<{
         background: "#f1f3f5",
         overflow: "hidden",
         cursor: "grab",
-        opacity: isDragging ? 0.5 : 1,
+        opacity: isDragging ? 0.5 : isDimmed ? 0.3 : 1,
+        // Same gold ring as the chart's highlighted blocks (GanttBlock).
+        boxShadow: isHighlighted ? "0 0 0 3px #FFD700" : undefined,
         boxSizing: "border-box",
       }}
       title={`${block.sku} ${block.sku_description || ""} — ${(block.qty_kg ?? 0).toLocaleString()} kg`}
@@ -98,7 +108,7 @@ function weekIndexOf(orderId: string): number | null {
   return m ? parseInt(m[1], 10) : null;
 }
 
-export const HoldingArea: React.FC<Props> = ({ blocks, anchor, skuFormats, onCardContextMenu }) => {
+export const HoldingArea: React.FC<Props> = ({ blocks, anchor, skuFormats, onCardContextMenu, highlightSku }) => {
   const [expanded, setExpanded] = useState(true);
   const { setNodeRef, isOver } = useDroppable({ id: "holding_area" });
 
@@ -153,7 +163,7 @@ export const HoldingArea: React.FC<Props> = ({ blocks, anchor, skuFormats, onCar
               </div>
               {byWeek.get(wk)!.sort(qtyDesc).map((b) => (
                 <HoldingCard key={b.id} block={b} anchor={anchor} skuFormats={skuFormats}
-                             onCardContextMenu={onCardContextMenu} />
+                             onCardContextMenu={onCardContextMenu} highlightSku={highlightSku} />
               ))}
             </div>
           ))}
@@ -165,7 +175,7 @@ export const HoldingArea: React.FC<Props> = ({ blocks, anchor, skuFormats, onCar
               </div>
               {loose.sort(qtyDesc).map((b) => (
                 <HoldingCard key={b.id} block={b} anchor={anchor} skuFormats={skuFormats}
-                             onCardContextMenu={onCardContextMenu} />
+                             onCardContextMenu={onCardContextMenu} highlightSku={highlightSku} />
               ))}
             </div>
           )}

@@ -8,7 +8,7 @@
 // the snap-left placement (start, hours, kg). Rows that cannot fit render
 // disabled with the reason.
 
-import React from "react";
+import React, { useState } from "react";
 import { hourToStamp } from "../utils/layout";
 import type { PlacementPlan } from "../utils/skuPicker";
 
@@ -31,6 +31,12 @@ interface Props {
   anchor: Date;
   rows: PickerRowData[];
   onPlace: (row: PickerRowData) => void;
+  /** "+ CIP here": a clean at this gap's snap-left point; later projected
+   * CIPs on the line re-forecast from it. null = done, string = why not. */
+  onAddCip?: () => string | null;
+  /** Ad-hoc trial run at this gap (trials ARE schedule — they go to the
+   * ERP with production, unlike downtimes). null = done, string = why not. */
+  onAddTrial?: (sku: string, hours: number) => string | null;
   onClose: () => void;
 }
 
@@ -94,8 +100,11 @@ export const Chips: React.FC<{
 };
 
 export const SkuPickerPopover: React.FC<Props> = ({
-  lineName, hour, x, y, anchor, rows, onPlace, onClose,
+  lineName, hour, x, y, anchor, rows, onPlace, onClose, onAddCip, onAddTrial,
 }) => {
+  const [trialSku, setTrialSku] = useState("");
+  const [trialH, setTrialH] = useState("8");
+  const [err, setErr] = useState<string | null>(null);
   // Keep the table on screen: it is wide, so pull it left/up near the edges.
   const left = Math.max(8, Math.min(x, (window.innerWidth || 1200) - 700));
   const top = Math.max(8, Math.min(y, (window.innerHeight || 800) - 420));
@@ -114,13 +123,44 @@ export const SkuPickerPopover: React.FC<Props> = ({
         <strong style={{ fontSize: 13 }}>
           ＋ Add a SKU — {lineName}, gap at {hourToStamp(hour, anchor)}
         </strong>
-        <span
-          style={{ cursor: "pointer", fontWeight: 700, color: "#888", marginLeft: 12 }}
-          onClick={onClose}
-        >
-          ×
+        <span style={{ display: "flex", gap: 10, alignItems: "baseline", marginLeft: 12 }}>
+          {onAddCip && (
+            <button
+              title="Insert a clean at this gap; later projected CIPs on the line re-forecast from it"
+              style={{ fontSize: 11.5, padding: "3px 10px", borderRadius: 4, fontWeight: 700,
+                       border: "1px solid #1565c0", background: "#e3f2fd", cursor: "pointer" }}
+              onClick={() => { const e = onAddCip(); setErr(e); if (!e) onClose(); }}
+            >
+              🧼 CIP here
+            </button>
+          )}
+          <span style={{ cursor: "pointer", fontWeight: 700, color: "#888" }} onClick={onClose}>
+            ×
+          </span>
         </span>
       </div>
+      {onAddTrial && (
+        <div style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 11.5, margin: "4px 0 2px" }}>
+          <span style={{ color: "#607d8b", fontWeight: 600 }}>Trial run:</span>
+          <input value={trialSku} onChange={(e) => setTrialSku(e.target.value)} placeholder="SKU"
+                 style={{ width: 90, fontSize: 11.5, padding: "2px 4px", border: "1px solid #ccc", borderRadius: 4 }} />
+          <input value={trialH} onChange={(e) => setTrialH(e.target.value)} placeholder="h"
+                 style={{ width: 44, fontSize: 11.5, padding: "2px 4px", border: "1px solid #ccc", borderRadius: 4 }} />
+          <button
+            style={{ fontSize: 11.5, padding: "2px 8px", borderRadius: 4, fontWeight: 700,
+                     border: "1px solid #7b1fa2", background: "#f3e5f5", cursor: "pointer" }}
+            onClick={() => {
+              const h = Number(trialH);
+              const e = !trialSku.trim() ? "enter a SKU" : !(h > 0) ? "hours must be > 0" : onAddTrial(trialSku.trim(), h);
+              setErr(e);
+              if (!e) onClose();
+            }}
+          >
+            Add trial
+          </button>
+        </div>
+      )}
+      {err && <div style={{ fontSize: 11.5, color: "#b71c1c", margin: "2px 0" }}>{err}</div>}
       <div style={{ fontSize: 11, color: "#888", margin: "2px 0 6px" }}>
         Snaps left against the previous block with the changeover setup
         respected. Demand-plan SKUs this line can run, most open demand first.

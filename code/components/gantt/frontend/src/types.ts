@@ -66,6 +66,11 @@ export interface SandboxConfig {
   /** ISO week of the demand file's anchor (demand_plan.source.json
    * anchor_iso_week): order-id -W<k> labels read W(base+k). */
   demand_base_iso_week?: number | null;
+  /** Per-line MaxHoursBetweenCIP (cip_info) for re-forecasting later
+   * projected cleans after a planner-inserted CIP; default when a line is
+   * missing. */
+  cip_interval_h?: Record<string, number>;
+  cip_interval_default_h?: number;
 }
 
 /** One SKU-pair changeover classification, precomputed server-side by

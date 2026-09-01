@@ -40,6 +40,11 @@ interface Props {
   onTogglePin?: (blockId: string, pinned: boolean) => void;
   /** Remove the block to the holding area; absent when the block is locked. */
   onRemove?: (blockId: string) => void;
+  /** Insert a CIP flush before/after this block (later projected cleans on
+   * the line re-forecast from it). Same contract as onSnap: null = done,
+   * string = why not. Offered on committed blocks too — the clean goes
+   * around the plant's run, never through it. */
+  onAddCip?: (blockId: string, dir: "before" | "after") => string | null;
   /** Fill the empty space next to the block (setup hours respected).
    * Same contract as onSnap: null = done, string = why not. */
   onFill?: (blockId: string, dir: "left" | "right" | "both") => string | null;
@@ -72,7 +77,7 @@ function fromLocalInput(anchor: Date, value: string): number | null {
 
 const round1 = (v: number) => Math.round(v * 10) / 10;
 
-export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClose, onApply, onSnap, onTogglePin, onFill, onRemove, demandLeft }) => {
+export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClose, onApply, onSnap, onTogglePin, onFill, onRemove, onAddCip, demandLeft }) => {
   // Draft field state, (re)seeded whenever a different block is opened.
   const [draft, setDraft] = useState<{ id: string; start: string; dur: string; qty: string } | null>(null);
   const [applyError, setApplyError] = useState<string | null>(null);
@@ -329,6 +334,32 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClo
             {block.pinned
               ? "Pinned: immovable like an MO. The solver treats it as committed line-time and its kg counts toward the demand plan."
               : "Pin when this SKU must run exactly here — the solver fills the rest of the demand around it."}
+          </div>
+        </div>
+      )}
+      {onAddCip && block.block_type !== "cip" && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            {(["before", "after"] as const).map((d) => (
+              <button
+                key={d}
+                title={`Insert a clean flush ${d === "before" ? "BEFORE" : "AFTER"} this block; later projected CIPs on the line re-forecast from it`}
+                style={{ fontSize: 12, padding: "4px 10px", borderRadius: 4,
+                         border: "1px solid #1565c0", background: "#e3f2fd",
+                         cursor: "pointer", fontWeight: 600 }}
+                onClick={() => {
+                  const err = onAddCip(block.id, d);
+                  setApplyError(err);
+                  if (!err) onClose();
+                }}
+              >
+                {d === "before" ? "🧼 CIP before" : "CIP after 🧼"}
+              </button>
+            ))}
+          </div>
+          <div style={{ fontSize: 11, color: "#888", marginTop: 4, maxWidth: 260 }}>
+            Adds a clean next to this block and re-forecasts the line's later
+            projected CIPs from it; blocks slide right if the gap is short.
           </div>
         </div>
       )}

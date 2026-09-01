@@ -25,11 +25,11 @@ import { setComponentValue, setFrameHeight } from "./streamlit";
 
 import { GanttChart } from "./components/GanttChart";
 import { HoldingArea } from "./components/HoldingArea";
-import { Palette } from "./components/Palette";
 import { AdherenceTable } from "./components/AdherenceTable";
 import { ContextMenu } from "./components/ContextMenu";
 import { BlockPopover } from "./components/BlockPopover";
 import { HoldingPlacePopover, type HoldingPlaceRow } from "./components/HoldingPlacePopover";
+import { deriveAutoHolding } from "./utils/holdingDerive";
 import { SkuPickerPopover, type PickerRowData } from "./components/SkuPickerPopover";
 import { DragPreviewBadge } from "./components/DragPreviewBadge";
 
@@ -138,7 +138,11 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   // insert-between). The solver plans AROUND them; so does the planner.
   const isCommittedMo = useCallback(
     (b: ScheduleBlock): boolean =>
-      (b.attrs ?? "").includes("current_state:"),
+      (b.attrs ?? "").includes("current_state:") &&
+      // Projected cleans are a FORECAST of the plant's CIP grid, not plant
+      // fact: a planner CIP re-forecasts them (2026-09-01). Scheduled
+      // cleans (cip_scheduled) stay locked.
+      !(b.block_type === "cip" && (b.attrs ?? "").includes("cip_projected")),
     [],
   );
   const isBlockLocked = useCallback(
@@ -670,6 +674,94 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     [closeMenu],
   );
 
+  // ── Planner CIPs (user request 2026-09-01) ──
+  // A clean can be inserted flush before/after a block (popup), at a gap
+  // (SKU picker "+ CIP here"), or from a week card's "CIP req" chip. The
+  // line's LATER projected cleans re-forecast from it (addCipReforecast).
+  const cipIntervalFor = useCallback((lineName: string): number => {
+    const cfgI = args.config.cip_interval_h?.[lineName];
+    if (cfgI && cfgI > 0) return cfgI;
+    // No cip_info for this line: infer from the spacing of its projected
+    // cleans, else the configured default.
+    const proj = cipWindows
+      .filter((b) => b.block_type === "cip" && b.line_name === lineName &&
+                     (b.attrs ?? "").includes("cip_projected"))
+      .map((b) => b.start_hour).sort((a, b) => a - b);
+    let best = 0;
+    for (let i = 1; i < proj.length; i++) {
+      const dlt = proj[i] - proj[i - 1];
+      if (dlt > 1 && (best === 0 || dlt < best)) best = dlt;
+    }
+    return best > 0 ? best : (args.config.cip_interval_default_h || 120);
+  }, [args.config, cipWindows]);
+
+  const placeCip = useCallback((lineName: string, lineId: number, startHour: number): string | null => {
+    const d = args.config.cip_duration_h || 6;
+    if (lockedThroughH != null && startHour < lockedThroughH - 1e-9) {
+      return `Cannot place a CIP inside the locked window (committed through ${hourToStamp(lockedThroughH, anchor)})`;
+    }
+    const onLine = [...schedule, ...cipWindows]
+      .filter((b) => b.line_name === lineName &&
+                     !String(b.id).startsWith("cipinfo_") && !String(b.id).startsWith("dt_"))
+      .sort((a, b) => a.start_hour - b.start_hour);
+    const inside = onLine.find((b) => b.start_hour < startHour - 1e-6 && b.end_hour > startHour + 1e-6);
+    if (inside) return `${hourToStamp(startHour, anchor)} is inside ${inside.sku || inside.label} — use the block's edge`;
+    const next = onLine.find((b) => b.start_hour >= startHour - 1e-6);
+    const shortfall = next ? Math.max(0, startHour + d - next.start_hour) : 0;
+    const shifted = shortfall > 0 && next
+      ? onLine.filter((b) => b.start_hour >= next.start_hour - 1e-6)
+      : [];
+    const fixed = shifted.find((b) => isBlockLocked(b));
+    if (fixed) return `Would move committed block ${fixed.sku || fixed.label} — place the CIP after it instead`;
+    setErrorMsg(null);
+    actions.addCipReforecast({
+      lineName, lineId, startHour, duration: d, intervalH: cipIntervalFor(lineName),
+      horizonH: horizon, shiftIds: shifted.map((b) => b.id), shiftH: shortfall,
+    });
+    return null;
+  }, [args.config, lockedThroughH, schedule, cipWindows, isBlockLocked, actions,
+      cipIntervalFor, horizon, anchor]);
+
+  const prevEndOnLine = useCallback((lineName: string, beforeHour: number, excludeId?: string): number =>
+    Math.max(0, ...[...schedule, ...cipWindows]
+      .filter((b) => b.id !== excludeId && b.line_name === lineName &&
+                     b.end_hour <= beforeHour + 1e-6 &&
+                     !String(b.id).startsWith("cipinfo_") && !String(b.id).startsWith("dt_"))
+      .map((b) => b.end_hour)),
+  [schedule, cipWindows]);
+
+  const handlePopoverAddCip = useCallback((blockId: string, dir: "before" | "after"): string | null => {
+    const block = [...schedule, ...cipWindows].find((b) => b.id === blockId);
+    if (!block) return "block not found";
+    if (dir === "after") return placeCip(block.line_name, block.line_id, block.end_hour);
+    const d = args.config.cip_duration_h || 6;
+    const start = Math.max(prevEndOnLine(block.line_name, block.start_hour, blockId),
+                           block.start_hour - d, lockedThroughH ?? 0);
+    return placeCip(block.line_name, block.line_id, start);
+  }, [schedule, cipWindows, placeCip, prevEndOnLine, args.config, lockedThroughH]);
+
+  const handlePickerAddCip = useCallback((): string | null => {
+    if (!picker) return "no gap selected";
+    const start = Math.max(prevEndOnLine(picker.lineName, picker.hour), lockedThroughH ?? 0);
+    return placeCip(picker.lineName, picker.lineId, start);
+  }, [picker, prevEndOnLine, lockedThroughH, placeCip]);
+
+  const handlePickerAddTrial = useCallback((sku: string, hours: number): string | null => {
+    if (!picker) return "no gap selected";
+    const start = Math.max(prevEndOnLine(picker.lineName, picker.hour), lockedThroughH ?? 0);
+    if (findOverlapsOnLine([...schedule, ...cipWindows], picker.lineName, "", start, start + hours)) {
+      return `Not enough room on ${picker.lineName} for a ${hours}h trial at ${hourToStamp(start, anchor)}`;
+    }
+    setErrorMsg(null);
+    actions.addTrial(picker.lineName, picker.lineId, sku, start, hours);
+    return null;
+  }, [picker, prevEndOnLine, lockedThroughH, schedule, cipWindows, actions, anchor]);
+
+  const handleWeekCipFix = useCallback((gap: { lineName: string; lineId: number; start: number }) => {
+    const err = placeCip(gap.lineName, gap.lineId, gap.start);
+    if (err) reject(err);
+  }, [placeCip, reject]);
+
   // ── Holding-card placement menu (user request 2026-09-01) ──
   // RIGHT-click a holding card: one row per line that can run its SKU, with
   // the earliest snap-left gap, changeover chips, and a Place button. An
@@ -1099,6 +1191,21 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     schedule !== initialState.current.schedule ||
     cipWindows !== initialState.current.cipWindows;
 
+  // Live holding (user rule 2026-09-01): once the board has been edited,
+  // re-derive the auto cards from the current schedule on EVERY change —
+  // SKU-picker adds, resizes, splits, trash — not just drags out of
+  // holding. Same math as the server rebuild, so "Refresh checks" then
+  // agrees instead of correcting. Until the first edit the server's cards
+  // stand (they already reflect the saved board plus made-kg credit).
+  const replaceAutoHolding = actions.replaceAutoHolding;
+  useEffect(() => {
+    if (!edited) return;
+    replaceAutoHolding(deriveAutoHolding(
+      schedule, args.demandTargets, args.capabilities, coveredByOrder,
+      anchor, args.skuDescriptions ?? {}));
+  }, [edited, schedule, args.demandTargets, args.capabilities, coveredByOrder,
+      anchor, args.skuDescriptions, replaceAutoHolding]);
+
   const kpis = useMemo(() => {
     if (!edited && args.kpis) {
       return serverKpisToKpiData(args.kpis, checkOverlapsSimple([...schedule, ...cipWindows]));
@@ -1125,7 +1232,8 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   // Per-week chips (user request 2026-08-18): fulfillment vs the demand due
   // that ISO week + changeovers by machine, recomputed live client-side.
   const weekStats = useMemo(() => {
-    const stats: Record<string, { boardPct: number | null; madePct: number | null; tl: number; ffs: number; cp: number; ttp: number; cipReq: number; board: number; credit: number; target: number }> = {};
+    const stats: Record<string, { boardPct: number | null; madePct: number | null; tl: number; ffs: number; cp: number; ttp: number; cipReq: number;
+  cipGap: { lineName: string; lineId: number; start: number } | null; board: number; credit: number; target: number }> = {};
     // MASTER-FILE RULE (user mandate 2026-08-21): the headline number is
     // BOARD fill — kg of calendar_blocks.csv blocks in the week (per-order
     // credit capped at target) vs the week's demand target. The board pass
@@ -1182,17 +1290,20 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         );
         if (waived) continue;
         const wk = `W${isoWeekAtHour(anchor, sorted[i].start_hour)}`;
-        const st = (stats[wk] ??= { boardPct: null, madePct: null, tl: 0, ffs: 0, cp: 0, ttp: 0, cipReq: 0, board: 0, credit: 0, target: 0 });
+        const st = (stats[wk] ??= { boardPct: null, madePct: null, tl: 0, ffs: 0, cp: 0, ttp: 0, cipReq: 0, cipGap: null as { lineName: string; lineId: number; start: number } | null, board: 0, credit: 0, target: 0 });
         const pi = pairs[`${from}|${to}`] ?? dflt;
         st.tl += pi.tl ?? 0;
         st.ffs += pi.ffs ?? 0;
         st.cp += pi.cp ?? 0;
         st.ttp += pi.ttp ?? 0;
-        if ((pi.cip_req ?? 0) === 1) st.cipReq += 1;
+        if ((pi.cip_req ?? 0) === 1) {
+          st.cipReq += 1;
+          if (!st.cipGap) st.cipGap = { lineName: prev.line_name, lineId: prev.line_id, start: prev.end_hour };
+        }
       }
     }
     for (const [wk, d] of Object.entries(dem)) {
-      const st = (stats[wk] ??= { boardPct: null, madePct: null, tl: 0, ffs: 0, cp: 0, ttp: 0, cipReq: 0, board: 0, credit: 0, target: 0 });
+      const st = (stats[wk] ??= { boardPct: null, madePct: null, tl: 0, ffs: 0, cp: 0, ttp: 0, cipReq: 0, cipGap: null as { lineName: string; lineId: number; start: number } | null, board: 0, credit: 0, target: 0 });
       st.board = d.board;
       st.credit = Math.max(0, d.sched - d.board);
       st.target = d.target;
@@ -1425,6 +1536,16 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
                         CIP req {ws.cipReq}
                       </span>
                     )}
+                    {ws.cipGap && (
+                      <button
+                        title={`Insert a clean at the first violating transition (${ws.cipGap.lineName} at ${hourToStamp(ws.cipGap.start, anchor)}); later projected CIPs re-forecast from it`}
+                        style={{ fontSize: 11, fontWeight: 800, borderRadius: 10, padding: "1px 8px",
+                                 border: "1px solid #1565c0", background: "#e3f2fd", color: "#0d47a1", cursor: "pointer" }}
+                        onClick={() => handleWeekCipFix(ws.cipGap!)}
+                      >
+                        + CIP
+                      </button>
+                    )}
                   </div>
                 ))}
             </div>
@@ -1470,9 +1591,19 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
 
         <div style={{ marginTop: 8 }}>
           <HoldingArea blocks={holdingArea} anchor={anchor} skuFormats={args.skuFormats ?? {}}
-            onCardContextMenu={pickerEnabled
-              ? (block, cx, cy) => { closeMenu(); setPopover(null); setPicker(null); setHoldMenu({ block, x: cx, y: cy }); }
-              : undefined} />
+            highlightSku={highlightSku}
+            onCardContextMenu={(block, cx, cy, shiftKey) => {
+              // Same convention as calendar blocks (2026-09-01): plain
+              // right-click toggles the SKU highlight, Shift+right-click
+              // opens the action menu (here: the placement menu).
+              closeMenu(); setPopover(null); setPicker(null);
+              if (shiftKey && pickerEnabled) {
+                setHoldMenu({ block, x: cx, y: cy });
+              } else {
+                setHoldMenu(null);
+                setHighlightSku((prev) => (prev === block.sku ? null : block.sku));
+              }
+            }} />
         </div>
 
         <DragOverlay dropAnimation={null}>
@@ -1510,13 +1641,6 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         </DragOverlay>
       </DndContext>
 
-      <Palette
-        lines={lines}
-        cipDuration={args.config.cip_duration_h}
-        onAddCip={actions.addCip}
-        onAddTrial={actions.addTrial}
-        onAddWindowBlock={actions.addWindowBlock}
-      />
 
       <div style={{ marginTop: 8 }}>
         <strong style={{ fontSize: 13, display: "block", marginBottom: 4 }}>
@@ -1564,6 +1688,8 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           anchor={anchor}
           rows={pickerRows}
           onPlace={handlePickerPlace}
+          onAddCip={handlePickerAddCip}
+          onAddTrial={handlePickerAddTrial}
           onClose={() => setPicker(null)}
         />
       )}
@@ -1583,6 +1709,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
             actions.removeToHolding(id);
             setPopover(null);
           }}
+          onAddCip={handlePopoverAddCip}
           demandLeft={popover.block.block_type === "sku"
             ? demandLeftForSku(popover.block.sku) : undefined}
           onTogglePin={

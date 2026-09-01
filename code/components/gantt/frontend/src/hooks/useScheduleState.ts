@@ -1,7 +1,8 @@
 // useScheduleState.ts — Central state management for the sandbox.
 
 import { useState, useCallback, useMemo, useRef } from "react";
-import type { BlockType, ScheduleBlock, SandboxArgs } from "../types";
+import { sameAutoCards } from "../utils/holdingDerive";
+import type { ScheduleBlock, SandboxArgs } from "../types";
 import { isWindowBlock } from "../types";
 import { hourToStamp } from "../utils/layout";
 
@@ -42,19 +43,27 @@ export interface ScheduleStateActions {
   ) => void;
   addCip: (lineName: string, lineId: number, startHour: number, duration: number) => void;
   addTrial: (lineName: string, lineId: number, sku: string, startHour: number, duration: number) => void;
-  addWindowBlock: (
-    blockType: BlockType,
-    lineName: string,
-    lineId: number,
-    startHour: number,
-    duration: number,
-    label: string,
-  ) => void;
+  /** Planner CIP + re-forecast (2026-09-01): one undo step that (a) slides
+   * shiftIds right by shiftH to open the gap, (b) places the clean, and
+   * (c) regenerates the line's LATER projected cleans start-to-start every
+   * intervalH from it (mirrors current_state.project_cips), snapping a
+   * slot that lands inside a block to that block's end and skipping slots
+   * within 1h of a surviving CIP. Regenerated cleans carry
+   * attrs planner:cip_projected — editable forecasts, staged as committed
+   * windows by the solver. */
+  addCipReforecast: (opts: {
+    lineName: string; lineId: number; startHour: number; duration: number;
+    intervalH: number; horizonH: number; shiftIds: string[]; shiftH: number;
+  }) => void;
   reportAction: (msg: string) => void;
   /** Adopt the SERVER-derived holding area (rebuilt after every Refresh
    * push). Not a user edit: no undo entry — the caller keeps the dirty
    * flag honest. */
   setHoldingFromServer: (blocks: ScheduleBlock[]) => void;
+  /** Replace the AUTO (hold_*) cards with a freshly derived set; planner-
+   * parked cards keep their place. No undo step: derived state, not an
+   * edit. Returns prev unchanged when nothing differs (render-loop guard). */
+  replaceAutoHolding: (cards: ScheduleBlock[]) => void;
   undo: () => void;
   redo: () => void;
   canUndo: boolean;
@@ -373,35 +382,65 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
     setLastAction(`Added trial ${sku} on ${lineName}`);
   }, [pushUndo]);
 
-  const addWindowBlock = useCallback((
-    blockType: BlockType,
-    lineName: string,
-    lineId: number,
-    startHour: number,
-    duration: number,
-    label: string,
-  ) => {
+  const addCipReforecast = useCallback((opts: {
+    lineName: string; lineId: number; startHour: number; duration: number;
+    intervalH: number; horizonH: number; shiftIds: string[]; shiftH: number;
+  }) => {
+    const { lineName, lineId, startHour, duration, intervalH, horizonH, shiftIds, shiftH } = opts;
     pushUndo();
-    const tag = label || blockType.toUpperCase();
-    const b: ScheduleBlock = {
-      id: `blk_${_nextId++}`,
-      line_id: lineId,
-      line_name: lineName,
-      order_id: tag,
-      sku: tag,
-      start_hour: startHour,
-      end_hour: startHour + duration,
-      run_hours: duration,
-      is_trial: false,
-      block_type: blockType,
-      label: tag,
+    const shift = new Set(shiftIds);
+    const slide = (b: ScheduleBlock): ScheduleBlock =>
+      shift.has(b.id) && shiftH > 0
+        ? { ...b, start_hour: b.start_hour + shiftH, end_hour: b.end_hour + shiftH }
+        : b;
+    const isProjectedHere = (b: ScheduleBlock) =>
+      b.block_type === "cip" && b.line_name === lineName &&
+      (b.attrs ?? "").includes("cip_projected") && b.start_hour > startHour + 1e-6;
+    const sched2 = schedule.map(slide);
+    const wins2 = cipWindows.map(slide).filter((b) => !isProjectedHere(b));
+    const cip: ScheduleBlock = {
+      id: `blk_${_nextId++}`, line_id: lineId, line_name: lineName,
+      order_id: "CIP", sku: "CIP", start_hour: startHour, end_hour: startHour + duration,
+      run_hours: duration, is_trial: false, block_type: "cip", label: "CIP",
+      attrs: "planner:cip",
     };
-    setCipWindows((prev) => [...prev, b]);
-    setLastAction(`Added ${blockType} on ${lineName} at ${stamp(startHour)}`);
-  }, [pushUndo, stamp]);
+    const onLine = [...sched2, ...wins2]
+      .filter((b) => b.line_name === lineName && !String(b.id).startsWith("cipinfo_"))
+      .sort((a, b) => a.start_hour - b.start_hour);
+    const added: ScheduleBlock[] = [cip];
+    let t = startHour + intervalH;
+    let guard = 0;
+    while (t < horizonH && guard++ < 60) {
+      const inside = onLine.find((b) => b.start_hour < t - 1e-6 && b.end_hour > t + 1e-6);
+      const s0 = inside ? inside.end_hour : t;
+      const near = [...wins2, ...added].some(
+        (c) => c.block_type === "cip" && c.line_name === lineName && Math.abs(c.start_hour - s0) < 1.0);
+      if (!near && s0 < horizonH) {
+        const e0 = Math.min(horizonH, s0 + duration);
+        added.push({ ...cip, id: `blk_${_nextId++}`, start_hour: s0, end_hour: e0,
+                     run_hours: e0 - s0, label: "CIP (projected)", attrs: "planner:cip_projected" });
+      }
+      t = s0 + intervalH;
+    }
+    setSchedule(sched2);
+    setCipWindows([...wins2, ...added]);
+    setLastAction(
+      `Added CIP on ${lineName} at ${stamp(startHour)}`
+      + (shiftH > 0 ? ` (${shiftIds.length} block(s) slid ${shiftH.toFixed(1)}h)` : "")
+      + `; ${added.length - 1} later clean(s) re-forecast`);
+  }, [pushUndo, stamp, schedule, cipWindows]);
 
   const reportAction = useCallback((msg: string) => {
     setLastAction(msg);
+  }, []);
+
+  const replaceAutoHolding = useCallback((cards: ScheduleBlock[]) => {
+    setHoldingArea((prev) => {
+      const isAuto = (b: ScheduleBlock) => String(b.id).startsWith("hold_");
+      const cur = prev.filter(isAuto);
+      if (sameAutoCards(cur, cards)) return prev;
+      return [...prev.filter((b) => !isAuto(b)), ...cards];
+    });
   }, []);
 
   const setHoldingFromServer = useCallback((blocks: ScheduleBlock[]) => {
@@ -412,9 +451,8 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
   const actions: ScheduleStateActions = {
     updateBlock, insertShift, moveBlock, resizeBlock, splitBlock,
     removeToHolding, restoreFromHolding, restorePartialFromHolding,
-    addToHolding, addProduction,
-    addCip, addTrial, addWindowBlock,
-    reportAction, setHoldingFromServer,
+    addToHolding, addProduction, addCipReforecast,
+    addCip, addTrial, reportAction, setHoldingFromServer, replaceAutoHolding,
     undo, redo,
     canUndo: undoStack.current.length > 0,
     canRedo: redoStack.current.length > 0,
