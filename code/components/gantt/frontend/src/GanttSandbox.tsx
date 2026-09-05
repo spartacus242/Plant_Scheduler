@@ -11,27 +11,37 @@ import { isWindowBlock } from "./types";
 import { useScheduleState } from "./hooks/useScheduleState";
 import { useBlockResize } from "./hooks/useBlockResize";
 import { useContextMenu } from "./hooks/useContextMenu";
-import { computeKpis, computeAdherence, checkOverlapsSimple, serverKpisToKpiData, orderTarget, weekFulfillmentCredit } from "./utils/kpi";
-import { isCapable, recalcDuration, findOverlapsOnLine } from "./utils/validation";
-import { LINE_HEIGHT, MIN_HOUR_WIDTH, MAX_HOUR_WIDTH, fitToWidth, hourToStamp, displayOrderId, setDemandBaseWeek, isoWeekLabel, isoWeekAtHour, isPastDemandWeek } from "./utils/layout";
+import { computeKpis, computeAdherence, checkOverlapsSimple, serverKpisToKpiData, orderTarget, weekFulfillmentCredit, countChangeoversByWeek } from "./utils/kpi";
+import { isCapable, recalcDuration, findOverlapsOnLine, placedQtyKg } from "./utils/validation";
+import { LINE_HEIGHT, MIN_HOUR_WIDTH, MAX_HOUR_WIDTH, fitToWidth, hourToStamp, displayOrderId, setDemandBaseWeek, isoWeekLabel, isoWeekAtHour, isPastDemandWeek, nowHour, isoWeekKey, demandWeekKey, mondayBoundaries } from "./utils/layout";
 import { getRate } from "./utils/validation";
+import { meanCapableRate } from "./utils/rates";
 import { computeDragPreview, computeInsertPlan, samePreview, type DragPreview, type InsertContext } from "./utils/dragPreview";
 import { planDrop, type DropPlan } from "./utils/dropPlan";
 import { isDouble, groupOf, sideOf } from "./utils/abLines";
 import { buildRows } from "./utils/ganttRows";
 import { skuColor, skuTextColor, blockLabel } from "./utils/colors";
-import { coFlagsForPair, planPlacement, remainingDemandBySku, splitPlacementByOrders, type PlacementPlan } from "./utils/skuPicker";
+import { coFlagsForPair, planPlacement, remainingDemandBySku, splitPlacementByOrders, effectiveSetupHours, isCipReqPair, type PlacementPlan } from "./utils/skuPicker";
+import { blockKey, findBlock, findIdCollisions, sameBlock, type BlockRef } from "./utils/blockIdentity";
+import { supplyRank, type Supply } from "./utils/stockRisk";
+import {
+  evaluateSchedule, humanText, isHardBlock, needsBanner, previewSupply, receiptsByDay, rulesOf, stampFor,
+  type ScheduleSupply,
+} from "./utils/supplyGlue";
 import { setComponentValue, setFrameHeight } from "./streamlit";
 
 import { GanttChart } from "./components/GanttChart";
+import { ReceiptDaysContext } from "./components/TimeAxis";
 import { HoldingArea } from "./components/HoldingArea";
 import { AdherenceTable } from "./components/AdherenceTable";
 import { ContextMenu } from "./components/ContextMenu";
 import { BlockPopover } from "./components/BlockPopover";
+import { SupplyDetailPanel } from "./components/SupplyDetailPanel";
 import { HoldingPlacePopover, type HoldingPlaceRow } from "./components/HoldingPlacePopover";
 import { deriveAutoHolding } from "./utils/holdingDerive";
 import { SkuPickerPopover, type PickerRowData } from "./components/SkuPickerPopover";
 import { DragPreviewBadge } from "./components/DragPreviewBadge";
+import { SupplyPill } from "./components/KpiBar";
 
 interface Props {
   args: SandboxArgs;
@@ -63,7 +73,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   );
   // Order-id week labels count from the DEMAND anchor's ISO week (see
   // setDemandBaseWeek) — set before any child renders labels.
-  setDemandBaseWeek(args.config.demand_base_iso_week ?? null);
+  setDemandBaseWeek(args.config.demand_base_iso_week ?? null, args.config.demand_anchor ?? null);
   const caps = args.capabilities;
   // The chart draws ONE row per group (a double line's A and B sides share a
   // row), so every index-based drag calculation must use the same collapsed
@@ -130,6 +140,118 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   // no drag, no resize, no typed edit — and nothing may be moved INTO the
   // frozen zone either (that would silently change the committed plan).
   const lockedThroughH = args.config.locked_through_h ?? null;
+
+  // ── Supply timeline (contract 2026-09-01 §5/§9) ──
+  // Verdicts are computed CLIENT-SIDE over the CURRENT schedule on every
+  // edit; the payload only carries the tables. No payload (read-only
+  // mounts, old report cache) = no stock surface anywhere.
+  const stock = args.stock ?? null;
+  const stockEnabled = stock !== null;
+  const supply = useMemo<ScheduleSupply | null>(
+    () => (stock ? evaluateSchedule(schedule, stock, caps, lockedThroughH) : null),
+    [schedule, stock, caps, lockedThroughH],
+  );
+  // Real-minute stamps (helpers.timefmt.hour_to_stamp twin) so the banner
+  // agrees with the Reconcile finding to the minute.
+  const supplyStamp = useMemo(() => stampFor(anchor), [anchor]);
+  // Header trucks (TimeAxis): receipts per calendar day, once per payload.
+  const receiptDays = useMemo(() => (stock ? receiptsByDay(stock) : null), [stock]);
+  // "Now" in board hours for the holding-card pills, refreshed with the
+  // board (the same events that re-judge the pills) rather than per render:
+  // the cards judge from max(now, lock) exactly like the Place popover's
+  // rows (holdMenuRows takes a fresh one at open time), never from a lock
+  // boundary already in the past.
+  const holdingNowH = useMemo(
+    () => nowHour(anchor),   // naive wall clock, like Python (layout.ts)
+    [anchor, schedule, holdingArea],  // refresh triggers, not inputs
+  );
+  // Session acknowledgements: hide the chip for a key, keep the popover text.
+  const [ackedKeys, setAckedKeys] = useState<Set<string>>(() => new Set());
+  const acknowledgeKey = useCallback((key: string) => {
+    setAckedKeys((prev) => { const next = new Set(prev); next.add(key); return next; });
+  }, []);
+  // Acknowledged = the WHOLE block-face decoration goes (chip, SHORT hatch,
+  // DEPENDENT tick): GanttBlock draws all three from this one verdict, and
+  // that is the intended reading — the planner has seen it; the popover,
+  // pill counts and Reconcile keep the verdict.
+  const supplyFor = useCallback(
+    (b: ScheduleBlock): Supply | null => {
+      if (!supply) return null;
+      const key = blockKey(b);
+      if (ackedKeys.has(key)) return null;
+      return supply.verdicts.get(key) ?? null;
+    },
+    [supply, ackedKeys],
+  );
+  // The dragged / edited block at a candidate position against the OTHER
+  // blocks (copy of the board timelines, no rebuild).
+  const supplyPreview = useCallback(
+    (block: ScheduleBlock, start: number, end: number, lineName: string): Supply | null =>
+      stock && block.block_type === "sku"
+        ? previewSupply(block, start, end, lineName, schedule, stock, caps, lockedThroughH,
+                        supply?.timelines)
+        : null,
+    [stock, schedule, caps, lockedThroughH, supply],
+  );
+  // Pre-commit gate: the ONLY refusal is hard_block (zero on hand, zero
+  // inbound, fresh feed). Everything else is warn-only after the commit.
+  const supplyGate = useCallback(
+    (block: ScheduleBlock, start: number, end: number, lineName: string): string | null => {
+      if (!stock) return null;
+      const s = supplyPreview(block, start, end, lineName);
+      return s && isHardBlock(s, stock) ? humanText(s, supplyStamp) : null;
+    },
+    [stock, supplyPreview, supplyStamp],
+  );
+  // Post-commit banner: commits queue the (line, span) windows they touched,
+  // stamped with the `schedule` they were queued against; once the schedule
+  // state has actually changed (and `supply` re-derived), the worst
+  // DEPENDENT/SHORT production block inside a window is announced — unless
+  // an earlier banner (setup warning) already stands.
+  // Windows, not keys: a split mints new ids and an insert slides a run of
+  // neighbours, so "what changed" is a span on a line.
+  // Production blocks only: a window edit leaves `schedule` untouched, so
+  // the pending span would otherwise fire on a later, unrelated edit.
+  // The stamp closes the same hole for a commit that turned out to be a
+  // no-op (the mutator bailed, the schedule reference never changed): the
+  // drain runs every render and drops a window whose schedule is still the
+  // current one instead of keeping it for the next real edit.
+  type SupplyWindow = { lineName: string; start: number; end: number };
+  const pendingSupply = useRef<{ schedule: ScheduleBlock[]; windows: SupplyWindow[] } | null>(null);
+  const queueSupplyCheck = useCallback(
+    (block: ScheduleBlock | null | undefined, windows: SupplyWindow[]) => {
+      if (!stock || !block || block.block_type !== "sku" || windows.length === 0) return;
+      pendingSupply.current = { schedule, windows };
+    },
+    [stock, schedule],
+  );
+  useEffect(() => {
+    const pend = pendingSupply.current;
+    if (!pend || !supply) return;
+    pendingSupply.current = null;
+    if (pend.schedule === schedule) return; // no-op commit: nothing to announce
+    let worst: Supply | null = null;
+    for (const b of schedule) {
+      if (b.block_type !== "sku") continue;
+      const inWindow = pend.windows.some((w) =>
+        w.lineName === b.line_name && b.start_hour < w.end + 1e-6 && b.end_hour > w.start - 1e-6);
+      if (!inWindow) continue;
+      const s = supply.verdicts.get(blockKey(b));
+      if (!s || !needsBanner(s)) continue;
+      if (!worst || supplyRank(s) > supplyRank(worst)) worst = s;
+    }
+    if (!worst) return;
+    const text = humanText(worst, supplyStamp);
+    setWarnMsg((prev) => prev ?? text);
+  });
+  // Supply banners are per-commit: a commit clears the standing one so a
+  // stale sentence never outlives the edit it described. Boards WITHOUT a
+  // stock payload keep the pre-supply behaviour exactly (a setup warning
+  // stands until the next drag / typed edit replaces it).
+  const clearSupplyBanner = useCallback(() => {
+    if (stockEnabled) setWarnMsg(null);
+  }, [stockEnabled]);
+
   // Planner-pinned blocks are immovable like MOs — the solver plans around
   // them — but unlike locked blocks the PLANNER can free them again via the
   // popup's unpin toggle, so the reason says how.
@@ -170,28 +292,42 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     [lockedThroughH],
   );
 
-  // Setup hours between two SKUs from the changeover matrix (0 when the pair
-  // is unknown or either side is a non-production window: a CIP's 6h wash
-  // absorbs any changeover).
+  // Setup hours between two SKUs: the matrix value rounded UP to whole hours
+  // and floored at the CIP duration for a cip_req pair — exactly what the
+  // solver reserves (skuPicker.effectiveSetupHours; fix FE / audit C36,
+  // changeover-9). 0 for the same SKU or an unknown pair.
+  const setupHoursFor = useCallback(
+    (fromSku: string, toSku: string): number => {
+      if (fromSku === toSku) return 0;
+      return effectiveSetupHours(
+        args.changeovers?.[fromSku]?.[toSku],
+        isCipReqPair(args.kpis?.co_pairs, fromSku, toSku),
+        args.config.cip_duration_h || 6,
+      );
+    },
+    [args.changeovers, args.kpis, args.config.cip_duration_h],
+  );
+  // Between two BLOCKS (0 when either side is a non-production window: a
+  // CIP's 6h wash absorbs any changeover).
   const setupBetween = useCallback(
     (from: ScheduleBlock | undefined, to: ScheduleBlock | undefined): number => {
       if (!from || !to) return 0;
       if (isWindowBlock(from.block_type) || isWindowBlock(to.block_type)) return 0;
-      if (from.sku === to.sku) return 0;
-      return Number(args.changeovers?.[from.sku]?.[to.sku] ?? 0) || 0;
+      return setupHoursFor(from.sku, to.sku);
     },
-    [args.changeovers],
+    [setupHoursFor],
   );
 
   // Non-blocking honesty check after a placement: does the gap to either
   // neighbour undercut the required setup time? The planner MAY place blocks
   // closer (their call) — but never silently.
   const setupWarning = useCallback(
-    (blockId: string, lineName: string, newStart: number, newEnd: number): string | null => {
+    (me: ScheduleBlock, lineName: string, newStart: number, newEnd: number): string | null => {
+      // The piece itself, not "every block with this id": a split MO's
+      // sibling is a real neighbour.
       const others = [...schedule, ...cipWindows].filter(
-        (b) => b.id !== blockId && b.line_name === lineName,
+        (b) => !sameBlock(b, me) && b.line_name === lineName,
       );
-      const me = [...schedule, ...cipWindows].find((b) => b.id === blockId);
       const left = others.filter((b) => b.end_hour <= newStart + 1e-9)
         .sort((a, b) => b.end_hour - a.end_hour)[0];
       const right = others.filter((b) => b.start_hour >= newEnd - 1e-9)
@@ -334,10 +470,12 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     const { active, overId } = ctx;
     const activeId = String(active.id);
     const fromHolding = activeId.startsWith("holding_");
+    // The draggable id is the PIECE key (id|start_hour); the block object
+    // rides in the drag data.
     const block =
       (active.data.current?.block as ScheduleBlock | undefined) ??
-      schedule.find((b) => b.id === activeId) ??
-      cipWindows.find((b) => b.id === activeId);
+      schedule.find((b) => blockKey(b) === activeId) ??
+      cipWindows.find((b) => blockKey(b) === activeId);
     if (!block) return;
     const next = computeDragPreview({
       block,
@@ -351,9 +489,19 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       downtime,
       insertCtx,
     });
+    // Supply row for the dragged production block only, at the landing the
+    // drop would commit (the insert point on an insert gesture).
+    if (next && stockEnabled && block.block_type === "sku") {
+      const ins = next.insert && !next.insert.blockedReason ? next.insert : null;
+      const s = supplyPreview(block, ins ? ins.insStart : next.startHour,
+                              ins ? ins.insEnd : next.endHour, next.targetLine);
+      next.supply = s;
+      next.supplyText = s ? humanText(s, supplyStamp) : null;
+    }
     // Recomputed every frame while auto-scroll runs: only re-render on change.
     setDragPreview((prev) => (samePreview(prev, next) ? prev : next));
-  }, [schedule, cipWindows, lines, caps, anchor, downtime, insertCtx, computeLanding]);
+  }, [schedule, cipWindows, lines, caps, anchor, downtime, insertCtx, computeLanding,
+      stockEnabled, supplyPreview, supplyStamp]);
   const refreshPreviewRef = useRef(refreshDragPreview);
   useEffect(() => { refreshPreviewRef.current = refreshDragPreview; });
 
@@ -404,11 +552,17 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
 
       const activeId = active.id as string;
       const overId = over?.id as string | undefined;
+      // The block dnd-kit carries (GanttBlock / HoldingCard put it in the
+      // drag data) resolved to the live state object — every mutation below
+      // names the PIECE, never a bare id shared by split MO pieces.
+      const carried = active.data.current?.block as ScheduleBlock | undefined;
 
       // ── Drag FROM holding TO a line row ──
       if (activeId.startsWith("holding_")) {
-        const blockId = activeId.replace("holding_", "");
-        const block = holdingArea.find((b) => b.id === blockId);
+        // HoldingCard registers `holding_<piece key>` (id|start_hour): the
+        // carried object names the card; the key is only the fallback.
+        const activeKey = activeId.replace("holding_", "");
+        const block = (carried && findBlock(holdingArea, carried)) ?? holdingArea.find((b) => blockKey(b) === activeKey);
         if (!block) return;
         const plan = computeLanding(active, block, true);
         if (!plan || !plan.valid) {
@@ -443,7 +597,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         // card fills what fits and the remainder stays in holding. A drop
         // whose START sits inside an existing block is still refused.
         const onLine = allBlocks
-          .filter((b) => b.id !== block.id && b.line_name === targetLineName)
+          .filter((b) => !sameBlock(b, block) && b.line_name === targetLineName)
           .sort((a, b2) => a.start_hour - b2.start_hour);
         if (onLine.some((b) => b.start_hour <= startHour + 1e-6
                                && b.end_hour > startHour + 1e-6)) {
@@ -461,34 +615,47 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
                  + `smaller than the ${Math.max(minRunH, 0.1)}h minimum run`);
           return;
         }
+        const placedH = dur <= room + 1e-6 ? dur : room;
+        const gate = supplyGate(block, startHour, startHour + placedH, targetLineName);
+        if (gate) {
+          reject(gate);
+          return;
+        }
         setErrorMsg(null);
+        clearSupplyBanner();
         if (dur <= room + 1e-6) {
-          actions.restoreFromHolding(blockId, targetLine.line_name, targetLine.line_id, startHour, dur);
+          // dur is the card's kg priced at THIS line's rate (recalcDuration)
+          // and the kg is capped at what the line makes in that window —
+          // never a physically impossible row (fix FE / audit ui-1, ui-14).
+          actions.restoreFromHolding(block, targetLine.line_name, targetLine.line_id, startHour, dur,
+            placedQtyKg(block, targetLineName, startHour, dur, caps, downtime));
         } else {
           actions.restorePartialFromHolding(
-            blockId, targetLine.line_name, targetLine.line_id, startHour, room, dur);
+            block, targetLine.line_name, targetLine.line_id, startHour, room, dur);
         }
+        queueSupplyCheck(block, [{ lineName: targetLineName, start: startHour, end: startHour + placedH }]);
         return;
       }
 
       // ── Drag TO holding area ──
       if (overId === "holding_area") {
-        const moving =
-          schedule.find((b) => b.id === activeId) ??
-          cipWindows.find((b) => b.id === activeId);
-        if (moving && isBlockLocked(moving)) {
+        const moving = carried
+          ? (findBlock(schedule, carried) ?? findBlock(cipWindows, carried))
+          : undefined;
+        if (!moving) return;
+        if (isBlockLocked(moving)) {
           reject(lockReason(moving));
           return;
         }
         setErrorMsg(null);
-        actions.removeToHolding(activeId);
+        actions.removeToHolding(moving);
         return;
       }
 
       // ── Normal in-chart drag ──
-      const block =
-        schedule.find((b) => b.id === activeId) ??
-        cipWindows.find((b) => b.id === activeId);
+      const block = carried
+        ? (findBlock(schedule, carried) ?? findBlock(cipWindows, carried))
+        : undefined;
       if (!block) return;
 
       if (isBlockLocked(block)) {
@@ -522,20 +689,29 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         }
         const newEnd = newStart + dur;
         const allBlocks = [...schedule, ...cipWindows];
-        if (findOverlapsOnLine(allBlocks, block.line_name, block.id, newStart, newEnd)) {
+        // Exclude the dragged PIECE only: excluding by id let a split MO
+        // piece land on its own sibling (same id, different start). The
+        // displaced neighbour is resolved by piece key for the same reason.
+        if (findOverlapsOnLine(allBlocks.filter((b) => !sameBlock(b, block)), block.line_name, "", newStart, newEnd)) {
           const plan = computeInsertPlan(block, block.line_name, newStart, dur, allBlocks, insertCtx);
-          const nextBlk = plan ? allBlocks.find((n) => n.id === plan.nextId) : undefined;
+          const nextBlk = plan ? allBlocks.find((n) => blockKey(n) === plan.nextKey) : undefined;
           if (plan && nextBlk && !plan.blockedReason) {
             const shifted = allBlocks
-              .filter((b) => b.id !== block.id && b.line_name === block.line_name)
+              .filter((b) => !sameBlock(b, block) && b.line_name === block.line_name)
               .filter((b) => b.start_hour >= nextBlk.start_hour - 1e-9);
             const lockedHit = shifted.find(isBlockLocked);
             if (lockedHit) {
               reject(`Cannot insert: would slide ${lockedHit.sku || lockedHit.label} — ${lockReason(lockedHit)}`);
               return;
             }
+            const gate = supplyGate(block, plan.insStart, plan.insStart + dur, block.line_name);
+            if (gate) { reject(gate); return; }
             setErrorMsg(null);
-            actions.insertShift(block.id, block.line_name, block.line_id, plan.insStart, dur, shifted.map((b) => b.id), plan.deltaH);
+            clearSupplyBanner();
+            actions.insertShift(block, block.line_name, block.line_id, plan.insStart, dur, shifted, plan.deltaH);
+            // The inserted block AND every slid neighbour may have changed verdict.
+            queueSupplyCheck(block, [{ lineName: block.line_name, start: plan.insStart,
+              end: Math.max(plan.insStart + dur, ...shifted.map((b) => b.end_hour + plan.deltaH)) }]);
             return;
           }
           reject(plan && plan.blockedReason
@@ -543,9 +719,12 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
             : `Overlap on ${block.line_name} at ${hourToStamp(newStart, anchor)}`);
           return;
         }
+        const gate = supplyGate(block, newStart, newEnd, block.line_name);
+        if (gate) { reject(gate); return; }
         setErrorMsg(null);
-        actions.moveBlock(block.id, block.line_name, block.line_id, newStart, dur);
-        setWarnMsg(setupWarning(block.id, block.line_name, newStart, newStart + dur));
+        actions.moveBlock(block, block.line_name, block.line_id, newStart, dur);
+        setWarnMsg(setupWarning(block, block.line_name, newStart, newStart + dur));
+        queueSupplyCheck(block, [{ lineName: block.line_name, start: newStart, end: newEnd }]);
       } else {
         if (block.block_type !== "cip" && !isCapable(targetLine.line_name, block.sku, caps)) {
           reject(`Line ${targetLine.line_name} cannot run ${block.sku}`);
@@ -567,20 +746,26 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         }
         const newEnd = newStart + dur;
         const allBlocks = [...schedule, ...cipWindows];
-        if (findOverlapsOnLine(allBlocks, targetLine.line_name, block.id, newStart, newEnd)) {
+        // Same piece-only exclusion / key resolution as the same-line path.
+        if (findOverlapsOnLine(allBlocks.filter((b) => !sameBlock(b, block)), targetLine.line_name, "", newStart, newEnd)) {
           const plan = computeInsertPlan(block, targetLine.line_name, newStart, dur, allBlocks, insertCtx);
-          const nextBlk = plan ? allBlocks.find((n) => n.id === plan.nextId) : undefined;
+          const nextBlk = plan ? allBlocks.find((n) => blockKey(n) === plan.nextKey) : undefined;
           if (plan && nextBlk && !plan.blockedReason) {
             const shifted = allBlocks
-              .filter((b) => b.id !== block.id && b.line_name === targetLine.line_name)
+              .filter((b) => !sameBlock(b, block) && b.line_name === targetLine.line_name)
               .filter((b) => b.start_hour >= nextBlk.start_hour - 1e-9);
             const lockedHit = shifted.find(isBlockLocked);
             if (lockedHit) {
               reject(`Cannot insert: would slide ${lockedHit.sku || lockedHit.label} — ${lockReason(lockedHit)}`);
               return;
             }
+            const gate = supplyGate(block, plan.insStart, plan.insStart + dur, targetLine.line_name);
+            if (gate) { reject(gate); return; }
             setErrorMsg(null);
-            actions.insertShift(block.id, targetLine.line_name, targetLine.line_id, plan.insStart, dur, shifted.map((b) => b.id), plan.deltaH);
+            clearSupplyBanner();
+            actions.insertShift(block, targetLine.line_name, targetLine.line_id, plan.insStart, dur, shifted, plan.deltaH);
+            queueSupplyCheck(block, [{ lineName: targetLine.line_name, start: plan.insStart,
+              end: Math.max(plan.insStart + dur, ...shifted.map((b) => b.end_hour + plan.deltaH)) }]);
             return;
           }
           reject(plan && plan.blockedReason
@@ -588,40 +773,58 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
             : `Overlap on ${targetLine.line_name} at ${hourToStamp(newStart, anchor)}`);
           return;
         }
+        const gate = supplyGate(block, newStart, newEnd, targetLine.line_name);
+        if (gate) { reject(gate); return; }
         setErrorMsg(null);
-        actions.moveBlock(block.id, targetLine.line_name, targetLine.line_id, newStart, dur);
-        setWarnMsg(setupWarning(block.id, targetLine.line_name, newStart, newEnd));
+        actions.moveBlock(block, targetLine.line_name, targetLine.line_id, newStart, dur);
+        setWarnMsg(setupWarning(block, targetLine.line_name, newStart, newEnd));
+        queueSupplyCheck(block, [{ lineName: targetLine.line_name, start: newStart, end: newEnd }]);
       }
     },
-    [schedule, cipWindows, holdingArea, actions, caps, lines, computeLanding, reject, anchor, downtime, isBlockLocked, lockReason, intoLockedZone, lockedThroughH, insertCtx, stopAutoScroll],
+    [schedule, cipWindows, holdingArea, actions, caps, lines, computeLanding, reject, anchor, downtime,
+     isBlockLocked, lockReason, intoLockedZone, lockedThroughH, insertCtx, stopAutoScroll, setupBetween,
+     setupWarning, supplyGate, queueSupplyCheck, clearSupplyBanner, args.config.min_run_hours],
   );
 
+  // The resize hook carries the piece (BlockRef) from pointer-down to
+  // commit; the commit re-reads the live object for the supply gate.
   const onResizeCommit = useCallback(
-    (id: string, newStart: number, newEnd: number) => actions.resizeBlock(id, newStart, newEnd),
-    [actions],
+    (ref: BlockRef, newStart: number, newEnd: number) => {
+      const block = findBlock(schedule, ref) ?? findBlock(cipWindows, ref);
+      if (block) {
+        const gate = supplyGate(block, newStart, newEnd, block.line_name);
+        if (gate) { reject(gate); return; }
+      }
+      clearSupplyBanner();
+      actions.resizeBlock(ref, newStart, newEnd);
+      queueSupplyCheck(block, block ? [{ lineName: block.line_name, start: newStart, end: newEnd }] : []);
+    },
+    [actions, schedule, cipWindows, supplyGate, reject, queueSupplyCheck, clearSupplyBanner],
   );
   const { resizing, startResize } = useBlockResize(args.config.min_run_hours, onResizeCommit);
 
   // Resize entry gate: drags and edits check locks, so resize must too — an
   // ungated handle let a locked block be resized (found in slice-1 QA).
   const guardedStartResize = useCallback<typeof startResize>(
-    (blockId, edge, startHour, endHour, clientX, hw) => {
-      const block =
-        schedule.find((b) => b.id === blockId) ?? cipWindows.find((b) => b.id === blockId);
-      if (block && isBlockLocked(block)) {
-        reject(lockReason(block));
+    (block, edge, startHour, endHour, clientX, hw) => {
+      if (isBlockLocked(block as ScheduleBlock)) {
+        reject(lockReason(block as ScheduleBlock));
         return;
       }
-      startResize(blockId, edge, startHour, endHour, clientX, hw);
+      startResize(block, edge, startHour, endHour, clientX, hw);
     },
-    [schedule, cipWindows, isBlockLocked, lockReason, reject, startResize],
+    [isBlockLocked, lockReason, reject, startResize],
   );
 
   const { menu, openMenu, closeMenu } = useContextMenu();
+  // The menu state keeps (id, start_hour): enough to name the piece again
+  // (blockIdentity) without widening useContextMenu.
+  const menuRef = useMemo<BlockRef | null>(
+    () => (menu.visible && menu.blockId ? { id: menu.blockId, start_hour: menu.startHour } : null),
+    [menu.visible, menu.blockId, menu.startHour],
+  );
   const handleContextMenu = useCallback(
-    (e: React.MouseEvent, blockId: string) => {
-      const block = [...schedule, ...cipWindows].find((b) => b.id === blockId);
-      if (!block) return;
+    (e: React.MouseEvent, block: ScheduleBlock) => {
       // Plain right-click on a SKU/trial block toggles the SKU highlight —
       // same effect as clicking its row in the adherence list; right-click
       // again (any block of that SKU) clears it. Works on locked/committed
@@ -636,20 +839,42 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         reject(lockReason(block));
         return;
       }
-      openMenu(e.clientX, e.clientY, blockId, block.block_type, block.start_hour, block.end_hour);
+      openMenu(e.clientX, e.clientY, block.id, block.block_type, block.start_hour, block.end_hour);
     },
-    [schedule, cipWindows, openMenu, reject, isBlockLocked, lockReason, setHighlightSku],
+    [openMenu, reject, isBlockLocked, lockReason, setHighlightSku],
   );
 
   const [popover, setPopover] = useState<{ block: ScheduleBlock; x: number; y: number } | null>(null);
+  // "Supply details" modal (planner feedback 2026-09-02), opened from the
+  // popover's button; re-resolved by piece at render time.
+  const [supplyDetailFor, setSupplyDetailFor] = useState<ScheduleBlock | null>(null);
   const handleBlockClick = useCallback(
-    (blockId: string) => {
-      const block = [...schedule, ...cipWindows].find((b) => b.id === blockId);
+    (ref: BlockRef) => {
+      const block = findBlock(schedule, ref) ?? findBlock(cipWindows, ref);
       if (!block) return;
       setPopover({ block, x: 300, y: 200 });
     },
     [schedule, cipWindows],
   );
+
+  // ?focus=<block_id> (Reconcile finding -> this block): seed the SKU
+  // highlight and scroll the piece into view once per focus value.
+  const focusedRef = useRef<string | null>(null);
+  useEffect(() => {
+    const id = args.focusBlock ?? null;
+    if (!id || focusedRef.current === id) return;
+    const b = schedule.find((x) => x.id === id) ?? cipWindows.find((x) => x.id === id);
+    if (!b) return;
+    focusedRef.current = id;
+    if (b.sku && !isWindowBlock(b.block_type)) setHighlightSku(b.sku);
+    const esc = typeof CSS !== "undefined" && typeof CSS.escape === "function"
+      ? CSS.escape(id) : id.replace(/["\\]/g, "\\$&");
+    const raf = requestAnimationFrame(() => {
+      const el = containerRef.current?.querySelector(`[data-block-id="${esc}"]`);
+      el?.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [args.focusBlock, schedule, cipWindows]);
 
   // ── Blank-space SKU picker (user request 2026-08-19) ──
   // RIGHT-click on an empty gap lists demand-plan SKUs the line can run,
@@ -678,22 +903,15 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   // A clean can be inserted flush before/after a block (popup), at a gap
   // (SKU picker "+ CIP here"), or from a week card's "CIP req" chip. The
   // line's LATER projected cleans re-forecast from it (addCipReforecast).
+  // Interval source = current_state.project_cips' (fix FE / audit cip-14):
+  // cip_info MaxHoursBetweenCIP for the line (config.cip_interval_h), else
+  // the configured default — never inferred from the spacing of the
+  // projected cleans already drawn (that spacing is an OUTPUT of the rule).
   const cipIntervalFor = useCallback((lineName: string): number => {
     const cfgI = args.config.cip_interval_h?.[lineName];
     if (cfgI && cfgI > 0) return cfgI;
-    // No cip_info for this line: infer from the spacing of its projected
-    // cleans, else the configured default.
-    const proj = cipWindows
-      .filter((b) => b.block_type === "cip" && b.line_name === lineName &&
-                     (b.attrs ?? "").includes("cip_projected"))
-      .map((b) => b.start_hour).sort((a, b) => a - b);
-    let best = 0;
-    for (let i = 1; i < proj.length; i++) {
-      const dlt = proj[i] - proj[i - 1];
-      if (dlt > 1 && (best === 0 || dlt < best)) best = dlt;
-    }
-    return best > 0 ? best : (args.config.cip_interval_default_h || 120);
-  }, [args.config, cipWindows]);
+    return args.config.cip_interval_default_h || 120;
+  }, [args.config]);
 
   const placeCip = useCallback((lineName: string, lineId: number, startHour: number): string | null => {
     const d = args.config.cip_duration_h || 6;
@@ -714,28 +932,37 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     const fixed = shifted.find((b) => isBlockLocked(b));
     if (fixed) return `Would move committed block ${fixed.sku || fixed.label} — place the CIP after it instead`;
     setErrorMsg(null);
+    // shiftIds are the PIECES (objects): a bare id would slide the first
+    // piece of a split MO whichever piece sits after the clean.
     actions.addCipReforecast({
       lineName, lineId, startHour, duration: d, intervalH: cipIntervalFor(lineName),
-      horizonH: horizon, shiftIds: shifted.map((b) => b.id), shiftH: shortfall,
+      horizonH: horizon, shiftIds: shifted, shiftH: shortfall,
+      // a projected slot that would split/push a committed block is skipped
+      immovable: isBlockLocked,
     });
+    const slidRun = shortfall > 0 ? shifted.find((b) => b.block_type === "sku") : undefined;
+    if (slidRun) {
+      clearSupplyBanner();
+      queueSupplyCheck(slidRun, [{ lineName, start: startHour, end: horizon }]);
+    }
     return null;
   }, [args.config, lockedThroughH, schedule, cipWindows, isBlockLocked, actions,
-      cipIntervalFor, horizon, anchor]);
+      cipIntervalFor, horizon, anchor, queueSupplyCheck, clearSupplyBanner]);
 
-  const prevEndOnLine = useCallback((lineName: string, beforeHour: number, excludeId?: string): number =>
+  const prevEndOnLine = useCallback((lineName: string, beforeHour: number, exclude?: ScheduleBlock): number =>
     Math.max(0, ...[...schedule, ...cipWindows]
-      .filter((b) => b.id !== excludeId && b.line_name === lineName &&
+      .filter((b) => !(exclude && sameBlock(b, exclude)) && b.line_name === lineName &&
                      b.end_hour <= beforeHour + 1e-6 &&
                      !String(b.id).startsWith("cipinfo_") && !String(b.id).startsWith("dt_"))
       .map((b) => b.end_hour)),
   [schedule, cipWindows]);
 
-  const handlePopoverAddCip = useCallback((blockId: string, dir: "before" | "after"): string | null => {
-    const block = [...schedule, ...cipWindows].find((b) => b.id === blockId);
+  const handlePopoverAddCip = useCallback((ref: ScheduleBlock, dir: "before" | "after"): string | null => {
+    const block = findBlock(schedule, ref) ?? findBlock(cipWindows, ref);
     if (!block) return "block not found";
     if (dir === "after") return placeCip(block.line_name, block.line_id, block.end_hour);
     const d = args.config.cip_duration_h || 6;
-    const start = Math.max(prevEndOnLine(block.line_name, block.start_hour, blockId),
+    const start = Math.max(prevEndOnLine(block.line_name, block.start_hour, block),
                            block.start_hour - d, lockedThroughH ?? 0);
     return placeCip(block.line_name, block.line_id, start);
   }, [schedule, cipWindows, placeCip, prevEndOnLine, args.config, lockedThroughH]);
@@ -772,7 +999,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     if (!holdMenu) return [];
     const block = holdMenu.block;
     const cardKg = block.qty_kg && block.qty_kg > 0 ? block.qty_kg : 0;
-    const nowH = (Date.now() - anchor.getTime()) / 3600_000;
+    const nowH = nowHour(anchor);
     const base = Math.max(0, nowH, lockedThroughH ?? 0);
     const rows: HoldingPlaceRow[] = [];
     for (const ln of lines) {
@@ -797,6 +1024,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           remainingKg: cardKg > 0 ? cardKg : rate * block.run_hours,
           blocksOnLine,
           changeovers: args.changeovers ?? {},
+          setupFor: setupHoursFor,
           lockedThroughH,
           nowH,
           horizonH: horizon,
@@ -811,13 +1039,13 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         lineName: ln.line_name,
         lineId: ln.line_id,
         plan,
-        inFlags: plan.prevSku ? coFlagsForPair(args.coFlags, plan.prevSku, block.sku) : [],
-        outFlags: plan.nextSku ? coFlagsForPair(args.coFlags, block.sku, plan.nextSku) : [],
+        inFlags: plan.prevSku ? coFlagsForPair(args.coFlags, plan.prevSku, block.sku, args.kpis?.co_pairs) : [],
+        outFlags: plan.nextSku ? coFlagsForPair(args.coFlags, block.sku, plan.nextSku, args.kpis?.co_pairs) : [],
       });
     }
     rows.sort((a, b) => a.plan.startHour - b.plan.startHour);
     return rows;
-  }, [holdMenu, schedule, cipWindows, lines, args.changeovers, args.coFlags,
+  }, [holdMenu, schedule, cipWindows, lines, args.changeovers, args.coFlags, args.kpis, setupHoursFor,
       anchor, lockedThroughH, horizon, caps, downtime, args.config.min_run_hours]);
 
   const handleHoldingPlace = useCallback(
@@ -826,26 +1054,39 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       const block = holdMenu.block;
       const { startHour, durationH } = row.plan;
       const allBlocks = [...schedule, ...cipWindows];
-      if (findOverlapsOnLine(allBlocks, row.lineName, block.id, startHour, startHour + durationH)) {
+      // A parked piece's sibling still on the board shares its id: exclude
+      // the card itself only, so the sibling stays an obstacle.
+      if (findOverlapsOnLine(allBlocks.filter((b) => !sameBlock(b, block)), row.lineName, "", startHour, startHour + durationH)) {
         reject(`Overlap on ${row.lineName} at ${hourToStamp(startHour, anchor)}`);
         setHoldMenu(null);
         return;
       }
-      const rate = getRate(row.lineName, block.sku, caps);
-      const cardKg = block.qty_kg && block.qty_kg > 0 ? block.qty_kg : 0;
-      const fullDur = rate > 0 && cardKg > 0
-        ? Math.ceil((cardKg / rate) * 10) / 10
-        : block.run_hours;
+      // ONE pricing rule for both gestures (drag and right-click Place):
+      // the card's kg integrated at THIS line's rate over the placed window
+      // (recalcDuration -> hoursForQty, whole hours). Fix FE / audit ui-1:
+      // the two paths used to disagree by 80-140 h on the same card.
+      const fullDur = recalcDuration(block, row.lineName, caps, downtime, startHour) ?? block.run_hours;
+      const placedH = durationH >= fullDur - 1e-6 ? fullDur : durationH;
+      const gate = supplyGate(block, startHour, startHour + placedH, row.lineName);
+      if (gate) {
+        reject(gate);
+        setHoldMenu(null);
+        return;
+      }
       setErrorMsg(null);
+      clearSupplyBanner();
       if (durationH >= fullDur - 1e-6) {
-        actions.restoreFromHolding(block.id, row.lineName, row.lineId, startHour, fullDur);
+        actions.restoreFromHolding(block, row.lineName, row.lineId, startHour, fullDur,
+          placedQtyKg(block, row.lineName, startHour, fullDur, caps, downtime));
       } else {
         actions.restorePartialFromHolding(
-          block.id, row.lineName, row.lineId, startHour, durationH, fullDur);
+          block, row.lineName, row.lineId, startHour, durationH, fullDur);
       }
+      queueSupplyCheck(block, [{ lineName: row.lineName, start: startHour, end: startHour + placedH }]);
       setHoldMenu(null);
     },
-    [holdMenu, schedule, cipWindows, caps, anchor, actions, reject],
+    [holdMenu, schedule, cipWindows, caps, downtime, anchor, actions, reject, supplyGate, queueSupplyCheck,
+     clearSupplyBanner],
   );
 
   const pickerRows = useMemo<PickerRowData[]>(() => {
@@ -870,7 +1111,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       (b) => groupOf(b.line_name) === group &&
         !(isWindowBlock(b.block_type) && sideOf(b.line_name)),
     );
-    const nowH = (Date.now() - anchor.getTime()) / 3600_000;
+    const nowH = nowHour(anchor);
     const rows: PickerRowData[] = [];
     for (const c of cands) {
       const rem = remaining[c.sku] ?? 0;
@@ -883,6 +1124,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         remainingKg: rem,
         blocksOnLine,
         changeovers: args.changeovers ?? {},
+        setupFor: setupHoursFor,
         lockedThroughH,
         nowH,
         horizonH: horizon,
@@ -895,13 +1137,13 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         desc: args.skuDescriptions?.[c.sku] ?? "",
         remainingKg: rem,
         plan,
-        inFlags: plan.prevSku ? coFlagsForPair(args.coFlags, plan.prevSku, c.sku) : [],
-        outFlags: plan.nextSku ? coFlagsForPair(args.coFlags, c.sku, plan.nextSku) : [],
+        inFlags: plan.prevSku ? coFlagsForPair(args.coFlags, plan.prevSku, c.sku, args.kpis?.co_pairs) : [],
+        outFlags: plan.nextSku ? coFlagsForPair(args.coFlags, c.sku, plan.nextSku, args.kpis?.co_pairs) : [],
       });
     }
     rows.sort((a, b) => b.remainingKg - a.remainingKg);
     return rows;
-  }, [picker, schedule, cipWindows, args.demandTargets, args.capabilities,
+  }, [picker, schedule, cipWindows, args.demandTargets, args.capabilities, args.kpis, setupHoursFor,
       args.changeovers, args.lineCapableSkus, args.skuDescriptions, args.coFlags,
       coveredByOrder, anchor, lockedThroughH, horizon, caps, downtime,
       args.config.min_run_hours]);
@@ -931,12 +1173,28 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         setPicker(null);
         return;
       }
+      // Hard-block gate on the whole placement as ONE virtual run (the
+      // per-order segments are contiguous and draw the same components).
+      const virtual: ScheduleBlock = {
+        id: "picker_virtual", line_id: picker.lineId, line_name: picker.lineName,
+        order_id: segments[0].orderId, sku: row.sku, start_hour: startHour,
+        end_hour: startHour + durationH, run_hours: durationH, is_trial: false,
+        block_type: "sku", qty_kg: qtyKg > 0 ? qtyKg : undefined,
+      };
+      const gate = supplyGate(virtual, startHour, startHour + durationH, picker.lineName);
+      if (gate) {
+        reject(gate);
+        setPicker(null);
+        return;
+      }
       setErrorMsg(null);
+      clearSupplyBanner();
       actions.addProduction(picker.lineName, picker.lineId, row.sku, row.desc, segments);
+      queueSupplyCheck(virtual, [{ lineName: picker.lineName, start: startHour, end: startHour + durationH }]);
       setPicker(null);
     },
     [picker, schedule, cipWindows, args.demandTargets, args.capabilities,
-     coveredByOrder, anchor, actions, reject],
+     coveredByOrder, anchor, actions, reject, supplyGate, queueSupplyCheck, clearSupplyBanner],
   );
 
   // Typed edits from the popover (start / duration / tonnage). Same guards as
@@ -945,9 +1203,8 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   // popover shows it inline, because the chart's top banner is out of the
   // user's sight while the popup is open.
   const handleApplyEdit = useCallback(
-    (blockId: string, edit: { startHour: number; durationH: number; qtyKg: number | null }): string | null => {
-      const block =
-        schedule.find((b) => b.id === blockId) ?? cipWindows.find((b) => b.id === blockId);
+    (ref: BlockRef, edit: { startHour: number; durationH: number; qtyKg: number | null }): string | null => {
+      const block = findBlock(schedule, ref) ?? findBlock(cipWindows, ref);
       if (!block) return "Block no longer exists";
       if (isBlockLocked(block)) {
         reject(lockReason(block));
@@ -970,7 +1227,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       const clash = allBlocks.find(
         (b) =>
           b.line_name === block.line_name &&
-          b.id !== block.id &&
+          !sameBlock(b, block) &&
           b.start_hour < newEnd &&
           b.end_hour > newStart,
       );
@@ -982,7 +1239,6 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         reject(msg);
         return msg;
       }
-      setErrorMsg(null);
       const patch: Partial<ScheduleBlock> = {
         start_hour: newStart,
         end_hour: newEnd,
@@ -991,15 +1247,24 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       if (!isWindowBlock(block.block_type)) {
         patch.qty_kg = edit.qtyKg ?? undefined;
       }
-      actions.updateBlock(blockId, patch);
+      // Typed kg changes the need: gate the block AS EDITED.
+      const gate = supplyGate({ ...block, ...patch }, newStart, newEnd, block.line_name);
+      if (gate) {
+        reject(gate);
+        return gate;
+      }
+      setErrorMsg(null);
+      actions.updateBlock(block, patch);
       actions.reportAction(
         `Edited ${block.order_id || block.sku}: ${hourToStamp(newStart, anchor)} for ${edit.durationH}h` +
           (edit.qtyKg ? `, ${edit.qtyKg.toLocaleString()} kg` : ""),
       );
-      setWarnMsg(setupWarning(blockId, block.line_name, newStart, newEnd));
+      setWarnMsg(setupWarning(block, block.line_name, newStart, newEnd));
+      queueSupplyCheck(block, [{ lineName: block.line_name, start: newStart, end: newEnd }]);
       return null;
     },
-    [schedule, cipWindows, actions, reject, anchor, args.config.min_run_hours, isBlockLocked, lockReason, intoLockedZone, lockedThroughH],
+    [schedule, cipWindows, actions, reject, anchor, args.config.min_run_hours, isBlockLocked, lockReason,
+     intoLockedZone, lockedThroughH, setupWarning, supplyGate, queueSupplyCheck],
   );
 
   // Pin toggle (popup): a pinned demand block becomes committed line-time —
@@ -1008,17 +1273,17 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   // edits until unpinned, so the board can't silently disagree with what the
   // solve was told.
   const handleTogglePin = useCallback(
-    (blockId: string, pinned: boolean) => {
-      const block = schedule.find((b) => b.id === blockId);
+    (ref: BlockRef, pinned: boolean) => {
+      const block = findBlock(schedule, ref);
       if (!block) return;
-      actions.updateBlock(blockId, { pinned });
+      actions.updateBlock(block, { pinned });
       actions.reportAction(
         pinned
           ? `📌 Pinned ${block.order_id || block.sku} — the solver will plan around it`
           : `Unpinned ${block.order_id || block.sku} — it can move again`,
       );
       setPopover((p) =>
-        p && p.block.id === blockId ? { ...p, block: { ...p.block, pinned } } : p,
+        p && sameBlock(p.block, block) ? { ...p, block: { ...p.block, pinned } } : p,
       );
     },
     [schedule, actions],
@@ -1028,14 +1293,13 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   // time between the two SKUs (user request 2026-08-14). Returns null on
   // success or the reason it could not snap.
   const handleSnap = useCallback(
-    (blockId: string, dir: "left" | "right"): string | null => {
-      const block =
-        schedule.find((b) => b.id === blockId) ?? cipWindows.find((b) => b.id === blockId);
+    (ref: BlockRef, dir: "left" | "right"): string | null => {
+      const block = findBlock(schedule, ref) ?? findBlock(cipWindows, ref);
       if (!block) return "Block no longer exists";
       if (isBlockLocked(block)) return lockReason(block);
       const dur = block.end_hour - block.start_hour;
       const others = [...schedule, ...cipWindows].filter(
-        (b) => b.id !== blockId && b.line_name === block.line_name,
+        (b) => !sameBlock(b, block) && b.line_name === block.line_name,
       );
       let newStart: number;
       let against: ScheduleBlock | undefined;
@@ -1066,8 +1330,11 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       if (clash) {
         return `No room: would overlap ${clash.sku || clash.label} (${hourToStamp(clash.start_hour, anchor)} - ${hourToStamp(clash.end_hour, anchor)})`;
       }
+      const gate = supplyGate(block, newStart, newEnd, block.line_name);
+      if (gate) return gate;
       setErrorMsg(null);
-      actions.updateBlock(blockId, {
+      clearSupplyBanner();
+      actions.updateBlock(block, {
         start_hour: newStart,
         end_hour: newEnd,
         run_hours: dur,
@@ -1076,9 +1343,11 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         `Snapped ${block.order_id || block.sku} ${dir} against ${against.sku || against.label}` +
           (setup > 0 ? ` (setup ${setup}h respected)` : " (no setup needed)"),
       );
+      queueSupplyCheck(block, [{ lineName: block.line_name, start: newStart, end: newEnd }]);
       return null;
     },
-    [schedule, cipWindows, actions, isBlockLocked, lockReason, intoLockedZone, lockedThroughH, anchor, setupBetween],
+    [schedule, cipWindows, actions, isBlockLocked, lockReason, intoLockedZone, lockedThroughH, anchor,
+     setupBetween, supplyGate, queueSupplyCheck, clearSupplyBanner],
   );
 
   // Fill the empty space next to a block (user request 2026-08-18): extend
@@ -1086,13 +1355,12 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   // time (from_sku -> to_sku), or to the horizon/lock boundary when the
   // line is open. Resize semantics — qty scales with duration.
   const handleFill = useCallback(
-    (blockId: string, dir: "left" | "right" | "both"): string | null => {
-      const block =
-        schedule.find((b) => b.id === blockId) ?? cipWindows.find((b) => b.id === blockId);
+    (ref: BlockRef, dir: "left" | "right" | "both"): string | null => {
+      const block = findBlock(schedule, ref) ?? findBlock(cipWindows, ref);
       if (!block) return "Block no longer exists";
       if (isBlockLocked(block)) return lockReason(block);
       const others = [...schedule, ...cipWindows].filter(
-        (b) => b.id !== blockId && b.line_name === block.line_name,
+        (b) => !sameBlock(b, block) && b.line_name === block.line_name,
       );
       let newStart = block.start_hour;
       let newEnd = block.end_hour;
@@ -1140,14 +1408,46 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       if (clash) {
         return `No room: would overlap ${clash.sku || clash.label}`;
       }
+      // Fill scales kg with the duration (resizeBlock): gate the grown run.
+      const grownKg = block.qty_kg && block.end_hour > block.start_hour
+        ? block.qty_kg * (newEnd - newStart) / (block.end_hour - block.start_hour)
+        : block.qty_kg;
+      const gate = supplyGate({ ...block, qty_kg: grownKg }, newStart, newEnd, block.line_name);
+      if (gate) return gate;
       setErrorMsg(null);
-      actions.resizeBlock(blockId, newStart, newEnd);
+      clearSupplyBanner();
+      actions.resizeBlock(block, newStart, newEnd);
       actions.reportAction(
         `Filled ${block.order_id || block.sku} ${notes.join(" and ")}`,
       );
+      queueSupplyCheck(block, [{ lineName: block.line_name, start: newStart, end: newEnd }]);
       return null;
     },
-    [schedule, cipWindows, actions, isBlockLocked, lockReason, lockedThroughH, horizon, setupBetween],
+    [schedule, cipWindows, actions, isBlockLocked, lockReason, lockedThroughH, horizon, setupBetween,
+     supplyGate, queueSupplyCheck, clearSupplyBanner],
+  );
+
+  // Split / remove from the Shift+right-click menu name the piece the menu
+  // was opened on; a split's two new pieces are checked by their span.
+  const handleMenuSplit = useCallback(
+    (_id: string, splitHour: number) => {
+      if (!menuRef) return;
+      const block = findBlock(schedule, menuRef);
+      clearSupplyBanner();
+      actions.splitBlock(menuRef, splitHour);
+      if (block) {
+        queueSupplyCheck(block, [{ lineName: block.line_name, start: block.start_hour, end: block.end_hour }]);
+      }
+    },
+    [menuRef, schedule, actions, queueSupplyCheck, clearSupplyBanner],
+  );
+  const handleMenuRemove = useCallback(
+    (_id: string) => { if (menuRef) actions.removeToHolding(menuRef); },
+    [menuRef, actions],
+  );
+  const handleMenuDetails = useCallback(
+    (_id: string) => { if (menuRef) handleBlockClick(menuRef); },
+    [menuRef, handleBlockClick],
   );
 
   // Remaining demand for a SKU by week (popup helper): target minus what
@@ -1157,12 +1457,14 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       const rows = computeAdherence(schedule, args.demandTargets, args.capabilities, coveredByOrder);
       const bySku = rows.filter((r) => r.sku === sku);
       const out: { week: string; left_kg: number; total_kg: number; scheduled_kg: number }[] = [];
-      const nowIso = isoWeekAtHour(new Date(), 0);
+      // (iso_year, iso_week) keys — W53-2026 is not "before" W1-2027
+      // (fix FE / audit time-8, C24).
+      const nowKey = isoWeekKey(new Date());
       for (const r of bySku) {
         const m = /-W(\d+)$/.exec(r.order_id);
-        const wkNum = m ? isoWeekLabel(parseInt(m[1], 10), anchor) : null;
-        if (wkNum !== null && wkNum < nowIso) continue; // past weeks are misses, not plan items
-        const wk = wkNum !== null ? `W${wkNum}` : "—";
+        const k = m ? parseInt(m[1], 10) : null;
+        if (k !== null && demandWeekKey(k, anchor) < nowKey) continue; // past weeks are misses, not plan items
+        const wk = k !== null ? `W${isoWeekLabel(k, anchor)}` : "—";
         const target = r.qty_min > 0 && r.qty_max >= r.qty_min
           ? (r.qty_min + r.qty_max) / 2
           : Math.max(r.qty_min, r.qty_max);
@@ -1248,13 +1550,13 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       boardByOrder[r.order_id] = r.scheduled_qty;
     }
     const dem: Record<string, { sched: number; board: number; target: number }> = {};
-    const nowIsoWk = isoWeekAtHour(new Date(), 0);
+    const nowKey = isoWeekKey(new Date());   // (year, week) key, see layout.ts
     for (const r of rows) {
       const m = /-W(\d+)$/.exec(r.order_id);
       if (!m) continue;
-      const wkNum = isoWeekLabel(parseInt(m[1], 10), anchor);
-      if (wkNum < nowIsoWk) continue; // past weeks are misses, not plan
-      const wk = `W${wkNum}`;
+      const k = parseInt(m[1], 10);
+      if (demandWeekKey(k, anchor) < nowKey) continue; // past weeks are misses, not plan
+      const wk = `W${isoWeekLabel(k, anchor)}`;
       const d = (dem[wk] ??= { sched: 0, board: 0, target: 0 });
       // Credit caps at the order's own target — overproduction on one order
       // cannot raise the week's fulfillment (same cap as weekly_breakdown).
@@ -1263,44 +1565,25 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       d.board += Math.min(boardByOrder[r.order_id] ?? 0, tgt);
       d.target += tgt;
     }
-    const byLine: Record<string, ScheduleBlock[]> = {};
-    for (const b of schedule) {
-      if (b.block_type !== "sku") continue;
-      (byLine[b.line_name] ??= []).push(b);
-    }
-    const pairs = args.kpis?.co_pairs ?? {};
-    const dflt = args.kpis?.co_default ?? { recipe: 1, format: 0, hours: 1.5 };
-    // Same CIP rules as countChangeovers (score_changeovers is the source of
-    // truth): a CIP fully inside the gap waives the transition entirely; a
-    // cip_req-flagged pair with no CIP in the gap is a hygiene violation.
-    const cipsByLineId: Record<number, [number, number][]> = {};
-    for (const c of cipWindows) {
-      if (c.block_type !== "cip") continue;
-      (cipsByLineId[c.line_id] ??= []).push([c.start_hour, c.end_hour]);
-    }
-    for (const blocks of Object.values(byLine)) {
-      const sorted = [...blocks].sort((a, b) => a.start_hour - b.start_hour);
-      for (let i = 1; i < sorted.length; i++) {
-        const prev = sorted[i - 1];
-        const from = prev.sku;
-        const to = sorted[i].sku;
-        if (from === to) continue;
-        const waived = (cipsByLineId[prev.line_id] ?? []).some(
-          ([cs, ce]) => cs >= prev.end_hour - 1e-6 && ce <= sorted[i].start_hour + 1e-6,
-        );
-        if (waived) continue;
-        const wk = `W${isoWeekAtHour(anchor, sorted[i].start_hour)}`;
-        const st = (stats[wk] ??= { boardPct: null, madePct: null, tl: 0, ffs: 0, cp: 0, ttp: 0, cipReq: 0, cipGap: null as { lineName: string; lineId: number; start: number } | null, board: 0, credit: 0, target: 0 });
-        const pi = pairs[`${from}|${to}`] ?? dflt;
-        st.tl += pi.tl ?? 0;
-        st.ffs += pi.ffs ?? 0;
-        st.cp += pi.cp ?? 0;
-        st.ttp += pi.ttp ?? 0;
-        if ((pi.cip_req ?? 0) === 1) {
-          st.cipReq += 1;
-          if (!st.cipGap) st.cipGap = { lineName: prev.line_name, lineId: prev.line_id, start: prev.end_hour };
-        }
-      }
+    // Changeovers per ISO week from the ONE port of score_changeovers'
+    // weekly rows (kpi.countChangeoversByWeek — fix FE / audit ui-5): the
+    // same CIP waiver, cip_req rule and machine flags as the KPI bar and
+    // the scorecard's week table, bucketed into the week the incoming
+    // block starts. Week marks = hour 0 (the anchor's own, possibly
+    // partial, week) + the Monday boundaries inside the horizon — the
+    // scorecard's _iso_week_bounds, labelled by the ISO week 1 h in.
+    const marks = [0, ...mondayBoundaries(anchor, 0, horizon).filter((h) => h > 1e-9)];
+    const weekly = countChangeoversByWeek(
+      schedule, args.kpis?.co_pairs ?? {}, args.kpis?.co_default ?? undefined, cipWindows, marks, horizon);
+    for (const w of weekly) {
+      const wk = `W${isoWeekAtHour(anchor, marks[w.idx] + 1)}`;
+      const st = (stats[wk] ??= { boardPct: null, madePct: null, tl: 0, ffs: 0, cp: 0, ttp: 0, cipReq: 0, cipGap: null as { lineName: string; lineId: number; start: number } | null, board: 0, credit: 0, target: 0 });
+      st.tl += w.topload_changes;
+      st.ffs += w.ffs_changes;
+      st.cp += w.casepacker_changes;
+      st.ttp += w.ttp_changes;
+      st.cipReq += w.cip_req_violations;
+      if (!st.cipGap && w.cip_gap) st.cipGap = w.cip_gap;
     }
     for (const [wk, d] of Object.entries(dem)) {
       const st = (stats[wk] ??= { boardPct: null, madePct: null, tl: 0, ffs: 0, cp: 0, ttp: 0, cipReq: 0, cipGap: null as { lineName: string; lineId: number; start: number } | null, board: 0, credit: 0, target: 0 });
@@ -1314,7 +1597,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     // live from the current board + ledger on every edit/rerun — Save is
     // never required for them to be accurate.
     return { byWeek: stats, computedAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) };
-  }, [schedule, cipWindows, args.demandTargets, args.capabilities, args.kpis, anchor, coveredByOrder]);
+  }, [schedule, cipWindows, args.demandTargets, args.capabilities, args.kpis, anchor, coveredByOrder, horizon]);
 
   const zoomIn = useCallback(() => {
     userZoomed.current = true;
@@ -1381,10 +1664,20 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     actions.setHoldingFromServer(args.holdingArea ?? []);
   }, [args.holdingArea, dirty, actions]);
   const pushRefresh = useCallback(() => {
+    // Save guard (fix FE / audit writeback-8): never hand Python a board
+    // where one block_id names two different runs — set_float_link / pin /
+    // delete key on block_id and would hit both. Split pieces of one MO
+    // may share an id; two unrelated blocks may not.
+    const dupes = findIdCollisions([...schedule, ...cipWindows]);
+    if (dupes.length) {
+      reject(`Duplicate block id(s) on the board: ${dupes.slice(0, 5).join(", ")}`
+             + `${dupes.length > 5 ? ` (+${dupes.length - 5} more)` : ""} — split or re-add the affected blocks before pushing`);
+      return;
+    }
     lastPushed.current = JSON.stringify({ schedule, cipWindows, holdingArea, lastAction });
     setDirty(false);
     setComponentValue({ schedule, cipWindows, holdingArea, lastAction });
-  }, [schedule, cipWindows, holdingArea, lastAction]);
+  }, [schedule, cipWindows, holdingArea, lastAction, reject]);
 
   useEffect(() => {
     const h = containerRef.current?.scrollHeight ?? 800;
@@ -1433,11 +1726,14 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       onClick={() => { closeMenu(); setPopover(null); setPicker(null); setHoldMenu(null); }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <div style={{ flex: 1 }}>
+        <div style={{ flex: 1, display: "flex", alignItems: "baseline", gap: 14, flexWrap: "wrap" }}>
           {kpis.overlaps.length > 0 && (
             <span style={{ color: "#b71c1c", fontWeight: 700, fontSize: 13 }}>
               ⚠ {kpis.overlaps.length} overlap(s): {kpis.overlaps[0]}
             </span>
+          )}
+          {stockEnabled && stock && supply && (
+            <SupplyPill counts={supply.counts} asOf={stock.as_of} feedState={stock.feed_state} />
           )}
         </div>
         <button
@@ -1559,6 +1855,9 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
             </div>
           </>
         )}
+        {/* Provider, not a prop: GanttChart owns the axis mounts (see
+            TimeAxis.ReceiptDaysContext); null without a stock payload. */}
+        <ReceiptDaysContext.Provider value={receiptDays}>
         <GanttChart
           schedule={schedule}
           cipWindows={cipWindows}
@@ -1574,6 +1873,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           insertPreview={dragPreview && dragPreview.insert && !dragPreview.insert.blockedReason ? dragPreview.insert : null}
           dropGhost={dropGhost}
           svgRef={chartSvgRef}
+          supplyFor={stockEnabled ? supplyFor : null}
           onResizeStart={guardedStartResize}
           onContextMenu={handleContextMenu}
           onEmptyContextMenu={pickerEnabled ? handleEmptyContextMenu : undefined}
@@ -1582,6 +1882,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           onZoomOut={zoomOut}
           onResetZoom={resetZoom}
         />
+        </ReceiptDaysContext.Provider>
         {pickerEnabled && (
           <div style={{ fontSize: 11, color: "#8a94a0", marginTop: 2 }}>
             Right-click an empty gap on a line to add a demand-plan SKU there
@@ -1592,6 +1893,13 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         <div style={{ marginTop: 8 }}>
           <HoldingArea blocks={holdingArea} anchor={anchor} skuFormats={args.skuFormats ?? {}}
             highlightSku={highlightSku}
+            stock={stockEnabled ? stock : null}
+            supplyTimelines={supply?.timelines ?? null}
+            caps={caps}
+            lockedThroughH={lockedThroughH}
+            nowH={holdingNowH}
+            demandTargets={args.demandTargets}
+            supplyStamp={supplyStamp}
             onCardContextMenu={(block, cx, cy, shiftKey) => {
               // Same convention as calendar blocks (2026-09-01): plain
               // right-click toggles the SKU highlight, Shift+right-click
@@ -1651,7 +1959,10 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           formatOrder={(id) => displayOrderId(id, anchor)}
           highlightSku={highlightSku}
           onSkuClick={setHighlightSku}
+          rateFor={(sku) => meanCapableRate(caps, sku)}
           onAddToHolding={(row, missingKg, runHours) => {
+            // runHours = missing kg / mean capable rate (AdherenceTable, fix
+            // FE / audit ui-8); 0.5 h floor only when no line is capable.
             actions.addToHolding(row.order_id, row.sku, Math.max(0.5, runHours), missingKg);
           }}
         />
@@ -1659,9 +1970,9 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
 
       <ContextMenu
         menu={menu}
-        onSplit={actions.splitBlock}
-        onRemove={actions.removeToHolding}
-        onDetails={handleBlockClick}
+        onSplit={handleMenuSplit}
+        onRemove={handleMenuRemove}
+        onDetails={handleMenuDetails}
         onClose={closeMenu}
         minRunHours={args.config.min_run_hours}
         anchor={anchor}
@@ -1674,6 +1985,10 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           y={holdMenu.y}
           rows={holdMenuRows}
           anchor={anchor}
+          stock={stockEnabled ? stock : null}
+          supplyTimelines={supply?.timelines ?? null}
+          supplyStamp={supplyStamp}
+          dueEndH={args.demandTargets.find((d) => d.order_id === holdMenu.block.order_id)?.due_end_hour ?? null}
           onPlace={handleHoldingPlace}
           onClose={() => setHoldMenu(null)}
         />
@@ -1687,6 +2002,9 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           y={picker.y}
           anchor={anchor}
           rows={pickerRows}
+          stock={stockEnabled ? stock : null}
+          supplyTimelines={supply?.timelines ?? null}
+          supplyStamp={supplyStamp}
           onPlace={handlePickerPlace}
           onAddCip={handlePickerAddCip}
           onAddTrial={handlePickerAddTrial}
@@ -1705,13 +2023,19 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           onApply={isBlockLocked(popover.block) ? undefined : handleApplyEdit}
           onSnap={isBlockLocked(popover.block) ? undefined : handleSnap}
           onFill={isBlockLocked(popover.block) ? undefined : handleFill}
-          onRemove={isBlockLocked(popover.block) ? undefined : (id) => {
-            actions.removeToHolding(id);
+          onRemove={isBlockLocked(popover.block) ? undefined : (b) => {
+            actions.removeToHolding(b);
             setPopover(null);
           }}
           onAddCip={handlePopoverAddCip}
           demandLeft={popover.block.block_type === "sku"
             ? demandLeftForSku(popover.block.sku) : undefined}
+          supply={stockEnabled ? (supply?.verdicts.get(blockKey(popover.block)) ?? null) : null}
+          stock={stockEnabled ? stock : null}
+          supplyStamp={supplyStamp}
+          acknowledged={ackedKeys.has(blockKey(popover.block))}
+          onAcknowledge={stockEnabled ? acknowledgeKey : undefined}
+          onOpenSupplyDetail={stockEnabled ? (b) => setSupplyDetailFor(b) : undefined}
           onTogglePin={
             popover.block.block_type === "sku" &&
             !popover.block.locked &&
@@ -1725,6 +2049,27 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           }
         />
       )}
+
+      {stockEnabled && stock && supply && supplyDetailFor && (() => {
+        // Resolve by piece each render: an edit may have replaced the object
+        // (or removed the block — then there is nothing to detail).
+        const b = findBlock(schedule, supplyDetailFor);
+        const s = b ? supply.verdicts.get(blockKey(b)) : undefined;
+        if (!b || !s) return null;
+        return (
+          <SupplyDetailPanel
+            block={b}
+            supply={s}
+            timelines={supply.timelines}
+            stock={stock}
+            schedule={schedule}
+            anchor={anchor}
+            anchorStamp={supplyStamp}
+            rules={rulesOf(stock)}
+            onClose={() => setSupplyDetailFor(null)}
+          />
+        );
+      })()}
 
       {lastAction && (
         <div style={{ fontSize: 11, color: lastAction.startsWith("Rejected") ? "#b71c1c" : "#888", marginTop: 4 }}>

@@ -64,8 +64,13 @@ export interface SandboxConfig {
    * committed to the plant and refuse drag/resize/edit. null/absent = no lock. */
   locked_through_h?: number | null;
   /** ISO week of the demand file's anchor (demand_plan.source.json
-   * anchor_iso_week): order-id -W<k> labels read W(base+k). */
+   * anchor_iso_week): order-id -W<k> labels read the REAL ISO week k weeks
+   * after that anchor week (53-week years included). */
   demand_base_iso_week?: number | null;
+  /** Optional: the demand file's anchor DATE ("YYYY-MM-DD ..."); pins the
+   * base week's year outright (else it is inferred as the ISO year whose
+   * week <base> lies closest to the planning anchor). */
+  demand_anchor?: string | null;
   /** Per-line MaxHoursBetweenCIP (cip_info) for re-forecasting later
    * projected cleans after a planner-inserted CIP; default when a line is
    * missing. */
@@ -113,6 +118,29 @@ export interface ServerKpis {
   covered_by_order?: Record<string, number>;
 }
 
+/** Supply-timeline tables from helpers.calendar_io.build_stock_payload
+ * (contract 2026-09-01 §5, snake_case like kpis.co_pairs). Python gates
+ * receipts and shifts every hour into THIS page's anchor frame; the client
+ * (utils/stockRisk) only builds curves and verdicts from these tables. */
+export interface StockArgs {
+  feed_state: "ok" | "missing" | "stale" | "empty";
+  as_of: { stock_rm: string; stock_pkg: string; po: string };   // display stamps
+  receipts_window_end_h: number;
+  rules: { min_days_after_delivery: number; lead_measured_from: "block_start" | "depletion";
+           dependent_frac_floor: number; hard_block: boolean };
+  opening: Record<string, number>;
+  tracked: string[];
+  in_house: string[];
+  units: Record<string, string>;
+  designations: Record<string, string>;
+  snapshot_h: Record<string, number>;
+  receipts: Record<string, { ready_h: number; qty: number; po8: string; tier: "erp" | "appt";
+                              receipt_date: string; label: string }[]>;
+  sku_needs: Record<string, { kg_per_case: number;
+                              items: { item: string; per_case: number; unit: string; alts: string[] }[] }>;
+  cases_left: Record<string, number>;      // order_id -> cases_left for running MOs (from manprg), may be {}
+}
+
 export interface SandboxArgs {
   schedule: ScheduleBlock[];
   cipWindows: ScheduleBlock[];
@@ -137,6 +165,13 @@ export interface SandboxArgs {
   coFlags?: Record<string, number>;
   /** sku -> designation from sku_info (demand SKUs only) for picker rows. */
   skuDescriptions?: Record<string, string>;
+  /** Supply timeline payload (helpers.calendar_io.build_stock_payload).
+   * null/absent = no stock surfaces at all (`stock_enabled = !!args.stock`):
+   * read-only mounts and an old report cache render exactly as before. */
+  stock?: StockArgs | null;
+  /** Block id to focus on mount (Reconcile finding -> ?focus=<block_id>):
+   * seeds highlightSku from that block's sku and scrolls it into view. */
+  focusBlock?: string | null;
   config: SandboxConfig;
 }
 
@@ -155,8 +190,12 @@ export interface AdherenceRow {
   scheduled_qty: number;
   pct_adherence: number;
   status: "MET" | "UNDER" | "OVER";
-  /** Mean capable-line rate for this SKU (kg/h) — used by the "+" holding button. */
-  avg_rate_kgph: number;
+  /** Mean capable-line rate for this SKU (kg/h), CLIENT-ONLY: kpi.ts sets
+   * it, the server rows (compute_adherence) do not carry it — the "+"
+   * holding button prices from utils/rates.meanCapableRate instead (fix
+   * FE / audit ui-8: `missing / (avg_rate_kgph || 1)` capped at 24 h gave
+   * every '+' a 24 h card before the first edit). */
+  avg_rate_kgph?: number;
 }
 
 export interface KpiData {

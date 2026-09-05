@@ -1,10 +1,18 @@
 // TimeAxis.tsx — Date labels + shift lines rendered inside the SVG.
 // Zoom buttons are rendered as a separate HTML component by GanttChart.
 
-import React from "react";
-import { hourToX, isoWeekAtHour, mondayBoundaries, LINE_LABEL_WIDTH, HEADER_HEIGHT } from "../utils/layout";
+import React, { useContext } from "react";
+import { hourToX, isoWeekAtHour, mondayBoundaries, naiveDate, LINE_LABEL_WIDTH, HEADER_HEIGHT } from "../utils/layout";
+import type { Receipt } from "../utils/stockRisk";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** Gated receipts per calendar day (supplyGlue.receiptsByDay) for the
+ * header trucks (contract 2026-09-01 §9). A context rather than a prop:
+ * GanttChart owns both TimeAxisSvg mounts while the payload lives in
+ * GanttSandbox, which wraps the chart in the provider. null = no stock
+ * payload = no trucks. */
+export const ReceiptDaysContext = React.createContext<Map<number, Receipt[]> | null>(null);
 
 interface SvgProps {
   viewStart: number;
@@ -26,6 +34,7 @@ export const TimeAxisSvg: React.FC<SvgProps> = ({
   const showBody = layer !== "header";
   const showHeader = layer !== "body";
   const dayPixels = 24 * hourWidth;
+  const receiptDays = useContext(ReceiptDaysContext);
 
   // ── Week ticks ──
   // ISO week boundaries at true Monday-00:00 wall-clock positions (the
@@ -39,8 +48,10 @@ export const TimeAxisSvg: React.FC<SvgProps> = ({
   const firstDay = Math.floor(viewStart / 24) * 24;
   for (let h = firstDay; h <= viewEnd; h += 24) {
     if (h >= viewStart) {
-      const d = new Date(anchor.getTime() + h * 3600000);
-      dayTicks.push({ hour: h, label: `${MONTHS[d.getMonth()]} ${d.getDate()}` });
+      // Naive wall clock (layout.ts convention): day k is [24k, 24k+24)
+      // from the anchor on both sides of a DST switch, like Python.
+      const d = naiveDate(anchor, h);
+      dayTicks.push({ hour: h, label: `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}` });
     }
   }
 
@@ -143,6 +154,30 @@ export const TimeAxisSvg: React.FC<SvgProps> = ({
           >
             {t.label}
           </text>
+        );
+      })}
+
+      {/* Supply trucks (§9): one 🚚 per VISIBLE day with a gated receipt, in
+          the header's bottom strip under the day label; the tooltip lists
+          the receipts (PO, item, qty, tier from the payload label). Days
+          left of the viewport are simply not in dayTicks; a stale feed has
+          been gated to no receipts upstream, so nothing draws. */}
+      {showHeader && receiptDays && dayPixels >= 14 && dayTicks.map((t) => {
+        const rs = receiptDays.get(Math.round(t.hour / 24));
+        if (!rs || rs.length === 0) return null;
+        const x = hourToX(t.hour, viewStart, hourWidth);
+        const colW = hourToX(t.hour + 24, viewStart, hourWidth) - x;
+        const title = `${rs.length} receipt${rs.length === 1 ? "" : "s"} ${t.label}\n`
+          + rs.map((r) => r.label || `PO ${r.po8} · ${r.qty} · ${r.tier}`).join("\n");
+        return (
+          <g key={`rcpt_${t.hour}`} data-testid="receipt-day" style={{ cursor: "help" }}>
+            <title>{title}</title>
+            <rect x={x} y={HEADER_HEIGHT - 15} width={colW} height={14} fill="#fff" fillOpacity={0} />
+            <text x={x + colW / 2} y={HEADER_HEIGHT - 4} textAnchor="middle"
+                  fontSize={dayPixels >= 40 ? 11 : 9}>
+              🚚
+            </text>
+          </g>
         );
       })}
     </g>

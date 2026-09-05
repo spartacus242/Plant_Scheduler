@@ -11,11 +11,13 @@
 // change both or neither. tests/test_sku_picker_math.py pins this module
 // under node via the frontend's own tsc.
 
-import type { ScheduleBlock, DemandTarget, AdherenceRow } from "../types";
+import type { ScheduleBlock, DemandTarget, AdherenceRow, CoPairInfo } from "../types";
 import { isWindowBlock } from "../types";
 import { hoursForQty, qtyOverWindow, type SideDowntime } from "./abLines";
 import { isPastDemandWeek } from "./layout";
 import { orderTarget } from "./kpi";
+
+export const CIP_REQ_LABEL = "CIP req";
 
 export const CO_FLAG_BITS = [
   { bit: 1, label: "ttp" },
@@ -24,6 +26,10 @@ export const CO_FLAG_BITS = [
   { bit: 8, label: "cspkr" },
   { bit: 16, label: "conv-org" },
   { bit: 32, label: "cin-non" },
+  // 7th column when the server adds cip_req_after to CO_FLAG_COLUMNS (fix
+  // FE / audit changeover-9, C37); until then the chip comes from
+  // kpis.co_pairs[pair].cip_req (coFlagsForPair's coPairs argument).
+  { bit: 64, label: CIP_REQ_LABEL },
 ] as const;
 
 /** Human chips for a changeover bitmask, e.g. 6 -> ["ffs", "tpld"]. */
@@ -35,15 +41,64 @@ export function coFlagLabels(mask: number | undefined): string[] {
 /** Chips for the FROM|TO transition, or null when the pair is absent from
  * coFlags — build_co_flags only covers demand-plan pairs, so a missing key
  * means UNKNOWN, not clean (the chip renders "?"). A same-SKU "transition"
- * is no changeover at all: honestly clean regardless of the table. */
+ * is no changeover at all: honestly clean regardless of the table.
+ * `coPairs` (kpis.co_pairs, the scorecard's per-pair classification over
+ * the FULL standards file) adds the "CIP req" chip and, for a pair the
+ * coFlags table lacks, its machine flags — so a cip_req pair is never
+ * shown as a 1-3 h gap the solver would refuse (audit changeover-9). */
 export function coFlagsForPair(
   coFlags: Record<string, number> | undefined,
   from: string,
   to: string,
+  coPairs?: Record<string, CoPairInfo> | null,
 ): string[] | null {
   if (from === to) return [];
-  const mask = coFlags?.[`${from}|${to}`];
-  return mask === undefined ? null : coFlagLabels(mask);
+  const key = `${from}|${to}`;
+  const mask = coFlags?.[key];
+  const pair = coPairs?.[key];
+  let labels: string[] | null = mask === undefined ? null : coFlagLabels(mask);
+  if (labels === null && pair) {
+    labels = [];
+    if ((pair.ttp ?? 0) === 1) labels.push("ttp");
+    if ((pair.ffs ?? 0) === 1) labels.push("ffs");
+    if ((pair.tl ?? 0) === 1) labels.push("tpld");
+    if ((pair.cp ?? 0) === 1) labels.push("cspkr");
+  }
+  if (labels !== null && pair && (pair.cip_req ?? 0) === 1 && !labels.includes(CIP_REQ_LABEL)) {
+    labels.push(CIP_REQ_LABEL);
+  }
+  return labels;
+}
+
+/**
+ * The setup hours the SOLVER reserves for a transition (fix FE / audit C36
+ * + changeover-9, C37): the standard rounded UP to whole hours
+ * (changeover_cache.round_setup_hours — a quarter-hour standard must never
+ * be short-changed), and at least the CIP duration when the pair is
+ * cip_req_after (apply_cip_req_setup_floor: the clean is modeled as TIME).
+ * The picker's snap-left start, its "+Nh" caption, the setup warning and
+ * the drop room all price with this, so a planner never plans a 1-3 h gap
+ * for a pair the solver then refuses. `rawSetupH` is the matrix value
+ * (already whole hours from load_changeover_setup_nested; ceil is
+ * idempotent there and guards an older payload).
+ */
+export function effectiveSetupHours(
+  rawSetupH: number | null | undefined,
+  cipReq: boolean,
+  cipDurationH: number,
+): number {
+  const raw = Number(rawSetupH ?? 0);
+  const base = Number.isFinite(raw) && raw > 0 ? Math.ceil(raw - 1e-9) : 0;
+  const floor = cipReq ? Math.max(0, Number(cipDurationH) || 0) : 0;
+  return Math.max(base, floor);
+}
+
+/** True when kpis.co_pairs flags FROM|TO as needing a clean in between. */
+export function isCipReqPair(
+  coPairs: Record<string, CoPairInfo> | null | undefined, from: string, to: string,
+): boolean {
+  if (from === to) return false;
+  return (coPairs?.[`${from}|${to}`]?.cip_req ?? 0) === 1;
 }
 
 const EPS = 1e-9;
@@ -105,6 +160,10 @@ export function planPlacement(a: {
   /** groupOf(line) — drives the half-rate downtime integration. */
   lineGroup: string;
   downtime?: SideDowntime;
+  /** Setup hours FROM -> TO. Default: the `changeovers` matrix value
+   * rounded UP to whole hours (effectiveSetupHours without a cip_req
+   * floor); the sandbox passes its own rule with the cip_req floor. */
+  setupFor?: (from: string, to: string) => number;
 }): PlacementPlan {
   const empty: PlacementPlan = {
     startHour: 0, durationH: 0, qtyKg: 0, prevSku: null, nextSku: null,
@@ -123,8 +182,11 @@ export function planPlacement(a: {
   const prev = sorted.filter((b) => b.end_hour <= a.clickHour + EPS).pop();
   const next = sorted.find((b) => b.start_hour >= a.clickHour - EPS);
 
-  const setupH = (from: string, to: string): number =>
-    from === to ? 0 : Number(a.changeovers?.[from]?.[to] ?? 0) || 0;
+  const setupH = (from: string, to: string): number => {
+    if (from === to) return 0;
+    if (a.setupFor) return a.setupFor(from, to);
+    return effectiveSetupHours(a.changeovers?.[from]?.[to], false, 0);
+  };
   const setupBeforeH =
     prev && !isWindowBlock(prev.block_type) ? setupH(prev.sku, a.sku) : 0;
   const setupAfterH =

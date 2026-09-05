@@ -7,11 +7,30 @@
 // overridden before Apply. Apply commits the displayed values literally —
 // validation (overlap, locked, min-run) happens in the GanttSandbox handler,
 // which keeps the popover open on rejection so the values can be corrected.
+//
+// Every callback hands back the BLOCK object (split MO pieces share an id,
+// so an id alone cannot name the piece being edited — 2026-09-01).
+//
+// "Supply" section (contract 2026-09-01 §9, mock in the plan §4): the live
+// client verdict for this piece — rendered only when the page sent a stock
+// payload. Planner feedback 2026-09-02: only the rows that can bite (SHORT /
+// DEPENDENT / NO_DATA / backed) are listed; plain-OK items sit behind the
+// "N more OK" toggle; the untracked consumables and WHICH other blocks draw
+// an item moved to the "Supply details" modal (SupplyDetailPanel) — here
+// only a count. [Acknowledge for this session] hides the block-face chip
+// for this key; the text here stays.
 
 import React, { useMemo, useState } from "react";
-import type { ScheduleBlock } from "../types";
+import type { ScheduleBlock, StockArgs } from "../types";
 import { isWindowBlock } from "../types";
-import { displayOrderId, hourToStamp } from "../utils/layout";
+import { displayOrderId, hourToStamp, naiveDate, naiveMs } from "../utils/layout";
+import type { Supply, SupplyItem } from "../utils/stockRisk";
+import { supplyRank } from "../utils/stockRisk";
+import {
+  atRiskCount, casesFromKg, chipFor, countedReceipts, fmtQty, itemSentence, leadText, rulesOf,
+  sortedItems, type StampFn,
+} from "../utils/supplyGlue";
+import { blockKey } from "../utils/blockIdentity";
 
 export interface BlockEdit {
   startHour: number;
@@ -31,26 +50,35 @@ interface Props {
   /** Commit typed edits. Returns null when accepted (popover closes) or a
    * human-readable rejection reason, shown INSIDE the popover — the chart's
    * top banner is out of sight while the popup has the user's eyes. */
-  onApply?: (blockId: string, edit: BlockEdit) => string | null;
+  onApply?: (block: ScheduleBlock, edit: BlockEdit) => string | null;
   /** Snap flush against the neighbouring block (setup hours respected).
    * Same contract as onApply: null = done, string = why not. */
-  onSnap?: (blockId: string, dir: "left" | "right") => string | null;
+  onSnap?: (block: ScheduleBlock, dir: "left" | "right") => string | null;
   /** Pin/unpin for the solver. Present only on production blocks the planner
    * may pin (not locked, not completed, not inside the frozen window). */
-  onTogglePin?: (blockId: string, pinned: boolean) => void;
+  onTogglePin?: (block: ScheduleBlock, pinned: boolean) => void;
   /** Remove the block to the holding area; absent when the block is locked. */
-  onRemove?: (blockId: string) => void;
+  onRemove?: (block: ScheduleBlock) => void;
   /** Insert a CIP flush before/after this block (later projected cleans on
    * the line re-forecast from it). Same contract as onSnap: null = done,
    * string = why not. Offered on committed blocks too — the clean goes
    * around the plant's run, never through it. */
-  onAddCip?: (blockId: string, dir: "before" | "after") => string | null;
+  onAddCip?: (block: ScheduleBlock, dir: "before" | "after") => string | null;
   /** Fill the empty space next to the block (setup hours respected).
    * Same contract as onSnap: null = done, string = why not. */
-  onFill?: (blockId: string, dir: "left" | "right" | "both") => string | null;
+  onFill?: (block: ScheduleBlock, dir: "left" | "right" | "both") => string | null;
   /** Remaining demand for this SKU by ISO week (target - board-scheduled),
    * so tonnage edits are made knowing what still needs filling. */
   demandLeft?: { week: string; left_kg: number; total_kg: number; scheduled_kg?: number }[];
+  /** Supply timeline (all absent without a stock payload). */
+  supply?: Supply | null;
+  stock?: StockArgs | null;
+  /** Anchor-aware stamp for supply hours (real minutes). */
+  supplyStamp?: StampFn;
+  acknowledged?: boolean;
+  onAcknowledge?: (key: string) => void;
+  /** Open the Supply details modal for this piece (SupplyDetailPanel). */
+  onOpenSupplyDetail?: (block: ScheduleBlock) => void;
 }
 
 const LABEL: React.CSSProperties = { color: "#888", paddingRight: 12 };
@@ -63,24 +91,107 @@ const INPUT: React.CSSProperties = {
   boxSizing: "border-box",
 };
 
+// datetime-local <-> board hours on the NAIVE wall clock (layout.ts
+// convention, fix FE / audit time-7): a typed "2026-11-02T00:00" is
+// exactly 168 h after a Monday 10-26 anchor on both sides, never 169.
 function toLocalInput(anchor: Date, hour: number): string {
-  const d = new Date(anchor.getTime() + hour * 3600_000);
+  const d = naiveDate(anchor, hour);
   const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
 }
 
 function fromLocalInput(anchor: Date, value: string): number | null {
-  const t = new Date(value).getTime();
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(String(value ?? ""));
+  if (!m) return null;
+  const t = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] ?? 0));
   if (Number.isNaN(t)) return null;
-  return (t - anchor.getTime()) / 3600_000;
+  return (t - naiveMs(anchor)) / 3600_000;
 }
 
 const round1 = (v: number) => Math.round(v * 10) / 10;
 
-export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClose, onApply, onSnap, onTogglePin, onFill, onRemove, onAddCip, demandLeft }) => {
+const VERDICT_WORD: Record<string, string> = {
+  OK: "OK", DEPENDENT: "DELIVERY-DEPENDENT", SHORT: "SHORT", NO_DATA: "NO DATA",
+};
+
+export const VerdictPill: React.FC<{ e: { verdict: string; backed?: boolean; minor?: boolean } }> = ({ e }) => {
+  const r = supplyRank(e);
+  const st = r === 4 ? { bg: "#c62828", fg: "#fff" }
+    : r === 3 ? { bg: "#ef6c00", fg: "#fff" }
+      : r === 2 ? { bg: "#eceff1", fg: "#546e7a" }
+        : r === 1 ? { bg: "#e0f2f1", fg: "#00695c" }
+          : { bg: "#e8f5e9", fg: "#2e7d32" };
+  const text = r === 4 ? "SHORT" : r === 3 ? "DEPENDENT" : r === 2 ? "?" : r === 1 ? "OK·backed" : "OK";
+  return (
+    <span style={{ fontSize: 9.5, fontWeight: 800, color: st.fg, background: st.bg,
+                   borderRadius: 8, padding: "0 6px", marginRight: 6 }}>
+      {text}
+    </span>
+  );
+};
+
+/** One flagged recipe item of the Supply section; `others` = how many OTHER
+ * blocks draw it in this window (who they are is in the details modal). */
+const SupplyItemRow: React.FC<{
+  e: SupplyItem; block: ScheduleBlock; stock: StockArgs; stamp: StampFn; others?: number;
+}> = ({ e, block, stock, stamp, others = 0 }) => {
+  const R = rulesOf(stock);
+  const L = 24 * Number(R.min_days_after_delivery);
+  const minDays = Number(R.min_days_after_delivery);
+  const ref = R.lead_measured_from === "depletion" ? (e.depletion_h ?? block.start_hour) : block.start_hour;
+  const receipts = countedReceipts(stock, block.sku, e.item, block.end_hour);
+  const desig = stock.designations?.[e.item] ?? "";
+  const sub: React.CSSProperties = { paddingLeft: 10, color: "#555" };
+  return (
+    <div style={{ marginTop: 4, lineHeight: 1.5 }}>
+      <div>
+        <VerdictPill e={e} />
+        <b>{e.item}</b>
+        {desig && <span style={{ color: "#777" }}> {desig}</span>}
+        <span style={{ color: "#333" }}> · need {fmtQty(e.need)} {e.unit}</span>
+        {others > 0 && (
+          <span style={{ color: "#999", fontSize: 10 }}>
+            {" · "}{others} other block{others === 1 ? " draws" : "s draw"} this
+          </span>
+        )}
+      </div>
+      <div style={sub}>{itemSentence(e, stamp)}</div>
+      {receipts.map((r, i) => {
+        const lead = ref - r.ready_h;
+        const isBinding = e.binding !== null && e.binding.po8 === r.po8
+          && Math.abs(e.binding.ready_h - r.ready_h) < 1e-9;
+        // Same hours/days form as the block sentence (supplyGlue.leadText).
+        const leadTxt = lead >= 0
+          ? `lead ${leadText(lead)} ${lead < L ? "<" : "≥"} ${minDays} d`
+          : `lands ${leadText(lead)} after ${R.lead_measured_from === "depletion" ? "it runs out" : "start"} (mid-run)`;
+        return (
+          <div key={`${r.po8}-${i}`} style={{ ...sub, color: isBinding ? "#333" : "#666" }}>
+            PO {r.po8} +{fmtQty(r.qty)} {e.unit} · {stamp(r.ready_h)}
+            <span style={{ color: "#999" }}> ({r.tier === "appt" ? "dock appt" : "ERP date"})</span>
+            {" · "}{leadTxt}
+            {isBinding && <span style={{ fontWeight: 700 }}> ◀ binding</span>}
+          </div>
+        );
+      })}
+      <div style={{ ...sub, fontWeight: 700, color: supplyRank(e) >= 3 ? "#b71c1c" : "#455a64" }}>
+        ▶ {VERDICT_WORD[e.verdict] ?? e.verdict}
+        {e.backed && " · backed"}
+        {e.minor && " · minor share"}
+        {e.mid_run && " · mid-run"}
+        {e.safe_from_h != null && e.verdict !== "OK" && ` · safe from ${stamp(e.safe_from_h)}`}
+      </div>
+    </div>
+  );
+};
+
+export const BlockPopover: React.FC<Props> = ({
+  block, x, y, rate, anchor, onClose, onApply, onSnap, onTogglePin, onFill, onRemove, onAddCip, demandLeft,
+  supply = null, stock = null, supplyStamp, acknowledged = false, onAcknowledge, onOpenSupplyDetail,
+}) => {
   // Draft field state, (re)seeded whenever a different block is opened.
   const [draft, setDraft] = useState<{ id: string; start: string; dur: string; qty: string } | null>(null);
   const [applyError, setApplyError] = useState<string | null>(null);
+  const [showAllOk, setShowAllOk] = useState(false);
 
   const seeded = useMemo(() => {
     if (!block) return null;
@@ -141,7 +252,7 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClo
       setApplyError("Qty must be a number (or empty for unknown)");
       return;
     }
-    const err = onApply(block.id, { startHour, durationH, qtyKg: isWindow ? null : qtyKg });
+    const err = onApply(block, { startHour, durationH, qtyKg: isWindow ? null : qtyKg });
     if (err) {
       setApplyError(err);
     } else {
@@ -149,6 +260,10 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClo
       onClose();
     }
   };
+
+  // Supply section inputs (nothing rendered without a payload).
+  const showSupply = stock !== null && supply !== null && block.block_type === "sku";
+  const stamp: StampFn = supplyStamp ?? ((h) => hourToStamp(h, anchor));
 
   return (
     <div
@@ -163,6 +278,9 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClo
         boxShadow: "0 4px 16px rgba(0,0,0,0.15)",
         zIndex: 1000,
         minWidth: 272,
+        maxWidth: 520,
+        maxHeight: "80vh",
+        overflowY: "auto",
         fontSize: 13,
       }}
       onClick={(e) => e.stopPropagation()}
@@ -178,7 +296,7 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClo
             <span
               style={{ cursor: "pointer", fontSize: 14 }}
               title="Remove this block — its tonnage returns to the holding area (undoable)"
-              onClick={() => onRemove(block.id)}
+              onClick={() => onRemove(block)}
             >
               🗑
             </span>
@@ -309,6 +427,100 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClo
           {applyError} — the change was NOT applied.
         </div>
       )}
+      {showSupply && stock && supply && (() => {
+        const items = sortedItems(supply);
+        // Only rows that can bite (planner feedback 2026-09-02): SHORT /
+        // DEPENDENT / NO_DATA / backed. Plain OK stays behind the toggle.
+        const flagged = items.filter((e) => supplyRank(e) > 0);
+        const plainOk = items.filter((e) => supplyRank(e) === 0);
+        const atRisk = atRiskCount(supply);
+        const coCount = (item: string): number =>
+          Object.prototype.hasOwnProperty.call(supply.co_consumers ?? {}, item)
+            ? supply.co_consumers[item].length : 0;
+        const chip = chipFor(supply);
+        const key = blockKey(block);
+        return (
+          <div data-testid="supply-section"
+               style={{ marginTop: 10, paddingTop: 6, borderTop: "1px solid #e0e0e5", fontSize: 11, maxWidth: 480 }}>
+            <div style={{ fontWeight: 700, color: "#455a64" }}>
+              Supply · stock as of {stock.as_of.stock_rm}
+              {stock.as_of.stock_pkg && stock.as_of.stock_pkg !== stock.as_of.stock_rm && ` / pkg ${stock.as_of.stock_pkg}`}
+              {" · POs as of "}{stock.as_of.po || "—"}
+              {" (window to "}{stamp(stock.receipts_window_end_h)}{")"}
+            </div>
+            {stock.feed_state !== "ok" && (
+              <div style={{ color: "#8d6e00", marginTop: 2 }}>
+                PO feed {stock.feed_state}: receipts unknown — shortfalls read "?" instead of short.
+              </div>
+            )}
+            {items.length === 0 && (
+              <div style={{ color: "#777", marginTop: 4 }}>
+                {supply.verdict === "NO_DATA"
+                  ? "? no recipe or quantity data for this block — nothing to grade"
+                  : "No tracked components to check."}
+              </div>
+            )}
+            {flagged.map((e) => (
+              <SupplyItemRow key={e.item} e={e} block={block} stock={stock} stamp={stamp}
+                             others={coCount(e.item)} />
+            ))}
+            {onOpenSupplyDetail && (items.length > 0 || supply.untracked.length > 0) && (
+              <div style={{ marginTop: 6 }}>
+                <button
+                  data-testid="supply-details"
+                  title="Every block drawing the at-risk items with the running balance, the open POs with dates and quantities, and the untracked consumables"
+                  style={{ fontSize: 11, padding: "3px 10px", borderRadius: 4, cursor: "pointer", fontWeight: 600,
+                           border: atRisk > 0 ? "1px solid #ef6c00" : "1px solid #78909c",
+                           background: atRisk > 0 ? "#fff3e0" : "#eceff1" }}
+                  onClick={() => onOpenSupplyDetail(block)}
+                >
+                  {atRisk > 0 ? `Supply details (${atRisk} item${atRisk === 1 ? "" : "s"} at risk)` : "Supply details…"}
+                </button>
+              </div>
+            )}
+            {plainOk.length > 0 && (
+              <div style={{ color: "#777", marginTop: 4 }}>
+                <span style={{ cursor: "pointer" }} onClick={() => setShowAllOk((v) => !v)}>
+                  {showAllOk ? "▾ hide" : "▸"} {plainOk.length} more OK
+                </span>
+                {showAllOk && plainOk.map((e) => (
+                  <div key={e.item} style={{ paddingLeft: 10, color: "#888", lineHeight: 1.4 }}>
+                    ✅ {e.item}
+                    {stock.designations?.[e.item] && <span style={{ color: "#aaa" }}> {stock.designations[e.item]}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ color: "#999", marginTop: 4 }}>
+              {/* NO_DATA with no worst item = the engine had no cases at all
+                  (no recipe, or no kg and no rate): there is no need to base
+                  on anything, so "rate × hours" would be a lie. */}
+              {supply.verdict === "NO_DATA" && supply.item == null
+                ? "No quantity basis for this block."
+                : <>
+                    Need is based on {casesFromKg(block, stock) ? "this block's kg (qty ÷ kg/case)" : "rate × hours (no kg on the block)"};
+                    on-hand nets every block on the board, live for this edit state.
+                  </>}
+            </div>
+            {onAcknowledge && chip !== null && (
+              <div style={{ marginTop: 6 }}>
+                {acknowledged ? (
+                  <span style={{ color: "#777" }}>Acknowledged for this session — chip hidden on the block.</span>
+                ) : (
+                  <button
+                    title="Hide the supply chip on this block until the page reloads; the verdict stays here and in Reconcile"
+                    style={{ fontSize: 11, padding: "3px 10px", borderRadius: 4,
+                             border: "1px solid #78909c", background: "#eceff1", cursor: "pointer", fontWeight: 600 }}
+                    onClick={() => onAcknowledge(key)}
+                  >
+                    Acknowledge for this session
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })()}
       {onTogglePin && (
         <div style={{ marginTop: 8 }}>
           <button
@@ -326,7 +538,7 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClo
               cursor: "pointer",
               fontWeight: 600,
             }}
-            onClick={() => onTogglePin(block.id, !block.pinned)}
+            onClick={() => onTogglePin(block, !block.pinned)}
           >
             {block.pinned ? "Unpin — let it move" : "📌 Fix for solver"}
           </button>
@@ -348,7 +560,7 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClo
                          border: "1px solid #1565c0", background: "#e3f2fd",
                          cursor: "pointer", fontWeight: 600 }}
                 onClick={() => {
-                  const err = onAddCip(block.id, d);
+                  const err = onAddCip(block, d);
                   setApplyError(err);
                   if (!err) onClose();
                 }}
@@ -378,7 +590,7 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClo
                          border: "1px solid #2e7d32", background: "#e8f5e9",
                          cursor: "pointer", fontWeight: 600 }}
                 onClick={() => {
-                  const err = onFill(block.id, d);
+                  const err = onFill(block, d);
                   setApplyError(err);
                   if (!err) onClose();
                 }}
@@ -430,7 +642,7 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClo
             title="Place flush against the previous block on this line, leaving exactly the setup time between the two SKUs"
             style={{ fontSize: 12, padding: "4px 10px", borderRadius: 4, border: "1px solid #78909c", background: "#eceff1", cursor: "pointer" }}
             onClick={() => {
-              const err = onSnap(block.id, "left");
+              const err = onSnap(block, "left");
               if (err) setApplyError(err); else { setApplyError(null); onClose(); }
             }}
           >
@@ -440,7 +652,7 @@ export const BlockPopover: React.FC<Props> = ({ block, x, y, rate, anchor, onClo
             title="Place flush against the next block on this line, leaving exactly the setup time between the two SKUs"
             style={{ fontSize: 12, padding: "4px 10px", borderRadius: 4, border: "1px solid #78909c", background: "#eceff1", cursor: "pointer" }}
             onClick={() => {
-              const err = onSnap(block.id, "right");
+              const err = onSnap(block, "right");
               if (err) setApplyError(err); else { setApplyError(null); onClose(); }
             }}
           >

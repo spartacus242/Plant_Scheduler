@@ -14,21 +14,17 @@
 
 import type { DemandTarget, ScheduleBlock } from "../types";
 import { computeAdherence } from "./kpi";
-import { isoWeekAtHour, isoWeekLabel } from "./layout";
+import { demandWeekKey, isoWeekKey } from "./layout";
+import { meanCapableRate, type Caps } from "./rates";
 
-type Caps = Record<string, Record<string, number>>;
-
-function meanCapableRate(caps: Caps, sku: string): number {
-  let sum = 0;
-  let n = 0;
-  for (const line of Object.keys(caps)) {
-    const r = Number(caps[line]?.[sku] ?? 0);
-    if (r > 0) { sum += r; n += 1; }
-  }
-  return n ? sum / n : 0;
-}
+// The card's duration basis, and the rate the holding supply pill judges
+// it at: ONE rule for the whole frontend, in utils/rates (fix FE / audit
+// ui-4 — averaging the group-expanded caps map counted a double line three
+// times and re-priced 112 of 153 cards on the first edit).
+export { meanCapableRate };
 
 const round1 = (v: number) => Math.round(v * 10) / 10;
+const round2 = (v: number) => Math.round(v * 100) / 100;
 
 export function deriveAutoHolding(
   schedule: ScheduleBlock[],
@@ -39,7 +35,9 @@ export function deriveAutoHolding(
   skuDescriptions: Record<string, string>,
 ): ScheduleBlock[] {
   const rows = computeAdherence(schedule, demand, caps, coveredByOrder);
-  const nowIso = isoWeekAtHour(new Date(), 0);
+  // (iso_year, iso_week) keys, never bare week numbers: W53-2026 is not
+  // "before" W1-2027 (fix FE / audit time-8).
+  const nowKey = isoWeekKey(new Date());
   const out: ScheduleBlock[] = [];
   const seen = new Set<string>();
   for (const r of rows) {
@@ -48,9 +46,8 @@ export function deriveAutoHolding(
     if (!oid || !sku || oid.endsWith("|CUR") || seen.has(oid)) continue;
     seen.add(oid);
     const m = /-W(\d+)$/.exec(oid);
-    if (m) {
-      const wk = isoWeekLabel(parseInt(m[1], 10), anchor);
-      if (wk !== null && wk < nowIso) continue; // a week that is over is a miss
+    if (m && demandWeekKey(parseInt(m[1], 10), anchor) < nowKey) {
+      continue; // a week that is over is a miss
     }
     const qtyMin = Number(r.qty_min ?? 0);
     if (qtyMin <= 0) continue;
@@ -58,7 +55,11 @@ export function deriveAutoHolding(
     if (prod >= qtyMin) continue;
     const missing = qtyMin - prod;
     const rate = meanCapableRate(caps, sku);
-    const hours = rate > 0 ? missing / rate : 0;
+    // holding_builder rounds run_hours to 2 dp (HoldingBlock) and the
+    // payload to 1 dp (to_payload): same two steps here so the derived
+    // card equals the server's byte for byte and the first edit is a
+    // pricing no-op (sameAutoCards compares run_hours).
+    const hours = rate > 0 ? round2(missing / rate) : 0;
     out.push({
       id: `hold_${oid}`,
       line_id: 0,

@@ -10,6 +10,7 @@
 
 import type { ScheduleBlock, DemandTarget, AdherenceRow, KpiData, CoPairInfo } from "../types";
 import { isWindowBlock } from "../types";
+import { meanCapableRate } from "./rates";
 
 /** Fallback when no co_pairs/co_default were passed (e.g. dev harness):
  * mirrors scorecard_config defaults base 0.5 + recipe 1.0. */
@@ -127,22 +128,10 @@ export function computeAdherence(
     }
   }
 
-  // Mean capable-line rate per SKU (only capable lines with rate > 0)
-  const avgRateBySku: Record<string, { sum: number; n: number }> = {};
-  for (const lineName of Object.keys(caps)) {
-    for (const [sku, rate] of Object.entries(caps[lineName])) {
-      if (rate > 0) {
-        const arr = avgRateBySku[sku] ?? { sum: 0, n: 0 };
-        arr.sum += rate;
-        arr.n += 1;
-        avgRateBySku[sku] = arr;
-      }
-    }
-  }
-  const avgRate = (sku: string): number => {
-    const arr = avgRateBySku[sku];
-    return arr && arr.n > 0 ? arr.sum / arr.n : 0;
-  };
+  // Mean capable-line rate per SKU: one rule (utils/rates, distinct lines,
+  // group-expanded side keys collapse) — fix FE / audit ui-4. Python's
+  // compute_adherence rows carry no rate; this field is client-only.
+  const avgRate = (sku: string): number => meanCapableRate(caps, sku);
 
   const rows: AdherenceRow[] = demand.map((d) => {
     const sq = schedByOrder[d.order_id] ?? 0;
@@ -266,6 +255,132 @@ export function countChangeovers(
     hours: Math.round(hours * 100) / 100,
     perLine, cipReqViolations, transitionsAtCip,
   };
+}
+
+/** One ISO week's changeover counts — the `weekly` rows score_changeovers
+ * returns when given week_bounds (fix FE / audit ui-5, C30). Field names
+ * are the Python row's. */
+export interface WeekChangeovers {
+  /** index into the marks array (bounds[i]) */
+  idx: number;
+  start_h: number;
+  span_h: number;
+  /** production hours inside the week (overlap share) */
+  prod_h: number;
+  sku_transitions: number;
+  recipe_changes: number;
+  format_changes: number;
+  topload_changes: number;
+  ffs_changes: number;
+  casepacker_changes: number;
+  ttp_changes: number;
+  recipe_only_changes: number;
+  co_hours: number;
+  /** cip_req-flagged transitions with no CIP in the gap (hygiene) */
+  cip_req_violations: number;
+  /** the first violating transition of the week — where a clean should go */
+  cip_gap: { lineName: string; lineId: number; start: number } | null;
+}
+
+/**
+ * Exact port of score_changeovers(..., week_bounds, horizon_h)["weekly"]:
+ * every transition buckets into the week the INCOMING block starts
+ * (bisect_right(marks, start) - 1, clamped at 0), a transition whose gap
+ * fully contains a CIP window is WAIVED from every count (the plant retools
+ * during the clean — user rule 2026-08-26), a cip_req pair with no CIP in
+ * the gap is a violation but still counts as a transition, and a pair that
+ * touches no machine is recipe-only. `weekMarks` are the week start hours
+ * (marks[0] = 0, then the Monday boundaries — scorecard _iso_week_bounds);
+ * `horizonH` closes the last week. Only weeks with at least one transition
+ * or production hour are returned, like the Python rows (wk_acc).
+ * tests/test_kpi_parity.py asserts this against the Python rows.
+ */
+export function countChangeoversByWeek(
+  schedule: ScheduleBlock[],
+  coPairs: Record<string, CoPairInfo> = {},
+  coDefault: CoPairInfo = CO_DEFAULT_FALLBACK,
+  cipWindows: ScheduleBlock[] = [],
+  weekMarks: number[] = [0],
+  horizonH?: number,
+): WeekChangeovers[] {
+  const marks = weekMarks.length ? weekMarks : [0];
+  const wkEnd = (i: number): number => {
+    if (i + 1 < marks.length) return marks[i + 1];
+    if (horizonH !== undefined) return horizonH;
+    return marks[i] + 168;
+  };
+  // bisect_right(marks, h) - 1, clamped at 0
+  const wkOf = (h: number): number => {
+    let i = 0;
+    while (i < marks.length && marks[i] <= h) i++;
+    return Math.max(0, i - 1);
+  };
+  const acc: Record<number, WeekChangeovers> = {};
+  const get = (i: number): WeekChangeovers =>
+    (acc[i] ??= {
+      idx: i, start_h: marks[i], span_h: wkEnd(i) - marks[i], prod_h: 0,
+      sku_transitions: 0, recipe_changes: 0, format_changes: 0,
+      topload_changes: 0, ffs_changes: 0, casepacker_changes: 0, ttp_changes: 0,
+      recipe_only_changes: 0, co_hours: 0, cip_req_violations: 0, cip_gap: null,
+    });
+
+  const byLineId: Record<number, ScheduleBlock[]> = {};
+  for (const b of schedule) {
+    if (!isProduction(b)) continue;
+    (byLineId[b.line_id] ??= []).push(b);
+  }
+  const cipsByLineId: Record<number, [number, number][]> = {};
+  for (const c of cipWindows) {
+    if (c.block_type !== "cip") continue;
+    (cipsByLineId[c.line_id] ??= []).push([c.start_hour, c.end_hour]);
+  }
+  const cipBetween = (lineId: number, aEnd: number, bStart: number): boolean =>
+    (cipsByLineId[lineId] ?? []).some(([cs, ce]) => cs >= aEnd - 1e-6 && ce <= bStart + 1e-6);
+
+  for (const blocks of Object.values(byLineId)) {
+    const sorted = [...blocks].sort((a, b) => a.start_hour - b.start_hour);
+    for (let i = 1; i < sorted.length; i++) {
+      const a = sorted[i - 1];
+      const b = sorted[i];
+      if (a.sku === b.sku) continue;
+      if (cipBetween(a.line_id, a.end_hour, b.start_hour)) continue; // waived
+      const pair = coPairs[`${a.sku}|${b.sku}`] ?? coDefault;
+      const w = get(wkOf(b.start_hour));
+      w.sku_transitions += 1;
+      w.recipe_changes += pair.recipe ? 1 : 0;
+      w.format_changes += pair.format ? 1 : 0;
+      const tl = (pair.tl ?? 0) === 1 ? 1 : 0;
+      const ffs = (pair.ffs ?? 0) === 1 ? 1 : 0;
+      const cp = (pair.cp ?? 0) === 1 ? 1 : 0;
+      const ttp = (pair.ttp ?? 0) === 1 ? 1 : 0;
+      w.topload_changes += tl;
+      w.ffs_changes += ffs;
+      w.casepacker_changes += cp;
+      w.ttp_changes += ttp;
+      if (!(tl || ffs || cp || ttp)) w.recipe_only_changes += 1;
+      w.co_hours += pair.hours;
+      if ((pair.cip_req ?? 0) === 1) {
+        w.cip_req_violations += 1;
+        if (!w.cip_gap) w.cip_gap = { lineName: a.line_name, lineId: a.line_id, start: a.end_hour };
+      }
+    }
+  }
+  // production hours per week (overlap share)
+  for (const b of schedule) {
+    if (!isProduction(b)) continue;
+    for (let i = 0; i < marks.length; i++) {
+      const ov = Math.max(0, Math.min(b.end_hour, wkEnd(i)) - Math.max(b.start_hour, marks[i]));
+      if (ov > 0) get(i).prod_h += ov;
+    }
+  }
+  const out = Object.keys(acc).map((k) => acc[Number(k)]).sort((x, y) => x.idx - y.idx);
+  for (const w of out) {
+    w.co_hours = Math.round(w.co_hours * 100) / 100;
+    w.prod_h = Math.round(w.prod_h * 100) / 100;
+    w.start_h = Math.round(w.start_h * 100) / 100;
+    w.span_h = Math.round(w.span_h * 100) / 100;
+  }
+  return out;
 }
 
 export function computeKpis(

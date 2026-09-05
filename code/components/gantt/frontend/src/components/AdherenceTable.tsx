@@ -11,6 +11,10 @@ interface Props {
   highlightSku: string | null;
   onSkuClick: (sku: string | null) => void;
   onAddToHolding: (row: AdherenceRow, missingKg: number, runHours: number) => void;
+  /** Mean capable-line rate (kg/h) for a SKU — the auto holding card's
+   * duration basis (utils/rates.meanCapableRate). Server rows carry no
+   * avg_rate_kgph, so without this the '+' button has no rate at all. */
+  rateFor?: (sku: string) => number;
 }
 
 const statusColors: Record<string, string> = {
@@ -19,7 +23,7 @@ const statusColors: Record<string, string> = {
   OVER: "#FFA15A",
 };
 
-export const AdherenceTable: React.FC<Props> = ({ rows, highlightSku, onSkuClick, onAddToHolding, formatOrder }) => {
+export const AdherenceTable: React.FC<Props> = ({ rows, highlightSku, onSkuClick, onAddToHolding, formatOrder, rateFor }) => {
   return (
     <div style={{ maxHeight: 260, overflowY: "auto", border: "1px solid #e0e0e5", borderRadius: 8, background: "#ffffff" }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: "#333" }}>
@@ -65,8 +69,13 @@ export const AdherenceTable: React.FC<Props> = ({ rows, highlightSku, onSkuClick
                     disabled={missingKg <= 0}
                     onClick={(e) => {
                       e.stopPropagation();
-                      // runHours is computed by the caller (avg rate, capped 24h)
-                      const runHours = Math.min(24, missingKg / (r.avg_rate_kgph || 1));
+                      // The card is sized like an AUTO holding card: missing
+                      // tonnage at the SKU's mean capable rate — no 24 h cap,
+                      // no `|| 1` divisor (fix FE / audit ui-8: a 4,000 kg
+                      // gap and a 196,000 kg gap both became 24 h cards
+                      // before the first edit). 0 when no line is capable.
+                      const rate = (rateFor ? rateFor(r.sku) : 0) || r.avg_rate_kgph || 0;
+                      const runHours = rate > 0 ? missingKg / rate : 0;
                       onAddToHolding(r, missingKg, runHours);
                     }}
                     style={{

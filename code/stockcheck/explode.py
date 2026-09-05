@@ -1,11 +1,16 @@
 # code/stockcheck/explode.py — requirements from the two demand signals.
 #
-# Schedule signal: production blocks in data/calendar_blocks.csv (qty_kg is
-#   NULL there; qty_kg = hours * calc_rate_kgph for (line_id, sku)).
+# Schedule signal: production blocks in data/calendar_blocks.csv. The board
+#   row's own qty_kg is the quantity the plan says will be made (solver rows
+#   and current_state rows all carry one); rate x hours from
+#   capabilities_rates is only the fallback for a row without it — the same
+#   rule the Gantt applies (supplyGlue.toTimelineBlock), so server and client
+#   grade one quantity ([stock] use_board_qty_kg, audit stock-2).
 # Demand signal: data/reference/demand_plan.csv (qty_target is kg).
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -35,17 +40,41 @@ def block_qty_kg(block: pd.Series, rates: pd.DataFrame) -> float:
     return hours * float(m.iloc[0]["calc_rate_kgph"])
 
 
+def board_qty_kg(block: pd.Series) -> float | None:
+    """The board row's own qty_kg as a positive finite float, else None
+    (blank, NaN, 0 and garbage all read as 'unknown kg' — a 0 on the board
+    is indistinguishable from unknown, calendar_io precedent)."""
+    v = block.get("qty_kg") if hasattr(block, "get") else None
+    if v is None or isinstance(v, bool):
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) and f > 0 else None
+
+
 def schedule_requirements(blocks: pd.DataFrame, bom: BomGraph,
                           azapart: pd.DataFrame,
-                          rates: pd.DataFrame) -> list[dict]:
+                          rates: pd.DataFrame, *,
+                          use_board_qty_kg: bool = True) -> list[dict]:
     """Explode every production block. Returns one dict per block with the
-    ExplosionResult attached."""
+    ExplosionResult attached.
+
+    Quantity: the board row's qty_kg when `use_board_qty_kg` and the row
+    carries one, else rate x hours (`qty_source` says which). The default
+    mirrors [stock] use_board_qty_kg = true; the caller passes the
+    configured value."""
     kpc = _kg_per_case(azapart)
     out = []
     prods = blocks[blocks["block_type"] == "production"]
     for _, b in prods.iterrows():
         sku = str(b["sku"])
-        kg = block_qty_kg(b, rates)
+        kg_board = board_qty_kg(b) if use_board_qty_kg else None
+        if kg_board is not None:
+            kg, src = kg_board, "board"
+        else:
+            kg, src = block_qty_kg(b, rates), "rate"
         per_case = kpc.get(sku) or 0.0
         cases = (kg / per_case) if per_case > 0 else 0.0
         exp = bom.explode(sku, cases)
@@ -54,6 +83,7 @@ def schedule_requirements(blocks: pd.DataFrame, bom: BomGraph,
             "line_id": int(b["line_id"]), "line_name": b["line_name"],
             "start_h": float(b["start_h"]), "end_h": float(b["end_h"]),
             "qty_kg": kg, "cases": cases, "explosion": exp,
+            "qty_source": src,
         })
     return out
 

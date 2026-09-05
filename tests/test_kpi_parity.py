@@ -31,6 +31,7 @@ from helpers.scorecard_engine import gantt_kpis  # noqa: E402
 
 FRONTEND = ROOT / "code" / "components" / "gantt" / "frontend"
 KPI_TS = FRONTEND / "src" / "utils" / "kpi.ts"
+HOLDING_TS = FRONTEND / "src" / "utils" / "holdingDerive.ts"
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +139,129 @@ COVERED_DEMAND = [
 COVERED_MAP = {"O4": 100.0}   # made kg from a hidden completed MO
 
 
+# ---------------------------------------------------------------------------
+# Position-aware fixture (fix FE / audit ui-10): the DEMAND above carries no
+# due hours, so compute_adherence's pass 1 (pro-rated credit by due-window
+# overlap, 2026-09-01) is a no-op on both sides and the old parity test
+# compared only the legacy own-order + waterfall path. This fixture has a
+# block straddling two due windows on a DOUBLE line whose caps map is
+# group-expanded (P17 + P17A/P17B at half rate, as pages/calendar.py hands
+# it to the Gantt), and pins the client-side holding-card derivation
+# against helpers.holding_builder — the ui-4 divergence (mean rate over the
+# expanded map) lived in a module no test referenced.
+#
+# Hand derivation (pass 1 of _credit_blocks_to_orders / kpi.ts):
+#   block P17 "X-W0" [150,170], qty_kg unknown -> rate 1000 x 20 h = 20,000 kg
+#   orders (earliest due first): X-W0 window [0,168] cap 11,000;
+#                                X-W1 window [168,336] cap 11,000
+#   overlap X-W0 = min(170,168) - max(150,0) = 18 h -> offered 20000*18/20 =
+#     18,000, capped at 11,000 -> X-W0 = 11,000, remaining 9,000
+#   overlap X-W1 = min(170,336) - max(150,168) = 2 h  -> offered 2,000 ->
+#     X-W1 = 2,000, remaining 7,000
+#   leftover 7,000 -> the block's OWN order X-W0, uncapped -> X-W0 = 18,000
+#   X-W0: 18,000 > qty_max 11,000 -> OVER, pct 18000/10000 = 180.0
+#   X-W1:  2,000 < qty_min  9,000 -> UNDER, pct 2000/10000 = 20.0
+# Holding card: X-W1 missing 9,000 - 2,000 = 7,000 kg; mean capable rate =
+#   1,000 (ONE line; the expanded sides must not drag it to 666.7) ->
+#   run_hours 7.0; card id hold_X-W1. X-W0 is met/over -> no card.
+# ---------------------------------------------------------------------------
+
+def position_fixture_calendar() -> pd.DataFrame:
+    rows = [_block("production", 17, "P17", 150, 170, "SKU_X", "X-W0")]
+    return pd.DataFrame(rows)[CALENDAR_COLUMNS]
+
+
+POS_CAPS_RAW = {"P17": {"SKU_X": 1000.0}}
+POS_CAPS = {"P17": {"SKU_X": 1000.0}, "P17A": {"SKU_X": 500.0}, "P17B": {"SKU_X": 500.0}}
+POS_DEMAND = [
+    {"order_id": "X-W0", "sku": "SKU_X", "qty_min": 9000.0, "qty_max": 11000.0,
+     "due_start_hour": 0.0, "due_end_hour": 168.0},
+    {"order_id": "X-W1", "sku": "SKU_X", "qty_min": 9000.0, "qty_max": 11000.0,
+     "due_start_hour": 168.0, "due_end_hour": 336.0},
+]
+
+
+def _python_position_rows() -> dict:
+    from helpers.scorecard_engine import compute_adherence
+
+    rows = compute_adherence(position_fixture_calendar(), POS_DEMAND, POS_CAPS)
+    return {r["order_id"]: r for r in rows}
+
+
+def _python_holding_cards() -> list[dict]:
+    """The calendar page's holding rebuild for the position fixture."""
+    from helpers.holding_builder import average_rate_per_sku, build_holding
+
+    by = _python_position_rows()
+    dem = pd.DataFrame({
+        "order_id": [d["order_id"] for d in POS_DEMAND],
+        "sku": [d["sku"] for d in POS_DEMAND],
+        "qty_target": [10000.0, 10000.0],
+        "lower_pct": [0.9, 0.9],
+        "upper_pct": [1.1, 1.1],
+    })
+    prod = pd.DataFrame({
+        "order_id": dem["order_id"],
+        "sku": dem["sku"],
+        "qty_min": dem["qty_target"] * dem["lower_pct"],
+        "qty_max": dem["qty_target"] * dem["upper_pct"],
+        "produced": [float(by[o]["scheduled_qty"]) for o in dem["order_id"]],
+    })
+    caps_df = pd.DataFrame([
+        {"line_name": ln, "sku": sku, "capable": 1, "calc_rate_kgph": rate}
+        for ln, m in POS_CAPS_RAW.items() for sku, rate in m.items()])
+    rates = average_rate_per_sku(caps_df)
+    return [b.to_payload() for b in build_holding(dem, prod, rates=rates)]
+
+
+def test_python_position_aware_credit_and_holding_by_hand():
+    by = _python_position_rows()
+    assert by["X-W0"]["scheduled_qty"] == 18000 and by["X-W0"]["status"] == "OVER"
+    assert by["X-W0"]["pct_adherence"] == 180.0
+    assert by["X-W1"]["scheduled_qty"] == 2000 and by["X-W1"]["status"] == "UNDER"
+    assert by["X-W1"]["pct_adherence"] == 20.0
+    cards = _python_holding_cards()
+    assert [(c["id"], c["run_hours"], c["qty_kg"]) for c in cards] == [("hold_X-W1", 7.0, 7000.0)]
+
+
+# Weekly changeover rows (fix FE / audit ui-5): the same fixture bucketed
+# into two 24 h "weeks" [0,24) and [24,48). Hand derivation (all four counted
+# transitions start before h24 -> week 0; F->G is waived at the P13 CIP):
+#   A->B h10 ffs   format, hours 3.0 | B->A h20 ffs format, hours 2.0
+#   D->E h5  no row -> recipe, recipe-only, hours 1.5
+#   G->F h18 flag-less row -> recipe, recipe-only, hours 1.5, cip_req violation
+#   week 0: 4 transitions, recipe 2, format 2, ffs 2, recipe_only 2, 8.0 h
+#   prod_h: P10 10+10+4 (A[20,25] -> 4 h in, 1 h in week 1), P11 8+4,
+#           P12 5+4, P13 6+6+4 -> week 0 = 24+12+9+16 = 61, week 1 = 1
+WEEK_BOUNDS = [(0.0, 34), (24.0, 35)]
+WEEK_MARKS = [0.0, 24.0]
+WEEK_HORIZON = 48.0
+EXPECTED_WEEKLY = [
+    {"idx": 0, "start_h": 0.0, "span_h": 24.0, "prod_h": 61.0, "sku_transitions": 4,
+     "recipe_changes": 2, "format_changes": 2, "topload_changes": 0, "ffs_changes": 2,
+     "casepacker_changes": 0, "ttp_changes": 0, "recipe_only_changes": 2, "co_hours": 8.0},
+    {"idx": 1, "start_h": 24.0, "span_h": 24.0, "prod_h": 1.0, "sku_transitions": 0,
+     "recipe_changes": 0, "format_changes": 0, "topload_changes": 0, "ffs_changes": 0,
+     "casepacker_changes": 0, "ttp_changes": 0, "recipe_only_changes": 0, "co_hours": 0.0},
+]
+
+
+def _python_weekly() -> list[dict]:
+    from helpers.scorecard_engine import score_changeovers
+
+    rows = score_changeovers(fixture_calendar(), scorecard_config({}), CO_MAP,
+                             week_bounds=WEEK_BOUNDS, horizon_h=WEEK_HORIZON)["weekly"]
+    return [{k: r[k] for k in EXPECTED_WEEKLY[0]} for r in rows]
+
+
+def test_python_weekly_changeover_rows_by_hand():
+    got = _python_weekly()
+    assert len(got) == 2
+    for g, e in zip(got, EXPECTED_WEEKLY):
+        for k, v in e.items():
+            assert g[k] == pytest.approx(v), (k, g, e)
+
+
 def test_covered_map_adds_to_board_never_replaces_it():
     """Hand-computed: O1 board 1000; made credit puts O4 at 100; waterfall
     (ALWAYS on) spreads MO9's 700 kg earliest-due first — O1 takes 600 (to
@@ -181,9 +305,18 @@ def test_python_golden_values(py_result):
 
     co = py_result["changeovers"]
     assert co["sku_transitions"] == 4            # A→B, B→A, D→E, G→F (F→G waived at CIP)
-    assert co["recipe_changes"] == 4
+    # Recipe vs format (fix Q / C35, scorecard-14, 2026-09-03). The old
+    # golden `recipe_changes == 4` pinned a vacuous _is_recipe_change that
+    # returned True on every branch (recipe == transitions on every board).
+    # Plant definition: FORMAT = topload/FFS/casepacker retooled; RECIPE =
+    # what is cooked/mixed changes (conv<->org, cinnamon, flavor count, TTP)
+    # or an unknown / flag-less pair. Here: A→B and B→A are ffs-only ->
+    # format, NOT recipe; D→E has no row -> recipe; G→F has a row with no
+    # machine flag -> recipe-only. Hours: B→A (setup 0) is now format 2.0
+    # alone (was 2.0 + 1.0 recipe), so 9.0 -> 8.0.
+    assert co["recipe_changes"] == 2
     assert co["format_changes"] == 2             # both standards rows flag ffs
-    assert co["total_co_hours"] == 9.0           # 3.0 + (2.0 + 1.0) + (0.5 + 1.0) + (0.5 + 1.0)
+    assert co["total_co_hours"] == 8.0           # 3.0 + 2.0 + (0.5 + 1.0) + (0.5 + 1.0)
     assert py_result["per_line_changeovers"] == {"P10": 2, "P11": 0, "P12": 1, "P13": 1}
 
     # CIP rules on this fixture (score_changeovers, the engine gantt_kpis
@@ -210,11 +343,13 @@ def test_python_golden_values(py_result):
     assert by_order["O6"]["status"] == "MET" and by_order["O6"]["pct_adherence"] == 100.0
 
     # co_pairs classification map the frontend consumes
+    # ffs-only rows: format 1, recipe 0 (see the recipe/format note above);
+    # kpi.ts consumes this map verbatim, so TS parity follows by lookup.
     assert py_result["co_pairs"]["SKU_A|SKU_B"] == {
-        "recipe": 1, "format": 1, "hours": 3.0,
+        "recipe": 0, "format": 1, "hours": 3.0,
         "tl": 0, "ffs": 1, "cp": 0, "ttp": 0, "cip_req": 0}
     assert py_result["co_pairs"]["SKU_B|SKU_A"] == {
-        "recipe": 1, "format": 1, "hours": 3.0,
+        "recipe": 0, "format": 1, "hours": 2.0,
         "tl": 0, "ffs": 1, "cp": 0, "ttp": 0, "cip_req": 0}
     assert py_result["co_pairs"]["SKU_F|SKU_G"] == {
         "recipe": 1, "format": 0, "hours": 1.5,
@@ -246,7 +381,9 @@ def test_python_golden_values(py_result):
 
 RUNNER_JS = """
 const fs = require("fs");
+const path = require("path");
 const kpi = require(process.argv[2]);
+const hd = require(path.join(path.dirname(process.argv[2]), "holdingDerive.js"));
 const fx = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
 const kpis = kpi.computeKpis(
   fx.schedule, fx.cipWindows, fx.demand, fx.caps, fx.co_pairs, fx.co_default);
@@ -255,10 +392,21 @@ const weekCredits = Object.fromEntries(
   adherence.map((r) => [r.order_id, kpi.weekFulfillmentCredit(r)]));
 const changeovers = kpi.countChangeovers(
   fx.schedule, fx.co_pairs, fx.co_default, fx.cipWindows);
-const out = { kpis, adherence, weekCredits, changeovers };
+const weekly = kpi.countChangeoversByWeek(
+  fx.schedule, fx.co_pairs, fx.co_default, fx.cipWindows, fx.week_marks, fx.week_horizon);
+const out = { kpis, adherence, weekCredits, changeovers, weekly };
 if (fx.covered) {
   out.coveredAdherence = kpi.computeAdherence(
     fx.covered.schedule, fx.covered.demand, fx.caps, fx.covered.map);
+}
+if (fx.position) {
+  const p = fx.position;
+  out.position = {
+    adherence: kpi.computeAdherence(p.schedule, p.demand, p.caps),
+    // anchor = now, legacy week math: -W0 is the current week, -W1 the next
+    holding: hd.deriveAutoHolding(p.schedule, p.demand, p.caps, undefined, new Date(), {})
+      .map((c) => ({ id: c.id, run_hours: c.run_hours, qty_kg: c.qty_kg })),
+  };
 }
 process.stdout.write(JSON.stringify(out));
 """
@@ -284,7 +432,9 @@ def _compile_kpi_ts(tmp: Path) -> Path:
     out = tmp / "compiled"
     proc = subprocess.run(
         [
-            "node", str(tsc), str(KPI_TS),
+            # holdingDerive.ts (the client holding-card derivation) rides
+            # along: it imports kpi.ts, layout.ts and rates.ts, all under src/.
+            "node", str(tsc), str(KPI_TS), str(HOLDING_TS),
             "--outDir", str(out),
             "--module", "commonjs",
             "--target", "es2020",
@@ -302,6 +452,7 @@ def _compile_kpi_ts(tmp: Path) -> Path:
     # common source root is src/ and kpi.js lands under utils/.
     js = out / "utils" / "kpi.js"
     assert js.exists(), f"expected {js}"
+    assert (out / "utils" / "holdingDerive.js").exists()
     return js
 
 
@@ -320,6 +471,13 @@ def test_ts_matches_python(py_result, tmp_path):
             "schedule": cov_schedule,
             "demand": COVERED_DEMAND,
             "map": COVERED_MAP,
+        },
+        "week_marks": WEEK_MARKS,
+        "week_horizon": WEEK_HORIZON,
+        "position": {
+            "schedule": calendar_to_gantt_payload(position_fixture_calendar())[0],
+            "demand": POS_DEMAND,
+            "caps": POS_CAPS,
         },
     }
     fixture_path = tmp_path / "fixture.json"
@@ -384,6 +542,30 @@ def test_ts_matches_python(py_result, tmp_path):
         assert tr["scheduled_qty"] == pr["scheduled_qty"]
         assert tr["status"] == pr["status"]
         assert tr["pct_adherence"] == pytest.approx(pr["pct_adherence"], abs=1e-9)
+
+    # Weekly changeover rows (fix FE / audit ui-5): kpi.countChangeoversByWeek
+    # is the port of score_changeovers(..., week_bounds)["weekly"] — same
+    # bucketing (incoming block start), same CIP waiver, same machine flags.
+    py_weekly = _python_weekly()
+    assert len(ts["weekly"]) == len(py_weekly) == len(EXPECTED_WEEKLY)
+    for tw, pw, ew in zip(ts["weekly"], py_weekly, EXPECTED_WEEKLY):
+        for k in ew:
+            assert tw[k] == pytest.approx(pw[k]), (k, tw, pw)
+            assert tw[k] == pytest.approx(ew[k]), (k, tw, ew)
+
+    # Position-aware credit on a double line + the holding-card derivation
+    # (fix FE / audit ui-10 and ui-4): both sides against the hand values.
+    py_pos = _python_position_rows()
+    ts_pos = {r["order_id"]: r for r in ts["position"]["adherence"]}
+    assert set(ts_pos) == set(py_pos) == {"X-W0", "X-W1"}
+    for oid in ("X-W0", "X-W1"):
+        assert ts_pos[oid]["scheduled_qty"] == py_pos[oid]["scheduled_qty"]
+        assert ts_pos[oid]["status"] == py_pos[oid]["status"]
+        assert ts_pos[oid]["pct_adherence"] == pytest.approx(py_pos[oid]["pct_adherence"], abs=1e-9)
+    assert ts_pos["X-W0"]["scheduled_qty"] == 18000 and ts_pos["X-W1"]["scheduled_qty"] == 2000
+    py_cards = [(c["id"], c["run_hours"], c["qty_kg"]) for c in _python_holding_cards()]
+    ts_cards = [(c["id"], c["run_hours"], c["qty_kg"]) for c in ts["position"]["holding"]]
+    assert ts_cards == py_cards == [("hold_X-W1", 7.0, 7000.0)]
 
 
 # ---------------------------------------------------------------------------

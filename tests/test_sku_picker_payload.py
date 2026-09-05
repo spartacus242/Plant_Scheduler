@@ -54,8 +54,14 @@ def co_csv(tmp_path):
 
 
 def test_co_flags_bitmask(co_csv):
+    """UPDATED 2026-09-03 (INTEGRATE, agent FE handoff W-1): CO_FLAG_COLUMNS
+    gained a 7th column, cip_req_after (bit 64 = the client's "CIP req"
+    chip), so the all-flags A->C row is 1+2+4+8+16+32+64 = 127 (was 63 with
+    six columns). The fixture sets every CO_FLAG_COLUMNS column to 1, so it
+    follows the tuple; the other masks are unchanged."""
     flags = build_co_flags(co_csv, DEMAND_SKUS)
-    assert flags == {"A|B": 1, "B|A": 6, "A|C": 63, "C|A": 0}
+    assert len(CO_FLAG_COLUMNS) == 7 and CO_FLAG_COLUMNS[-1] == "cip_req_after"
+    assert flags == {"A|B": 1, "B|A": 6, "A|C": 127, "C|A": 0}
 
 
 def test_co_flags_include_board_neighbours(co_csv):

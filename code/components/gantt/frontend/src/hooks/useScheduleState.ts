@@ -2,35 +2,65 @@
 
 import { useState, useCallback, useMemo, useRef } from "react";
 import { sameAutoCards } from "../utils/holdingDerive";
+import {
+  findBlock, findBlockIndex, mintBlockId, patchOne, refId, removeOne, resolveIndices, type BlockRef,
+} from "../utils/blockIdentity";
+import { reforecastCips } from "../utils/cipReforecast";
 import type { ScheduleBlock, SandboxArgs } from "../types";
 import { isWindowBlock } from "../types";
 import { hourToStamp } from "../utils/layout";
 
-let _nextId = 1;
+// Ids are minted collision-free (utils/blockIdentity.mintBlockId: time +
+// random, never one already in `taken`). The old module-scope `_nextId`
+// counter restarted at 1 on every mount and was never seeded from the
+// board, so a reload re-minted blk_1, blk_2 ... and calendar_blocks.csv
+// carried two unrelated rows per id (fix FE / audit writeback-8).
 function ensureId(b: ScheduleBlock): ScheduleBlock {
-  if (!b.id) return { ...b, id: `blk_${_nextId++}` };
+  if (!b.id) return { ...b, id: mintBlockId("blk") };
   return b;
 }
 
+function idsOf(...lists: readonly ScheduleBlock[][]): Set<string> {
+  const s = new Set<string>();
+  for (const l of lists) for (const b of l) s.add(String(b.id));
+  return s;
+}
+
+export type { BlockRef } from "../utils/blockIdentity";
+
+/** Every edit targets ONE block, named by a `BlockRef`: the state object
+ * (identity), an {id, start_hour} pair, or — legacy — a bare id, which
+ * resolves to the FIRST piece carrying it. Split MO pieces share an id
+ * (calendar_blocks.csv `;split`), so a bare id is ambiguous for them and
+ * callers that hold the block should pass it (utils/blockIdentity). */
 export interface ScheduleStateActions {
-  updateBlock: (id: string, patch: Partial<ScheduleBlock>) => void;
-  /** Insert-between: move `id` to [newStart, newStart+dur] on `lineName` and
-   * shift every listed block right by `deltaH` - ONE undo step. */
+  updateBlock: (target: BlockRef, patch: Partial<ScheduleBlock>) => void;
+  /** Insert-between: move `target` to [newStart, newStart+dur] on `lineName`
+   * and shift each block in `shiftIds` right by `deltaH` - ONE undo step.
+   * Every ref shifts exactly one piece (bare id = first piece). */
   insertShift: (
-    id: string, lineName: string, lineId: number, newStart: number, dur: number,
-    shiftIds: string[], deltaH: number,
+    target: BlockRef, lineName: string, lineId: number, newStart: number, dur: number,
+    shiftIds: BlockRef[], deltaH: number,
   ) => void;
-  moveBlock: (id: string, newLine: string, newLineId: number, newStart: number, newDuration: number) => void;
-  resizeBlock: (id: string, newStart: number, newEnd: number) => void;
-  splitBlock: (id: string, splitHour: number) => void;
-  removeToHolding: (id: string) => void;
-  restoreFromHolding: (id: string, lineName: string, lineId: number, startHour: number, duration: number) => void;
+  moveBlock: (target: BlockRef, newLine: string, newLineId: number, newStart: number, newDuration: number) => void;
+  /** Bare id shared by several pieces: the piece keeping one edge fixed
+   * (start == newStart or end == newEnd) is the one resized. */
+  resizeBlock: (target: BlockRef, newStart: number, newEnd: number) => void;
+  splitBlock: (target: BlockRef, splitHour: number) => void;
+  removeToHolding: (target: BlockRef) => void;
+  /** `qtyKg` (optional): the kg the placed block may claim — the caller
+   * prices it on the TARGET line over the placed window
+   * (validation.placedQtyKg); absent = keep the card's kg. */
+  restoreFromHolding: (
+    target: BlockRef, lineName: string, lineId: number, startHour: number, duration: number,
+    qtyKg?: number,
+  ) => void;
   /** Resize-to-fit restore (user rule 2026-09-01): place only placedH of the
    * card (its full on-line duration would be fullDurOnLine) and keep the
    * remainder in holding, kg apportioned by hour share so card + block
    * always sum back to the original tonnage. */
   restorePartialFromHolding: (
-    id: string, lineName: string, lineId: number, startHour: number,
+    target: BlockRef, lineName: string, lineId: number, startHour: number,
     placedH: number, fullDurOnLine: number,
   ) => void;
   addToHolding: (orderId: string, sku: string, runHours: number, qtyKg?: number) => void;
@@ -50,10 +80,13 @@ export interface ScheduleStateActions {
    * slot that lands inside a block to that block's end and skipping slots
    * within 1h of a surviving CIP. Regenerated cleans carry
    * attrs planner:cip_projected — editable forecasts, staged as committed
-   * windows by the solver. */
+   * windows by the solver. shiftIds are BlockRefs (one piece each). */
   addCipReforecast: (opts: {
     lineName: string; lineId: number; startHour: number; duration: number;
-    intervalH: number; horizonH: number; shiftIds: string[]; shiftH: number;
+    intervalH: number; horizonH: number; shiftIds: BlockRef[]; shiftH: number;
+    /** Blocks the planner may not move: a projected slot that would have
+     * to split/push one is skipped (utils/cipReforecast). */
+    immovable?: (b: ScheduleBlock) => boolean;
   }) => void;
   reportAction: (msg: string) => void;
   /** Adopt the SERVER-derived holding area (rebuilt after every Refresh
@@ -138,57 +171,59 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
     setLastAction("Redo");
   }, [snapshot]);
 
-  const updateBlock = useCallback((id: string, patch: Partial<ScheduleBlock>) => {
+  // Every mutation below resolves its target to ONE index per list
+  // (utils/blockIdentity) — never "every block with this id", which hit
+  // both pieces of a split MO.
+  const updateBlock = useCallback((target: BlockRef, patch: Partial<ScheduleBlock>) => {
     pushUndo();
-    setSchedule((prev) => prev.map((b) => (b.id === id ? { ...b, ...patch } : b)));
-    setCipWindows((prev) => prev.map((b) => (b.id === id ? { ...b, ...patch } : b)));
+    setSchedule((prev) => patchOne(prev, target, patch));
+    setCipWindows((prev) => patchOne(prev, target, patch));
   }, [pushUndo]);
 
   const insertShift = useCallback((
-    id: string, lineName: string, lineId: number, newStart: number, dur: number,
-    shiftIds: string[], deltaH: number,
+    target: BlockRef, lineName: string, lineId: number, newStart: number, dur: number,
+    shiftIds: BlockRef[], deltaH: number,
   ) => {
     pushUndo();
-    const shift = new Set(shiftIds);
-    const apply = (b: ScheduleBlock): ScheduleBlock => {
-      if (b.id === id) {
-        return { ...b, line_name: lineName, line_id: lineId,
-                 start_hour: newStart, end_hour: newStart + dur, run_hours: dur };
-      }
-      if (shift.has(b.id) && deltaH > 0) {
-        return { ...b, start_hour: b.start_hour + deltaH, end_hour: b.end_hour + deltaH };
-      }
-      return b;
+    const apply = (list: ScheduleBlock[]): ScheduleBlock[] => {
+      const moved = findBlockIndex(list, target);
+      const shift = resolveIndices(list, shiftIds);
+      if (moved < 0 && shift.size === 0) return list;
+      return list.map((b, i) => {
+        if (i === moved) {
+          return { ...b, line_name: lineName, line_id: lineId,
+                   start_hour: newStart, end_hour: newStart + dur, run_hours: dur };
+        }
+        if (shift.has(i) && deltaH > 0) {
+          return { ...b, start_hour: b.start_hour + deltaH, end_hour: b.end_hour + deltaH };
+        }
+        return b;
+      });
     };
-    setSchedule((prev) => prev.map(apply));
-    setCipWindows((prev) => prev.map(apply));
+    setSchedule(apply);
+    setCipWindows(apply);
     setLastAction(
       `Inserted at ${stamp(newStart)} - ${shiftIds.length} block(s) slid ${deltaH.toFixed(1)}h right`,
     );
   }, [pushUndo, stamp]);
 
-  const moveBlock = useCallback((id: string, newLine: string, newLineId: number, newStart: number, newDuration: number) => {
+  const moveBlock = useCallback((target: BlockRef, newLine: string, newLineId: number, newStart: number, newDuration: number) => {
     pushUndo();
-    setSchedule((prev) =>
-      prev.map((b) =>
-        b.id === id
-          ? { ...b, line_name: newLine, line_id: newLineId, start_hour: newStart, end_hour: newStart + newDuration, run_hours: newDuration }
-          : b,
-      ),
-    );
-    setCipWindows((prev) =>
-      prev.map((b) =>
-        b.id === id
-          ? { ...b, line_name: newLine, line_id: newLineId, start_hour: newStart, end_hour: newStart + newDuration, run_hours: newDuration }
-          : b,
-      ),
-    );
-    setLastAction(`Moved ${id} to ${newLine} at ${stamp(newStart)}`);
+    const moved: Partial<ScheduleBlock> = {
+      line_name: newLine, line_id: newLineId,
+      start_hour: newStart, end_hour: newStart + newDuration, run_hours: newDuration,
+    };
+    setSchedule((prev) => patchOne(prev, target, moved));
+    setCipWindows((prev) => patchOne(prev, target, moved));
+    setLastAction(`Moved ${refId(target)} to ${newLine} at ${stamp(newStart)}`);
   }, [pushUndo, stamp]);
 
-  const resizeBlock = useCallback((id: string, newStart: number, newEnd: number) => {
+  const resizeBlock = useCallback((target: BlockRef, newStart: number, newEnd: number) => {
     pushUndo();
     const dur = newEnd - newStart;
+    // A resize keeps one edge: that edge picks the piece when a bare id is
+    // shared (useBlockResize commits by id only).
+    const edges: [number, number] = [newStart, newEnd];
     // Produced kg follows the duration the user sets: scale proportionally so
     // a resized run stays honest (rate x hours), never a stale carry-over.
     // Unknown kg (null/undefined/0) stays unknown - never invent a number.
@@ -197,19 +232,18 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
       if (!b.qty_kg || oldDur <= 0) return b.qty_kg;
       return Math.round(((b.qty_kg * dur) / oldDur) * 10) / 10;
     };
-    setSchedule((prev) =>
-      prev.map((b) => (b.id === id ? { ...b, start_hour: newStart, end_hour: newEnd, run_hours: dur, qty_kg: scaledKg(b) } : b)),
-    );
-    setCipWindows((prev) =>
-      prev.map((b) => (b.id === id ? { ...b, start_hour: newStart, end_hour: newEnd, run_hours: dur } : b)),
-    );
-    setLastAction(`Resized ${id} to ${stamp(newStart)} - ${stamp(newEnd)} (${dur}h)`);
+    setSchedule((prev) => patchOne(prev, target,
+      (b) => ({ ...b, start_hour: newStart, end_hour: newEnd, run_hours: dur, qty_kg: scaledKg(b) }),
+      { edges }));
+    setCipWindows((prev) => patchOne(prev, target,
+      { start_hour: newStart, end_hour: newEnd, run_hours: dur }, { edges }));
+    setLastAction(`Resized ${refId(target)} to ${stamp(newStart)} - ${stamp(newEnd)} (${dur}h)`);
   }, [pushUndo, stamp]);
 
-  const splitBlock = useCallback((id: string, splitHour: number) => {
+  const splitBlock = useCallback((target: BlockRef, splitHour: number) => {
     pushUndo();
     setSchedule((prev) => {
-      const idx = prev.findIndex((b) => b.id === id);
+      const idx = findBlockIndex(prev, target);
       if (idx < 0) return prev;
       const b = prev[idx];
       // Apportion produced kg by duration share - a plain spread would give
@@ -220,8 +254,11 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
       const fracA = total > 0 ? (splitHour - b.start_hour) / total : 0.5;
       const kgA = b.qty_kg ? Math.round(b.qty_kg * fracA * 10) / 10 : b.qty_kg;
       const kgB = b.qty_kg ? Math.round((b.qty_kg - (kgA as number)) * 10) / 10 : b.qty_kg;
-      const segA: ScheduleBlock = { ...b, id: `blk_${_nextId++}`, end_hour: splitHour, run_hours: splitHour - b.start_hour, qty_kg: kgA };
-      const segB: ScheduleBlock = { ...b, id: `blk_${_nextId++}`, start_hour: splitHour, run_hours: b.end_hour - splitHour, qty_kg: kgB };
+      const taken = idsOf(prev);
+      const idA = mintBlockId("blk", taken);
+      taken.add(idA);
+      const segA: ScheduleBlock = { ...b, id: idA, end_hour: splitHour, run_hours: splitHour - b.start_hour, qty_kg: kgA };
+      const segB: ScheduleBlock = { ...b, id: mintBlockId("blk", taken), start_hour: splitHour, run_hours: b.end_hour - splitHour, qty_kg: kgB };
       const next = [...prev];
       next.splice(idx, 1, segA, segB);
       return next;
@@ -229,22 +266,24 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
     setLastAction(`Split block at ${stamp(splitHour)}`);
   }, [pushUndo, stamp]);
 
-  const removeToHolding = useCallback((id: string) => {
-    // Find the block FIRST from current state before queueing updates
-    const found = schedule.find((b) => b.id === id) ?? cipWindows.find((b) => b.id === id);
+  const removeToHolding = useCallback((target: BlockRef) => {
+    // Find the block FIRST from current state before queueing updates, then
+    // remove exactly that piece: the old id filter dropped a split MO's
+    // sibling pieces from the board without parking them.
+    const found = findBlock(schedule, target) ?? findBlock(cipWindows, target);
     if (!found) return;
     pushUndo();
-    setSchedule((prev) => prev.filter((b) => b.id !== id));
-    setCipWindows((prev) => prev.filter((b) => b.id !== id));
+    setSchedule((prev) => removeOne(prev, found));
+    setCipWindows((prev) => removeOne(prev, found));
     setHoldingArea((prev) => [...prev, found]);
     setLastAction(`Removed ${found.order_id} to holding`);
   }, [pushUndo, schedule, cipWindows]);
 
   const restorePartialFromHolding = useCallback((
-    id: string, lineName: string, lineId: number, startHour: number,
+    target: BlockRef, lineName: string, lineId: number, startHour: number,
     placedH: number, fullDurOnLine: number,
   ) => {
-    const found = holdingArea.find((b) => b.id === id);
+    const found = findBlock(holdingArea, target);
     if (!found || placedH <= 0 || fullDurOnLine <= 0 || placedH >= fullDurOnLine) return;
     pushUndo();
     // splitBlock's apportioning rule: the placed segment takes its hour
@@ -257,7 +296,7 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
     const remCardH = Math.max(0.1, Math.round(found.run_hours * (1 - frac) * 10) / 10);
     const placed: ScheduleBlock = {
       ...found,
-      id: `blk_${_nextId++}`,
+      id: mintBlockId("blk", idsOf(schedule, cipWindows, holdingArea)),
       line_name: lineName,
       line_id: lineId,
       start_hour: startHour,
@@ -266,18 +305,23 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
       qty_kg: kgPlaced,
     };
     setSchedule((prev) => [...prev, placed]);
-    setHoldingArea((prev) => prev.map((b) => b.id === id
-      ? { ...b, start_hour: 0, end_hour: remCardH, run_hours: remCardH, qty_kg: kgRest }
-      : b));
+    setHoldingArea((prev) => patchOne(prev, found,
+      { start_hour: 0, end_hour: remCardH, run_hours: remCardH, qty_kg: kgRest }));
     setLastAction(
       `Placed ${placedH.toFixed(1)}h of ${found.order_id} on ${lineName} — `
       + `${remCardH.toFixed(1)}h stays in holding`);
-  }, [pushUndo, holdingArea]);
+  }, [pushUndo, holdingArea, schedule, cipWindows]);
 
-  const restoreFromHolding = useCallback((id: string, lineName: string, lineId: number, startHour: number, duration: number) => {
-    const found = holdingArea.find((b) => b.id === id);
+  const restoreFromHolding = useCallback((
+    target: BlockRef, lineName: string, lineId: number, startHour: number, duration: number,
+    qtyKg?: number,
+  ) => {
+    const found = findBlock(holdingArea, target);
     if (!found) return;
     pushUndo();
+    // The kg follows the placement (fix FE / audit ui-14): the caller
+    // prices the card on the target line over the placed window; the
+    // card's own kg is only kept when no price was given.
     const b: ScheduleBlock = {
       ...found,
       line_name: lineName,
@@ -285,8 +329,9 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
       start_hour: startHour,
       end_hour: startHour + duration,
       run_hours: duration,
+      ...(qtyKg !== undefined ? { qty_kg: qtyKg } : {}),
     };
-    setHoldingArea((prev) => prev.filter((bl) => bl.id !== id));
+    setHoldingArea((prev) => removeOne(prev, found));
     if (isWindowBlock(b.block_type)) {
       setCipWindows((prev) => [...prev, b]);
     } else {
@@ -321,8 +366,9 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
   ) => {
     if (!segments.length) return;
     pushUndo();
+    const taken = idsOf(schedule, cipWindows, holdingArea);
     const blocks: ScheduleBlock[] = segments.map((s) => ({
-      id: `blk_${_nextId++}`,
+      id: (() => { const id = mintBlockId("blk", taken); taken.add(id); return id; })(),
       line_id: lineId,
       line_name: lineName,
       order_id: s.orderId,
@@ -343,12 +389,12 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
         `(${totalH.toFixed(1)}h, ${Math.round(totalKg).toLocaleString()} kg ` +
         `across ${segments.length} order(s))`,
     );
-  }, [pushUndo, stamp]);
+  }, [pushUndo, stamp, schedule, cipWindows, holdingArea]);
 
   const addCip = useCallback((lineName: string, lineId: number, startHour: number, duration: number) => {
     pushUndo();
     const b: ScheduleBlock = {
-      id: `blk_${_nextId++}`,
+      id: mintBlockId("blk", idsOf(schedule, cipWindows, holdingArea)),
       line_id: lineId,
       line_name: lineName,
       order_id: "CIP",
@@ -362,12 +408,12 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
     };
     setCipWindows((prev) => [...prev, b]);
     setLastAction(`Added CIP on ${lineName} at ${stamp(startHour)}`);
-  }, [pushUndo, stamp]);
+  }, [pushUndo, stamp, schedule, cipWindows, holdingArea]);
 
   const addTrial = useCallback((lineName: string, lineId: number, sku: string, startHour: number, duration: number) => {
     pushUndo();
     const b: ScheduleBlock = {
-      id: `blk_${_nextId++}`,
+      id: mintBlockId("blk", idsOf(schedule, cipWindows, holdingArea)),
       line_id: lineId,
       line_name: lineName,
       order_id: `TRIAL-${sku}-L${lineName}`,
@@ -380,55 +426,40 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
     };
     setSchedule((prev) => [...prev, b]);
     setLastAction(`Added trial ${sku} on ${lineName}`);
-  }, [pushUndo]);
+  }, [pushUndo, schedule, cipWindows, holdingArea]);
 
   const addCipReforecast = useCallback((opts: {
     lineName: string; lineId: number; startHour: number; duration: number;
-    intervalH: number; horizonH: number; shiftIds: string[]; shiftH: number;
+    intervalH: number; horizonH: number; shiftIds: BlockRef[]; shiftH: number;
+    immovable?: (b: ScheduleBlock) => boolean;
   }) => {
     const { lineName, lineId, startHour, duration, intervalH, horizonH, shiftIds, shiftH } = opts;
     pushUndo();
-    const shift = new Set(shiftIds);
-    const slide = (b: ScheduleBlock): ScheduleBlock =>
-      shift.has(b.id) && shiftH > 0
+    const slide = (b: ScheduleBlock, on: boolean): ScheduleBlock =>
+      on && shiftH > 0
         ? { ...b, start_hour: b.start_hour + shiftH, end_hour: b.end_hour + shiftH }
         : b;
-    const isProjectedHere = (b: ScheduleBlock) =>
-      b.block_type === "cip" && b.line_name === lineName &&
-      (b.attrs ?? "").includes("cip_projected") && b.start_hour > startHour + 1e-6;
-    const sched2 = schedule.map(slide);
-    const wins2 = cipWindows.map(slide).filter((b) => !isProjectedHere(b));
-    const cip: ScheduleBlock = {
-      id: `blk_${_nextId++}`, line_id: lineId, line_name: lineName,
-      order_id: "CIP", sku: "CIP", start_hour: startHour, end_hour: startHour + duration,
-      run_hours: duration, is_trial: false, block_type: "cip", label: "CIP",
-      attrs: "planner:cip",
-    };
-    const onLine = [...sched2, ...wins2]
-      .filter((b) => b.line_name === lineName && !String(b.id).startsWith("cipinfo_"))
-      .sort((a, b) => a.start_hour - b.start_hour);
-    const added: ScheduleBlock[] = [cip];
-    let t = startHour + intervalH;
-    let guard = 0;
-    while (t < horizonH && guard++ < 60) {
-      const inside = onLine.find((b) => b.start_hour < t - 1e-6 && b.end_hour > t + 1e-6);
-      const s0 = inside ? inside.end_hour : t;
-      const near = [...wins2, ...added].some(
-        (c) => c.block_type === "cip" && c.line_name === lineName && Math.abs(c.start_hour - s0) < 1.0);
-      if (!near && s0 < horizonH) {
-        const e0 = Math.min(horizonH, s0 + duration);
-        added.push({ ...cip, id: `blk_${_nextId++}`, start_hour: s0, end_hour: e0,
-                     run_hours: e0 - s0, label: "CIP (projected)", attrs: "planner:cip_projected" });
-      }
-      t = s0 + intervalH;
-    }
-    setSchedule(sched2);
-    setCipWindows([...wins2, ...added]);
+    const shiftS = resolveIndices(schedule, shiftIds);
+    const shiftW = resolveIndices(cipWindows, shiftIds);
+    const sched2 = schedule.map((b, i) => slide(b, shiftS.has(i)));
+    const wins2 = cipWindows.map((b, i) => slide(b, shiftW.has(i)));
+    // The clean + the line's later cleans on current_state.project_cips'
+    // wall-clock grid, production split around them and pushed like
+    // _clip_prod_around_cips (utils/cipReforecast — fix FE / audit cip-14).
+    const taken = idsOf(schedule, cipWindows, holdingArea);
+    const mintId = (): string => { const id = mintBlockId("blk", taken); taken.add(id); return id; };
+    const res = reforecastCips({
+      lineName, lineId, startHour, duration, intervalH, horizonH,
+      schedule: sched2, windows: wins2, immovable: opts.immovable, mintId,
+    });
+    setSchedule(res.schedule);
+    setCipWindows(res.windows);
     setLastAction(
       `Added CIP on ${lineName} at ${stamp(startHour)}`
       + (shiftH > 0 ? ` (${shiftIds.length} block(s) slid ${shiftH.toFixed(1)}h)` : "")
-      + `; ${added.length - 1} later clean(s) re-forecast`);
-  }, [pushUndo, stamp, schedule, cipWindows]);
+      + `; ${res.added.length - 1} later clean(s) re-forecast`
+      + (res.skipped > 0 ? ` (${res.skipped} slot(s) skipped: committed block in the way)` : ""));
+  }, [pushUndo, stamp, schedule, cipWindows, holdingArea]);
 
   const reportAction = useCallback((msg: string) => {
     setLastAction(msg);
