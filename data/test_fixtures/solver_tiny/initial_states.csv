@@ -1,0 +1,4 @@
+line_id,line_name,initial_sku,available_from_hour,long_shutdown_flag,long_shutdown_extra_setup_hours,carryover_run_hours_since_last_cip_at_t0,last_cip_end_datetime,comment
+0,L1,A,0,0,0,60,,solver_tiny
+1,L2,CLEAN,0,0,0,0,,solver_tiny
+2,L3,B,0,0,0,0,,solver_tiny

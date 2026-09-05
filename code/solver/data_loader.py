@@ -56,6 +56,93 @@ class Params:
     min_run_pct_of_qty: float = 0.5
     # Allow Week-1 orders to be produced in Week-0 to fill slack and smooth week-to-week
     allow_week1_in_week0: bool = True
+    # Early-fill policy (plant decision 2026-09-04): how far before its own
+    # due_start a DEMAND order may start when allow_week1_in_week0 is on.
+    #   None      -> unbounded: next-week demand may be pre-built as far back
+    #                into earlier weeks as free capacity allows; the only
+    #                floors are the horizon, the line availability gate,
+    #                committed downtime windows and (Scenario E) the end of
+    #                every committed current-state MO on the line.
+    #   int hours -> every demand order may start at most that many hours
+    #                before its own due_start (the pre-2026-09-04 rule was
+    #                model_builder.EARLY_FILL_HOURS = 48, SECOND week only).
+    # [scheduler] early_fill_hours = "unbounded" | "none" | <int>; absent =
+    # None. Producing in the right week stays a SOFT preference either way
+    # (week gradient + objective_week_deviation_weight per early hour).
+    early_fill_hours: int | None = None
+    # Due-week policy: [scheduler] due_week_policy = "hard" | "soft".
+    #   "hard" (SHIPPED DEFAULT, 2026-09-04 night) -> a DEMAND order's week
+    #       end is a wall: due_end + 1 at relax levels 0-1 (level 2 relax_due
+    #       prices lateness per hour). Early fill is unchanged (decision #1,
+    #       early_fill_hours above) and the early kg-week price below still
+    #       ranks the nearer week first on a contested hour.
+    #   "soft" (OPT-IN; plant decision 2026-09-04 #2: "Treat the week numbers
+    #       on the demand_plan_summary.csv as preferential order, but not
+    #       necessarily the hard borders ... if a sku has tons scheduled in
+    #       week 1 and week 3, and it makes sense to combine all kgs for that
+    #       sku in one run in week 2, then that should be explored") -> the
+    #       due week is a PREFERENCE in both directions: the order may also
+    #       finish late inside the horizon, and every kg placed in the wrong
+    #       week is priced per kg per whole week of deviation with the two
+    #       weights below. The horizon end, the line gate, committed windows /
+    #       MOs and every current MO's or trial's own window stay hard.
+    #   Why soft is not the default: benchmarked 2026-09-04 at 600 s on the
+    #       live board (bench/results/policy_soft_v2, two seeds) soft delivered
+    #       2.22 / 2.06 kt on time vs 3.59 / 3.36 kt under hard (-38 %), 463 /
+    #       602 t late, W1 on-time 52 / 54 % vs 86 / 81 %, changeover hours
+    #       80.8 / 85.2 vs 73.8 / 73.2, and 6 of 8 discretionary large (>= 30
+    #       t) late orders saved no changeover -- pass-1 search stalls on the
+    #       larger soft model, so the lateness is search residue, not a priced
+    #       trade. Hard keeps 0 late kg and still finds 6-9 at-wall
+    #       consolidations for free.
+    due_week_policy: str = "hard"
+    # Deviation prices, in FILL UNITS PER TONNE PER WEEK-STEP, where 1 kg of
+    # tier-1 fill = 1,000 units (the pass-2 currency; "kg-eq" below = the
+    # fill value of one kg). late_kg_week_weight is used ONLY under
+    # due_week_policy = "soft" (hard builds no lateness terms for demand
+    # orders); early_kg_week_weight grades pre-building under both policies.
+    # v2 pricing (2026-09-04 evening): the SAME fraction of a kg's fill value
+    # is charged in every pass -- pass 2 applies weight / 1000 per kg-week
+    # (fill ~ 1,000 per kg), pass 1 applies weight per kg-week (fill = 1e6 per
+    # kg). v1 applied weight / 1000 in both, so the price was 0.2 % of fill in
+    # pass 1 and 200 % in pass 2, and pass 2 bought pass 1's deviation back
+    # with changeovers (model_builder).
+    # One FFS change under the Scenario F weights = (5 + 600) x 100 x K(33)
+    # = 1,996,500 units ~ 2,000 kg-eq (2 h of a 1,000 kg/h line).
+    #   late_kg_week_weight    200,000 -> ONE TONNE ONE WEEK LATE costs
+    #       200 kg-eq = 20 % of the tonne's own fill value per week late. So
+    #       a 10 t run slipping one week costs one FFS change, a 30 t order
+    #       three, 100 t ten: a small run (<= 10 t) may slip a week to save
+    #       ONE major changeover or to join a larger same-SKU run; a large
+    #       order (>= 30 t) does not move for fewer than several. Late still
+    #       beats never up to 4 weeks late (4 x 20 % < 100 %). Per kg per
+    #       week-step: 200 in pass 2, 200,000 in pass 1.
+    #   early_kg_week_weight    50,000 -> 1/4 of late = 50 kg-eq = 5 % of the
+    #       tonne's fill value per week early (inventory is cheaper than a
+    #       missed week). The nearer week wins a contested hour by 5 % per
+    #       week -- what the fixed-48h rule got for free and the unbounded
+    #       policy lost (W1 fill 86 % vs 53 %) -- and three weeks early
+    #       (3 x 5 % = 15 %) still leaves a kg worth making, so pre-building
+    #       beats idling on a 4-week horizon. Per kg per week-step: 50 in
+    #       pass 2, 50,000 in pass 1. See helpers/solver_rules.py rows
+    #       due_week_policy / late_kg_week_weight / early_kg_week_weight.
+    #   Opt-in note: 200,000 / 50,000 are the opt-in defaults; late 400,000 /
+    #       early 100,000 is the only tested soft setting under which every
+    #       late order stayed <= 1 week late (bench 2026-09-04).
+    # [scheduler] late_kg_week_weight / early_kg_week_weight (integers >= 0;
+    # 0 disables that side's price, not the freedom).
+    late_kg_week_weight: int = 200_000
+    early_kg_week_weight: int = 50_000
+    # Pass-2 makespan coefficient ([scheduler] pass2_makespan_weight, int >=
+    # 0, default 1 = unchanged: a pure tiebreaker). Used ONLY in the pass-2
+    # fill-exchange objective Minimize(co*100*K + makespan * W + ... -
+    # prod_score). 1 kg-eq ~ 1,000 pass-2 units, so a weight of 100,000 makes
+    # one hour of shorter plan worth 100 kg-eq = 0.1 t of fill; 1,000,000
+    # makes it 1 t (an hour of a 1,000 kg/h line).
+    pass2_makespan_weight: int = 1
+    # Opt-in legacy one-sided week-0/week-1 gap stitch (fix SB-1 retired it;
+    # model_builder reads the flag with getattr). [scheduler] legacy_week_stitch.
+    legacy_week_stitch: bool = False
     # When True, keep per-SKU rates from capabilities_rates.csv instead of
     # overriding them with the flat line_rates.csv values.
     use_sku_rates: bool = False
@@ -118,6 +205,84 @@ class Params:
     solver_random_seed: int | None = None
 
 
+def parse_early_fill_hours(value) -> int | None:
+    """[scheduler] early_fill_hours -> Params.early_fill_hours.
+
+    None / "unbounded" / "none" / "" -> None (no limit, the plant decision of
+    2026-09-04); an int, float or numeric string -> whole hours (>= 0).
+    Anything else raises ValueError so a typo cannot silently become a
+    policy. Used by phase2_scheduler.params_from_config; the independent
+    validator restates the same parse on purpose (it shares no code with the
+    model it checks).
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"early_fill_hours: expected hours or 'unbounded', got {value!r}")
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in ("", "unbounded", "none", "unlimited", "inf"):
+            return None
+        try:
+            value = float(s)
+        except ValueError:
+            raise ValueError(
+                f"early_fill_hours: expected hours or 'unbounded', got {value!r}") from None
+    try:
+        h = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"early_fill_hours: expected hours or 'unbounded', got {value!r}") from None
+    if math.isnan(h) or math.isinf(h) or h < 0:
+        raise ValueError(f"early_fill_hours must be >= 0 hours, got {value!r}")
+    return int(round(h))
+
+
+DUE_WEEK_POLICIES = ("soft", "hard")
+
+
+def parse_due_week_policy(value) -> str:
+    """[scheduler] due_week_policy -> Params.due_week_policy.
+
+    None / "" / missing -> "hard" (the shipped default since 2026-09-04
+    night; "soft" is the opt-in of plant decision 2026-09-04 #2, see
+    Params); "soft" / "hard" (any case) -> as given. Anything else raises
+    ValueError so a typo cannot silently become a policy. The independent
+    validator restates the same parse on purpose (it shares no code with the
+    model).
+    """
+    if value is None:
+        return "hard"
+    if isinstance(value, bool) or not isinstance(value, str):
+        raise ValueError(
+            f"due_week_policy: expected 'soft' or 'hard', got {value!r}")
+    s = value.strip().lower()
+    if s == "":
+        return "hard"
+    if s not in DUE_WEEK_POLICIES:
+        raise ValueError(
+            f"due_week_policy: expected 'soft' or 'hard', got {value!r}")
+    return s
+
+
+def parse_kg_week_weight(value, name: str, default: int) -> int:
+    """[scheduler] late_kg_week_weight / early_kg_week_weight -> whole
+    fill-reward units per tonne per week-step (>= 0). None / "" -> the
+    default; a number or numeric string -> int(round()); junk, negative,
+    NaN or a bool raise ValueError."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return int(default)
+    if isinstance(value, bool):
+        raise ValueError(f"{name}: expected a number >= 0, got {value!r}")
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name}: expected a number >= 0, got {value!r}") from None
+    if math.isnan(f) or math.isinf(f) or f < 0:
+        raise ValueError(f"{name}: expected a number >= 0, got {value!r}")
+    return int(round(f))
+
+
 class Files:
     def __init__(self, data_dir: Path):
         data_dir = Path(data_dir)
@@ -154,7 +319,22 @@ class Data:
     def load(self) -> None:
         # ── Capabilities (capable flags + fallback SKU-specific rates) ───
         cap = pd.read_csv(self.F.caps)
-        cap["line_id"] = pd.to_numeric(cap["line_id"], errors="coerce").fillna(0).astype(int)
+        # An identifier must never be defaulted (fix SA-12 / audit
+        # quality-10): the old fillna(0) turned any unparsable line_id (a
+        # line NAME, a shifted column, a header that slipped through) into
+        # line 0 = P09, silently declaring that SKU capable on P09 at the
+        # foreign line's rate. Raise, naming the rows.
+        _lid = pd.to_numeric(cap["line_id"], errors="coerce")
+        _bad = cap.index[_lid.isna()].tolist()
+        if _bad:
+            _ex = ", ".join(
+                f"row {i}: line_id={cap.at[i, 'line_id']!r}"
+                for i in _bad[:5])
+            raise ValueError(
+                f"capabilities_rates.csv: {len(_bad)} row(s) with an "
+                f"unparsable line_id ({_ex}{', ...' if len(_bad) > 5 else ''})"
+                " — an identifier is never defaulted to line 0")
+        cap["line_id"] = _lid.astype(int)
         cap["sku"] = cap["sku"].astype(str)
         cap["capable"] = pd.to_numeric(cap.get("capable", 0), errors="coerce").fillna(0).astype(int)
         # Support old column names: rate_uph (legacy), rate_kgph (new VIF
@@ -311,9 +491,22 @@ class Data:
         already in VIF and cannot be shifted). Tonnage is the *remaining* kg
         (fct − made); the solver may trim it under relax_demand but the
         objective rewards meeting it, and mo_changes.csv records the delta.
+
+        Quantity bounds (fix SA-5 / audit C61, 2026-09-03): the model makes
+        produced = round(rate) x integer run hours, so the old
+        qty_min == qty_max == round(remaining) was satisfiable ONLY when the
+        remaining kg happened to be a whole multiple of the rounded rate —
+        23,000 kg @ 737 kg/h made Scenario E level 0 structurally INFEASIBLE
+        and level 1 then recorded a bogus tonnage_trim. The bounds now
+        bracket the remaining kg at whole hours of the locked line's rate:
+        qty_min = ir x floor(remaining / ir), qty_max = ir x ceil(remaining /
+        ir) with ir = round(rate) (at least one hour when anything remains).
+        The raw remaining kg is kept in `qty_remaining` for reporting. When
+        the rate is unknown (no line, rate <= 0) the old exact bounds stay.
         """
         name_to_id = {v: k for k, v in self.line_names.items()}
         out: List[dict] = []
+        seen_mo: dict[str, int] = {}
         for row_i, r in cmo.iterrows():
             line_name = str(r.get("line_name", "")).strip().upper()
             sku = str(r.get("sku", "")).strip()
@@ -334,29 +527,75 @@ class Data:
             # pre-rolling 2-week window and clipped rows inside a 504h plan
             due_end = num_or_default(r.get("due_end_h"), self.P.horizon_h - 1)
             locked = int(num_or_default(r.get("locked_line"), 1)) == 1
+            qmin = qmax = int(round(remaining))
+            rate = float(self.rate.get((line_id, sku)) or 0.0)
+            ir = int(round(rate))
+            if ir > 0:
+                n_lo = int(math.floor(remaining / ir))
+                n_hi = int(math.ceil(remaining / ir))
+                if n_lo < 1:
+                    n_lo = 1  # anything remaining takes at least one hour
+                if n_hi < n_lo:
+                    n_hi = n_lo
+                qmin, qmax = ir * n_lo, ir * n_hi
+            # Duplicate MO numbers (fix SA-12 / audit adversarial-10): the
+            # same MO on two lines used to yield two orders with the SAME
+            # order_id, so mo_changes.csv reported both against one set of
+            # blocks. Suffix the repeat (`<mo>#2|CUR`) and warn; the
+            # "|CUR" SUFFIX consumers key on (endswith) is preserved and
+            # mo_id still carries the bare MO number.
+            order_id = f"{mo}|CUR"
+            if mo in seen_mo:
+                seen_mo[mo] += 1
+                order_id = f"{mo}#{seen_mo[mo]}|CUR"
+                print(f"[current_mo] WARNING: MO {mo} appears more than once "
+                      f"(row {row_i}, line {line_name}); order_id -> "
+                      f"{order_id}. Check manprg for a duplicated MO number.")
+            else:
+                seen_mo[mo] = 1
             out.append(
                 dict(
-                    order_id=f"{mo}|CUR",
+                    order_id=order_id,
                     sku=sku,
                     due_start=due_start,
                     due_end=due_end,
-                    qty_min=int(round(remaining)),
-                    qty_max=int(round(remaining)),
+                    qty_min=qmin,
+                    qty_max=qmax,
+                    qty_remaining=int(round(remaining)),
                     priority=0,  # current MOs outrank new demand
                     is_current_mo=True,
                     mo_id=mo,
                     locked_line=line_id if locked else None,
                     source=str(r.get("source", "manprg")),
+                    # The MO's manprg planned start in solver hours (may be
+                    # negative for a running MO); absent column -> None.
+                    # write_mo_changes reports it as orig_start_h with
+                    # orig_start_src = "manprg" (INTEGRATE, agent V handoff).
+                    manprg_start_h=(
+                        None if pd.isna(r.get("manprg_start_h", float("nan")))
+                        else int(round(float(r.get("manprg_start_h"))))),
                 )
             )
         return out
 
     def _parse_demand(self, dem: pd.DataFrame) -> List[dict]:
+        """Demand rows -> order dicts.
+
+        Validation (fix SA-12 / audit adversarial-4, 2026-09-03): a malformed
+        row used to poison the whole plan silently — a negative qty_target
+        gave qty_min -4500 / qty_max -5500 and `prod <= qmax` made the model
+        INFEASIBLE at EVERY relax level with no row named; lower_pct >
+        upper_pct (qmin > qmax) did the same at level 0 and the ladder then
+        "rescued" the run by dropping every order's demand floor. Such rows
+        now raise a ValueError naming the row. A qty_target of exactly 0 is
+        legitimate (Scenario F netting writes fully-covered weeks as 0) and
+        is kept.
+        """
         out = []
-        for _, r in dem.iterrows():
+        for row_i, r in dem.iterrows():
             sku = str(r.get("sku", ""))
-            if not sku:
-                raise ValueError("DemandPlan row missing 'sku'")
+            if not sku or sku.lower() == "nan":
+                raise ValueError(f"demand_plan.csv row {row_i}: missing 'sku'")
             order_id = str(r.get("order_id", ""))
             if not order_id or order_id.lower() == "nan":
                 wk = r.get("week_index")
@@ -364,19 +603,58 @@ class Data:
                     ds = num_or_default(r.get("due_start_hour"), 0)
                     wk = 0 if ds <= 167 else 1
                 order_id = f"W{int(wk)}-{sku}"
-            qty_target = float_or_default(r.get("qty_target"), 0.0)
-            lower_pct = r.get("lower_pct")
-            upper_pct = r.get("upper_pct")
-            qty_min = r.get("qty_min")
-            qty_max = r.get("qty_max")
-            if pd.notna(lower_pct) and pd.notna(upper_pct):
+            where = f"demand_plan.csv row {row_i} ({order_id}, sku {sku})"
+
+            def _num(name: str, v, allow_blank: bool = False):
+                if v is None or (isinstance(v, float) and math.isnan(v)) or (
+                        isinstance(v, str) and not v.strip()):
+                    if allow_blank:
+                        return None
+                    raise ValueError(f"{where}: {name} is blank")
+                try:
+                    f = float(v)
+                except (TypeError, ValueError):
+                    raise ValueError(
+                        f"{where}: {name}={v!r} is not a number") from None
+                if math.isnan(f) or math.isinf(f):
+                    raise ValueError(f"{where}: {name}={v!r} is not a number")
+                return f
+
+            qty_target = _num("qty_target", r.get("qty_target"),
+                              allow_blank=True)
+            if qty_target is None:
+                qty_target = 0.0
+            if qty_target < 0:
+                raise ValueError(
+                    f"{where}: qty_target={qty_target} is negative")
+            lower_pct = _num("lower_pct", r.get("lower_pct"), allow_blank=True)
+            upper_pct = _num("upper_pct", r.get("upper_pct"), allow_blank=True)
+            qty_min = _num("qty_min", r.get("qty_min"), allow_blank=True)
+            qty_max = _num("qty_max", r.get("qty_max"), allow_blank=True)
+            if lower_pct is not None and upper_pct is not None:
+                if lower_pct < 0 or upper_pct < 0:
+                    raise ValueError(
+                        f"{where}: lower_pct={lower_pct} / upper_pct="
+                        f"{upper_pct} must be >= 0")
+                if lower_pct > upper_pct:
+                    raise ValueError(
+                        f"{where}: lower_pct={lower_pct} > upper_pct="
+                        f"{upper_pct} (qty_min would exceed qty_max)")
                 qmin = int(math.floor(qty_target * float(lower_pct)))
                 qmax = int(math.ceil(qty_target * float(upper_pct)))
-            elif pd.notna(qty_min) and pd.notna(qty_max):
-                qmin = num_or_default(qty_min, 0)
-                qmax = num_or_default(qty_max, 0)
+            elif qty_min is not None and qty_max is not None:
+                qmin = int(qty_min)
+                qmax = int(qty_max)
+                if qmin < 0 or qmax < 0:
+                    raise ValueError(
+                        f"{where}: qty_min={qmin} / qty_max={qmax} must be "
+                        ">= 0")
+                if qmin > qmax:
+                    raise ValueError(
+                        f"{where}: qty_min={qmin} > qty_max={qmax}")
             else:
-                raise ValueError(f"Demand row for sku={sku} needs pct bounds or qty_min/max.")
+                raise ValueError(
+                    f"{where}: needs lower_pct/upper_pct or qty_min/qty_max.")
             out.append(
                 dict(
                     order_id=order_id,

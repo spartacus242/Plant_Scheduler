@@ -39,6 +39,17 @@ def _csv_rows(path: Path) -> int:
     return sum(1 for _ in open(path, encoding="utf-8-sig")) - 1
 
 
+def _setup_int(x) -> int:
+    """Setup hours -> whole model hours, rounded UP. Fix SA-4 (audit C36,
+    2026-09-03): the legacy half-up rounding (floor(x + 0.5)) turned the
+    plant's quarter-hour standards 0.25 / 1.25 / 2.25 into 0 / 1 / 2 h, so
+    the model reserved 15 minutes LESS than the standard (12 live
+    CHANGEOVER_GAP shortfalls found by the independent validator). A
+    reserved slot may exceed the standard, never undercut it."""
+    v = float(x)
+    return int(math.ceil(v - 1e-9)) if v > 0 else 0
+
+
 def _direct_dicts(path: Path):
     """Replicate the legacy inline build (pre-cache) for an equivalence check.
     Applies the same plant-export column aliases as the cache (2026-08-26 —
@@ -50,9 +61,7 @@ def _direct_dicts(path: Path):
                               if a in chg.columns and c not in chg.columns})
     chg["from_sku"] = chg["from_sku"].astype(str)
     chg["to_sku"] = chg["to_sku"].astype(str)
-    chg["setup_rounded"] = chg["setup_hours"].apply(
-        lambda x: int(math.floor(float(x) + 0.5))
-    )
+    chg["setup_rounded"] = chg["setup_hours"].apply(_setup_int)
     setup, mc, ctype = {}, {}, {}
     for _, r in chg.iterrows():
         pair = (str(r["from_sku"]), str(r["to_sku"]))
@@ -93,8 +102,9 @@ def test_nested_matches_legacy(tmp_path):
     chg = pd.read_csv(wd / "changeovers.csv",
                       dtype={"from_sku": str, "to_sku": str})
     for _, r in chg.iterrows():
+        # rounded UP since fix SA-4 (see _setup_int)
         assert nested[str(r["from_sku"])][str(r["to_sku"])] == float(
-            int(math.floor(float(r["setup_hours"]) + 0.5))
+            _setup_int(r["setup_hours"])
         )
 
 

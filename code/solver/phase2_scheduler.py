@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 import argparse
+import copy
 import sys
 import traceback
 from datetime import datetime, timedelta
@@ -16,9 +17,10 @@ from typing import Any, Dict, List, Tuple
 import pandas as pd
 from ortools.sat.python import cp_model
 
-from data_loader import Params, Data, Files, available_hours_line
+from data_loader import (Params, Data, Files, available_hours_line, parse_early_fill_hours,
+                         parse_due_week_policy, parse_kg_week_weight)
 from diagnostics import run_diagnostics, run_unique_line_load_diagnostic, run_blockages_diagnostic
-from model_builder import build_model
+from model_builder import build_model, default_fill_exchange_rate
 from validate_schedule import validate_all
 from solver_progress import (
     init_progress,
@@ -238,9 +240,12 @@ def _parse_args() -> argparse.Namespace:
         "--cip-flex",
         action="store_true",
         help=(
-            "CIP timing flexibility: scale down the cip_defer reward so a CIP "
-            "can be pulled EARLIER to absorb a changeover. The line's max "
-            "allowable CIP interval stays a HARD constraint (food safety)."
+            "RETIRED (no effect since 2026-09-03, fix SB-4): the cip_defer "
+            "reward this mode scaled was removed from the objective; a CIP "
+            "now costs dur x median line rate kg and may be pulled earlier "
+            "freely for changeover absorption. The line's max allowable CIP "
+            "interval stays a HARD constraint (food safety). Flag accepted "
+            "for compatibility."
         ),
     )
     parser.add_argument(
@@ -259,6 +264,17 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Path to flowstate.toml config file for defaults.",
     )
+    parser.add_argument(
+        "--deterministic",
+        action="store_true",
+        help=(
+            "Reproducible search: num_search_workers=1 plus the configured "
+            "solver_random_seed (0 when unset). The default 8-worker portfolio "
+            "is NOT reproducible even with a fixed seed (C80: same inputs + "
+            "same seed gave different plans) - use this for A/B evidence, "
+            "not for production speed."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -269,7 +285,7 @@ _ARGS = _parse_args() if __name__ == "__main__" else argparse.Namespace(
     min_run_hours=None, no_week1_in_week0=False, initial_states=None,
     two_phase=False,
     objective="balanced", validate=False, rolling=False, cross_week=False,
-    cip_flex=False, no_warm_start=False, config=None,
+    cip_flex=False, no_warm_start=False, config=None, deterministic=False,
 )
 
 # --- Config file loading (Phase 2.2) ---
@@ -385,6 +401,40 @@ def params_from_config(
     if sched.get("min_run_pct_of_qty") is not None:
         P.min_run_pct_of_qty = float(sched["min_run_pct_of_qty"])
     P.allow_week1_in_week0 = bool(allow_week1)
+    # Early-fill policy (plant decision 2026-09-04): [scheduler]
+    # early_fill_hours = "unbounded" | "none" | <hours>. Absent = None =
+    # unbounded — next-week demand may be pre-built as early as free capacity
+    # allows, never before an already scheduled MO (model_builder). An
+    # integer restores a bounded allowance (48 = the pre-decision value,
+    # now applied to EVERY later week, not only the second).
+    P.early_fill_hours = parse_early_fill_hours(sched.get("early_fill_hours"))
+    # Due-week policy: [scheduler] due_week_policy = "hard" (shipped default,
+    # 2026-09-04 night: due_end + 1 is a wall at relax levels 0-1) | "soft"
+    # (opt-in, plant decision 2026-09-04 #2: the demand week is a preference
+    # in both directions, lateness inside the horizon is priced per kg-week;
+    # benchmarked -38 % on-time kg at 600 s, see data_loader.Params). The
+    # prices are late_kg_week_weight / early_kg_week_weight in fill units per
+    # tonne per week-step (v2 defaults 200,000 / 50,000 = 20 % / 5 % of a
+    # tonne's fill value per week; 10 t one week late ~ one FFS change --
+    # data_loader.Params and model_builder.dev_kg_coefficients for the
+    # one-currency invariant). The late price is soft-only; the early price
+    # grades pre-building under both policies.
+    P.due_week_policy = parse_due_week_policy(sched.get("due_week_policy"))
+    P.late_kg_week_weight = parse_kg_week_weight(
+        sched.get("late_kg_week_weight"), "late_kg_week_weight",
+        Params.late_kg_week_weight)
+    P.early_kg_week_weight = parse_kg_week_weight(
+        sched.get("early_kg_week_weight"), "early_kg_week_weight",
+        Params.early_kg_week_weight)
+    # [scheduler] pass2_makespan_weight (v2 pricing, 2026-09-04): makespan
+    # coefficient in the pass-2 fill-exchange objective only. Default 1 (a
+    # tiebreaker); 1 kg-eq ~ 1,000 pass-2 units, so 100,000 makes one hour
+    # of shorter plan worth 0.1 t of fill. Whole integer >= 0.
+    if sched.get("pass2_makespan_weight") is not None:
+        P.pass2_makespan_weight = max(0, int(sched["pass2_makespan_weight"]))
+    # Opt-in legacy week-0/week-1 gap stitch (fix SB-1 retired the hard
+    # form; default off). Read with getattr by model_builder.
+    P.legacy_week_stitch = bool(sched.get("legacy_week_stitch", False))
     # Soft demand (Scenario F)
     P.soft_demand = bool(sched.get("soft_demand", False))
     if sched.get("shortfall_weight") is not None:
@@ -406,6 +456,10 @@ def apply_solver_seed(solver: "cp_model.CpSolver", P: Params) -> None:
     default seed stays in force and existing runs are unchanged.
     """
     seed = getattr(P, "solver_random_seed", None)
+    if seed is None and DETERMINISTIC:
+        # --deterministic without a configured seed: pin CP-SAT's seed so
+        # two runs of the same inputs really are the same search.
+        seed = 0
     if seed is not None:
         solver.parameters.random_seed = int(seed)
 
@@ -413,6 +467,16 @@ def apply_solver_seed(solver: "cp_model.CpSolver", P: Params) -> None:
 DATA_DIR = _ARGS.data_dir.resolve() if _ARGS.data_dir is not None else BASE_DIR
 _CFG = _load_config(_ARGS.config, DATA_DIR)
 _CFG_SCHED = _CFG.get("scheduler", {})
+# C80 (fix V-5): CP-SAT's 8-worker portfolio is nondeterministic under a
+# wall-clock limit even with random_seed pinned (measured: same inputs +
+# seed 7 -> three different plans). --deterministic (or [scheduler]
+# deterministic = true) runs every solve with ONE worker so a seed is
+# reproducible; the anchor solve of the two-pass block is always 1 worker
+# (it is a fixed-assignment check, workers add nothing).
+DETERMINISTIC = bool(getattr(_ARGS, "deterministic", False)
+                     or _CFG_SCHED.get("deterministic", False))
+SEARCH_WORKERS = 1 if DETERMINISTIC else 8
+ANCHOR_WORKERS = 1
 
 ERR_FILE = DATA_DIR / "solver_error.txt"
 KPI_FILE = DATA_DIR / "solver_kpis.txt"
@@ -609,23 +673,97 @@ def _late_orders(
     data: Data,
     vars_dict: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    """Per-order total lateness (hours past due window) when relax_due was on."""
+    """Per-order lateness: hours past the due window (relax_due, or the soft
+    due-week policy at every level — plant decision 2026-09-04 #2) plus, when
+    the model priced it, the kg that landed after due_end + 1 (`late_kg`) and
+    the kg x whole-weeks-late (`late_kg_weeks`, the priced quantity). Under
+    the soft policy these are a TRADE-OFF the solver chose (late beats short;
+    a small order joins a later campaign when that saves a changeover), not a
+    violation — the independent validator reports them as WARN."""
     lateness = vars_dict.get("lateness") or {}
-    if not lateness:
+    late_kg = vars_dict.get("late_kg") or {}
+    late_steps = vars_dict.get("late_kg_steps") or {}
+    if not lateness and not late_kg:
         return []
-    totals: Dict[int, int] = {}
+    hours: Dict[int, int] = {}
+    kg: Dict[int, int] = {}
+    kgw: Dict[int, int] = {}
     for (_l, o_idx), var in lateness.items():
         v = int(solver.Value(var))
         if v > 0:
-            totals[o_idx] = totals.get(o_idx, 0) + v
-    return [
+            hours[o_idx] = hours.get(o_idx, 0) + v
+    for (_l, o_idx), expr in late_kg.items():
+        v = int(solver.Value(expr))
+        if v > 0:
+            kg[o_idx] = kg.get(o_idx, 0) + v
+    for (_l, o_idx), exprs in late_steps.items():
+        v = sum(int(solver.Value(e)) for e in exprs)
+        if v > 0:
+            kgw[o_idx] = kgw.get(o_idx, 0) + v
+    idxs = set(hours) | set(kg)
+    rows = [
         {
             "order_id": data.orders[o_idx]["order_id"],
             "sku": data.orders[o_idx]["sku"],
-            "lateness_h": v,
+            "lateness_h": hours.get(o_idx, 0),
+            "late_kg": kg.get(o_idx, 0),
+            "late_kg_weeks": kgw.get(o_idx, 0),
         }
-        for o_idx, v in sorted(totals.items(), key=lambda kv: -kv[1])
+        for o_idx in idxs
     ]
+    return sorted(rows, key=lambda r: (-r["late_kg_weeks"], -r["lateness_h"]))
+
+
+def _early_orders(
+    solver: cp_model.CpSolver,
+    data: Data,
+    vars_dict: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Per-order kg produced BEFORE due_start (`early_kg`) and kg x whole
+    weeks early (`early_kg_weeks`) — the priced pre-building of the soft
+    due-week policy (decision #1 allows it, #2 prices it). Empty when the
+    model priced nothing."""
+    early_kg = vars_dict.get("early_kg") or {}
+    early_steps = vars_dict.get("early_kg_steps") or {}
+    if not early_kg:
+        return []
+    kg: Dict[int, int] = {}
+    kgw: Dict[int, int] = {}
+    for (_l, o_idx), expr in early_kg.items():
+        v = int(solver.Value(expr))
+        if v > 0:
+            kg[o_idx] = kg.get(o_idx, 0) + v
+    for (_l, o_idx), exprs in early_steps.items():
+        v = sum(int(solver.Value(e)) for e in exprs)
+        if v > 0:
+            kgw[o_idx] = kgw.get(o_idx, 0) + v
+    rows = [
+        {
+            "order_id": data.orders[o_idx]["order_id"],
+            "sku": data.orders[o_idx]["sku"],
+            "early_kg": kg[o_idx],
+            "early_kg_weeks": kgw.get(o_idx, 0),
+        }
+        for o_idx in kg
+    ]
+    return sorted(rows, key=lambda r: -r["early_kg_weeks"])
+
+
+def _dev_kg_week_totals(solver: cp_model.CpSolver, vars_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Report fields for the soft due-week policy: the policy in force and the
+    solved kg-week totals (0 when the model built no deviation terms)."""
+    def _val(expr) -> int:
+        if isinstance(expr, (int, float)):
+            return int(expr)
+        try:
+            return int(solver.Value(expr))
+        except Exception:  # noqa: BLE001 - telemetry, never a gate
+            return 0
+    return {
+        "due_week_policy": str(vars_dict.get("due_week_policy") or "hard"),
+        "late_kg_weeks": _val(vars_dict.get("late_kg_weeks", 0)),
+        "early_kg_weeks": _val(vars_dict.get("early_kg_weeks", 0)),
+    }
 
 
 def _week_moved_orders(
@@ -641,6 +779,7 @@ def _week_moved_orders(
     if not week_dev:
         return []
     out: Dict[int, Dict[str, Any]] = {}
+    _wk_boundary = _two_phase_boundary(data.orders)
     for (_l, o_idx), (early_v, late_v) in week_dev.items():
         e = int(solver.Value(early_v))
         lt = int(solver.Value(late_v))
@@ -649,7 +788,8 @@ def _week_moved_orders(
         rec = out.setdefault(o_idx, {
             "order_id": data.orders[o_idx]["order_id"],
             "sku": data.orders[o_idx]["sku"],
-            "azap_week": 0 if int(data.orders[o_idx]["due_end"]) <= WEEK0_END else 1,
+            # demand-derived frame (fix SB-1): first week = 0, later = 1
+            "azap_week": 0 if int(data.orders[o_idx]["due_start"]) < _wk_boundary else 1,
             "hours_earlier": 0,
             "hours_later": 0,
         })
@@ -659,6 +799,341 @@ def _week_moved_orders(
         out.values(),
         key=lambda r: -(r["hours_earlier"] + r["hours_later"]),
     )
+
+
+# ── Fix V helpers (audit 2026-09-03: C81/C83/C84/C85/C63/C80) ──────────────
+# Validator ERROR codes that mean the plan cannot be run on the floor. A
+# schedule carrying any of these must not be promoted without an explicit
+# planner override (pages/generate.py, pages/compare.py read the count from
+# feasibility_report.json["validation"]["physical_errors"]).
+PHYSICAL_ERROR_CODES = (
+    "OVERLAP", "IN_DOWNTIME", "CIP_INTERVAL", "CHANGEOVER_GAP", "BEFORE_GATE",
+)
+
+# mo_changes.csv (VIF write-back) columns. The first twelve are the historical
+# record; the rest were added 2026-09-03 (writeback-5/6/7 + agent W handoff):
+# one row per produced PIECE (piece = 1..split_count), where orig_start_h came
+# from, wall-clock start/end of the piece, the anchor datetime hour 0 refers to
+# (so the hours are usable in VIF), the work dir / scenario and a timestamp.
+MO_CHANGES_COLUMNS = [
+    "mo", "line_name", "sku", "source", "orig_qty_kg", "new_qty_kg",
+    "delta_kg", "orig_start_h", "new_start_h", "new_end_h", "split_count",
+    "reason", "piece", "orig_start_src", "new_start_dt", "new_end_dt",
+    "planning_anchor", "scenario_id", "generated_at",
+]
+
+
+def _model_warnings(vars_dict: Dict[str, Any] | None) -> List[str]:
+    """Model-build warnings (fix SB-3: lines already past their CIP interval
+    at the availability gate get the clean pinned at the gate). Surfaced in
+    the run log, feasibility_report.json["model_warnings"] and Generate
+    (INTEGRATE, agent SB handoff V-1)."""
+    return [str(w) for w in ((vars_dict or {}).get("warnings") or [])]
+
+
+def _log_model_warnings(vars_dict: Dict[str, Any] | None, label: str = "") -> List[str]:
+    ws = _model_warnings(vars_dict)
+    for w in ws:
+        log(f"[model] WARNING{label}: {w}")
+    return ws
+
+
+def _two_phase_boundary(orders: List[dict]) -> int:
+    """Hour at which the two-phase driver cuts week 0 from week 1.
+
+    = the SECOND distinct demand due_start (model_builder.week_frame, fix
+    SB-1), falling back to the legacy Monday constant when the demand file
+    holds a single week. The old test `due_end <= 167` / `due_start >= 168`
+    was right only on a Monday-anchored frame: on the live Wednesday-anchored
+    Scenario F frame (W1 = 120-287) a W1 order fell in NEITHER class and was
+    silently dropped from the two-phase solve (INTEGRATE, agent SB handoff
+    V-3).
+    """
+    try:
+        from model_builder import week_frame
+        second = week_frame(orders).get("second_start")
+    except Exception:  # noqa: BLE001 - never lose a solve over telemetry
+        second = None
+    return int(second) if second is not None else WEEK1_START
+
+
+def _sub_phase_params(P: Params, *, horizon_h: int,
+                      min_run_override: int | None = None) -> Params:
+    """Params for a two-phase sub-solve (C84 / config-5 / quality-3).
+
+    dataclasses.replace copies EVERY field of the parent solve and overrides
+    only the three the sub-phase deliberately changes: the horizon, the
+    week-1-in-week-0 rule (off inside a single-week model) and the CLI
+    min-run override. The previous hand-written constructor silently dropped
+    use_sku_rates, soft_demand, objective_shortfall_weight,
+    over_target_reward_pct and solver_random_seed - and would have dropped
+    every future field too.
+    """
+    import dataclasses
+    return dataclasses.replace(
+        P,
+        horizon_h=int(horizon_h),
+        allow_week1_in_week0=False,
+        min_run_hours=(int(min_run_override) if min_run_override is not None
+                       else P.min_run_hours),
+    )
+
+
+def _level_report_fields(level: int, vars_dict: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """Honest labels for a relax level (C63 / orchestration-1).
+
+    Level 3 (ignore_co) drops the changeover ordering + setup-time block in
+    model_builder, so its plans can put two SKUs back-to-back with 0 h of
+    setup. ``setup_times_enforced`` says so; a model that keeps setup TIME at
+    level 3 (model-side fix S12) can announce it by putting
+    ``vars_dict["setup_times_enforced"] = True`` and this report follows.
+    """
+    ignore_co = bool(RELAX_LADDER[level]["ignore_co"])
+    kept_by_model = bool((vars_dict or {}).get("setup_times_enforced", False))
+    return {
+        "ignore_co": ignore_co,
+        "setup_times_enforced": (not ignore_co) or kept_by_model,
+    }
+
+
+def _keep_committed_mo_bounds(model: Any, vars_dict: Dict[str, Any], data: Data,
+                              level: int) -> Tuple[str, int]:
+    """C85 / orchestration-9: relax levels must not zero a committed MO's qty_min.
+
+    model_builder applies ``relax_demand`` (levels >= 1) to EVERY order, so a
+    running/queued manprg MO could be trimmed to a 4 h stub and reported as
+    'tonnage_trim' - the plant's committed contract silently broken. Here the
+    orchestrator re-imposes produced >= qty_min for is_current_mo orders:
+      level 0  - bounds are hard already ("n/a")
+      level 1  - relax_demand for DEMAND orders only; MO bounds kept
+      level 2  - + soft due dates: an MO may now finish past its manprg
+                 window (lateness is priced), but its tonnage is still kept
+      level 3  - last resort (ignore_co): MO bounds are RELEASED so the ladder
+                 can still end FEASIBLE; the report/log say so loudly and
+                 mo_changes.csv records every trim.
+    Returns (state, n_orders) with state in {"n/a", "kept", "released"}.
+    """
+    cur = [(i, o) for i, o in enumerate(data.orders) if o.get("is_current_mo")]
+    if level <= 0 or not cur:
+        return ("n/a", 0)
+    if level >= 3:
+        return ("released", len(cur))
+    produced = vars_dict.get("produced")
+    if produced is None:
+        return ("n/a", 0)
+    n = 0
+    for i, o in cur:
+        try:
+            var = produced[i]
+        except (KeyError, IndexError, TypeError):
+            continue
+        model.Add(var >= int(o["qty_min"]))
+        n += 1
+    return ("kept", n)
+
+
+def _co_load_value(solver: cp_model.CpSolver, vars_dict: Dict[str, Any]) -> int | None:
+    """Weighted changeover load of a solved model (int when no CO term exists)."""
+    co = vars_dict.get("co_load")
+    try:
+        if co is None:
+            return None
+        if isinstance(co, int):
+            return int(co)
+        return int(solver.Value(co))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _adopt_pass2(co1: int | None, co2: int | None,
+                 err1: int | None, err2: int | None, *,
+                 obj_anchor: float | None = None,
+                 obj2: float | None = None) -> Tuple[bool, str]:
+    """C83 / orchestration-7: pass 2 replaces pass 1 only when it is not worse.
+
+    A FEASIBLE-but-unimproved pass 2 (anchor failed, time ran out) used to be
+    adopted blindly. "Not worse" is measured on pass 2's OWN objective when
+    both sides are known (INTEGRATE, 2026-09-03): since fix SA-3 pass 2
+    minimizes `co_load x 100 x K - prod_score + ...`, i.e. it prices fill at
+    the exchange rate K and may legitimately ACCEPT a higher changeover load
+    for materially more fill (live_F t60: +870 t of fill for +13 % co_load
+    was discarded by the co_load-only rule). `obj_anchor` is the pass-2
+    objective of pass 1's own plan (the anchor solve), `obj2` the pass-2
+    result: obj2 <= obj_anchor means pass 2 improved on pass 1 by pass 2's
+    yardstick. Without the objective pair the legacy rule applies:
+    co_load_2 <= co_load_1. In both cases the validator's PHYSICAL error
+    count must not grow (err1/err2; unknown counts cannot veto — they are
+    logged as such).
+    """
+    if obj_anchor is not None and obj2 is not None:
+        if obj2 > obj_anchor + 1e-6:
+            return False, (f"pass-2 objective {obj2:,.0f} > pass 1's plan {obj_anchor:,.0f}"
+                           " (hint not honoured)")
+        note = f"pass-2 objective {obj2:,.0f} <= pass 1's plan {obj_anchor:,.0f}"
+        if co1 is not None and co2 is not None:
+            note += f" (co_load {co2:,} vs {co1:,})"
+    else:
+        if co1 is None or co2 is None:
+            return False, "changeover load could not be evaluated on both passes"
+        if co2 > co1:
+            return False, f"co_load {co2:,} > pass 1's {co1:,}"
+        note = f"co_load {co2:,} <= {co1:,}"
+    if err1 is not None and err2 is not None and err2 > err1:
+        return False, note + f"; but physical validator errors {err2} > pass 1's {err1}"
+    if err1 is None or err2 is None:
+        note += " (validator error counts unknown - not compared)"
+    else:
+        note += f", physical validator errors {err2} <= {err1}"
+    return True, note
+
+
+def _validation_summary(rep_dict: Dict[str, Any], top_n: int = 12) -> Dict[str, Any]:
+    """Compact validation record for feasibility_report.json (C81 / V-1)."""
+    counts = rep_dict.get("counts") or {}
+    physical = sum(int((counts.get(c) or {}).get("ERROR", 0)) for c in PHYSICAL_ERROR_CODES)
+    errs = [v for v in (rep_dict.get("violations") or []) if v.get("severity") == "ERROR"]
+    top = [
+        f"{v.get('code')} line={v.get('line') or '-'} order={v.get('order') or '-'}"
+        + (f" [{v.get('hours'):g}h]" if v.get("hours") is not None else "")
+        + f" {v.get('detail', '')}"
+        for v in errs[:top_n]
+    ]
+    return {
+        "ok": bool(rep_dict.get("ok")),
+        "n_errors": int(rep_dict.get("n_errors") or 0),
+        "n_warnings": int(rep_dict.get("n_warnings") or 0),
+        "physical_errors": int(physical),
+        "physical_error_codes": list(PHYSICAL_ERROR_CODES),
+        "counts": counts,
+        "top_violations": top,
+        "checks_run": len(rep_dict.get("checks_run") or []),
+    }
+
+
+def _run_independent_validation(data_dir: Path, *, schedule: Any = None,
+                                cips: Any = None, write_txt: bool = True,
+                                label: str = "") -> Dict[str, Any]:
+    """Run code/solver/independent_validator.validate_work_dir (C81 / V-1).
+
+    Runs after EVERY solve that produced a schedule. Returns the compact
+    summary that goes into feasibility_report.json["validation"]; the full
+    text report is written to validation_independent.txt when the on-disk
+    schedule is validated. Never raises - a validator failure is recorded as
+    ok=None so the UI can say "not validated" instead of "clean".
+    """
+    try:
+        from independent_validator import validate_work_dir
+
+        rep = validate_work_dir(
+            Path(data_dir), schedule=schedule, cips=cips,
+            config=(_ARGS.config if getattr(_ARGS, "config", None) else None),
+        )
+        summ = _validation_summary(rep.to_dict())
+        if write_txt:
+            try:
+                (Path(data_dir) / "validation_independent.txt").write_text(
+                    rep.summary(), encoding="utf-8")
+            except OSError:
+                pass
+        log(f"[validate] independent validator{label}: errors={summ['n_errors']} "
+            f"(physical {summ['physical_errors']}), warnings={summ['n_warnings']}, "
+            f"checks={summ['checks_run']}")
+        for t in summ["top_violations"][:8]:
+            log("[validate]   " + t)
+        return summ
+    except Exception as exc:  # noqa: BLE001
+        log(f"[validate] independent validator FAILED{label}: {type(exc).__name__}: {exc}")
+        return {"ok": None, "n_errors": None, "n_warnings": None,
+                "physical_errors": None, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _prev_solve_trust(data_dir: Path) -> Tuple[int | None, str | None]:
+    """(relax_level, input_sig) of the previous schedule, for the warm-start gates."""
+    import json as _json
+    for _name in ("prev_feasibility.json", "feasibility_report.json"):
+        _fr = Path(data_dir) / _name
+        if _fr.exists():
+            try:
+                _prev = _json.loads(_fr.read_text(encoding="utf-8"))
+                return _prev.get("relax_level"), _prev.get("input_sig")
+            except Exception:  # noqa: BLE001
+                return None, None
+    return None, None
+
+
+def _idle_kpi_summary(data_dir: Path) -> List[str]:
+    idle_kpi_path = Path(data_dir) / "idle_kpis.csv"
+    if not idle_kpi_path.exists():
+        return []
+    try:
+        import csv
+        with open(idle_kpi_path, encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+        n = len(rows)
+        t_idle = sum(int(r.get("idle_h", 0)) for r in rows)
+        t_prod = sum(int(r.get("production_h", 0)) for r in rows)
+        t_span = sum(int(r.get("span_h", 0)) for r in rows)
+        m_idle = sorted(int(r.get("idle_h", 0)) for r in rows)[n // 2] if n else 0
+        util = round(100 * t_prod / t_span, 1) if t_span > 0 else 0.0
+        return [f"Idle KPIs: {n} lines, total_idle={t_idle}h, median_idle={m_idle}h, utilization={util}%"]
+    except (OSError, KeyError, ValueError, TypeError):
+        return []
+
+
+def _write_single_phase_outputs(solver: cp_model.CpSolver, data: Data, P: Params,
+                                data_dir: Path, vars_dict: Dict[str, Any], *,
+                                level: int, status_name: str,
+                                extra: Dict[str, Any] | None = None,
+                                announce_stage: bool = True) -> Dict[str, Any]:
+    """Write EVERY single-phase output for one solved model and return the report.
+
+    schedule_phase2.csv, cip_windows.csv, produced_vs_bounds.csv,
+    mo_changes.csv, week1_initial_states.csv, idle_kpis.csv, solver_kpis.txt,
+    feasibility_report.json (with the independent validation record).
+    Called for pass 1 BEFORE pass 2 starts (C80: a pass-2 abort can no
+    longer lose the schedule) and again when pass 2 is adopted.
+    """
+    if announce_stage:
+        update_stage(data_dir, "writing_output", "active")
+    _sched_rows, bounds_rows = write_solution(solver, data, P, data_dir, vars_dict)
+    if announce_stage:
+        update_stage(data_dir, "writing_output", "done", "Schedule and KPIs saved")
+    fields = _level_report_fields(level, vars_dict)
+    kpi = [f"Status: {status_name}", f"Relax level: {level} ({RELAX_LABELS[level]})"]
+    if not fields["setup_times_enforced"]:
+        kpi.append("UNSAFE: changeover times not enforced (relax level 3)")
+    write_kpi_lines(kpi + _idle_kpi_summary(data_dir))
+    report: Dict[str, Any] = {
+        "relax_level": level,
+        "relax_mode": RELAX_LABELS[level],
+        "status": status_name,
+        "solver_status": status_name,
+        "orders_short_of_qmin": _orders_short_of_qmin(bounds_rows),
+        "late_orders": _late_orders(solver, data, vars_dict),
+        # Soft due weeks (2026-09-04 #2): pre-built kg and the kg-week totals
+        # the objective priced; late_orders above carries late_kg per order.
+        "early_orders": _early_orders(solver, data, vars_dict),
+        "cross_week": CROSS_WEEK,
+        "cip_flex": CIP_FLEX,
+        "week_moved_orders": _week_moved_orders(solver, data, vars_dict),
+        "deterministic": DETERMINISTIC,
+        "search_workers": SEARCH_WORKERS,
+    }
+    report.update(_dev_kg_week_totals(solver, vars_dict))
+    report.update(fields)
+    report["model_warnings"] = _model_warnings(vars_dict)
+    if extra:
+        report.update(extra)
+    if not fields["setup_times_enforced"]:
+        log("UNSAFE: changeover times not enforced (relax level 3 / ignore_co) - "
+            "this plan may put two SKUs back-to-back with no setup time")
+    if _sched_rows:
+        report["validation"] = _run_independent_validation(data_dir)
+    else:
+        report["validation"] = {"ok": None, "n_errors": None, "n_warnings": None,
+                                "physical_errors": None, "note": "no schedule rows"}
+    write_feasibility_report(data_dir, report)
+    return report
 
 
 # Set once P is resolved; write_feasibility_report stamps it into every
@@ -697,6 +1172,9 @@ def write_feasibility_report(data_dir: Path, report: Dict[str, Any]) -> None:
     report.setdefault("generated_at", datetime.now().isoformat(timespec="seconds"))
     report.setdefault("orders_short_of_qmin", [])
     report.setdefault("late_orders", [])
+    report.setdefault("early_orders", [])
+    report.setdefault("late_kg_weeks", 0)
+    report.setdefault("early_kg_weeks", 0)
     report.setdefault("blocking_lines", _read_blocking_lines(data_dir))
     report.setdefault("input_sig", input_signature(data_dir))
     report.setdefault("soft_demand", _SOFT_DEMAND_ACTIVE)
@@ -978,6 +1456,26 @@ def write_week1_initial_states(
             data.init_map.get(l, {}).get("carryover_run_hours", 0) or 0
         )
 
+        # Fix SB-6 (audit C50 / cip-11, 2026-09-03). The carry is the WALL-
+        # CLOCK age of the line's last clean at hour 0 of the frame the
+        # week-1 model runs in — and that frame is the SAME anchor as week 0
+        # (Phase 2 keeps P.horizon_h and gates each line at its week-0 end;
+        # week-1 orders get due_start 0). model_builder's trigger is
+        # `last_end + carry >= k x interval` on absolute hours, so:
+        #   * no CIP in week 0  -> the pre-horizon carry is still the truth
+        #     (the old code REPLACED it with the week-0 run hours, dropping
+        #     the pre-horizon dirty time, and double-counting week-0 hours
+        #     that the absolute clock already sees);
+        #   * a CIP in week 0 ending at hour c -> the clean is c hours AFTER
+        #     t0, i.e. carry = -c (negative is a valid input: the model's
+        #     deadline becomes interval - carry = c + interval, the same
+        #     absolute deadline the last_cip_end_datetime column carries,
+        #     and the validator's cip_ref_hour = -carry = c);
+        #   * clamp to the LINE's interval - 1 (line_cip_hrs), not a
+        #     hard-coded 119 — a 144 h line with 130 h of carry was reset to
+        #     119 and given 25 h of clock it did not have.
+        line_interval = int(data.cip_interval_map.get(l, P.cip_interval_h) or 0)
+        carry_cap = line_interval - 1 if line_interval > 1 else orig_carry
         if not prods:
             initial_sku = str(data.init_map.get(l, {}).get("initial_sku", "CLEAN"))
             carryover = orig_carry
@@ -986,15 +1484,16 @@ def write_week1_initial_states(
         else:
             last_run = max(prods, key=lambda x: x["end_hour"])
             initial_sku = str(last_run["sku"])
-            carryover = sum(
-                p["run_hours"] for p in prods
-                if p["start_hour"] >= last_cip_end
-            )
+            if last_cip_end > 0 and l in cip_by_line:
+                carryover = -int(last_cip_end)
+            else:
+                carryover = orig_carry
             last_end_hour = max(p["end_hour"] for p in prods)
             if last_cip_end > 0 and l in cip_by_line:
                 last_cip_dt = (anchor + timedelta(hours=last_cip_end)).strftime("%Y-%m-%d %H:%M:%S")
             else:
                 last_cip_dt = ""
+        carryover = int(min(carryover, carry_cap))
 
         # Use the later of last production end or last CIP end.
         # A CIP may extend past the last production block (e.g. CIP at
@@ -1018,9 +1517,10 @@ def write_week1_initial_states(
             "available_from_hour": avail_from,
             "long_shutdown_flag": 0,
             "long_shutdown_extra_setup_hours": 0,
-            "carryover_run_hours_since_last_cip_at_t0": int(min(carryover, 119)),
+            "carryover_run_hours_since_last_cip_at_t0": carryover,
             "last_cip_end_datetime": last_cip_dt,
-            "comment": "Auto from week-0 run",
+            "comment": ("Auto from week-0 run (wall-clock carry at t0; negative"
+                        " = clean after t0)"),
         })
 
     df = pd.DataFrame(out_rows)
@@ -1210,7 +1710,7 @@ def write_solution(
         for ln in idle_kpi_lines:
             log(ln)
     pd.DataFrame(bounds_rows).to_csv(data_dir / "produced_vs_bounds.csv", index=False)
-    write_mo_changes(data_dir, data, schedule_rows, bounds_rows)
+    write_mo_changes(data_dir, data, schedule_rows, bounds_rows, P=P)
     return schedule_rows, bounds_rows
 
 
@@ -1219,21 +1719,46 @@ def write_mo_changes(
     data: Data,
     schedule_rows: List[Dict[str, Any]],
     bounds_rows: List[Dict[str, Any]],
+    P: Params | None = None,
 ) -> None:
-    """Write mo_changes.csv comparing planned current-MO production vs manprg.
+    """Write mo_changes.csv - the VIF write-back record for committed MOs.
 
-    Only current-state MOs (is_current_mo orders) are compared. For each MO
-    we report the original remaining kg (qty_min), the solver's planned
-    produced kg, the planned window (earliest start / latest end across its
-    schedule blocks), the number of split blocks, and a reason:
-      tonnage_trim   produced < orig
-      tonnage_fill   produced > orig   (should not happen with qty_max=orig)
-      split          more than one production block
-      reordered      planned start moved from the manprg start_h
-      unmoved        produced == orig and single block
-    The file is the VIF write-back record (CSV download in the UI).
+    Only current-state MOs (is_current_mo orders) are compared. Columns (the
+    first twelve are the historical record, see MO_CHANGES_COLUMNS):
+      orig_qty_kg   remaining kg the plant committed (qty_remaining, else qty_min)
+      new_qty_kg    the solver's planned produced kg
+      orig_start_h  the MO's manprg start when current_mo.csv carries
+                    ``manprg_start_h`` (orig_start_src = "manprg"), else the
+                    solver bound due_start (orig_start_src = "due_start",
+                    a Flowstate projection - writeback-6)
+      piece         1..split_count: ONE ROW PER PRODUCED BLOCK, each with its
+                    own new_start_h/new_end_h (writeback-7: a split MO is no
+                    longer one window spanning the CIP gap)
+      reason        tonnage_trim / tonnage_fill / split / reordered / unmoved,
+                    or ``dropped`` when the solver placed NO block for the MO
+                    (writeback-5: new_start_h/new_end_h are then EMPTY, never 0)
+      new_start_dt / new_end_dt / planning_anchor  wall-clock equivalents; the
+                    anchor is the datetime hour 0 refers to, so the hour
+                    columns are usable in VIF (P.planning_start_date)
+      scenario_id   the work-dir name (the runner names it after the scenario)
+      generated_at  when this record was written
     """
     from collections import defaultdict
+
+    anchor: datetime | None = None
+    if P is not None:
+        try:
+            anchor = datetime.strptime(str(P.planning_start_date), "%Y-%m-%d %H:%M:%S")
+        except (ValueError, TypeError):
+            anchor = None
+    anchor_s = anchor.strftime("%Y-%m-%d %H:%M:%S") if anchor else ""
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    scenario_id = Path(data_dir).name
+
+    def _dt(h: Any) -> str:
+        if h is None or h == "" or anchor is None:
+            return ""
+        return (anchor + timedelta(hours=float(h))).strftime("%Y-%m-%d %H:%M:%S")
 
     # produced per order id (mo|CUR) from bounds_rows
     produced_by_order: dict[str, int] = {}
@@ -1253,31 +1778,18 @@ def write_mo_changes(
         if not o.get("is_current_mo"):
             continue
         oid = o["order_id"]
-        orig_kg = int(o["qty_min"])
+        orig_kg = int(o.get("qty_remaining") or o["qty_min"])
         new_kg = produced_by_order.get(oid, 0)
         blocks = sorted(
             blocks_by_order.get(oid, []), key=lambda r: r["start_hour"])
-        if blocks:
-            first_start = min(b["start_hour"] for b in blocks)
-            last_end = max(b["end_hour"] for b in blocks)
-            start_h = int(first_start)
-            end_h = int(last_end)
-            split_count = len(blocks)
+        manprg_start = o.get("manprg_start_h")
+        if manprg_start is not None and str(manprg_start) != "":
+            orig_start_h: Any = int(manprg_start)
+            orig_src = "manprg"
         else:
-            start_h, end_h, split_count = 0, 0, 0
-
-        reasons: list[str] = []
-        if new_kg < orig_kg:
-            reasons.append("tonnage_trim")
-        elif new_kg > orig_kg:
-            reasons.append("tonnage_fill")
-        if split_count > 1:
-            reasons.append("split")
-        if blocks and int(o["due_start"]) != start_h:
-            reasons.append("reordered")
-        if not reasons:
-            reasons.append("unmoved")
-        rows.append({
+            orig_start_h = int(o["due_start"])
+            orig_src = "due_start"
+        base = {
             "mo": str(o.get("mo_id", "")),
             "line_name": data.line_names.get(o.get("locked_line"), ""),
             "sku": o["sku"],
@@ -1285,21 +1797,38 @@ def write_mo_changes(
             "orig_qty_kg": orig_kg,
             "new_qty_kg": new_kg,
             "delta_kg": new_kg - orig_kg,
-            "orig_start_h": int(o["due_start"]),
-            "new_start_h": start_h,
-            "new_end_h": end_h,
-            "split_count": split_count,
-            "reason": "+".join(reasons),
-        })
-    if rows:
-        pd.DataFrame(rows).to_csv(data_dir / "mo_changes.csv", index=False)
-    else:
-        # still write an empty file so callers can check existence/header
-        pd.DataFrame(
-            columns=["mo", "line_name", "sku", "source", "orig_qty_kg",
-                     "new_qty_kg", "delta_kg", "orig_start_h", "new_start_h",
-                     "new_end_h", "split_count", "reason"]
-        ).to_csv(data_dir / "mo_changes.csv", index=False)
+            "orig_start_h": orig_start_h,
+            "orig_start_src": orig_src,
+            "planning_anchor": anchor_s,
+            "scenario_id": scenario_id,
+            "generated_at": generated_at,
+        }
+        if not blocks:
+            # writeback-5: a committed MO the solver did not place at all.
+            # Hours are EMPTY (not 0 - hour 0 is a real position) and the
+            # reason is the single token the UI/export can refuse on.
+            rows.append({**base, "new_start_h": "", "new_end_h": "",
+                         "split_count": 0, "reason": "dropped", "piece": "",
+                         "new_start_dt": "", "new_end_dt": ""})
+            continue
+        reasons: list[str] = []
+        if new_kg < orig_kg:
+            reasons.append("tonnage_trim")
+        elif new_kg > orig_kg:
+            reasons.append("tonnage_fill")
+        if len(blocks) > 1:
+            reasons.append("split")
+        if int(blocks[0]["start_hour"]) != int(orig_start_h):
+            reasons.append("reordered")
+        if not reasons:
+            reasons.append("unmoved")
+        for k, b in enumerate(blocks, start=1):
+            s_h, e_h = int(b["start_hour"]), int(b["end_hour"])
+            rows.append({**base, "new_start_h": s_h, "new_end_h": e_h,
+                         "split_count": len(blocks), "reason": "+".join(reasons),
+                         "piece": k, "new_start_dt": _dt(s_h), "new_end_dt": _dt(e_h)})
+    pd.DataFrame(rows, columns=MO_CHANGES_COLUMNS).to_csv(
+        data_dir / "mo_changes.csv", index=False)
 
 
 def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
@@ -1313,45 +1842,34 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
 
     # ── Stage: Loading Data ──
     update_stage(data_dir, "loading_data", "active")
-    P0 = Params(
-        horizon_h=168,
-        changeover_penalty=P.changeover_penalty,
-        cip_interval_h=P.cip_interval_h,
-        cip_duration_h=P.cip_duration_h,
-        max_lines_per_order=P.max_lines_per_order,
-        stale_threshold_days=P.stale_threshold_days,
-        stale_setup_extra_h=P.stale_setup_extra_h,
-        long_shutdown_default_h=P.long_shutdown_default_h,
-        planning_start_date=P.planning_start_date,
-        min_run_hours=MIN_RUN_HOURS_OVERRIDE if MIN_RUN_HOURS_OVERRIDE is not None else P.min_run_hours,
-        min_run_pct_of_qty=P.min_run_pct_of_qty,
-        allow_week1_in_week0=False,  # Week-0 only
-        objective_makespan_weight=P.objective_makespan_weight,
-        objective_changeover_weight=P.objective_changeover_weight,
-        objective_cip_defer_weight=P.objective_cip_defer_weight,
-        objective_idle_weight=P.objective_idle_weight,
-        objective_late_weight=P.objective_late_weight,
-        objective_week_deviation_weight=P.objective_week_deviation_weight,
-        objective_cip_flex_weight=P.objective_cip_flex_weight,
-        co_topload_weight=P.co_topload_weight,
-        co_ttp_weight=P.co_ttp_weight,
-        co_ffs_weight=P.co_ffs_weight,
-        co_casepacker_weight=P.co_casepacker_weight,
-        co_base_weight=P.co_base_weight,
-        co_conv_org_weight=P.co_conv_org_weight,
-        co_cinn_weight=P.co_cinn_weight,
-        co_flavor_weight=P.co_flavor_weight,
-        co_cip_req_weight=P.co_cip_req_weight,
-    )
+    # C84 / config-5: dataclasses.replace keeps EVERY Params field (the
+    # hand-written constructor dropped use_sku_rates, soft_demand,
+    # objective_shortfall_weight, over_target_reward_pct, solver_random_seed).
+    P0 = _sub_phase_params(P, horizon_h=168, min_run_override=MIN_RUN_HOURS_OVERRIDE)
+    log(f"[two-phase] sub-phase params: use_sku_rates={P0.use_sku_rates} "
+        f"soft_demand={P0.soft_demand} seed={P0.solver_random_seed} "
+        f"min_run_hours={P0.min_run_hours} (all other fields inherited from P)")
+    n_levels_tp = len(_ladder_levels(_base_relax_level(), 3 if AUTO_RELAX else _base_relax_level()))
+    log(f"[budget] two-phase: {tl:.0f}s per week solve, {SEARCH_WORKERS} workers; "
+        f"typical wall ~{2 * tl:.0f}s (W0 + W1), ceiling ~{2 * n_levels_tp * tl:.0f}s "
+        f"if both relax ladders escalate through {n_levels_tp} level(s)")
     data0 = Data(P0, F)
     data0.load()
     # Week-0 split: demand orders due in week 0, PLUS current-state MOs
     # (running/queued — they are committed work regardless of their nominal
     # due window; the solver places what fits in week 0 and the remainder
     # carries into week 1 via the MO's presence in both phases).
+    # The week boundary is the SECOND distinct demand due_start (fix SB-1
+    # frame; INTEGRATE): a first-week order is one whose due_start lies
+    # before it, whatever weekday the horizon is anchored on. Trials keep the
+    # old end-based test against the same boundary.
+    _wk_boundary = _two_phase_boundary(data0.orders)
+    log(f"[two-phase] week boundary at hour {_wk_boundary} (second distinct demand due_start)")
     orders_week0 = [
         o for o in data0.orders
-        if int(o["due_end"]) <= WEEK0_END or o.get("is_current_mo")
+        if o.get("is_current_mo")
+        or (o.get("is_trial", False) and int(o["due_end"]) < _wk_boundary)
+        or (not o.get("is_trial", False) and int(o["due_start"]) < _wk_boundary)
     ]
     data0.orders = orders_week0
 
@@ -1391,6 +1909,12 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
     solver0 = None
     status0 = None
     vars0 = None
+    mo_state0 = "n/a"
+    # orchestration-12: the SAME trust gates as the single-phase path -
+    # hints from a schedule solved on different inputs, or at a MORE relaxed
+    # level than this attempt, starve the search instead of seeding it.
+    _prev_relax_tp, _prev_sig_tp = _prev_solve_trust(data_dir)
+    _inputs_changed_tp = _prev_sig_tp != input_signature(Path(data_dir))
     for lvl in _ladder_levels(base_lvl, max_lvl):
         flags = RELAX_LADDER[lvl]
         if lvl > base_lvl:
@@ -1405,6 +1929,11 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
             cross_week=CROSS_WEEK,
             cip_flex=CIP_FLEX,
         )
+        _log_model_warnings(vars0, " (Week-0)")
+        mo_state0, _mo_n0 = _keep_committed_mo_bounds(model0, vars0, data0, lvl)
+        if mo_state0 != "n/a":
+            log(f"[auto-relax] Week-0 level {lvl}: committed MO bounds {mo_state0} "
+                f"for {_mo_n0} MO(s)")
         proto0 = model0.Proto()
         update_stage(
             data_dir, "building_model_w0", "done",
@@ -1422,7 +1951,17 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         # (line, order) key aligns with vars0["present"]. A hint only steers
         # the search (CP-SAT repairs it), so it is safe at every relax level.
         # ALWAYS logs, including the no-op / failure paths (pitfall 15).
-        if not _ARGS.no_warm_start:
+        if _ARGS.no_warm_start:
+            log("[warm-start] disabled by --no-warm-start")
+        elif _inputs_changed_tp:
+            log("[warm-start] W0 skipped: solve inputs changed since the "
+                "previous schedule (input_sig mismatch) - stale hints steer "
+                "into the new constraints")
+        elif _prev_relax_tp is not None and _prev_relax_tp > lvl:
+            log(f"[warm-start] W0 skipped: previous schedule is relax level "
+                f"{_prev_relax_tp}, attempting level {lvl} - hints from a "
+                "more-relaxed plan starve the search")
+        else:
             try:
                 from warm_start import apply_warm_start
 
@@ -1432,18 +1971,16 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
                     log(_wsn)
             except Exception as _wsexc:  # noqa: BLE001
                 log(f"[warm-start] W0 FAILED, solving cold: {_wsexc}")
-        else:
-            log("[warm-start] disabled by --no-warm-start")
 
         # ── Stage: Solving Week 0 ──
         update_stage(
             data_dir, "solving_week0", "active",
-            f"{int(tl)}s limit, 8 workers (level {lvl}: {RELAX_LABELS[lvl]})",
+            f"{int(tl)}s limit, {SEARCH_WORKERS} workers (level {lvl}: {RELAX_LABELS[lvl]})",
         )
         reset_solver_stats(data_dir, status="STARTING", time_limit_s=tl,
                            direction="min")
         solver0 = cp_model.CpSolver()
-        solver0.parameters.num_search_workers = 8
+        solver0.parameters.num_search_workers = SEARCH_WORKERS
         solver0.parameters.max_time_in_seconds = tl
         apply_solver_seed(solver0, P)
         cb0 = _ProgressCallback(data_dir, label_prefix=f"W0 L{lvl}: ",
@@ -1484,45 +2021,17 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
     # unschedulable.
     F_week1 = Files(data_dir)
     F_week1.init = str(data_dir / "week1_initial_states.csv")
-    P1 = Params(
-        horizon_h=P.horizon_h,
-        changeover_penalty=P.changeover_penalty,
-        cip_interval_h=P.cip_interval_h,
-        cip_duration_h=P.cip_duration_h,
-        max_lines_per_order=P.max_lines_per_order,
-        stale_threshold_days=P.stale_threshold_days,
-        stale_setup_extra_h=P.stale_setup_extra_h,
-        long_shutdown_default_h=P.long_shutdown_default_h,
-        planning_start_date=P.planning_start_date,
-        min_run_hours=MIN_RUN_HOURS_OVERRIDE if MIN_RUN_HOURS_OVERRIDE is not None else P.min_run_hours,
-        min_run_pct_of_qty=P.min_run_pct_of_qty,
-        allow_week1_in_week0=False,
-        objective_makespan_weight=P.objective_makespan_weight,
-        objective_changeover_weight=P.objective_changeover_weight,
-        objective_cip_defer_weight=P.objective_cip_defer_weight,
-        objective_idle_weight=P.objective_idle_weight,
-        objective_late_weight=P.objective_late_weight,
-        objective_week_deviation_weight=P.objective_week_deviation_weight,
-        objective_cip_flex_weight=P.objective_cip_flex_weight,
-        co_topload_weight=P.co_topload_weight,
-        co_ttp_weight=P.co_ttp_weight,
-        co_ffs_weight=P.co_ffs_weight,
-        co_casepacker_weight=P.co_casepacker_weight,
-        co_base_weight=P.co_base_weight,
-        co_conv_org_weight=P.co_conv_org_weight,
-        co_cinn_weight=P.co_cinn_weight,
-        co_flavor_weight=P.co_flavor_weight,
-        co_cip_req_weight=P.co_cip_req_weight,
-    )
+    P1 = _sub_phase_params(P, horizon_h=P.horizon_h, min_run_override=MIN_RUN_HOURS_OVERRIDE)
     data1 = Data(P1, F_week1)
     data1.load()
     orders_week1 = []
+    _wk_boundary1 = _two_phase_boundary(data1.orders)
     for o in data1.orders:
         is_trial = o.get("is_trial", False)
         if is_trial:
             tsh = o.get("trial_start_hour", 0)
             teh = o.get("trial_end_hour", 0)
-            if tsh < WEEK1_START and teh > WEEK0_END + 1:
+            if tsh < _wk_boundary1 and teh > _wk_boundary1:
                 # Boundary-spanning trial: must go to Phase 2 (full 336h)
                 log(
                     f"[two-phase] WARNING: trial {o['order_id']} spans "
@@ -1530,10 +2039,10 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
                     f"Consider single-phase mode for best results."
                 )
                 orders_week1.append(o)
-            elif tsh >= WEEK1_START:
+            elif tsh >= _wk_boundary1:
                 orders_week1.append(o)
             # else: trial fits entirely in Week-0 (handled by Phase 1)
-        elif int(o["due_start"]) >= WEEK1_START:
+        elif int(o["due_start"]) >= _wk_boundary1:
             orders_week1.append(o)
     # Allow Week-1 orders to start as soon as line is available (due_start=0)
     # but do NOT override due_start for trial orders (timing is fixed)
@@ -1548,8 +2057,14 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         if cip_rows_0:
             pd.DataFrame(cip_rows_0).to_csv(data_dir / "cip_windows.csv", index=False)
         pd.DataFrame(bounds_0).to_csv(data_dir / "produced_vs_bounds.csv", index=False)
-        write_kpi_lines(["Status: TWO_PHASE — Week-0 FEASIBLE, no Week-1 orders"])
-        write_feasibility_report(data_dir, {
+        write_mo_changes(data_dir, data0, schedule_rows_0, bounds_0, P=P0)
+        _fields0 = _level_report_fields(level0, vars0)
+        _kpi0 = ["Status: TWO_PHASE — Week-0 FEASIBLE, no Week-1 orders"]
+        if not _fields0["setup_times_enforced"]:
+            _kpi0.append("UNSAFE: changeover times not enforced (relax level 3)")
+            log("UNSAFE: changeover times not enforced (relax level 3 / ignore_co)")
+        write_kpi_lines(_kpi0)
+        _rep0: Dict[str, Any] = {
             "relax_level": level0,
             "relax_mode": RELAX_LABELS[level0],
             "status": solver0.StatusName(status0),
@@ -1557,7 +2072,14 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
             "week": "Week-0 (no Week-1 orders)",
             "orders_short_of_qmin": _orders_short_of_qmin(bounds_0),
             "late_orders": _late_orders(solver0, data0, vars0),
-        })
+            "committed_mo_bounds": mo_state0,
+            "deterministic": DETERMINISTIC,
+            "search_workers": SEARCH_WORKERS,
+            "model_warnings": _model_warnings(vars0),
+        }
+        _rep0.update(_fields0)
+        _rep0["validation"] = _run_independent_validation(data_dir, label=" (two-phase, W0 only)")
+        write_feasibility_report(data_dir, _rep0)
         return
 
     # ── Stage: Building Model (Week 1) ──
@@ -1567,6 +2089,7 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
     solver1 = None
     status1 = None
     vars1 = None
+    mo_state1 = "n/a"
     for lvl in _ladder_levels(base_lvl, max_lvl):
         flags = RELAX_LADDER[lvl]
         if lvl > base_lvl:
@@ -1582,6 +2105,11 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
             cross_week=CROSS_WEEK,
             cip_flex=CIP_FLEX,
         )
+        _log_model_warnings(vars1, " (Week-1)")
+        mo_state1, _mo_n1 = _keep_committed_mo_bounds(model1, vars1, data1, lvl)
+        if mo_state1 != "n/a":
+            log(f"[auto-relax] Week-1 level {lvl}: committed MO bounds {mo_state1} "
+                f"for {_mo_n1} MO(s)")
         proto1 = model1.Proto()
         update_stage(
             data_dir, "building_model_w1", "done",
@@ -1591,12 +2119,12 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         # ── Stage: Solving Week 1 ──
         update_stage(
             data_dir, "solving_week1", "active",
-            f"{int(tl)}s limit, 8 workers (level {lvl}: {RELAX_LABELS[lvl]})",
+            f"{int(tl)}s limit, {SEARCH_WORKERS} workers (level {lvl}: {RELAX_LABELS[lvl]})",
         )
         reset_solver_stats(data_dir, status="STARTING", time_limit_s=tl,
                            direction="min")
         solver1 = cp_model.CpSolver()
-        solver1.parameters.num_search_workers = 8
+        solver1.parameters.num_search_workers = SEARCH_WORKERS
         solver1.parameters.max_time_in_seconds = tl
         apply_solver_seed(solver1, P)
         cb1 = _ProgressCallback(data_dir, label_prefix=f"W1 L{lvl}: ",
@@ -1648,8 +2176,10 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
     pd.DataFrame(combined_bounds).to_csv(data_dir / "produced_vs_bounds.csv", index=False)
     if combined_cips:
         pd.DataFrame(combined_cips).to_csv(data_dir / "cip_windows.csv", index=False)
-    # MO change table (current-state MOs vs planned) for VIF write-back
-    write_mo_changes(data_dir, data1, combined_schedule, combined_bounds)
+    # MO change table (current-state MOs vs planned) for VIF write-back.
+    # (orchestration-10, not fixed here: data1 holds the Week-1 orders, so
+    # committed MOs - which live in the Week-0 model - are not listed.)
+    write_mo_changes(data_dir, data1, combined_schedule, combined_bounds, P=P1)
 
     # Final InitialStates for rolling (available_from=0 for next week)
     write_week1_initial_states(
@@ -1661,12 +2191,21 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
     # Idle-gap KPIs on combined schedule
     idle_kpi_lines = compute_idle_kpis(combined_schedule, combined_cips, data_dir)
     final_level = max(level0, level1)
-    write_kpi_lines(
-        ["Status: TWO_PHASE — Week-0 and Week-1 FEASIBLE",
-         f"Relax level: {final_level} ({RELAX_LABELS[final_level]})"]
-        + idle_kpi_lines
-    )
+    _fields_tp = _level_report_fields(final_level, vars1)
+    _kpi_tp = ["Status: TWO_PHASE — Week-0 and Week-1 FEASIBLE",
+               f"Relax level: {final_level} ({RELAX_LABELS[final_level]})"]
+    if not _fields_tp["setup_times_enforced"]:
+        _kpi_tp.append("UNSAFE: changeover times not enforced (relax level 3)")
+        log("UNSAFE: changeover times not enforced (relax level 3 / ignore_co) - "
+            "this plan may put two SKUs back-to-back with no setup time")
+    write_kpi_lines(_kpi_tp + idle_kpi_lines)
     write_feasibility_report(data_dir, {
+        **_fields_tp,
+        "committed_mo_bounds": {"week0": mo_state0, "week1": mo_state1},
+        "deterministic": DETERMINISTIC,
+        "search_workers": SEARCH_WORKERS,
+        "model_warnings": _model_warnings(vars0) + _model_warnings(vars1),
+        "validation": _run_independent_validation(data_dir, label=" (two-phase)"),
         "relax_level": final_level,
         "relax_mode": RELAX_LABELS[final_level],
         "status": "FEASIBLE",
@@ -1692,6 +2231,10 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
 
 
 def main() -> None:
+    # orchestration-11: the run log is reset FIRST. Every banner below
+    # ([soft-demand], [two-pass], [rolling], ...) used to be written and then
+    # wiped by a later reset_err(), so the journal never showed the mode.
+    reset_err()
     # Apply config overrides from flowstate.toml + CLI flags (CLI wins).
     # The full toml -> Params mapping lives in params_from_config so the
     # override plumbing is testable without a subprocess.
@@ -1729,6 +2272,9 @@ def main() -> None:
     # dedicated minimization pass is the lever.
     TWO_PASS_CO = bool(_CFG_SCHED.get("two_pass_co", False))
     TWO_PASS_EPS = float(_CFG_SCHED.get("two_pass_epsilon_pct", 1.0))
+    # Per-order pass-2 floors (fix SA-3, model_builder order_floors): opt-in,
+    # default OFF — see the INTEGRATE decision note at the pass-2 build.
+    PASS2_ORDER_FLOORS = bool(_CFG_SCHED.get("pass2_order_floors", False))
     # Separate pass-2 budget (overnight batch): scheduler.time_limit_pass2
     # in the work toml. Unset/0 keeps the historical behaviour — pass 2
     # reuses pass 1's time limit.
@@ -1737,17 +2283,32 @@ def main() -> None:
         log(f"[two-pass] enabled: pass 2 minimizes changeovers holding fill "
             f">= pass 1 - {TWO_PASS_EPS}%"
             + (f" (pass 2 budget {TWO_PASS_TL:.0f}s)" if TWO_PASS_TL else ""))
-    reset_err()
     log(
         f"START {datetime.now():%Y-%m-%d} phase={PHASE} relax={RELAX_DEMAND} relax_due={RELAX_DUE} "
         f"ignoreCO={IGNORE_CHANGEOVERS} auto_relax={AUTO_RELAX} "
         f"cross_week={CROSS_WEEK} cip_flex={CIP_FLEX} "
         f"tl={TIME_LIMIT} mlpo={P.max_lines_per_order}"
     )
-    # AFTER reset_err — anything logged earlier is wiped with the old file.
     if P.solver_random_seed is not None:
         log(f"[seed] CP-SAT random_seed {P.solver_random_seed} "
             "(applied to every solve pass)")
+    if DETERMINISTIC:
+        log("[seed] --deterministic: every solve runs with num_search_workers=1 "
+            f"and random_seed {P.solver_random_seed if P.solver_random_seed is not None else 0}; "
+            "the default 8-worker portfolio is NOT reproducible under a "
+            "wall-clock limit even with a fixed seed (C80)")
+    # Time-limit honesty (fix V-9): the per-solve budget is NOT the wall time.
+    if not TWO_PHASE:
+        _tl_b = float(TIME_LIMIT) if TIME_LIMIT is not None else 120.0
+        _nl_b = len(_ladder_levels(_base_relax_level(), 3 if AUTO_RELAX else _base_relax_level()))
+        _msg = (f"[budget] single-phase: {_tl_b:.0f}s per solve, {SEARCH_WORKERS} workers; "
+                f"ceiling ~{_nl_b * _tl_b:.0f}s if the relax ladder runs through "
+                f"{_nl_b} level(s)")
+        if TWO_PASS_CO and P.soft_demand:
+            _tl2_b = TWO_PASS_TL or _tl_b
+            _msg += (f"; two-pass adds anchor <= {min(120.0, _tl2_b):.0f}s + pass 2 "
+                     f"{_tl2_b:.0f}s -> typical wall ~{_tl_b + min(120.0, _tl2_b) + _tl2_b:.0f}s")
+        log(_msg)
 
     # Initialise structured progress
     if _CROSS_WEEK_FORCED_SINGLE:
@@ -1802,6 +2363,7 @@ def main() -> None:
                 solver = None
                 status = None
                 vars_dict = None
+                _mo_state = "n/a"
                 # Warm-start hints are only useful when the previous schedule
                 # honoured AT LEAST this attempt's constraints. Hinting a
                 # changeover-ENFORCING level with a changeover-IGNORING
@@ -1853,6 +2415,18 @@ def main() -> None:
                         cross_week=CROSS_WEEK,
                         cip_flex=CIP_FLEX,
                     )
+                    # C85 / orchestration-9: relax levels 1-2 relax DEMAND
+                    # orders only; committed MOs keep their tonnage bounds.
+                    _mo_state, _mo_n = _keep_committed_mo_bounds(
+                        model, vars_dict, data, lvl)
+                    if _mo_state == "kept":
+                        log(f"[auto-relax] level {lvl}: committed MO bounds kept "
+                            f"for {_mo_n} MO(s) (relax_demand applies to demand "
+                            "orders only)")
+                    elif _mo_state == "released":
+                        log(f"[auto-relax] level {lvl}: committed MO bounds "
+                            f"RELEASED for {_mo_n} MO(s) - last resort; "
+                            "mo_changes.csv records every trim")
                     proto = model.Proto()
                     n_vars = len(proto.variables)
                     n_cons = len(proto.constraints)
@@ -1892,7 +2466,7 @@ def main() -> None:
                     # ── Stage: Solving ──
                     update_stage(
                         DATA_DIR, "solving", "active",
-                        f"{int(tl)}s time limit, 8 workers (level {lvl}: {RELAX_LABELS[lvl]})",
+                        f"{int(tl)}s time limit, {SEARCH_WORKERS} workers (level {lvl}: {RELAX_LABELS[lvl]})",
                     )
                     # Single-phase always maximizes production (see
                     # build_model call above); a soft-demand run additionally
@@ -1919,7 +2493,7 @@ def main() -> None:
                         pass_id=_cb_kwargs.get("pass_id", ""))
 
                     solver = cp_model.CpSolver()
-                    solver.parameters.num_search_workers = 8
+                    solver.parameters.num_search_workers = SEARCH_WORKERS
                     solver.parameters.max_time_in_seconds = tl
                     apply_solver_seed(solver, P)
                     # Fill labels carry their own pass wording; the ladder
@@ -1946,6 +2520,25 @@ def main() -> None:
                 # Level 0 = changeovers enforced; at level 3 (ignore_co) a
                 # CO-minimizing pass is meaningless. Pass 2 gets its own full
                 # time budget (the runner's subprocess ceiling is 4x tl).
+                #
+                # Fix V (2026-09-03):
+                #  * C80  pass 1's outputs are written BEFORE pass 2 starts, so
+                #         a pass-2 process abort (CP-SAT CHECK failure seen on
+                #         bench B7_free) can never lose the schedule; the
+                #         anchor solve runs 1 worker with the model's search
+                #         strategy cleared (every var is fixed, an empty
+                #         strategy is what tripped 'heuristics.fixed_search !=
+                #         nullptr'); pass 2 runs without repair_hint (the
+                #         complete hint is adopted as the incumbent anyway)
+                #         and without the 'fixed' subsolver.
+                #  * C83  pass 2 is adopted only when its co_load <= pass 1's
+                #         and its validator error count is not worse.
+                #  * SA-3 per-order floors min(pass-1 kg, target) + fill
+                #         exchange rate K go into the pass-2 build; the
+                #         min_prod_score floor stays as the secondary floor.
+                _outputs_done = False
+                _two_pass_extra: Dict[str, Any] | None = None
+                _pass1_report: Dict[str, Any] | None = None
                 if (status in (cp_model.FEASIBLE, cp_model.OPTIMAL)
                         and level == 0 and _SOFT_DEMAND_ACTIVE and TWO_PASS_CO
                         and vars_dict.get("prod_score") is not None):
@@ -1953,9 +2546,69 @@ def main() -> None:
                         _tl2 = TWO_PASS_TL or tl
                         _score1 = solver.Value(vars_dict["prod_score"])
                         _floor = int(_score1 * (1.0 - TWO_PASS_EPS / 100.0))
+                        _co1 = _co_load_value(solver, vars_dict)
                         log(f"[two-pass] pass 1 fill score {_score1:,} -> "
                             f"pass 2 floor {_floor:,} ({TWO_PASS_EPS}% give), "
-                            "objective = weighted changeover load")
+                            f"pass 1 co_load {_co1}, objective = weighted "
+                            "changeover load")
+                        log(f"[budget] pass 2: anchor <= {min(120.0, _tl2):.0f}s "
+                            f"({ANCHOR_WORKERS} worker) + solve {_tl2:.0f}s "
+                            f"({SEARCH_WORKERS} workers)")
+                        # (a) C80: the schedule is safe on disk before pass 2.
+                        update_stage(DATA_DIR, "solving", "active",
+                                     "pass 1 done: saving its schedule before pass 2")
+                        _pass1_report = _write_single_phase_outputs(
+                            solver, data, P, DATA_DIR, vars_dict,
+                            level=level, status_name=status_name,
+                            extra={"two_pass": {"adopted": "pass 1",
+                                                "decision": "pass 2 pending",
+                                                "co_load_pass1": _co1},
+                                   "committed_mo_bounds": _mo_state},
+                            announce_stage=False)
+                        _outputs_done = True
+                        _two_pass_extra = {"two_pass": _pass1_report["two_pass"]}
+                        log("[two-pass] pass 1 outputs written (schedule safe "
+                            "before pass 2 starts)")
+                        # PHYSICAL errors only (INTEGRATE): the pass-2
+                        # candidate is validated in memory against the
+                        # pass-1 produced_vs_bounds.csv on disk, so its
+                        # DEMAND_SUM rows are an artefact, never a veto.
+                        _val1 = _pass1_report.get("validation") or {}
+                        _err1 = _val1.get("physical_errors")
+                        _nerr1 = _val1.get("n_errors")
+                        # Per-order floors (fix 4 / SA-3): pass 2 may
+                        # resequence but never delete an order or shave its
+                        # tail below min(pass-1 kg, target).
+                        # INTEGRATE decision (bench B8/B8_eps2 vs SA E3b,
+                        # 2026-09-03): the per-order floors are OFF by
+                        # default. With the fill exchange rate K in pass 2's
+                        # objective (fix SA-3) a kg of fill is already priced
+                        # against a changeover (one full change ~ 3.5 t), so
+                        # trimming a tail for cosmetics can never pay (E2);
+                        # the floors additionally forbade DROPPING any order
+                        # pass 1 made, which is exactly the trade the plant
+                        # asked pass 2 to make (bench B8: an 8 h pair of
+                        # format changes for a 4 t stub is a losing trade;
+                        # audit F4's own recommendation). Opt in with
+                        # [scheduler] pass2_order_floors = true to protect
+                        # every pass-1 order's kg unconditionally.
+                        _floors: Dict[int, int] = {}
+                        if PASS2_ORDER_FLOORS:
+                            for _i, _o in enumerate(data.orders):
+                                if _o.get("is_current_mo") or _o.get("is_trial"):
+                                    continue
+                                _made = int(solver.Value(vars_dict["produced"][_i]))
+                                _tgt = int(_o.get("qty_target") or 0)
+                                _fl = min(_made, _tgt) if _tgt > 0 else 0
+                                if _fl > 0:
+                                    _floors[_i] = _fl
+                        _K = int(default_fill_exchange_rate(P))
+                        log(f"[two-pass] {len(_floors)} per-order floors "
+                            + ("(min(pass-1 kg, target))" if PASS2_ORDER_FLOORS
+                               else "(disabled: [scheduler] pass2_order_floors = false)")
+                            + f" + fill exchange rate K={_K} (one full changeover ~ "
+                            f"{1080 * 100 * _K / 1010 / 1000:.1f} t of fill); "
+                            "prod_score floor kept as secondary")
                         m2, v2 = build_model(
                             P, data, PHASE,
                             flags["relax_demand"], flags["ignore_co"],
@@ -1965,7 +2618,10 @@ def main() -> None:
                             relax_due=flags["relax_due"],
                             cross_week=CROSS_WEEK, cip_flex=CIP_FLEX,
                             min_prod_score=_floor,
+                            order_floors=_floors,
+                            fill_exchange_rate=_K,
                         )
+                        _log_model_warnings(v2, " (pass 2)")
                         _hinted = 0
                         for _grp in ("present", "seg_b_present", "run_h",
                                      "seg_a_start", "seg_a_run", "seg_a_end",
@@ -1993,28 +2649,37 @@ def main() -> None:
                         # materialize a complete solution, then install that
                         # full assignment as the hint for the real solve —
                         # complete hints are adopted as the incumbent.
+                        _proto2 = m2.Proto()
+                        # C80: with every strategy variable fixed the search
+                        # strategy presolves to EMPTY and CP-SAT aborts the
+                        # process (CHECK heuristics.fixed_search != nullptr).
+                        # The anchor is a fixed-assignment check: no strategy,
+                        # one worker. The strategy is restored for pass 2.
+                        _strategy_backup = [copy.deepcopy(_s) for _s in _proto2.search_strategy]
+                        _proto2.search_strategy.clear()
                         _s2a = cp_model.CpSolver()
-                        _s2a.parameters.num_search_workers = 8
+                        _s2a.parameters.num_search_workers = ANCHOR_WORKERS
                         _s2a.parameters.max_time_in_seconds = min(120.0, _tl2)
                         apply_solver_seed(_s2a, P)
                         _s2a.parameters.fix_variables_to_their_hinted_value = True
                         _sta = _s2a.Solve(m2)
-                        if _sta in (cp_model.FEASIBLE, cp_model.OPTIMAL):
+                        _anchor_ok = _sta in (cp_model.FEASIBLE, cp_model.OPTIMAL)
+                        if _anchor_ok:
                             _resp = _s2a.ResponseProto()
                             # ortools 9.15's proto wrapper has no ClearField;
                             # ClearHints() empties the hint, then the proto's
                             # repeated fields accept the full assignment.
                             m2.ClearHints()
-                            _proto = m2.Proto()
-                            _proto.solution_hint.vars.extend(
+                            _proto2.solution_hint.vars.extend(
                                 range(len(_resp.solution)))
-                            _proto.solution_hint.values.extend(_resp.solution)
+                            _proto2.solution_hint.values.extend(_resp.solution)
                             log(f"[two-pass] anchor {_s2a.StatusName(_sta)}: "
                                 f"complete {len(_resp.solution):,}-var hint "
                                 "installed (pass 1's plan as incumbent)")
                         else:
                             log(f"[two-pass] anchor {_s2a.StatusName(_sta)} — "
                                 "falling back to the partial hint")
+                        _proto2.search_strategy.extend(_strategy_backup)
                         update_stage(
                             DATA_DIR, "solving", "active",
                             f"pass 2: min changeovers, fill floored at "
@@ -2023,10 +2688,17 @@ def main() -> None:
                             DATA_DIR, status="STARTING", time_limit_s=_tl2,
                             direction="min", pass_id="co")
                         _s2 = cp_model.CpSolver()
-                        _s2.parameters.num_search_workers = 8
+                        _s2.parameters.num_search_workers = SEARCH_WORKERS
                         _s2.parameters.max_time_in_seconds = _tl2
                         apply_solver_seed(_s2, P)
-                        _s2.parameters.repair_hint = True
+                        # C80: repair_hint=True was the crashing configuration
+                        # (bench B7_free: 2/12 aborts; 0/24 without it). A
+                        # complete hint is adopted as the incumbent without
+                        # repair; a partial one was measured useless with it
+                        # (run 20). The 'fixed' subsolver only replays the
+                        # fill strategy, which the incumbent already embodies.
+                        _s2.parameters.repair_hint = False
+                        _s2.parameters.ignore_subsolvers.append("fixed")
                         # Watch the true weighted changeover load so pass-2
                         # labels report it directly instead of the composite
                         # objective (an int co_load means no CO term exists).
@@ -2036,71 +2708,88 @@ def main() -> None:
                             co_expr=(None if isinstance(_co_expr, int)
                                      else _co_expr))
                         _st2 = _s2.Solve(m2, _cb2)
+                        # Pass 1's plan measured on pass 2's objective (the
+                        # anchor solve fixes every variable to the hint).
+                        _obj_anchor = float(_s2a.ObjectiveValue()) if _anchor_ok else None
+                        _tp_rec: Dict[str, Any] = {
+                            "co_load_pass1": _co1, "anchor": _s2a.StatusName(_sta),
+                            "pass2_status": _s2.StatusName(_st2),
+                            "validator_errors_pass1": _nerr1,
+                            "validator_physical_pass1": _err1,
+                            "objective_pass1_plan": _obj_anchor,
+                            "floors": len(_floors), "fill_exchange_rate": _K,
+                        }
                         if _st2 in (cp_model.FEASIBLE, cp_model.OPTIMAL):
+                            _co2 = _co_load_value(_s2, v2)
+                            _fill2 = int(_s2.Value(v2["prod_score"]))
+                            # Validate the pass-2 CANDIDATE in memory before
+                            # it may replace the pass-1 files on disk.
+                            _rows2, _b2 = _solution_to_rows(_s2, data, P, v2)
+                            _cips2 = extract_cip_windows(
+                                _s2, data, v2.get("cip_vars", {}) or {})
+                            if _rows2:
+                                _val2 = _run_independent_validation(
+                                    DATA_DIR, schedule=pd.DataFrame(_rows2),
+                                    cips=(pd.DataFrame(_cips2) if _cips2 else None),
+                                    write_txt=False, label=" (pass 2 candidate)")
+                                _err2 = _val2.get("physical_errors")
+                                _nerr2 = _val2.get("n_errors")
+                            else:
+                                _err2 = _nerr2 = None
+                            _obj2 = float(_s2.ObjectiveValue())
+                            _adopt, _why = _adopt_pass2(_co1, _co2, _err1, _err2,
+                                                        obj_anchor=_obj_anchor, obj2=_obj2)
+                            _tp_rec.update({
+                                "co_load_pass2": _co2, "fill_score_pass2": _fill2,
+                                "fill_floor": _floor, "validator_errors_pass2": _nerr2,
+                                "validator_physical_pass2": _err2,
+                                "objective_pass2": _obj2,
+                                "adopted": "pass 2" if _adopt else "pass 1",
+                                "decision": _why,
+                            })
                             log(f"[two-pass] pass 2 {_s2.StatusName(_st2)}: "
-                                f"fill score {_s2.Value(v2['prod_score']):,} "
-                                f"(floor {_floor:,}) — adopting pass 2")
-                            solver, vars_dict = _s2, v2
-                            status_name = _s2.StatusName(_st2)
-                            update_solver_stats(
-                                DATA_DIR, status=status_name,
-                                elapsed_s=round(_s2.WallTime(), 1))
+                                f"fill score {_fill2:,} (floor {_floor:,}), "
+                                f"co_load {_co2} vs pass 1 {_co1} - "
+                                f"{'ADOPTING pass 2' if _adopt else 'KEEPING pass 1'} "
+                                f"({_why})")
+                            if _adopt:
+                                solver, vars_dict = _s2, v2
+                                status_name = _s2.StatusName(_st2)
+                                update_solver_stats(
+                                    DATA_DIR, status=status_name,
+                                    elapsed_s=round(_s2.WallTime(), 1))
+                                _outputs_done = False
                         else:
+                            _tp_rec.update({"adopted": "pass 1",
+                                            "decision": f"pass 2 {_s2.StatusName(_st2)}"})
                             log(f"[two-pass] pass 2 {_s2.StatusName(_st2)} — "
                                 "keeping pass 1 unchanged")
+                        _two_pass_extra = {"two_pass": _tp_rec}
+                        if _outputs_done and _pass1_report is not None:
+                            # pass 1 stays: stamp the decision into its report
+                            _pass1_report["two_pass"] = _tp_rec
+                            write_feasibility_report(DATA_DIR, _pass1_report)
                     except Exception as _tp_exc:  # noqa: BLE001
                         log(f"[two-pass] FAILED, keeping pass 1: {_tp_exc}")
+                        if _outputs_done and _pass1_report is not None:
+                            _pass1_report["two_pass"] = {
+                                "adopted": "pass 1",
+                                "decision": f"pass 2 failed: {type(_tp_exc).__name__}: {_tp_exc}"}
+                            write_feasibility_report(DATA_DIR, _pass1_report)
 
                 if status in (cp_model.FEASIBLE, cp_model.OPTIMAL):
                     update_stage(DATA_DIR, "solving", "done", status_name)
-
-                    # ── Stage: Writing Output ──
-                    update_stage(DATA_DIR, "writing_output", "active")
-                    _sched_rows, bounds_rows = write_solution(
-                        solver,
-                        data,
-                        P,
-                        DATA_DIR,
-                        vars_dict,
-                    )
-                    update_stage(DATA_DIR, "writing_output", "done", "Schedule and KPIs saved")
-
-                    idle_kpi_path = DATA_DIR / "idle_kpis.csv"
-                    idle_kpi_summary = []
-                    if idle_kpi_path.exists():
-                        try:
-                            import csv
-                            with open(idle_kpi_path, encoding="utf-8") as f:
-                                rows = list(csv.DictReader(f))
-                            n = len(rows)
-                            t_idle = sum(int(r.get("idle_h", 0)) for r in rows)
-                            t_prod = sum(int(r.get("production_h", 0)) for r in rows)
-                            t_span = sum(int(r.get("span_h", 0)) for r in rows)
-                            m_idle = sorted(int(r.get("idle_h", 0)) for r in rows)[n // 2] if n else 0
-                            util = round(100 * t_prod / t_span, 1) if t_span > 0 else 0.0
-                            idle_kpi_summary = [
-                                f"Idle KPIs: {n} lines, total_idle={t_idle}h, median_idle={m_idle}h, utilization={util}%"
-                            ]
-                        except (OSError, KeyError, ValueError, TypeError):
-                            pass
-                    write_kpi_lines(
-                        [f"Status: {status_name}",
-                         f"Relax level: {level} ({RELAX_LABELS[level]})"]
-                        + idle_kpi_summary
-                    )
-                    write_feasibility_report(DATA_DIR, {
-                        "relax_level": level,
-                        "relax_mode": RELAX_LABELS[level],
-                        "status": status_name,
-                        "solver_status": status_name,
-                        "orders_short_of_qmin": _orders_short_of_qmin(bounds_rows),
-                        "late_orders": _late_orders(solver, data, vars_dict),
-                        "cross_week": CROSS_WEEK,
-                        "cip_flex": CIP_FLEX,
-                        "week_moved_orders": _week_moved_orders(
-                            solver, data, vars_dict
-                        ),
-                    })
+                    if not _outputs_done:
+                        _extra_out: Dict[str, Any] = {"committed_mo_bounds": _mo_state}
+                        if _two_pass_extra:
+                            _extra_out.update(_two_pass_extra)
+                        _write_single_phase_outputs(
+                            solver, data, P, DATA_DIR, vars_dict,
+                            level=level, status_name=status_name,
+                            extra=_extra_out)
+                    else:
+                        update_stage(DATA_DIR, "writing_output", "done",
+                                     "Schedule and KPIs saved (pass 1 kept)")
                 else:
                     update_stage(DATA_DIR, "solving", "error", status_name)
                     _handle_infeasible(
@@ -2117,7 +2806,7 @@ def main() -> None:
         update_stage(DATA_DIR, "validating", "active")
         log("[validate] running post-solve validation")
         try:
-            validate_all(DATA_DIR, verbose=True)
+            validate_all(DATA_DIR, verbose=True, cfg=_CFG)
             update_stage(DATA_DIR, "validating", "done", "Validation complete")
         except (OSError, ValueError, KeyError) as exc:
             log(f"[validate] {type(exc).__name__}: {exc}\n" + traceback.format_exc())

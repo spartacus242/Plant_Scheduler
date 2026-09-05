@@ -20,8 +20,12 @@
 #   P9  row 9  demand total         no phantom tonnage per SKU
 #
 # Design notes (same shape as tests/test_solver_contracts.py)
-#   * These assert on ALREADY-SOLVED work dirs under data/_scenario_work/. They
-#     cost milliseconds. A real solve is 60-600 s and never runs inside a test.
+#   * Since 2026-09-03 (fix T-1, audit tests-1) these assert on the
+#     deterministic fixture data/test_fixtures/solver_tiny/ solved once per
+#     session by tests/conftest.py (one ~2 s CP-SAT solve, 2 workers); the
+#     live work dir under data/_scenario_work/ is an opt-in extra
+#     (FLOWSTATE_LIVE_WORK). Before that every probe skipped on a clean
+#     checkout and otherwise judged "whatever solved last".
 #   * Config is read from the WORK DIR's flowstate.toml -- the config the solve
 #     actually used -- never hard-coded.
 #   * Several section-5 constraints are RELAX-LEVEL DEPENDENT. The auto-relax
@@ -48,15 +52,65 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOLVER_DIR = ROOT / "code" / "solver"
+if str(ROOT / "tests") not in sys.path:
+    sys.path.insert(0, str(ROOT / "tests"))
+from conftest import resolve_solver_work, solver_work_params  # noqa: E402
 
 WORK_ROOT = ROOT / "data" / "_scenario_work"
 TOL = 1e-6
 
-# model_builder.py:13-15 -- week-boundary constants used by the due-window and
-# min-run replication below. Mirrored (not imported) on purpose: importing the
-# solver would drag ortools into the default suite.
-WEEK0_END = 167
-WEEK0_FILL_START = 120
+# Plant rule for the early-fill window (charter row 8). Until 2026-09-03 this
+# file MIRRORED the model's own Monday-anchor constants (due_start > 167 ->
+# window opens at 120), so P1b/P8 could only agree with the model, never
+# catch it; fix T restated the rule then in force (only the SECOND demand
+# week, 48 h early). PLANT DECISION 2026-09-04 (the user): "early fill can go
+# as far into the previous weeks as needed, except cannot be placed before an
+# already scheduled MO". Stated here from that decision and the work-dir
+# toml -- nothing is imported from the solver:
+#   * allow_week1_in_week0 off, current MOs, trials -> the order's own due_start;
+#   * [scheduler] early_fill_hours absent / "unbounded" / "none" -> the due
+#     window contributes NO start floor (0): only the line's gate, committed
+#     windows and committed MOs bound the start (C1 / C2 / P8c);
+#   * early_fill_hours = h -> every demand order may open h hours before its
+#     own due_start (48 = the pre-decision value, no longer second-week-only).
+# The due END (due_end + 1) stays hard (P8b). Producing in the right week is
+# a SOFT preference (week gradient + week_deviation_weight), not probed here.
+EARLY_FILL_HOURS = 48   # documented legacy value only (see above)
+
+
+def _early_fill_hours(raw) -> int | None:
+    """Parse the toml value the way the plant states it: absent / "unbounded"
+    / "none" -> None (no floor); a number -> whole hours."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        s = raw.strip().lower()
+        if s in ("", "unbounded", "none", "unlimited", "inf"):
+            return None
+        return int(round(float(s)))
+    return int(round(float(raw)))
+
+
+def _second_week_start(orders: dict) -> int | None:
+    """The second distinct due_start among the DEMAND orders (current MOs
+    excluded -- their windows are plant fact), or None with a single week.
+    LEGACY since 2026-09-04 (the floor no longer privileges the second week);
+    kept for the frame tests in tests/test_fix_T.py."""
+    starts = sorted({int(o["due_start"]) for o in orders.values() if not o.get("current_mo")})
+    return starts[1] if len(starts) > 1 else None
+
+
+def _window_open(o: dict, orders: dict, cfg: dict) -> int:
+    """Hour at which `o` may start producing (the due-window floor, hard at
+    every relax level). `cfg["early_fill_hours"]` absent -> unbounded (the
+    plant decision's default); `orders` is kept for signature compatibility."""
+    ds_raw = int(o["due_start"])
+    if o.get("current_mo") or not cfg["allow_week1_in_week0"]:
+        return ds_raw
+    efh = cfg.get("early_fill_hours")
+    if efh is None:
+        return 0
+    return max(0, ds_raw - int(efh))
 
 
 # --------------------------------------------------------------------------
@@ -98,12 +152,16 @@ def _num(v, default: float = 0.0) -> float:
 # --------------------------------------------------------------------------
 # fixtures
 # --------------------------------------------------------------------------
-@pytest.fixture(scope="module")
-def work() -> Path:
-    dirs = _solved_work_dirs()
-    if not dirs:
-        pytest.skip("no solved scenario work dir under data/_scenario_work/")
-    return dirs[0]
+@pytest.fixture(scope="module", params=solver_work_params())
+def work(request, solver_tiny_work: Path) -> Path:
+    """The artifact under test -- see tests/test_solver_contracts.py::work.
+
+    Fix T-1 (audit tests-1, 2026-09-03): the deterministic fixture
+    data/test_fixtures/solver_tiny/ solved once per session by conftest.py
+    (relax level 0, hard demand, current MO, cip_req pair, downtime, committed
+    CIP window), plus the live work dir only when FLOWSTATE_LIVE_WORK is set.
+    """
+    return resolve_solver_work(request.param, solver_tiny_work)
 
 
 @pytest.fixture(scope="module")
@@ -125,6 +183,12 @@ def cfg(work: Path) -> dict:
         "min_run_pct_of_qty": _num(sch.get("min_run_pct_of_qty"), 0.5),
         "max_lines_per_order": int(_num(sch.get("max_lines_per_order"), 3)),
         "allow_week1_in_week0": bool(sch.get("allow_week1_in_week0", True)),
+        # plant decision 2026-09-04: absent = unbounded early fill
+        "early_fill_hours": _early_fill_hours(sch.get("early_fill_hours")),
+        # absent = hard due weeks (the shipped default since 2026-09-04 night;
+        # "soft" is the opt-in of plant decision #2: a late finish inside the
+        # horizon becomes a priced trade-off instead of a wall)
+        "due_week_policy": str(sch.get("due_week_policy", "hard") or "hard").strip().lower(),
         "use_sku_rates": bool(sch.get("use_sku_rates", False)),
         "planning_start_date": str(sch.get("planning_start_date", "")),
         "cip_interval_h": int(_num(cip.get("interval_h"), 120)),
@@ -221,14 +285,59 @@ def orders(work: Path) -> dict:
         )
     cmo = _read(work / "current_mo.csv")
     if cmo is not None:
+        # Rate of the MO's locked line for the C61 bracket below. Rebuilt
+        # from the work-dir inputs (never from the solver): per-SKU
+        # capabilities rates when use_sku_rates is on, else the flat
+        # line_rates.csv value for the line.
+        caps_df = _read(work / "capabilities_rates.csv")
+        line_rate: dict[tuple[str, str], float] = {}
+        if caps_df is not None:
+            rcol = next((c for c in ("calc_rate_kgph", "rate_kgph", "rate_uph")
+                         if c in caps_df.columns), None)
+            if rcol is not None:
+                for cr in caps_df.itertuples():
+                    line_rate[(_norm(cr.line_name), str(cr.sku))] = _num(getattr(cr, rcol))
+        flat: dict[str, float] = {}
+        lr_df = _read(work / "line_rates.csv")
+        if lr_df is not None and "rate_kgph" in lr_df.columns:
+            name_col = "Line" if "Line" in lr_df.columns else "line_name"
+            for lr in lr_df.itertuples():
+                flat[_norm(getattr(lr, name_col))] = _num(lr.rate_kgph)
+        toml_p = work / "flowstate.toml"
+        use_sku_rates = False
+        if toml_p.exists():
+            import tomllib
+            use_sku_rates = bool(tomllib.loads(toml_p.read_text(encoding="utf-8"))
+                                 .get("scheduler", {}).get("use_sku_rates", False))
         for _, r in cmo.iterrows():
             remaining = _num(r.get("remaining_kg"))
             if remaining <= 0:
                 continue  # fully produced -- data_loader drops it too
+            # Fix SA-5 / audit C61 (2026-09-03): the loader brackets the
+            # remaining kg at WHOLE HOURS of the locked line's rounded rate,
+            # qty_min = ir*floor(rem/ir), qty_max = ir*ceil(rem/ir) (>= 1 h),
+            # because produced = round(rate) x integer hours can equal the raw
+            # remaining kg only when it is a whole multiple of the rate
+            # (23,000 @ 737 made level 0 structurally INFEASIBLE). The old
+            # mirror here (qty_min == qty_max == remaining) pinned that
+            # defect (audit tests-7) and would flag the honest 13,000 kg
+            # bracket of a 12,500 kg MO @ 1000 kg/h as phantom tonnage in P9.
+            # Hand check: 12,500 / 1000 -> floor 12, ceil 13 -> 12,000..13,000.
+            ln = _norm(r.get("line_name"))
+            sku = str(r["sku"]).strip()
+            rate = (line_rate.get((ln, sku), 0.0) if use_sku_rates
+                    else flat.get(ln, line_rate.get((ln, sku), 0.0)))
+            ir = int(round(rate))
+            if ir > 0:
+                n_lo = max(1, int(math.floor(remaining / ir)))
+                n_hi = max(n_lo, int(math.ceil(remaining / ir)))
+                qmin, qmax = ir * n_lo, ir * n_hi
+            else:
+                qmin = qmax = int(round(remaining))
             out[f"{str(r['mo']).strip()}|CUR"] = dict(
-                sku=str(r["sku"]).strip(),
-                qty_min=int(round(remaining)),
-                qty_max=int(round(remaining)),
+                sku=sku,
+                qty_min=qmin,
+                qty_max=qmax,
                 due_start=int(_num(r.get("due_start_h"))),
                 due_end=int(_num(r.get("due_end_h"), 335)),
                 current_mo=True,
@@ -270,17 +379,15 @@ def rates(work: Path, cfg: dict, capabilities: pd.DataFrame) -> dict | None:
     }
 
 
-def _min_run_hours(o: dict, rate: float, cfg: dict) -> int:
-    """Replicate model_builder.py:251-265 for one (line, order) pair.
+def _min_run_hours(o: dict, rate: float, cfg: dict, orders: dict | None = None) -> int:
+    """Replicate the model's min-run floor for one (line, order) pair.
 
     Deliberately NOT imported from the solver (spec: replicate, do not import).
+    The window opens at _window_open (the plant's early-fill policy, see the
+    top of this file); max_len = min(H, due_end + 1) - that hour.
     """
     horizon = cfg["horizon_h"]
-    ds_raw = int(o["due_start"])
-    if ds_raw > WEEK0_END and cfg["allow_week1_in_week0"]:
-        ds_eff = WEEK0_FILL_START
-    else:
-        ds_eff = ds_raw
+    ds_eff = _window_open(o, orders or {}, cfg)
     max_len = max(0, min(horizon, o["due_end"] + 1) - max(0, ds_eff))
     floor_h = cfg["min_run_hours"]
     if o["current_mo"]:
@@ -338,7 +445,7 @@ def test_p1b_per_line_order_run_hours_meet_the_replicated_min_run(
             unknown.append(order_id)
             continue
         rate = rates.get((int(line_id), o["sku"]), 0.0)
-        floor_h = _min_run_hours(o, rate, cfg)
+        floor_h = _min_run_hours(o, rate, cfg, orders)
         total = float(grp["run_hours"].sum())
         if total < floor_h - TOL:
             violations.append(
@@ -381,7 +488,7 @@ def test_p1c_current_mo_blocks_meet_the_min_run_floor(schedule, cfg, orders, rat
         rate = rates.get((line_id, o["sku"])) if rates else None
         if rate is None:
             continue  # rate basis ambiguous -- cannot verify the qty cap
-        want = _min_run_hours(o, rate, cfg)
+        want = _min_run_hours(o, rate, cfg, orders)
         total = float(grp["run_hours"].sum())
         if total < want - TOL:
             total_violations.append(
@@ -495,21 +602,30 @@ def test_p3_every_scheduled_line_sku_pair_is_capable(schedule, capabilities):
 # P5 -- charter row 5: CIP max-interval deadline (food safety / compliance)
 # --------------------------------------------------------------------------
 def test_p5_cip_starts_respect_the_hard_max_interval_deadline(work, cfg, schedule):
-    """model_builder.py:792-833 and 844-858 -- the HARD, never-relaxed deadline.
+    """model_builder.py CIP section -- the HARD, never-relaxed deadline.
 
     Three parts, all keyed on the line's max_cip_hrs from line_cip_hrs.csv
     (data/reference/cip_info.csv MaxHoursBetweenCIP is the upstream source of
     that column; PreviousCIP arrives in the work dir as the initial_states
     carryover / last_cip_end_datetime pair the solver actually reads):
 
-      a. CIP 1 starts by available_from + max(0, interval - carryover)
-         (model_builder.py:806-808).
-      b. when initial_states carries an absolute last_cip_end_datetime inside
-         the horizon, CIP 1 also starts by that hour + interval
-         (model_builder.py:829-833).
-      c. CIP k starts by CIP k-1's end + interval (model_builder.py:847, 858).
-         C6 in test_solver_contracts.py covers this gap too; kept here so P5
-         reads as one complete row-5 statement.
+      a. PLANT RULE (fix SB-3 / audit C43, 2026-09-03): the clean is due
+         `interval` WALL-CLOCK hours after the previous one ended, i.e. at
+         horizon hour (interval - carryover) -- committed and idle hours
+         count. Until 2026-09-03 this probe mirrored the model's own
+         deadline `available_from + (interval - carryover)`, which let the
+         first CIP slide by the whole availability gate (live E-mode lines
+         15-160 h late vs cip_info) and therefore proved nothing about the
+         plant rule. The one documented exception: when that hour is
+         already behind the line's gate the model pins the clean AT the gate
+         (as early as its downtime rows allow) and emits a warning, so the
+         probe accepts max(deadline, gate) there.
+      b. when initial_states carries an absolute last_cip_end_datetime (a
+         clean BEFORE the anchor is a valid, negative hour), CIP 1 also
+         starts by that hour + interval.
+      c. CIP k starts by CIP k-1's end + interval. C6 in
+         test_solver_contracts.py covers this gap too; kept here so P5 reads
+         as one complete row-5 statement.
 
     Plus the operational tail: production may not run more than `interval`
     hours past the last CIP on the line. That one is IMPLIED by the clock-span
@@ -547,8 +663,8 @@ def test_p5_cip_starts_respect_the_hard_max_interval_deadline(work, cfg, schedul
                         - anchor).total_seconds() / 3600.0
             except ValueError:
                 hour = None
-            if hour is not None and 0 <= hour < cfg["horizon_h"]:
-                last_cip[line] = hour
+            if hour is not None and hour < cfg["horizon_h"]:
+                last_cip[line] = hour   # negative = clean before the anchor
 
     last_prod = {
         line: float(g["end_hour"].max())
@@ -565,13 +681,17 @@ def test_p5_cip_starts_respect_the_hard_max_interval_deadline(work, cfg, schedul
         if not windows:
             continue
 
-        # (a) first CIP, relative to the line's availability + carryover
-        deadline = gates.get(line, 0.0) + max(0.0, interval - carries.get(line, 0.0))
+        # (a) first CIP by the plant's wall clock: interval - carryover hours
+        #     into the horizon; a line already past that at its gate gets
+        #     the clean at the gate (model warning "already past its CIP
+        #     interval at the gate").
+        due = interval - carries.get(line, 0.0)
+        deadline = max(due, gates.get(line, 0.0))
         if windows[0][0] > deadline + TOL:
             violations.append(
-                f"{line}: first CIP starts {windows[0][0]:g}h, deadline "
-                f"{deadline:g}h (avail {gates.get(line, 0.0):g} + interval "
-                f"{interval:g} - carry {carries.get(line, 0.0):g})"
+                f"{line}: first CIP starts {windows[0][0]:g}h, due "
+                f"{due:g}h (interval {interval:g} - carry "
+                f"{carries.get(line, 0.0):g}; gate {gates.get(line, 0.0):g})"
             )
         # (b) absolute cross-phase deadline from the previous CIP's clock time
         if line in last_cip and windows[0][0] > last_cip[line] + interval + TOL:
@@ -713,11 +833,15 @@ def test_p7_no_order_is_split_across_too_many_lines(schedule, cfg):
 # P8 -- charter row 8: due dates
 # --------------------------------------------------------------------------
 def test_p8_orders_start_no_earlier_than_their_due_window(schedule, cfg, orders, relax):
-    """model_builder.py:172-175 -- seg_a_start >= ds_eff, where a week-1/2 order
-    may pull forward to WEEK0_FILL_START when allow_week1_in_week0 is on. The
-    start floor is hard at EVERY relax level, but cross-week mode replaces the
-    whole due block with a weighted preference (model_builder.py:136-169), so
-    the probe skips loudly there."""
+    """Charter row 8 -- no production before the order's window opens. The
+    window is the order's due_start, except that with allow_week1_in_week0
+    the plant's early-fill policy applies (plant decision 2026-09-04, see
+    _window_open and the note at the top of this file): unbounded (the
+    default -- the floor is 0 and this probe then only guards current MOs)
+    or `early_fill_hours` before its own due_start for every demand order.
+    Stated from the plant rule, not copied from the model. The start floor
+    is hard at EVERY relax level, but cross-week mode replaces the whole due
+    block with a weighted preference, so the probe skips loudly there."""
     if relax["cross_week"]:
         pytest.skip(
             "cross_week mode: the due window is a weighted preference, not a "
@@ -730,11 +854,7 @@ def test_p8_orders_start_no_earlier_than_their_due_window(schedule, cfg, orders,
         o = orders.get(order_id)
         if o is None:
             continue
-        ds_raw = int(o["due_start"])
-        if ds_raw > WEEK0_END and cfg["allow_week1_in_week0"]:
-            ds_eff = WEEK0_FILL_START
-        else:
-            ds_eff = ds_raw
+        ds_eff = _window_open(o, orders, cfg)
         first = float(grp["start_hour"].min())
         if first < ds_eff - TOL:
             violations.append(
@@ -746,15 +866,50 @@ def test_p8_orders_start_no_earlier_than_their_due_window(schedule, cfg, orders,
     )
 
 
+def test_p8c_no_demand_block_starts_before_a_committed_mo_on_its_line(schedule, work):
+    """Plant decision 2026-09-04 -- "early fill ... cannot be placed before an
+    already scheduled MO". In an E-style work dir the scheduled MOs are the
+    rows of current_mo.csv, written back as "<mo>|CUR" blocks on their locked
+    line (model_builder committed-MO floor; validator EARLY_BEFORE_COMMITTED).
+    Every demand block on such a line must start at or after the END of every
+    committed block there, at every relax level (the floor is a physical
+    commitment, not a preference). The solver_tiny fixture carries MO1 on
+    L1, so this probe is live there; a work dir without current_mo.csv skips."""
+    if not (work / "current_mo.csv").exists():
+        pytest.skip("no current_mo.csv (not a scenario-E work dir)")
+    committed = schedule[schedule["current_mo"] & ~schedule["trial"]]
+    if committed.empty:
+        pytest.skip("no committed-MO rows in the schedule")
+    demand = schedule[~schedule["current_mo"] & ~schedule["trial"]]
+    violations = []
+    for line_id, cgrp in committed.groupby("line_id"):
+        c_end = float(cgrp["end_hour"].max())
+        for _, r in demand[demand["line_id"] == line_id].iterrows():
+            if float(r["start_hour"]) < c_end - TOL:
+                violations.append(
+                    f"{r['line_name']} {r['order_id']} starts h{float(r['start_hour']):g} "
+                    f"before committed MO(s) {sorted(set(cgrp['order_id']))} end h{c_end:g}"
+                )
+    assert not violations, (
+        "demand placed before an already scheduled MO: " + "; ".join(violations[:10])
+    )
+
+
 def test_p8b_orders_end_by_their_due_date_cap(schedule, cfg, orders, relax):
-    """model_builder.py:192-195 -- eff_end <= due_end + 1 is the HARD cap.
-    Ladder level 2+ (soft_due) replaces it with due_end + 1 + lateness where
-    lateness <= H - (due_end + 1), i.e. the horizon; cross-week mode drops the
-    end constraint too. In those modes the probe asserts the bound that IS in
-    force (the horizon) and the count of late orders is reported by the
-    dispatch summary rather than silently swallowed."""
+    """model_builder.py -- eff_end <= due_end + 1 is the HARD cap under
+    [scheduler] due_week_policy = "hard". Ladder level 2+ (soft_due) replaces
+    it with due_end + 1 + lateness where lateness <= H - (due_end + 1), i.e.
+    the horizon; cross-week mode drops the end constraint too; and the
+    OPT-IN policy due_week_policy = "soft" (plant decision 2026-09-04 #2,
+    "week numbers are preferential order, not hard borders") prices a demand
+    order's lateness per kg-week at EVERY level instead of walling it. The
+    key absent means "hard" (the shipped default since 2026-09-04 night). In
+    the relaxed modes the probe asserts the bound that IS in force (the
+    horizon) and the count of late orders is reported by the dispatch
+    summary rather than silently swallowed."""
     horizon = cfg["horizon_h"]
-    relaxed = relax["relax_due"] or relax["cross_week"]
+    soft_weeks = cfg.get("due_week_policy", "hard") == "soft"
+    relaxed = relax["relax_due"] or relax["cross_week"] or soft_weeks
     prod = schedule[~schedule["trial"]]
     hard_violations, late = [], []
     for order_id, grp in prod.groupby("order_id"):
@@ -779,9 +934,13 @@ def test_p8b_orders_end_by_their_due_date_cap(schedule, cfg, orders, relax):
     if relaxed and late:
         pytest.skip(
             f"{len(late)} order(s) finish past due+1, permitted by relax level "
-            f"{relax['level']} ({relax['mode']}, cross_week={relax['cross_week']}); "
+            f"{relax['level']} ({relax['mode']}, cross_week={relax['cross_week']}, "
+            f"due_week_policy={'soft' if soft_weeks else 'hard'}); "
             "the horizon bound was asserted instead. Row 8's hard cap is "
-            "UNVERIFIED for this work dir. First few: " + "; ".join(late[:5])
+            "UNVERIFIED for this work dir"
+            + (" (soft due weeks: lateness is a priced trade-off, see the "
+               "validator's DUE_WINDOW WARN rows)" if soft_weeks else "")
+            + ". First few: " + "; ".join(late[:5])
         )
 
 

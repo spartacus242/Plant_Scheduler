@@ -46,7 +46,10 @@ _RULES: list[dict[str, Any]] = [
         name="Idle-time penalty",
         config="objective.idle_weight", default=0,
         where="model_builder.py (every objective mode); [objective]",
-        planner="Cost per idle hour between runs on a line. 0 switches idle "
+        planner="Cost per idle hour on a line, measured from the line's "
+                "availability gate to its last run (since 2026-09-03 — "
+                "before, idle BEFORE the first run was free, so the "
+                "cheapest plan always started late). 0 switches idle "
                 "tracking off entirely. Works in every objective mode.",
     ),
     dict(
@@ -60,23 +63,139 @@ _RULES: list[dict[str, Any]] = [
     ),
     dict(
         id="late_weight", group=GROUP_KNOB, ui="exposed",
-        name="Lateness penalty",
+        name="Lateness penalty (per hour)",
         config="objective.late_weight", default=200,
-        where="model_builder.py relax_due branch; [objective]",
-        planner="Cost per hour an order finishes past its due window. Only "
-                "active once the relax ladder reaches level 2 (soft due "
-                "dates); at level 0/1 due dates are hard and this does "
-                "nothing. Ignored in cross-week mode (week deviation "
-                "replaces it).",
+        where="model_builder.py soft due-end branch; [objective]",
+        planner="Cost per HOUR an order finishes past its due window -- the "
+                "smooth tiebreaker inside a week. Under the shipped default "
+                "due_week_policy = hard it is active only from relax level "
+                "2 (soft due dates). Under the opt-in soft due weeks "
+                "(2026-09-04 #2) every demand order carries it at every "
+                "relax level, underneath the kg-week price "
+                "late_kg_week_weight (which does the real work there: 200/h "
+                "on a 168 h week is 33,600 vs 200,000 per tonne-week). "
+                "Ignored in cross-week mode.",
     ),
     dict(
         id="week_deviation_weight", group=GROUP_KNOB, ui="exposed",
-        name="Cross-week deviation cost",
+        name="Early-start deviation cost (per hour)",
         config="objective.week_deviation_weight", default=40,
-        where="model_builder.py cross_week branch; [objective]",
-        planner="Cross-week mode only: cost per hour an order runs outside "
-                "the week AZAP asked for. Lower = more willing to move a "
-                "SKU between weeks to build a longer campaign.",
+        where="model_builder.py week_dev (default + cross_week branches); "
+              "[objective]",
+        planner="Cost per HOUR an order STARTS before its own due_start "
+                "(cross-week mode: per hour outside AZAP's week, both "
+                "sides). Since 2026-09-04 this is only the smooth tiebreaker "
+                "under the kg-week price early_kg_week_weight (40/h vs "
+                "50 per kg-week in the pass-2 currency: a 1,000 kg/h line "
+                "pulled one week early pays 50,000 per hour of production "
+                "from the kg-week term and 40 from this one).",
+    ),
+    dict(
+        id="due_week_policy", group=GROUP_KNOB, ui="easy",
+        name="Due-week policy (hard walls / soft weeks)",
+        config="scheduler.due_week_policy", default="hard",
+        where="flowstate.toml [scheduler] due_week_policy; "
+              "model_builder.py effective_due_end / soft_due_weeks; "
+              "independent_validator.py DUE_WINDOW (late finish)",
+        planner="hard (the shipped default): a demand order must finish "
+                "inside its week -- due_end + 1 is a wall at relax levels "
+                "0-1, level 2 prices lateness per hour; pre-building an "
+                "earlier week stays allowed (early-fill policy). soft is "
+                "OPT-IN: the plant asked for it (decision 2026-09-04 #2: "
+                "\"Treat the week numbers on the demand_plan_summary.csv as "
+                "preferential order, but not necessarily the hard borders "
+                "... if a sku has tons scheduled in week 1 and week 3, and "
+                "it makes sense to combine all kgs for that sku in one run "
+                "in week 2, then that should be explored.\"), but measured "
+                "2026-09-04 at 600 s it delivered 38 % less on-time kg than "
+                "hard (2.22 / 2.06 vs 3.59 / 3.36 kt) with 463 / 602 t "
+                "late, so it ships off. Under soft a demand order's week is "
+                "a PREFERENCE in both directions -- it may be pre-built (the "
+                "early-fill policy) and it may finish late anywhere inside "
+                "the horizon; every kg in the wrong week is priced per kg per "
+                "whole week of deviation (late_kg_week_weight / "
+                "early_kg_week_weight), so two runs of one SKU merge into one "
+                "campaign exactly when the changeovers saved are worth more "
+                "than the deviation. All demand tonnage still comes first: "
+                "late production always beats no production. Committed MOs, "
+                "trials, the line gate, committed windows and the horizon end "
+                "stay hard. The validator reports a late finish as ERROR "
+                "under hard, WARN (trade-off) under soft. If you opt in, "
+                "late 400,000 / early 100,000 is the only tested price pair "
+                "that kept every late order within one week.",
+    ),
+    dict(
+        id="late_kg_week_weight", group=GROUP_KNOB, ui="easy",
+        name="Late kg-week price (soft weeks only)",
+        config="scheduler.late_kg_week_weight", default=200_000,
+        where="flowstate.toml [scheduler] late_kg_week_weight; "
+              "data_loader.Params; model_builder.py dev_kg_coefficients / "
+              "kg-week deviation block",
+        planner="Applies ONLY under the opt-in due_week_policy = soft (the "
+                "shipped default hard builds no lateness terms). "
+                "Cost of ONE TONNE finishing ONE WEEK LATE, in fill units "
+                "where 1 kg of fill = 1,000 units (one 'fill-equivalent kg', "
+                "kg-eq). The SAME fraction of a kg's fill value is charged "
+                "in every solver pass (v2 pricing, 2026-09-04: pass 2 pays "
+                "200 per kg-week against fill ~1,000 per kg, pass 1 pays "
+                "200,000 against fill 1,000,000 per kg). Arithmetic: one FFS "
+                "change under the Scenario F weights = (base 5 + ffs 600) x "
+                "100 x K(33) = 1,996,500 pass-2 units ~ 2,000 kg-eq, so the "
+                "default 200,000 = 200 kg-eq per tonne-week = 20 % of the "
+                "tonne's fill value per week late: 10 t one week late ~ one "
+                "FFS change, 30 t ~ three, 100 t ~ ten. Decision rule: a "
+                "small run (<= 10 t) may slip one week to save ONE major "
+                "changeover or to join a larger same-SKU run; a large order "
+                "(>= 30 t) does not move a week for fewer than several major "
+                "changeovers saved; it PRE-BUILDS instead whenever capacity "
+                "allows (early costs 1/4 as much); it never leaves tonnage "
+                "unmade to avoid lateness (late beats never up to 4 weeks "
+                "late: 4 x 20 % < 100 %). Graded in whole weeks (1 h into "
+                "the next week counts as a week — the plant's unit); "
+                "late_weight (per hour) breaks ties inside a week. 0 = "
+                "lateness free (still allowed). 400,000 (with early "
+                "100,000) is the only tested setting that kept every late "
+                "order within one week.",
+    ),
+    dict(
+        id="early_kg_week_weight", group=GROUP_KNOB, ui="easy",
+        name="Early kg-week price (soft weeks)",
+        config="scheduler.early_kg_week_weight", default=50_000,
+        where="flowstate.toml [scheduler] early_kg_week_weight; "
+              "data_loader.Params; model_builder.py kg-week deviation "
+              "block",
+        planner="Cost of ONE TONNE produced ONE WEEK EARLY (inventory), same "
+                "currency as late_kg_week_weight; active under BOTH due-week "
+                "policies (pre-building is allowed either way). Default "
+                "50,000 = 1/4 of "
+                "the late price = 50 kg-eq per tonne-week = 5 % of the "
+                "tonne's fill value per week early (50 per kg-week in pass "
+                "2, 50,000 in pass 1). Inventory is cheaper than a missed "
+                "week. Decision rule: on a contested hour the nearer week "
+                "wins by 5 % per week on top of the 1 %/week fill gradient "
+                "(the 280480 pattern: W1's order fills before W2's of the "
+                "same SKU — what the fixed-48h rule got for free); a later "
+                "week's order is pulled INTO an earlier campaign when tonnes "
+                "x weeks early x 50,000 < the changeover saved (up to ~40 "
+                "t-weeks per FFS change); three weeks early still costs only "
+                "15 % of a kg's fill value, so idle capacity is still filled "
+                "with later weeks (fill beats the price).",
+    ),
+    dict(
+        id="pass2_makespan_weight", group=GROUP_KNOB, ui="easy",
+        name="Pass-2 makespan weight (Scenario F)",
+        config="scheduler.pass2_makespan_weight", default=1,
+        where="flowstate.toml [scheduler] pass2_makespan_weight (optional "
+              "key); data_loader.Params; model_builder.py pass-2 "
+              "fill-exchange Minimize branch",
+        planner="Coefficient of the plan's makespan in the pass-2 objective "
+                "ONLY (Minimize co x 100 x K + makespan x W + ... - fill). "
+                "Default 1 = a pure tiebreaker: one hour of shorter plan is "
+                "worth 1 unit ~ 0.001 kg of fill, so tails are never shaved "
+                "for cosmetics. 1 kg-eq ~ 1,000 pass-2 units: a weight of "
+                "100,000 makes one hour of shorter plan worth 0.1 t of fill, "
+                "1,000,000 makes it 1 t (an hour of a 1,000 kg/h line). "
+                "Pass 1 and the non-fill modes keep objective.makespan_weight.",
     ),
     dict(
         id="cip_flex_weight", group=GROUP_KNOB, ui="exposed",
@@ -201,11 +320,15 @@ _RULES: list[dict[str, Any]] = [
         config="scheduler.min_run_pct_of_qty", default=0.5,
         where="model_builder.py run-bound block; [scheduler] "
               "min_run_pct_of_qty",
-        planner="Hard floor: a line assigned to an order must run at least "
-                "this fraction of the hours the order's minimum quantity "
-                "needs. At 0.5, splitting an order across 2 lines forces "
+        planner="Hard-demand floor (A–E): a line assigned to an order must "
+                "run at least this fraction of the hours the order's "
+                "minimum quantity needs — the minimum AFTER the window "
+                "clamp (impossible-demand rule), so a clamped order can "
+                "still be placed. At 0.5, splitting across 2 lines forces "
                 "each to take a meaningful share — no token 1h helpers. "
-                "Only bites when an order splits across lines.",
+                "NOT applied under soft demand (Scenario F): partial fills "
+                "are the point there, so only min_run_hours holds "
+                "(2026-09-03).",
     ),
     dict(
         id="max_lines_per_order", group=GROUP_KNOB, ui="exposed",
@@ -281,20 +404,34 @@ _RULES: list[dict[str, Any]] = [
     dict(
         id="week_grid", group=GROUP_FIXED, ui="don't expose",
         name="Week grid",
-        value="168h Monday weeks; week 0 = hours 0-167",
-        where="model_builder.py WEEK0_END/WEEK1_START",
-        planner="The solver's weeks are fixed 168-hour blocks from the "
-                "horizon anchor (a Monday). Due windows, the week gradient "
-                "and the two-phase split all use this grid.",
+        value="demand-derived weeks; deviation graded in 168 h steps",
+        where="model_builder.py week_frame / WEEK_STEP_H",
+        planner="The solver's weeks come from the demand file's due windows "
+                "(the staged frame — a stub first week when the horizon "
+                "opens mid-week), not from a Monday constant. The kg-week "
+                "deviation prices count whole 168 h steps from an order's own "
+                "due_start (early) or due_end + 1 (late). A 4-week horizon "
+                "(horizon_weeks = 4 / 672 h) is supported end to end: staging "
+                "pro-rates the partial fourth week, the model's CIP slots and "
+                "week steps follow the horizon.",
     ),
     dict(
         id="week0_fill_start", group=GROUP_FIXED, ui="needs care",
-        name="Week-0 fill window",
-        value="hour 120",
-        where="model_builder.py WEEK0_FILL_START",
-        planner="A next-week order may pull forward into THIS week only "
-                "from hour 120 (the last two days), so early week-0 hours "
-                "stay reserved for week-0 demand.",
+        name="Early-fill policy (how early next-week demand may be pre-built)",
+        config="scheduler.early_fill_hours", default="unbounded",
+        where="flowstate.toml [scheduler] early_fill_hours; "
+              "model_builder.py effective_due_start; "
+              "independent_validator.py DUE_WINDOW / EARLY_BEFORE_COMMITTED",
+        planner="Plant decision 2026-09-04: a later week's demand may be "
+                "produced as far back into earlier weeks as free capacity "
+                "allows ('unbounded'), but never before an already "
+                "scheduled MO — the line's availability gate, committed "
+                "windows and every current-state MO on the line are hard "
+                "floors. Set an integer (e.g. 48) to cap how many hours "
+                "before its own due_start any demand order may start. "
+                "Either way the right week is a soft preference: the fill "
+                "week gradient and week_deviation_weight (per early hour) "
+                "serve the nearest due week first when capacity is short.",
     ),
     dict(
         id="week_stitch", group=GROUP_FIXED, ui="needs care",
@@ -313,7 +450,14 @@ _RULES: list[dict[str, Any]] = [
         planner="When a level is INFEASIBLE the solver retries one level "
                 "softer and reports which level produced the plan. "
                 "Min-changeovers never escalates past soft due dates — it "
-                "would contradict itself by dropping changeovers.",
+                "would contradict itself by dropping changeovers. Level 3 "
+                "('ignore changeovers') drops only the changeover PRICE; "
+                "the setup HOURS between different SKUs stay hard "
+                "(2026-09-03 — before, level 3 wrote zero-gap schedules). "
+                "Under the default soft due-week policy (2026-09-04 #2) "
+                "level 2's 'soft due dates' is already in force for demand "
+                "orders at level 0, so level 2 only still relaxes committed "
+                "MOs' windows.",
     ),
     dict(
         id="producible_zeroing", group=GROUP_FIXED, ui="don't expose",
@@ -321,10 +465,15 @@ _RULES: list[dict[str, Any]] = [
         value="qty_min clamped to provable window capacity",
         where="model_builder.py _producible_kg_in_window",
         planner="An order asking for more than its capable lines can "
-                "physically make inside its window (gates and downtime "
-                "subtracted) is clamped to that ceiling and reported "
-                "'short of minimum' — it never turns the whole solve "
-                "INFEASIBLE. Committed MOs and trials are never clamped.",
+                "physically make inside its window (gates and the UNION of "
+                "downtime subtracted, capable == 1 lines only, at most "
+                "max_lines_per_order of them) is clamped to that ceiling "
+                "and reported 'short of minimum' — it never turns the whole "
+                "solve INFEASIBLE. Committed MOs and trials are never "
+                "clamped. (Capable/union/max-lines tightened 2026-09-03: "
+                "before, non-capable lines and double-counted downtime "
+                "inflated the bound ~4x and 105 t of unmakeable demand was "
+                "reported as a solver shortfall.)",
     ),
     dict(
         id="dead_pair_pruning", group=GROUP_FIXED, ui="don't expose",
@@ -366,11 +515,12 @@ _RULES: list[dict[str, Any]] = [
     dict(
         id="cip_max_count", group=GROUP_FIXED, ui="don't expose",
         name="Max solver CIPs per line",
-        value="3 per horizon",
-        where="model_builder.py cip1..cip3",
-        planner="The model creates at most 3 CIP slots per line per "
-                "horizon. At 504h / 120h intervals that is exactly enough "
-                "— a longer horizon or shorter interval would need code.",
+        value="ceil((horizon + carry) / interval) + 1 slots",
+        where="model_builder.py CIP slot count (fix SB-2)",
+        planner="The model creates enough CIP slots per line for the whole "
+                "horizon at the line's interval plus one spare (2026-09-03; "
+                "before, a hard-coded 3 silently capped a 504 h line). A "
+                "4-week (672 h) horizon at 120 h intervals gets 7 slots.",
     ),
     dict(
         id="cip_absorb", group=GROUP_FIXED, ui="don't expose",
@@ -390,7 +540,22 @@ _RULES: list[dict[str, Any]] = [
         planner="A SKU pair missing from changeovers.csv costs zero setup "
                 "TIME but the full weighted penalty (all four machines "
                 "assumed to change) — the solver avoids unknown switches "
-                "without inventing hours.",
+                "without inventing hours. EXCEPTION (2026-09-03): the same "
+                "SKU following itself is never a changeover — cost 0, time "
+                "0 — whatever the matrix says; before, a missing (X,X) row "
+                "charged the full default and same-SKU campaigns were "
+                "split by foreign SKUs.",
+    ),
+    dict(
+        id="setup_rounding", group=GROUP_FIXED, ui="don't expose",
+        name="Setup hours rounded UP",
+        value="0.25→1h, 1.25→2h, 2.5→3h",
+        where="solver/changeover_cache.py round_setup_hours",
+        planner="The model plans in whole hours, so every changeover "
+                "standard is rounded UP to the next hour: the reserved slot "
+                "may be longer than the standard, never shorter. Before "
+                "2026-09-03 the plant's quarter-hour standards (13,998 of "
+                "54,988 matrix rows) were rounded down by 15 minutes.",
     ),
     dict(
         id="initial_sku_co", group=GROUP_FIXED, ui="don't expose",
@@ -399,9 +564,13 @@ _RULES: list[dict[str, Any]] = [
         where="model_builder.py first_flags; initial_states.csv "
               "long_shutdown_extra_setup_hours",
         planner="The first order on a line pays the changeover from the "
-                "SKU the line is holding now (unless CLEAN), plus extra "
-                "setup hours if the line is coming back from a flagged "
-                "long shutdown.",
+                "SKU the line is holding now (unless CLEAN) — its setup "
+                "TIME and, since 2026-09-03, its weighted COST too (same "
+                "formula and CIP waivers as any other switch; before, the "
+                "opening format change was free and the solver spent it on "
+                "the most expensive switch of the line). Plus extra setup "
+                "hours if the line is coming back from a flagged long "
+                "shutdown.",
     ),
     dict(
         id="min_co_multipliers", group=GROUP_FIXED, ui="don't expose",
@@ -426,9 +595,18 @@ _RULES: list[dict[str, Any]] = [
         name="Production dominates preferences",
         value="production kg x1000 vs preference terms",
         where="model_builder.py maximize branch",
-        planner="In fill/maximize modes, produced kilograms outrank every "
-                "preference (changeovers, makespan, idle): the solver "
-                "never trades real tonnage for a nicer-looking plan.",
+        planner="PASS 1 of fill/maximize modes: one kilogram up to target "
+                "is worth ~1,000 x 1,000 = 1,000,000 objective units, so "
+                "under the Scenario F weights (changeover x300) a topload "
+                "change (455) is worth 0.137 kg, an FFS change (605) 0.18 kg, "
+                "a TTP+casepacker switch (30) 0.009 kg (TTP alone, 10: "
+                "0.003 kg), an idle hour 0.000003 kg — NOT the 46 / 61 / 3 kg "
+                "an older comment claimed (off by x333). "
+                "Pass 1 therefore never gives up fill for fewer "
+                "changeovers — and, the honest flip side, it does not "
+                "minimize changeovers at all; that is pass 2's job (see the "
+                "two-pass rules). It also buys a 4 h stub with a full "
+                "changeover rather than leave the hours idle.",
     ),
     dict(
         id="week_gradient", group=GROUP_FIXED, ui="don't expose",
@@ -457,9 +635,68 @@ _RULES: list[dict[str, Any]] = [
         where="phase2_scheduler.py TWO_PASS_EPS; [scheduler] "
               "two_pass_epsilon_pct",
         planner="Pass 1 maximizes fill; pass 2 minimizes changeovers while "
-                "keeping at least (100% - this) of pass 1's fill score. "
-                "1% ≈ the tonnage the solver may give back to buy fewer "
-                "expensive changeovers.",
+                "keeping at least (100% - this) of pass 1's TOTAL fill "
+                "score. Honest detail (audit 2026-09-03): on its own this "
+                "floor is fungible — pass 2 could spend the whole 1% on "
+                "anything in its objective (it trimmed 100 t to 99 t to end "
+                "1 h earlier, and deleted a 2 t sole-line order). It is now "
+                "backed by the per-order floors and the fill exchange rate "
+                "below; the percentage remains a global safety net.",
+    ),
+    dict(
+        id="pass2_order_floors", group=GROUP_FIXED, ui="don't expose",
+        name="Pass-2 per-order floors (Scenario F)",
+        value="produced >= min(pass-1 produced, target) per order",
+        where="model_builder.py build_model(order_floors=...); "
+              "phase2_scheduler.py two-pass block",
+        planner="Pass 2 may re-sequence and merge runs but may never delete "
+                "an order pass 1 filled or shave its tail below target: "
+                "every order keeps at least what pass 1 made, up to its "
+                "target (2026-09-03).",
+    ),
+    dict(
+        id="pass2_fill_exchange_rate", group=GROUP_FIXED, ui="needs care",
+        name="Pass-2 fill exchange rate (Scenario F)",
+        value="K = 33 under the F weights (one FFS change ≈ 2 h of a "
+              "1,000 kg/h line)",
+        where="model_builder.py default_fill_exchange_rate / "
+              "build_model(fill_exchange_rate=...)",
+        planner="Pass 2 keeps fill IN its objective: it minimizes "
+                "changeover load x 100 x K minus the fill score, so it gives "
+                "up a kilogram only when the changeover it saves is worth "
+                "more. Arithmetic: an FFS change costs base 5 + ffs 600 = "
+                "605 -> 60,500 pass-2 units; the plant values it at about "
+                "2 h of a 1,000 kg/h line = 2,000 kg x ~1,010 fill units/kg "
+                "= 2,020,000; K = 2,020,000 / 60,500 ≈ 33. So a topload "
+                "change (455) ≈ 1.5 t, a full change (1080) ≈ 3.5 t, a "
+                "TTP-only switch (10) ≈ 33 kg; a makespan hour is worth "
+                "0.001 kg — tails are never shaved for cosmetics.",
+    ),
+    dict(
+        id="cur_mo_bounds", group=GROUP_FIXED, ui="don't expose",
+        name="Committed-MO quantity bracket",
+        value="rate x floor(remaining/rate) .. rate x ceil(remaining/rate)",
+        where="data_loader.py _parse_current_mo",
+        planner="A running/queued MO's remaining kg is produced in whole "
+                "hours of its line's rate, so its bounds bracket the "
+                "remaining kg at the hour below and the hour above "
+                "(2026-09-03 — pinning it exactly made Scenario E "
+                "structurally INFEASIBLE unless the kg happened to be a "
+                "whole multiple of the rate). The raw remaining kg is kept "
+                "for the write-back report.",
+    ),
+    dict(
+        id="demand_validation", group=GROUP_FIXED, ui="don't expose",
+        name="Demand / capabilities input validation",
+        value="bad row -> named ValueError, never a silent INFEASIBLE",
+        where="data_loader.py _parse_demand, Data.load (capabilities)",
+        planner="A negative or non-numeric target, lower_pct > upper_pct "
+                "or a line_id that is not a number stops the run with the "
+                "offending row named (2026-09-03). Before, one bad row made "
+                "every relax level INFEASIBLE with no message, or a text "
+                "line_id silently became P09. A target of exactly 0 (a "
+                "fully covered week) is legitimate. A repeated MO number "
+                "gets a distinct order id and a warning.",
     ),
     dict(
         id="horizon", group=GROUP_FIXED, ui="easy",
@@ -468,7 +705,10 @@ _RULES: list[dict[str, Any]] = [
         where="[scheduler] horizon_hours (wins) or horizon_weeks x 168",
         planner="How far the solver plans. Orders due past the horizon "
                 "cannot be produced at all — the horizon must cover the "
-                "demand file.",
+                "demand file. horizon_weeks = 4 (672 h) is supported end to "
+                "end (plant decision 2026-09-04 #2: look 3-4 weeks out so a "
+                "SKU's week-1 and week-3 tonnage can be consolidated); "
+                "staging pro-rates a partial last week and defers the rest.",
     ),
     dict(
         id="budget_ceiling", group=GROUP_FIXED, ui="don't expose",

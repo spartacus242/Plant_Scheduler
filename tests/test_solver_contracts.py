@@ -16,13 +16,17 @@
 #   C7 downtime staleness  no outage silently expires inside the horizon
 #
 # Design notes
-#   * These run against ALREADY-SOLVED work dirs under data/_scenario_work/.
-#     They are assertions about artifacts, so they cost milliseconds and can
-#     live in the default suite. If no work dir exists the contract tests skip
-#     (a fresh clone has never solved) -- but the pure-function tests for the
-#     downtime audit always run.
-#   * Deliberately NOT invoking the solver: a real solve is 60-600 s (see the
-#     flowstate-cp-sat-solver skill, pitfall 9) and belongs in a slow marker.
+#   * Since 2026-09-03 (fix T-1, audit tests-1) these run against a
+#     DETERMINISTIC artifact: data/test_fixtures/solver_tiny/ solved once per
+#     session by tests/conftest.py (in-process CP-SAT, 2 workers, <= 15 s,
+#     seed 7). Before that they asserted on "whatever solved last" under the
+#     gitignored data/_scenario_work/ and skipped on a clean checkout, so the
+#     regression gate was vacuous on CI and could re-target a stale dir here.
+#     Set FLOWSTATE_LIVE_WORK=1 (or =<path>) to ALSO run them on a real work
+#     dir; the pure-function tests for the downtime audit always run.
+#   * The one solve is tiny (3 lines, 8 orders, ~2 s). A real solve is
+#     60-600 s (flowstate-cp-sat-solver skill, pitfall 9) and stays in the
+#     slow marker (tests/test_solver_fresh_solve.py).
 #     `python scripts/check_solver_current_state.py` remains the live-run gate.
 
 from __future__ import annotations
@@ -41,6 +45,8 @@ from helpers.downtime_horizon import (  # noqa: E402
     audit_downtime_horizon,
     uncovered_tail_hours,
 )
+
+from conftest import resolve_solver_work, solver_work_params  # noqa: E402
 
 WORK_ROOT = ROOT / "data" / "_scenario_work"
 TOL = 1e-6
@@ -87,12 +93,20 @@ def _norm(v) -> str:
     return str(v).strip().upper()
 
 
-@pytest.fixture(scope="module")
-def work() -> Path:
-    dirs = _solved_work_dirs()
-    if not dirs:
-        pytest.skip("no solved scenario work dir under data/_scenario_work/")
-    return dirs[0]
+@pytest.fixture(scope="module", params=solver_work_params())
+def work(request, solver_tiny_work: Path) -> Path:
+    """The artifact under test.
+
+    Fix T-1 (audit tests-1, 2026-09-03): `solver_tiny` is the deterministic
+    fixture data/test_fixtures/solver_tiny/ solved ONCE per session by
+    tests/conftest.py (2 workers, <= 15 s, seed 7, relax level 0). It exists
+    on every checkout, so these contracts never skip. `live_work` (the newest
+    dir under data/_scenario_work/, or FLOWSTATE_LIVE_WORK=<path>) is an
+    EXTRA parametrisation, present only when FLOWSTATE_LIVE_WORK is set, and
+    its absence is then a failure -- never a silent skip against a stale
+    three-week-old artifact.
+    """
+    return resolve_solver_work(request.param, solver_tiny_work)
 
 
 @pytest.fixture(scope="module")
@@ -299,10 +313,15 @@ def test_c7_audit_tolerates_junk_rows():
     assert audit_downtime_horizon(rows, 504) == []
 
 
+@pytest.mark.live_data
 def test_c7_real_reference_downtimes_cover_the_configured_horizon():
     """The live data must not contain a stale full-horizon outage. This is the
     check that caught P11/P13 being scheduled on hours 336-504 of a 504 h plan
     while both lines were physically down.
+
+    Marked `live_data` on purpose (fix T-4 / audit tests-6): this is a data
+    audit of the bridge-refreshed export, the ONE legitimate reason to read
+    data/reference in the suite; the conftest guard fails any unmarked read.
 
     The reference file stores wall-clock datetimes now; the audit speaks
     hours, so derive them through the one loader (migrate=False: a test must

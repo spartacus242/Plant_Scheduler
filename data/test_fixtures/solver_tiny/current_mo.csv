@@ -1,0 +1,2 @@
+mo,line_name,sku,remaining_kg,due_start_h,due_end_h,locked_line,source
+MO1,L1,A,12500,0,47,1,manprg

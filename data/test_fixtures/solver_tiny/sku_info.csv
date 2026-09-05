@@ -1,0 +1,5 @@
+sku,designation,format,casepacker_format,topload_format,pouch_format,is_organic,has_cinnamon
+A,Apple F1,6x6x12x90,6,6x12,90,0,0
+B,Banana F2,12x4x12x120,12,4x12,120,0,0
+C,Cherry F1c,12x6x12x90,12,6x12,90,0,0
+D,Date F2,12x4x12x120,12,4x12,120,0,0

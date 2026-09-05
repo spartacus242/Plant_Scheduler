@@ -1,0 +1,13 @@
+from_sku,to_sku,setup_hours,ttp_change,ffs_change,tpld_change,cspkr_change,conv_to_org,cinn_to_non_cinn,added_flavors,cip_req_after
+A,B,4,1,1,1,1,0,0,0,0
+B,A,4,1,1,1,1,0,0,0,0
+A,C,1.25,1,0,0,0,0,0,0,0
+C,A,1.25,1,0,0,0,0,0,0,0
+A,D,4,1,1,1,1,0,0,0,0
+D,A,4,1,1,1,1,0,0,0,0
+B,C,2.5,1,0,0,1,0,0,0,1
+C,B,2.5,1,0,0,1,0,0,0,0
+B,D,1,1,0,0,0,0,0,0,0
+D,B,1,1,0,0,0,0,0,0,0
+C,D,4,1,1,1,1,0,0,0,0
+D,C,4,1,1,1,1,0,0,0,0

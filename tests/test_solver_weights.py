@@ -60,7 +60,13 @@ def _tiny_data(P: Params, n_lines: int = 2) -> Data:
     d.setup = {("111", "222"): 2, ("222", "111"): 2}
     full_mc = {"ttp": 1, "ffs": 1, "topload": 1, "casepacker": 1,
                "conv_to_org": 1, "cinn_to_non": 1, "added_flavors": 1}
-    d.machine_changes = {("111", "222"): dict(full_mc),
+    # One pair carries cip_req_after so co_cip_req_weight has a real term to
+    # land in. Until fix SA-7 (2026-09-03) this test passed WITHOUT such a
+    # pair only because the co_cost_l domain bound was the closed form
+    # len(elig) x sum(all weights) — doubling W_cip_req moved the bound, not
+    # a coefficient. The bound is now the exact sum of the terms' costs, so
+    # the knob is honestly inert unless a cip_req_after pair exists.
+    d.machine_changes = {("111", "222"): dict(full_mc, cip_req_after=1),
                          ("222", "111"): dict(full_mc)}
     d.orders = [
         dict(order_id="O1", sku="111", due_start=0, due_end=167,
@@ -122,10 +128,10 @@ WEIGHT_CASES = [
     ("objective_makespan_weight", {}),
     ("objective_changeover_weight", {}),
     ("objective_idle_weight", {}),
-    ("objective_cip_defer_weight", {}),
+    # objective_cip_defer_weight / objective_cip_flex_weight: RETIRED knobs
+    # since fix SB-4 (2026-09-03) — see test_retired_cip_defer_knobs_are_inert.
     ("objective_late_weight", {"relax_due": True}),
     ("objective_week_deviation_weight", {"cross_week": True}),
-    ("objective_cip_flex_weight", {"cip_flex": True}),
     ("co_topload_weight", {}),
     ("co_ttp_weight", {}),
     ("co_ffs_weight", {}),
@@ -148,6 +154,26 @@ def test_doubling_weight_changes_the_model(attr, flags):
     assert base != doubled, f"{attr} is a dead knob: model unchanged"
 
 
+@pytest.mark.parametrize("attr,flags", [
+    ("objective_cip_defer_weight", {}),
+    ("objective_cip_flex_weight", {"cip_flex": True}),
+], ids=["cip_defer_weight_retired", "cip_flex_weight_retired"])
+def test_retired_cip_defer_knobs_are_inert(attr, flags):
+    """Fix SB-4 (audit C42 / bench F6, 2026-09-03): the cip_defer REWARD
+    (`- sum(cip_start) * W_cip`, scaled by cip_flex_weight under cip_flex)
+    no longer reaches the model. It rewarded a LATER and a MORE NUMEROUS
+    clean: the solver split a 30 h run, parked the tail 200 h later and
+    "needed" two 6 h cleans purely to collect the reward (audit exp6). Both
+    Params stay for config compatibility (toml / UI / knob map) but are
+    inert by design — this test used to assert the opposite (WEIGHT_CASES
+    "every knob must reach a coefficient"); the model now carries a per-CIP
+    COST instead (dur x median line rate, model_builder CIP count cost)."""
+    base = _proto_str(_base_params(), **flags)
+    doubled = _proto_str(
+        _base_params(**{attr: getattr(_base_params(), attr) * 2}), **flags)
+    assert base == doubled, f"{attr} is retired and must not move the model"
+
+
 @pytest.mark.parametrize("mode", ["min-changeovers", "spread-load"])
 @pytest.mark.parametrize("attr", ["objective_makespan_weight",
                                   "objective_changeover_weight"])
@@ -161,16 +187,38 @@ def test_balanced_only_weights_ignored_in_fixed_modes(mode, attr):
     assert base == doubled, f"{attr} unexpectedly moves {mode} mode"
 
 
-@pytest.mark.parametrize("attr,flags", [
-    ("objective_late_weight", {}),            # inert below relax level 2
-    ("objective_week_deviation_weight", {}),  # inert without cross-week
-    ("objective_cip_flex_weight", {}),        # inert without cip-flex
+@pytest.mark.parametrize("attr,flags,pkw", [
+    # late_weight is inert below relax level 2 ONLY under due_week_policy =
+    # "hard" (the shipped default since 2026-09-04 night): under the opt-in
+    # soft due weeks (plant decision 2026-09-04 #2) every demand order
+    # carries a priced lateness var at every level, so the per-hour weight
+    # reaches the model at level 0 too (tests/test_soft_week_policy.py pins
+    # that). The "inert" claim below spells the policy out anyway.
+    ("objective_late_weight", {}, {"due_week_policy": "hard"}),
+    # inert without cross-week ONLY because _tiny_data is a single demand
+    # week whose orders open at hour 0 AND _base_params turns
+    # allow_week1_in_week0 off: since fix SB-1 (2026-09-03) the default mode
+    # prices every hour an order runs before its own due_start with this
+    # weight, and under the plant's early-fill policy (2026-09-04, Params.
+    # early_fill_hours None = unbounded) that is every later week's whole
+    # early-fill window (test_fix_SB.py::
+    # test_early_fill_is_priced_per_hour_in_the_default_mode,
+    # tests/test_early_fill_policy.py).
+    ("objective_week_deviation_weight", {}, {}),
+    ("objective_cip_flex_weight", {}, {}),        # inert without cip-flex
+    # The kg-week prices (2026-09-04 #2) need a week-step threshold inside
+    # the horizon: _tiny_data's single week [0, 167] on a 168 h horizon has
+    # none (no early-fill window, due_end + 1 == H), so both are inert here
+    # and live in tests/test_soft_week_policy.py.
+    ("late_kg_week_weight", {}, {}),
+    ("early_kg_week_weight", {}, {}),
 ], ids=["late_without_relax_due", "week_dev_without_cross_week",
-        "cip_flex_without_mode"])
-def test_mode_gated_weights_inert_outside_their_mode(attr, flags):
-    base = _proto_str(_base_params(), **flags)
+        "cip_flex_without_mode", "late_kg_week_single_week",
+        "early_kg_week_single_week"])
+def test_mode_gated_weights_inert_outside_their_mode(attr, flags, pkw):
+    base = _proto_str(_base_params(**pkw), **flags)
     doubled = _proto_str(
-        _base_params(**{attr: getattr(_base_params(), attr) * 2}), **flags)
+        _base_params(**pkw, **{attr: getattr(_base_params(), attr) * 2}), **flags)
     assert base == doubled, f"{attr} moves the model outside its mode"
 
 

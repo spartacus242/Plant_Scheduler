@@ -47,7 +47,8 @@ _COLUMN_ALIASES = {
 # Bump when _norm_df's output schema changes (aliases, new columns): the
 # parquet cache is keyed by source mtime only, so a code-side schema change
 # must not resurrect a stale cache written by older code.
-_SCHEMA_V = 2
+# v3 (2026-09-03): setup_rounded is now rounded UP (round_setup_hours).
+_SCHEMA_V = 3
 _DEFAULT_FAMILY_COLS = (
     "ediact_sku_format",
     "format",
@@ -62,7 +63,28 @@ _DEFAULT_FAMILY_COLS = (
 
 
 def round_half_up(x: float) -> int:
+    """Nearest integer, halves up. Kept for callers that want a nearest
+    rounding; NOT used for setup TIME any more (see round_setup_hours)."""
     return int(math.floor(x + 0.5))
+
+
+def round_setup_hours(x: float) -> int:
+    """Setup hours -> whole model hours, rounded UP (fix SA-4 / audit C36,
+    2026-09-03). The solver models time in integer hours; half-up rounding
+    turned the plant's quarter-hour standards 0.25 -> 0, 1.25 -> 1, 2.25 -> 2
+    (13,998 of the 54,988 live matrix rows), so the gap the model reserved
+    was 15 minutes SHORTER than the standard and the independent validator
+    flagged 12 live CHANGEOVER_GAP shortfalls. A reserved slot may be longer
+    than the standard, never shorter: 0.25 -> 1, 1.25 -> 2, 2.5 -> 3, 3.0 ->
+    3. The 1e-9 guard keeps float noise (2.0000000001) from adding an hour.
+    Negative / NaN values are treated as 0."""
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return 0
+    if v != v or v <= 0:  # NaN or non-positive
+        return 0
+    return int(math.ceil(v - 1e-9))
 
 
 def _norm_df(src: Path) -> pd.DataFrame:
@@ -75,7 +97,7 @@ def _norm_df(src: Path) -> pd.DataFrame:
     chg["from_sku"] = chg["from_sku"].astype(str)
     chg["to_sku"] = chg["to_sku"].astype(str)
     chg["setup_hours"] = pd.to_numeric(chg["setup_hours"], errors="coerce").fillna(0.0)
-    chg["setup_rounded"] = chg["setup_hours"].apply(round_half_up)
+    chg["setup_rounded"] = chg["setup_hours"].apply(round_setup_hours)
     for col in _MACHINE_COLS:
         if col in chg.columns:
             chg[col] = pd.to_numeric(chg[col], errors="coerce").fillna(1).astype(int)

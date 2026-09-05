@@ -1,7 +1,7 @@
 # Flowstate configuration — operational truth → twin → optimizer
 
 [scheduler]
-planning_start_date = "2026-09-01 00:00:00"
+planning_start_date = "2026-09-04 00:00:00"
 # Rolling horizon (handoff WW32 #1). "today" = the Plant Calendar opens on the
 # current day and offers to re-base stored blocks onto it; "fixed" keeps the
 # legacy behaviour of always opening on planning_start_date.
@@ -23,6 +23,58 @@ use_current_mo = true
 # capabilities_rates.csv catalog rate, end in the past) fall back to the
 # manprg estimate with a warning. false = exact legacy behaviour.
 reforecast_running_mo_ends = true
+# Early-fill policy (plant decision 2026-09-04): next-week demand may be
+# pre-built as far back into earlier weeks as free capacity allows, but never
+# before an already scheduled MO (the line availability gate, committed
+# windows and, in Scenario E, every current-state MO on the line stay hard).
+# "unbounded" (also the default when the key is absent) = no limit; an
+# integer = the number of hours before its own due_start any demand order may
+# start (48 was the pre-2026-09-04 rule, then second week only). Producing
+# in the right week stays a SOFT preference: the fill week gradient and
+# [objective] week_deviation_weight serve the nearest due week first when
+# capacity is contested.
+early_fill_hours = "unbounded"
+# Due-week policy: "hard" | "soft".
+# "hard" = the SHIPPED DEFAULT (decided 2026-09-04 night): a demand order must
+# finish inside its week -- due_end + 1 is a wall at relax levels 0-1, level 2
+# prices lateness per hour. Pre-building an earlier week stays allowed
+# (early_fill_hours above). Measured at 600 s on the live board: 0 late kg,
+# W1 on-time 86 / 81 %, 73.8 changeover hours, 6-9 at-wall consolidations free.
+# "soft" = OPT-IN (plant decision 2026-09-04 #2: "week numbers are preferential
+# order, not hard borders"): a demand order's week is a preference in BOTH
+# directions -- it may finish late inside the horizon, and every kg in the
+# wrong week is priced per kg per whole week of deviation, so a small order
+# joins another week's campaign only when the changeovers saved are worth
+# more. Not the default because at 600 s it delivered 2.22 / 2.06 kt on time
+# vs 3.59 / 3.36 kt under hard (-38 %), 463 / 602 t late, W1 52 / 54 %, and
+# 6 of 8 large (>= 30 t) late orders saved no changeover (the pass-1 search
+# stalls on the larger model; lateness was search residue, not a priced trade).
+due_week_policy = "hard"
+# Deviation prices, in fill units per TONNE per week of deviation where 1 kg
+# of fill = 1,000 units ("fill-equivalent kg"). late_kg_week_weight applies
+# ONLY under due_week_policy = "soft" (hard builds no lateness terms);
+# early_kg_week_weight grades pre-building under both policies. The same
+# fraction of a kg's fill value is charged in every solver pass (v2,
+# 2026-09-04). One FFS changeover under the Scenario F weights = (5 + 600) x
+# 100 x K=33 = 1,996,500 units ~ 2,000 kg-eq (about 2 h of a 1,000 kg/h line).
+# late_kg_week_weight = 200000: ONE TONNE ONE WEEK LATE costs 200 kg-eq =
+# 20 % of its own fill value per week. In plant terms: a 10 t run slipping
+# one week costs about one FFS changeover, 30 t about three, 100 t about
+# ten -- so a small run (<= 10 t) may slip a week to save one major
+# changeover or to join a larger same-SKU run, a large order (>= 30 t) does
+# not move for fewer than several. Late still beats never up to 4 weeks late.
+# early_kg_week_weight = 50000: 1/4 of late = 5 % per week early (inventory
+# is cheaper than a missed week); the nearer week wins a contested hour by
+# 5 % per week. 0 disables a side's price, not the freedom.
+# If you opt in to soft weeks: late 400000 / early 100000 is the only tested
+# setting that kept every late order within one week (bench 2026-09-04).
+late_kg_week_weight = 200000
+early_kg_week_weight = 50000
+# Pass-2 makespan coefficient (Scenario F two-pass only; default 1 = a pure
+# tiebreaker, 1 unit ~ 0.001 kg of fill per hour of shorter plan). 1 kg-eq ~
+# 1,000 pass-2 units, so 100000 makes one hour of shorter plan worth 0.1 t of
+# fill and 1000000 makes it 1 t. Uncomment to change:
+# pass2_makespan_weight = 100000
 
 [cip]
 interval_h = 120
@@ -127,3 +179,47 @@ target_avg_run_h = 16.0
 # scores 100. Monotonic: score = clamp(100 * avg_run_h / floor, 0, 100), so only
 # SHORT runs are penalised and long campaigns are never punished.
 campaign_run_floor_h = 24.0
+
+# Supply timeline (2026-09-01): open-PO receipts gated per block on the Plant
+# Calendar. Defaults mirror helpers/config.py::stock_config — every key is
+# written out so the plant can tune them without a code edit.
+[stock]
+# Buffer L in days: a receipt counts as RELIABLE only when it lands at least
+# this long before the block's reference hour (L = 24 x this, in hours).
+min_days_after_delivery = 4
+# "block_start" = lead measured to the block start (the planner's sentence);
+# "depletion" = measured to the hour on-hand runs out (later, more lenient).
+lead_measured_from = "block_start"
+# Packaging receipt usable from HH:00 local on its ERP receipt date.
+receipt_ready_hour = 16
+# Raw arrival areas (raw_areas below) add this QC release delay in hours.
+raw_qc_offset_h = 72
+# When a dock appointment is joined on PO number: ready = appointment + this.
+appt_ready_offset_h = 2
+# Feed whose content is older than this (max receipt date vs today) is stale:
+# it can neither rescue nor alarm — verdicts read NO_DATA, never SHORT/OK.
+po_ignore_after_h = 168
+# Landed rule: stock lots with a decoded batch date >= receipt_date - 3 d
+# summing to >= this fraction of the PO qty mean the line already arrived
+# (counted on-hand, so the PO line is excluded to avoid double-counting).
+landed_match_frac = 0.95
+# A block whose dependent share is below this reads as minor (grey/info).
+dependent_frac_floor = 0.05
+# Warn-only by default. true rejects ONLY a SHORT placement with zero on-hand
+# and zero inbound on a fresh feed; everything else stays a warning.
+hard_block = false
+# Block cases from the board's qty_kg when present, else rate x hours.
+use_board_qty_kg = true
+# Arrival areas that get the raw QC offset.
+raw_areas = ["RB1", "AMB", "RC1"]
+# Off-site areas: counted only from a joined "SL3 TRANSFER" appointment,
+# otherwise excluded (reason "offsite_no_transfer").
+offsite_areas = ["SL3"]
+
+# Data-health refresh cadences (hours) default in helpers/data_health.py
+# DEFAULT_CADENCE_H (manprg 0.5, cip_info 26, vif 26, demand_plan 192,
+# demand_summary 168, calendar 24, open_pos 26, receiving 168). Uncomment to
+# override any of them — a key here shadows the code default.
+# [health.cadence_h]
+# open_pos = 26
+# receiving = 168

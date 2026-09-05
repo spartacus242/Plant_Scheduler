@@ -7,7 +7,7 @@ import argparse
 import math
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 BASE_DIR = Path(__file__).resolve().parent
 if str(BASE_DIR) not in sys.path:
@@ -16,6 +16,13 @@ if str(BASE_DIR) not in sys.path:
 import pandas as pd
 
 from data_loader import Params, Data, Files
+
+# A per-line max_cip_hrs at or above this is the fill-mode STAND-DOWN sentinel
+# (scenario_runner writes 100000 into the work dir so the model draws no CIP;
+# the committed layer carries the real cleans). Such a line is reported as
+# NOT CHECKED, never as OK (fix V / C47 / config-7). Same threshold as
+# independent_validator.CIP_STANDDOWN_MIN.
+CIP_STANDDOWN_MIN = 10000
 
 
 # ---------------------------------------------------------------------------
@@ -92,17 +99,41 @@ def check_no_overlaps(schedule_path: Path) -> List[str]:
 # ---------------------------------------------------------------------------
 # Check 3: CIP spacing (every 120 production hours)
 # ---------------------------------------------------------------------------
+def _read_line_cip_map(path: Path | None, default_h: int) -> Dict[int, int]:
+    out: Dict[int, int] = {}
+    if path and Path(path).exists():
+        lc = pd.read_csv(path)
+        lc["line_id"] = pd.to_numeric(lc["line_id"], errors="coerce").fillna(0).astype(int)
+        lc["max_cip_hrs"] = pd.to_numeric(lc["max_cip_hrs"], errors="coerce").fillna(default_h).astype(int)
+        for _, r in lc.iterrows():
+            out[int(r["line_id"])] = int(r["max_cip_hrs"])
+    return out
+
+
 def check_cip_spacing(
     schedule_path: Path,
     cip_path: Path,
     init_path: Path,
     interval_h: int = 120,
     line_cip_hrs_path: Path | None = None,
+    tolerance_h: float = 0.0,
+    standdown_path: Path | None = None,
 ) -> List[str]:
     """Verify CIP occurs within the allowed clock-hours per line.
 
     Uses per-line intervals from *line_cip_hrs_path* when available,
     falling back to *interval_h* for lines not listed.
+
+    Fix V (C47 / config-7, 2026-09-03):
+      * ``tolerance_h`` replaces the hidden ``+ 12`` hours: the default is 0
+        (the model has no tolerance either); ``[validator] cip_tolerance_h``
+        in flowstate.toml sets it explicitly.
+      * a line whose interval is the stand-down sentinel (>= CIP_STANDDOWN_MIN,
+        read from *standdown_path* - normally the WORK-dir line_cip_hrs.csv -
+        or from the limits file itself) is reported as ``NOT CHECKED``, never
+        as OK: in fill mode the model is told 100000 h so it draws no CIP and
+        the check could not fire. The limits themselves should come from the
+        ORIGINAL reference file (validate_all resolves that).
     """
     issues: List[str] = []
     if not schedule_path.exists():
@@ -110,14 +141,11 @@ def check_cip_spacing(
 
     sched = pd.read_csv(schedule_path)
 
-    # Per-line CIP interval overrides
-    cip_interval_map: Dict[int, int] = {}
-    if line_cip_hrs_path and line_cip_hrs_path.exists():
-        lc = pd.read_csv(line_cip_hrs_path)
-        lc["line_id"] = pd.to_numeric(lc["line_id"], errors="coerce").fillna(0).astype(int)
-        lc["max_cip_hrs"] = pd.to_numeric(lc["max_cip_hrs"], errors="coerce").fillna(interval_h).astype(int)
-        for _, r in lc.iterrows():
-            cip_interval_map[int(r["line_id"])] = int(r["max_cip_hrs"])
+    # Per-line CIP interval overrides (the limits) + stand-down flags
+    cip_interval_map: Dict[int, int] = _read_line_cip_map(line_cip_hrs_path, interval_h)
+    standdown_map: Dict[int, int] = (
+        _read_line_cip_map(standdown_path, interval_h) if standdown_path else {})
+    not_checked: List[str] = []
 
     # Load initial carryover (clock hours since last CIP before horizon)
     init_carry: Dict[int, int] = {}
@@ -149,6 +177,12 @@ def check_cip_spacing(
 
         if not segs:
             continue
+        stood_down = standdown_map.get(line_id, line_interval)
+        if line_interval >= CIP_STANDDOWN_MIN or stood_down >= CIP_STANDDOWN_MIN:
+            limit_note = (f"reference limit {line_interval}h"
+                          if line_interval < CIP_STANDDOWN_MIN else "no reference limit")
+            not_checked.append(f"{line_name} ({limit_note})")
+            continue
 
         first_start = segs[0][0]
         clock_since_cip = carry
@@ -161,14 +195,22 @@ def check_cip_spacing(
                 clock_since_cip = 0
                 cip_idx += 1
             clock_at_end = e - last_reference
-            if clock_at_end > line_interval + 12:
+            if clock_at_end > line_interval + tolerance_h:
                 issues.append(
                     f"CIP: Line {line_name} -- {clock_at_end}h clock since last CIP "
-                    f"(limit {line_interval}h) at h{e}"
+                    f"(limit {line_interval}h, tolerance {tolerance_h:g}h) at h{e}"
                 )
 
-    if not issues:
-        issues.append("CIP: All lines within allowed clock-hours between CIPs. OK.")
+    n_lines = len(sched["line_id"].unique())
+    if not issues and len(not_checked) < n_lines:
+        issues.append("CIP: All checked lines within allowed clock-hours between CIPs. OK.")
+    if not_checked:
+        issues.append(
+            f"CIP: NOT CHECKED on {len(not_checked)} of {n_lines} line(s) -- stand-down "
+            f"sentinel max_cip_hrs >= {CIP_STANDDOWN_MIN} in the work dir (fill mode: the "
+            "model draws no CIP, the committed layer carries the cleans; verify on the "
+            "calendar): " + ", ".join(not_checked)
+        )
     return issues
 
 
@@ -221,8 +263,83 @@ def check_changeover_timing(
 # ---------------------------------------------------------------------------
 # Summary report
 # ---------------------------------------------------------------------------
-def validate_all(data_dir: Path, verbose: bool = True) -> List[str]:
-    """Run all validation checks and return combined report lines."""
+def _load_cfg_dict(data_dir: Path, cfg: Any) -> dict:
+    if isinstance(cfg, dict):
+        return cfg
+    p = Path(cfg) if cfg else data_dir / "flowstate.toml"
+    if not p.exists():
+        return {}
+    try:
+        import tomllib
+    except ImportError:  # pragma: no cover
+        return {}
+    try:
+        return tomllib.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def resolve_cip_check_inputs(
+    data_dir: Path,
+    cfg: Any = None,
+    *,
+    interval_h: int | None = None,
+    line_cip_hrs_path: Path | None = None,
+    tolerance_h: float | None = None,
+) -> Dict[str, Any]:
+    """Where the CIP-spacing check takes its limits from (fix V / config-7).
+
+    interval_h: explicit > ``[cip] interval_h`` of the config (the work-dir
+    flowstate.toml unless ``cfg`` is given) > 120.
+    line_cip_hrs_path: explicit > the ORIGINAL ``data/reference/line_cip_hrs.csv``
+    (the work dir sits in ``data/_scenario_work/<id>``) > the work-dir copy.
+    The work-dir copy is always read for the stand-down flags.
+    tolerance_h: explicit > ``[validator] cip_tolerance_h`` > 0.
+    """
+    data_dir = Path(data_dir)
+    raw = _load_cfg_dict(data_dir, cfg)
+    cip = raw.get("cip", {}) or {}
+    src_int = "explicit"
+    if interval_h is None:
+        if cip.get("interval_h") is not None:
+            interval_h, src_int = int(cip["interval_h"]), "[cip] interval_h"
+        else:
+            interval_h, src_int = 120, "default 120"
+    work_lc = data_dir / "line_cip_hrs.csv"
+    src_lc = "explicit"
+    if line_cip_hrs_path is None:
+        ref_lc = data_dir.parent.parent / "reference" / "line_cip_hrs.csv"
+        if ref_lc.exists():
+            line_cip_hrs_path, src_lc = ref_lc, "reference (original)"
+        else:
+            line_cip_hrs_path, src_lc = work_lc, "work dir"
+    if tolerance_h is None:
+        val = raw.get("validator", {}) or {}
+        tolerance_h = float(val.get("cip_tolerance_h", 0.0) or 0.0)
+    return {
+        "interval_h": int(interval_h), "interval_src": src_int,
+        "line_cip_hrs_path": Path(line_cip_hrs_path), "line_cip_hrs_src": src_lc,
+        "standdown_path": work_lc if work_lc.exists() else None,
+        "tolerance_h": float(tolerance_h),
+    }
+
+
+def validate_all(
+    data_dir: Path,
+    verbose: bool = True,
+    *,
+    cfg: Any = None,
+    interval_h: int | None = None,
+    line_cip_hrs_path: Path | None = None,
+    tolerance_h: float | None = None,
+) -> List[str]:
+    """Run all validation checks and return combined report lines.
+
+    ``cfg`` (dict or toml path) supplies ``[cip] interval_h`` and
+    ``[validator] cip_tolerance_h``; see resolve_cip_check_inputs for the
+    precedence. Positional use ``validate_all(data_dir, verbose)`` is unchanged.
+    """
+    data_dir = Path(data_dir)
     report: List[str] = ["=" * 60, "Flowstate Schedule Validation Report", "=" * 60, ""]
 
     # Bounds
@@ -242,11 +359,22 @@ def validate_all(data_dir: Path, verbose: bool = True) -> List[str]:
 
     # CIP
     report.append("--- CIP Spacing ---")
+    _cip_in = resolve_cip_check_inputs(
+        data_dir, cfg, interval_h=interval_h,
+        line_cip_hrs_path=line_cip_hrs_path, tolerance_h=tolerance_h)
+    report.append(
+        f"CIP check inputs: interval_h={_cip_in['interval_h']} ({_cip_in['interval_src']}); "
+        f"per-line limits from {_cip_in['line_cip_hrs_path']} ({_cip_in['line_cip_hrs_src']}); "
+        f"tolerance {_cip_in['tolerance_h']:g}h"
+    )
     cip_issues = check_cip_spacing(
         data_dir / "schedule_phase2.csv",
         data_dir / "cip_windows.csv",
         data_dir / "initial_states.csv",
-        line_cip_hrs_path=data_dir / "line_cip_hrs.csv",
+        interval_h=_cip_in["interval_h"],
+        line_cip_hrs_path=_cip_in["line_cip_hrs_path"],
+        tolerance_h=_cip_in["tolerance_h"],
+        standdown_path=_cip_in["standdown_path"],
     )
     report.extend(cip_issues)
     report.append("")
@@ -263,7 +391,9 @@ def validate_all(data_dir: Path, verbose: bool = True) -> List[str]:
     # Summary
     all_issues = bounds_issues + overlap_issues + cip_issues + co_issues
     n_ok = sum(1 for i in all_issues if i.endswith("OK."))
-    n_problems = sum(1 for i in all_issues if not i.endswith("OK.") and not i.startswith("MISSING"))
+    n_problems = sum(1 for i in all_issues
+                     if not i.endswith("OK.") and not i.startswith("MISSING")
+                     and not i.startswith("CIP check inputs:"))
     report.append("=" * 60)
     report.append(f"Checks passed: {n_ok}/4    Issues found: {n_problems}")
     report.append("=" * 60)
