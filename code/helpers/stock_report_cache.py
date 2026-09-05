@@ -26,16 +26,19 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 CACHE_NAME = "report.cache.json"
 
 # Everything the report reads besides the toggles: the six VIF exports
 # (refresh_vif_snapshot's own mtime guard uses the same list), the board
-# (schedule view), the demand plan (demand view) and the rates file (kg per
-# block). A missing file signs 0.0 — appearing and disappearing both move
-# the signature.
+# (schedule view), the demand plan (demand view), the rates file (kg per
+# block) and the supply-timeline inputs (open-PO file incl. a configured
+# override, dock sheet, flowstate.toml for rules + anchor — the list lives in
+# stockcheck.api.supply_input_paths so cache and report cannot drift). A
+# missing file signs 0.0 — appearing and disappearing both move the
+# signature.
 _VIF_FILES = ("ediact 3.csv", "ediact 4.csv", "jestkexp.csv",
               "jestkexp2.csv", "azapart.csv", "rmpkitems.csv")
 
@@ -48,16 +51,39 @@ def _mtime(p: Path) -> float:
 
 
 def current_signature(data_dir: Path, vif_folder: str,
-                      toggles: dict | None) -> list:
+                      toggles: dict | None, *, today=None) -> list:
+    """Input signature of the report. Besides the file mtimes it carries
+    the compute DATE (audit stock-12): the feed's stale verdict and the
+    overdue fate both depend on today's date, so a report computed
+    yesterday must read stale after midnight even when no file moved.
+    `today` (date) is for tests; None = date.today()."""
+    from stockcheck.api import supply_input_paths
     dd = Path(data_dir)
     vf = Path(vif_folder)
-    sig: list = [str(vif_folder),
+    # Paths are signed RESOLVED: the app hands an absolute data_dir while
+    # scripts (overnight batch, probes) pass a relative one, and a spelling
+    # difference alone read as "inputs moved" (2026-09-01: a report computed
+    # by a script showed stale on the calendar seconds later).
+    sig: list = [_abs(vf),
                  json.dumps(toggles or {}, sort_keys=True)]
     sig += [_mtime(vf / n) for n in _VIF_FILES]
     sig += [_mtime(dd / "calendar_blocks.csv"),
             _mtime(dd / "reference" / "demand_plan.csv"),
             _mtime(dd / "reference" / "capabilities_rates.csv")]
+    # paths, not just mtimes: a changed po_report_path must re-sign even
+    # when both files happen to share an mtime
+    for p in supply_input_paths(dd):
+        sig += [_abs(p), _mtime(p)]
+    # the clock term: one recompute per day, never a day-old staleness
+    sig.append((today or date.today()).isoformat())
     return sig
+
+
+def _abs(p: Path | str) -> str:
+    try:
+        return str(Path(p).resolve())
+    except OSError:
+        return str(p)
 
 
 @dataclass(frozen=True)

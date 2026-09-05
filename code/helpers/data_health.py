@@ -50,6 +50,8 @@ DEFAULT_CADENCE_H: dict[str, float] = {
     "demand_plan": 192.0,   # ~weekly + margin
     "demand_summary": 168.0,  # weekly AZAP baseline (demand_plan_summary.csv)
     "calendar": 24.0,       # the schedule of record should be touched daily
+    "open_pos": 26.0,       # IT's open-PO extract, daily with the VIF job
+    "receiving": 168.0,     # weekly dock-appointment xlsm (packaging only)
 }
 
 
@@ -165,12 +167,28 @@ def _live_feed_statuses(dd: Path, cfg: dict) -> list[HealthStatus]:
             source="live_feed",
         ))
     else:
-        age = min(_age_h(Path(p)) for p in present)
+        # CONTENT age, not just file age (fix CA-1 / audit C01): the bridge
+        # stamps manprg.asof.json when the manprg content changes; a file
+        # re-written with identical content is still stale telemetry. The
+        # stamp is trusted only while its sha matches the files (else mtime).
+        file_age = min(_age_h(Path(p)) for p in present)
+        age, src = file_age, "file mtime"
+        try:
+            from helpers.manprg_import import read_asof_stamp
+            as_of, as_of_src, _w = read_asof_stamp([Path(p) for p in present])
+            if as_of is not None and as_of_src == "stamp":
+                age = (datetime.now() - as_of.to_pydatetime()).total_seconds() / 3600.0
+                src = "as-of stamp"
+        except Exception:  # noqa: BLE001 — health must never crash on this
+            pass
         stale = age is not None and age > cadence.get("manprg", 0.5)
+        detail = (f"manprg content observed {_fmt_age(age)} ago ({src})."
+                  if age is not None else "manprg present (age unknown).")
+        if src == "as-of stamp" and file_age is not None:
+            detail += f" File written {_fmt_age(file_age)} ago."
         out.append(HealthStatus(
             key="manprg", name="Live MO progress (manprg)", state=STALE if stale else OK,
-            detail=(f"manprg last refreshed {_fmt_age(age)} ago."
-                    if age is not None else "manprg present (age unknown).")
+            detail=detail
             + (f" Expected refresh ≤ {cadence.get('manprg', 0.5):g} h." if stale else ""),
             actions=("Refresh the manprg export (or enable SQL live refresh in Settings)",) if stale else (),
             cadence_h=cadence.get("manprg"), age_h=age,
@@ -253,6 +271,73 @@ def _live_feed_statuses(dd: Path, cfg: dict) -> list[HealthStatus]:
             + (f" Expected refresh ≤ {cadence.get('vif', 26.0):g} h." if stale else ""),
             actions=("Refresh the VIF export push from the work PC",) if stale else (),
             cadence_h=cadence.get("vif"), age_h=age,
+            source="live_feed",
+        ))
+
+    # Open-PO report (supply timeline, 2026-09-01). Same resolver as the
+    # stock report so Home and the Inbound tab agree on the source. mtime is
+    # the bridge pull time, so this row is a health-only staleness signal;
+    # the engine's own gate is content-based (max receipt date vs today).
+    # No dev fixture exists for this feed, so absence is MISSING, not STALE.
+    from helpers.reconcile_engine import open_po_path
+    po_p = open_po_path(dd, cfg)
+    # is_file: an override pointing at IT's drop FOLDER exists but is no
+    # report — MISSING (naming it), never OK on the bridge copy's presence
+    if po_p is None or not po_p.is_file():
+        out.append(HealthStatus(
+            key="open_pos", name="Open PO report (inbound)", state=MISSING,
+            detail=("open_pos.xlsx / open_pos.csv not found in data/reference/."
+                    if po_p is None else
+                    f"Configured po_report_path is a directory, not a file: {po_p}"
+                    if po_p.is_dir() else
+                    f"Configured po_report_path not found: {po_p}"),
+            actions=("Push IT's open-PO extract as open_pos.xlsx via the bridge "
+                     "(fs-live-push) and pull, or set po_report_path in Settings",),
+            source="live_feed",
+        ))
+    else:
+        age = _age_h(po_p)
+        stale = age is not None and age > cadence.get("open_pos", 26.0)
+        out.append(HealthStatus(
+            key="open_pos", name="Open PO report (inbound)", state=STALE if stale else OK,
+            detail=(f"{po_p.name} last refreshed {_fmt_age(age)} ago."
+                    if age is not None else f"{po_p.name} present (age unknown).")
+            + (f" Expected refresh ≤ {cadence.get('open_pos', 26.0):g} h." if stale else ""),
+            actions=("Refresh the open-PO extract push from the work PC (open_pos.xlsx)",)
+            if stale else (),
+            cadence_h=cadence.get("open_pos"), age_h=age,
+            source="live_feed",
+        ))
+
+    # Receiving schedule (dock appointments). Its own row: it rode along
+    # under vif_stock's age before, which hid a decayed xlsm behind fresh
+    # VIF exports. The bundled dev fixture keeps the Receiving tab usable, so
+    # its presence downgrades MISSING to STALE like the VIF rule.
+    recv_p = reference_dir(dd) / "Shipping Receiving Schedule NPA - 2024.xlsm"
+    if not recv_p.exists():
+        dev_ok = (dd / "stockcheck" / "dev_receiving_schedule.xlsm").exists()
+        out.append(HealthStatus(
+            key="receiving", name="Receiving schedule (dock appointments)",
+            state=STALE if dev_ok else MISSING,
+            detail=("Live receiving xlsm not landed — Stock Check is showing the "
+                    "bundled dev fixture." if dev_ok else
+                    "Shipping Receiving Schedule NPA - 2024.xlsm not found in data/reference/."),
+            actions=("Push the weekly receiving xlsm from the work PC "
+                     "(fs-live-push) and pull the bridge",),
+            source="live_feed",
+        ))
+    else:
+        age = _age_h(recv_p)
+        stale = age is not None and age > cadence.get("receiving", 168.0)
+        out.append(HealthStatus(
+            key="receiving", name="Receiving schedule (dock appointments)",
+            state=STALE if stale else OK,
+            detail=(f"Receiving xlsm last refreshed {_fmt_age(age)} ago."
+                    if age is not None else "Receiving xlsm present (age unknown).")
+            + (f" Expected refresh ≤ {cadence.get('receiving', 168.0):g} h." if stale else ""),
+            actions=("Refresh the weekly receiving xlsm push from the work PC",)
+            if stale else (),
+            cadence_h=cadence.get("receiving"), age_h=age,
             source="live_feed",
         ))
     return out

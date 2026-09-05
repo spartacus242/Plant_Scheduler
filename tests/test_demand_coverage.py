@@ -219,10 +219,20 @@ def test_history_demand_absorbs_past_production():
                     "due_start_hour": 0, "due_end_hour": 167}])
     completed = [{"item": "111", "start_dt": pd.Timestamp(2026, 8, 12, 6),
                   "hours": 10.0, "qty_kg": 80000.0, "made_kg": 80000.0}]  # W33
-    # without history: all 80k rolls into W34
+    # Without history the 80k made in W33 has NO demand week to settle
+    # against. It used to roll 100% into W34 silently (audit finding C54 /
+    # netting-2, 2026-09-02: every completed MO of the prior week reduced
+    # this week's fill targets by its full made kg after each weekly demand
+    # re-import). Now it is held back and reported; the legacy carry is
+    # available explicitly via carry_unsettled_past=True.
     free = build_ledger(dem, _blocks([]), completed=completed,
                         anchor=MON_AUG_17)
-    assert free.rows[0].applied_kg == 50000.0
+    assert free.rows[0].applied_kg == 0.0
+    assert free.unsettled_past == {("111", 202633): 80000.0}
+    assert any(n.startswith("WARNING") and "80,000 kg" in n for n in free.notes)
+    legacy = build_ledger(dem, _blocks([]), completed=completed,
+                          anchor=MON_AUG_17, carry_unsettled_past=True)
+    assert legacy.rows[0].applied_kg == 50000.0
     # with W33 history demand of 60k: only the 20k true surplus carries
     hist = {("111", 202633): 60000.0}
     led = build_ledger(dem, _blocks([]), completed=completed,

@@ -47,7 +47,9 @@ CATEGORY_ORDER = ["service", "changeovers", "cip", "campaigns", "trials"]
 
 CATEGORY_DOCS = {
     "service": (
-        "Did we make what the customer ordered, on time? Scored only when "
+        "Did we make what the customer ordered, on time? Two service levels - "
+        "on-time orders / in-horizon orders and on-time kg / in-horizon demand "
+        "kg - plus the excess-inventory penalty. Scored only when "
         "data/reference/demand_plan.csv exists - otherwise the whole category is "
         "n/a and its weight is redistributed across the remaining categories."
     ),
@@ -57,14 +59,18 @@ CATEGORY_DOCS = {
         "sell."
     ),
     "cip": (
-        "Clean-in-place discipline: how often we clean, how long it takes, and how "
-        "much of the allowed dirty-time budget we throw away by cleaning early."
+        "Clean-in-place discipline on the plant's WALL-CLOCK interval from the "
+        "previous clean: did any line run past its interval (gate), and how much "
+        "production did early cleans displace (price). Inherited events inside "
+        "the committed manprg sequence are reported, not gated. n/a with no "
+        "production or a missing CIP input file."
     ),
     "campaigns": (
         "Run-length discipline. Long, consolidated campaigns are efficient; a week "
-        "chopped into short runs bleeds changeover and ramp time. Scored "
-        "longer-is-better against campaign_run_floor_h - long runs are never "
-        "penalised."
+        "chopped into short runs bleeds changeover and ramp time. Scored on "
+        "CAMPAIGNS (maximal same-SKU runs per line), longer-is-better against "
+        "campaign_run_floor_h - long runs are never penalised; no production "
+        "scores 0."
     ),
     "trials": (
         "The cost of R&D / trial work on the plant floor: the hours it consumes and "
@@ -76,18 +82,57 @@ CATEGORY_DOCS = {
 KNOWN_LIMITATIONS = [
     (
         "Forfeited CIP is an estimate, not a measurement",
-        "cip_forfeited_kg values each forfeited dirty-time hour at the line's "
-        "AVERAGE kg/h across every SKU it is capable of running. The actual SKU "
-        "that would have run in that hour may be faster or slower, so treat the "
-        "kg figure as an order-of-magnitude cost, not an exact tonnage. If "
-        "capabilities_rates.csv is missing the metric reads 0 kg and the CIP "
-        "category quietly looks better than it is."
+        "cip_forfeited_kg values each displaced production hour at the line's "
+        "AVERAGE kg/h across every SKU it is capable of running (or the flat "
+        "line rate). The actual SKU that would have run in that hour may be "
+        "faster or slower, so treat the kg figure as an order-of-magnitude "
+        "cost, not an exact tonnage. If no rate table is loaded the CIP "
+        "category is n/a (scoring input missing), never a flattering 0 kg."
+    ),
+    (
+        "CIP clean clock: lines without a recorded PreviousCIP",
+        "The clean clock is wall time from cip_info's PreviousCIP (negative "
+        "hours when the clean was before the anchor). A line with no "
+        "PreviousCIP in cip_info.csv is ASSUMED clean at hour 0 of the "
+        "horizon - the walk cannot know its real dirty time, so its first "
+        "clean may read early and an overdue run before hour interval may be "
+        "missed. An early clean forfeits its displaced production in full; a "
+        "clean at or past its interval forfeits nothing (a step, not a ramp)."
     ),
     (
         "Service is all-or-nothing",
         "Without demand_plan.csv the service category is None. It is dropped from "
         "the composite and its 0.30 weight is renormalized across the other five "
         "categories, which materially changes what the composite means."
+    ),
+    (
+        "Missing inputs and impossible calendars are flagged, not refused",
+        "score_calendar still returns numbers when a scoring input file is "
+        "missing (result.degraded lists it; the dependent category is n/a) or "
+        "when the calendar cannot physically run (result.sanity lists overlaps "
+        "on a line, end <= start, negative starts, NaN hours). Such a result "
+        "is NOT comparable with a clean one - ranking pages must check "
+        "result.rankable. Blocks ending past the horizon only warn (a "
+        "re-forecast MO legitimately runs off the board)."
+    ),
+    (
+        "Service scope stops at the horizon",
+        "Orders whose due window starts at or after the horizon are neither "
+        "late nor on time - they are reported as orders_beyond_horizon. An "
+        "order is 'delivered' at the hour its credited kg first reaches "
+        "qty_min; credited kg follow the adherence waterfall (position-aware, "
+        "then earliest-due), so a committed MO can satisfy a demand order it "
+        "does not name - and a demand order can be 'late' while a block "
+        "carrying its id exists, if that block's kg were credited elsewhere."
+    ),
+    (
+        "Campaign floor is saturated on every real board",
+        "avg_campaign_h scores 100 at campaign_run_floor_h (24 h). Real boards "
+        "average 30-47 h per campaign and carry 0 short campaigns, so the "
+        "campaigns category reads 100 for the board, every proposal and the "
+        "naive strawman alike - it only discriminates once the floor is "
+        "recalibrated (a config decision, not an engine one). "
+        "avg_campaign_h_kgw (kg-weighted) is reported alongside for that call."
     ),
     (
         "Excess inventory kg may be estimated, not measured",
@@ -127,15 +172,18 @@ METRIC_DOCS: dict[str, dict[str, Any]] = {
     },
     "recipe_changes": {
         "definition": (
-            "Count of adjacent production transitions on the same line where recipe/SKU "
-            "family differs (changeover flags: flavor/organic/cinnamon; else SKU change "
-            "that is not format-only)."
+            "Count of adjacent production transitions on the same line where what is "
+            "COOKED or MIXED changes: conventional<->organic, cinnamon<->non, a flavor "
+            "count change, or a TTP (cooking/mixing) change; a pair with no standards "
+            "row or with no machine flag at all also counts as a recipe change."
         ),
         "formula": (
             "For each line, sort production blocks by start_h; for each adjacent pair "
-            "(a, b) with a.sku != b.sku, count 1 if the changeover-standards row flags "
-            "conv_to_org_change=1 or cinn_to_non=1 or added_flavors>0, or the pair is "
-            "not a pure format change, or no standards row exists."
+            "(a, b) with a.sku != b.sku and no CIP fully inside the gap, count 1 if the "
+            "standards row has conv_to_org_change=1 or cinn_to_non=1 or ttp_change=1 "
+            "or added_flavors != 0, or no standards row exists, or the row sets none "
+            "of topload/ffs/casepacker. A pure format change (only topload/ffs/"
+            "casepacker flags) is NOT a recipe change."
         ),
         "direction": "lower",
         "cap_key": "cap_recipe_changes",
@@ -148,12 +196,14 @@ METRIC_DOCS: dict[str, dict[str, Any]] = {
     },
     "format_changes": {
         "definition": (
-            "Count of adjacent production transitions with packaging format change "
-            "(topload / TTP / FFS / casepacker flags from changeover standards)."
+            "Count of adjacent production transitions with a packaging FORMAT change "
+            "(topload / FFS / casepacker flags from changeover standards). TTP is "
+            "cooking/mixing and counts under recipe, not format."
         ),
         "formula": (
-            "Same adjacent-pair scan; count 1 when any of topload_change, ttp_change, "
-            "ffs_change, casepacker_change equals 1 in the changeover-standards row."
+            "Same adjacent-pair scan (CIP-in-gap pairs waived); count 1 when any of "
+            "topload_change, ffs_change, casepacker_change equals 1 in the "
+            "changeover-standards row. A pair with no row is not a format change."
         ),
         "direction": "lower",
         "cap_key": "cap_format_changes",
@@ -191,6 +241,34 @@ METRIC_DOCS: dict[str, dict[str, Any]] = {
             "over rather than running. It converts directly to lost cases."
         ),
     },
+    "sku_transitions": {
+        "definition": (
+            "Adjacent production pairs on one line whose SKU differs, AFTER the "
+            "CIP waiver: a pair whose gap fully contains a CIP block is not a "
+            "transition (the plant retools during the clean). ONE rule for the "
+            "whole scorecard family."
+        ),
+        "formula": (
+            "Per line, sort production blocks by start_h; for each adjacent pair "
+            "(a, b): skip if a.sku == b.sku; skip (count in transitions_at_cip) if "
+            "a CIP block lies fully inside [a.end_h, b.start_h]; else count 1. "
+            "Missing-pair default: a pair with no changeovers.csv row (or a row "
+            "with no machine/recipe flag) is a RECIPE-ONLY change - weight "
+            "co_weight_recipe_only (1.0), never 0. Applied identically by "
+            "score_changeovers, its per-week rows (weekly_breakdown), the Gantt "
+            "KPI bar (kpi.ts via co_pairs/co_default) and overnight_score v2 "
+            "weighted_co_load / transition_cost."
+        ),
+        "direction": "lower",
+        "cap_key": None,
+        "scoring": "Not scored directly - the scored metric is weighted_co.",
+        "category": "changeovers",
+        "why": (
+            "Two surfaces on one page counting the same board differently (85 in "
+            "the KPI bar, 112 in the week table on the 2026-09-02 board) destroy "
+            "trust in both; the waiver and the missing-pair default live here once."
+        ),
+    },
     # --- cip ---------------------------------------------------------------
     "cip_count": {
         "definition": (
@@ -226,16 +304,21 @@ METRIC_DOCS: dict[str, dict[str, Any]] = {
     },
     "cip_forfeited_h": {
         "definition": (
-            "For each CIP: max(0, line_cip_interval_h - run_hours_since_last_cip). "
-            "Cleaning earlier than the interval forfeits unused dirty-time budget. "
-            "REPORTED ONLY - the scored version of this metric is cip_forfeited_kg."
+            "Production hours DISPLACED by cleans pulled forward before the line's "
+            "wall-clock CIP interval expired. Idle time, planned downtime and "
+            "pre-horizon hours are never charged. REPORTED ONLY - the scored "
+            "version of this metric is cip_forfeited_kg."
         ),
         "formula": (
-            "Per line, walk CIPs in start_h order with last_cip_end starting at 0. "
-            "run_since = sum of production overlap in (last_cip_end, cip_start). "
-            "forfeited += max(0, interval - run_since), where interval comes from "
-            "reference/line_cip_hrs.csv (max_cip_hrs) or cip_interval_fallback_h. "
-            "Then last_cip_end = cip.end_h."
+            "Per line, merge CIP rows that touch/overlap into one clean event and "
+            "walk them in start order; the clock seeds at cip_info PreviousCIP "
+            "(hours from the anchor, NEGATIVE when before it; 0 if unknown). "
+            "wall_since = start - previous clean end; early_h = max(0, interval - "
+            "wall_since) (reported as cip_early_h); displaced_h = min(duration, "
+            "production hours on the line within one clean-duration either side "
+            "of the clean). forfeited_h += displaced_h only when early_h > 0. "
+            "interval = reference/line_cip_hrs.csv max_cip_hrs, else "
+            "cip_interval_fallback_h."
         ),
         "direction": "lower",
         "cap_key": None,
@@ -252,20 +335,28 @@ METRIC_DOCS: dict[str, dict[str, Any]] = {
     },
     "cip_forfeited_kg": {
         "definition": (
-            "Forfeited CIP dirty-time converted to KILOGRAMS of lost production, "
-            "valuing each forfeited hour at that line's average run rate (kg/h)."
+            "Production displaced by EARLY cleans, in KILOGRAMS: each displaced "
+            "hour valued at that line's average run rate (kg/h). A clean at or "
+            "past its wall-clock interval is the mandated clean and costs nothing."
         ),
         "formula": (
-            "Same per-line CIP walk as cip_forfeited_h; for each CIP add "
-            "max(0, interval - run_since) * avg_rate_kgph(line). "
-            "avg_rate_kgph(line) = mean of calc_rate_kgph over rows in "
-            "reference/capabilities_rates.csv where capable == 1 for that "
-            "line_name (then the overall line mean, then 0 if the file is absent)."
+            "Same per-line CIP walk as cip_forfeited_h; for each early clean add "
+            "displaced_h * avg_rate_kgph(line). avg_rate_kgph(line) = flat "
+            "rate_kgph from line_rates.csv when use_sku_rates = false, else the "
+            "mean calc_rate_kgph over capable rows of capabilities_rates.csv for "
+            "that line_name (then the overall line mean). No rate table -> the "
+            "CIP category is n/a (scoring input missing)."
         ),
         "direction": "lower",
         "cap_key": "cap_cip_forfeited_kg",
         "scoring": (
-            "score = clamp(100 * (1 - cip_forfeited_kg / cap_cip_forfeited_kg), 0, 100)"
+            "score = clamp(100 * (1 - cip_forfeited_kg / cap_cip_forfeited_kg), 0, 100). "
+            "The 2026-09-03 definition change (wall clock, displaced hours only) "
+            "shrinks the number ~10x versus the old idle-inflated one (snapshot "
+            "board 2,736,037 -> 249,185 kg). The shipped cap of 1,500,000 kg was "
+            "calibrated on the OLD definition and reads ~83 on that board; it "
+            "must be recalibrated (recommended 500,000 kg) in flowstate.toml / "
+            "config defaults - the engine does not change it."
         ),
         "category": "cip",
         "why": (
@@ -291,10 +382,14 @@ METRIC_DOCS: dict[str, dict[str, Any]] = {
         "direction": "lower",
         "cap_key": None,
         "scoring": (
-            "Compliance GATES the CIP category: any cip_overdue or "
-            "cip_req_violations event -> category 0. When compliant, the "
+            "Compliance GATES the CIP category: any NON-INHERITED cip_overdue "
+            "or cip_req_violations event -> category 0. Inherited events "
+            "(cip_req_inherited: both runs are committed manprg blocks; "
+            "cip_overdue_inherited: the block tripping the clock is committed) "
+            "are the plant's own sequence, reported but not gated - the "
+            "category must move when the PLAN changes. When compliant, the "
             "category is the cip_forfeited_kg score (the capacity price of "
-            "early cleans)."
+            "early cleans); with no production it is n/a."
         ),
         "category": "cip",
         "why": (
@@ -302,6 +397,32 @@ METRIC_DOCS: dict[str, dict[str, Any]] = {
             "not a preference. The fix is sequencing to an existing CIP "
             "boundary, or pulling the next CIP forward - which costs "
             "forfeited kilograms, priced by the other half of this category."
+        ),
+    },
+    "cip_overdue": {
+        "definition": (
+            "Clean cycles where a line ran past its wall-clock CIP interval "
+            "without a clean: one event per (line, cycle between cleans)."
+        ),
+        "formula": (
+            "Per line, walk production blocks in start order; the clock seeds at "
+            "cip_info PreviousCIP (negative when before the anchor, 0 if unknown) "
+            "and resets at every merged clean event. A block whose end_h - "
+            "last_clean_end > interval + cip_overdue_tolerance_h (default 0; the "
+            "old +12 h grace is gone) flags its cycle once. cip_overdue_inherited "
+            "counts the events whose tripping block carries current_state:."
+        ),
+        "direction": "lower",
+        "cap_key": None,
+        "scoring": (
+            "Gate: (cip_overdue - cip_overdue_inherited) > 0 -> CIP category 0. "
+            "Same wall clock as cip_forfeited_h, so the two halves of the "
+            "category can no longer contradict each other."
+        ),
+        "category": "cip",
+        "why": (
+            "The max interval is a hard hygiene limit, not a target. Running "
+            "past it is the one thing a schedule must never do."
         ),
     },
     # --- trials ------------------------------------------------------------
@@ -379,41 +500,74 @@ METRIC_DOCS: dict[str, dict[str, Any]] = {
         ),
     },
     # --- service -----------------------------------------------------------
-    "orders_at_risk": {
-        "definition": (
-            "Orders whose scheduled completion is within at_risk_h of due end but still "
-            "on time. n/a if demand data missing."
-        ),
-        "formula": (
-            "For each demand order, scheduled_end = max(end_h) of its production "
-            "blocks. Count orders where scheduled_end <= due_end_hour and "
-            "scheduled_end >= due_end_hour - at_risk_h."
-        ),
-        "direction": "lower",
-        "cap_key": "cap_orders_at_risk",
-        "scoring": "score = clamp(100 * (1 - orders_at_risk / cap_orders_at_risk), 0, 100)",
-        "category": "service",
-        "why": (
-            "These orders make the date on paper with no buffer. One breakdown or one "
-            "slow changeover and they are late. This is your early-warning list."
-        ),
-    },
     "orders_late": {
         "definition": (
-            "Orders with scheduled completion after due end, or unmet qty below min. "
-            "n/a if demand data missing."
+            "In-horizon demand orders NOT delivered by their deadline: credited kg "
+            "never reach qty_min, or reach it after due_end_hour + 1. n/a if "
+            "demand data missing."
         ),
         "formula": (
-            "Count demand orders where scheduled_end > due_end_hour, plus every order "
-            "with no production block scheduled at all (scheduled_end is None)."
+            "Scope: orders with due_start_hour < horizon (others -> "
+            "orders_beyond_horizon). Credit: the adherence waterfall "
+            "(compute_adherence - position-aware by due-window overlap, then "
+            "own order id, then earliest-due). delivered_h = end_h of the block "
+            "at which cumulative credited kg first reaches qty_min (qty_min <= 0: "
+            "the last crediting block). late <=> no credit, or credited < "
+            "qty_min, or delivered_h > due_end_hour + 1 (due_end_hour is the "
+            "INCLUSIVE last hour - the solver's own deadline)."
         ),
         "direction": "lower",
-        "cap_key": "cap_orders_late",
-        "scoring": "score = clamp(100 * (1 - orders_late / cap_orders_late), 0, 100)",
+        "cap_key": None,
+        "scoring": (
+            "order service level = 100 * (1 - orders_late / orders_in_scope). "
+            "Service = mean(order service level, on_time_kg_pct[, excess score]). "
+            "cap_orders_late is used only for scorecards saved before 2026-09-03."
+        ),
         "category": "service",
         "why": (
             "The one number the customer sees. Any schedule that looks efficient while "
             "missing dates is not a good schedule."
+        ),
+    },
+    "on_time_kg_pct": {
+        "definition": (
+            "Quantity-weighted service level: kg credited by the deadline (capped "
+            "at each order's target) as a % of in-horizon demand kg."
+        ),
+        "formula": (
+            "sum over in-scope orders of min(kg credited by blocks ending <= "
+            "due_end_hour + 1, target) / sum(target) * 100, target = "
+            "(qty_min+qty_max)/2 when qty_min > 0 and qty_max >= qty_min, else "
+            "max(qty_min, qty_max)."
+        ),
+        "direction": "higher",
+        "cap_key": None,
+        "scoring": "score = on_time_kg_pct (already 0-100).",
+        "category": "service",
+        "why": (
+            "An order count treats a 300 kg and a 30,000 kg order alike; the kg "
+            "view says how much of what the customer wanted actually left on time."
+        ),
+    },
+    "orders_at_risk": {
+        "definition": (
+            "On-time orders delivered inside the last at_risk_h (default 24 h) of "
+            "their window. WARNING only - never scored."
+        ),
+        "formula": (
+            "Count in-scope orders that are on time (see orders_late) with "
+            "delivered_h >= due_end_hour + 1 - at_risk_h."
+        ),
+        "direction": "lower",
+        "cap_key": None,
+        "scoring": (
+            "Not scored since 2026-09-03: scoring it as a penalty made an order "
+            "delivered just in time score WORSE than one not delivered at all."
+        ),
+        "category": "service",
+        "why": (
+            "These orders make the date on paper with no buffer. One breakdown or one "
+            "slow changeover and they are late. This is your early-warning list."
         ),
     },
     "excess_inventory_kg": {
@@ -421,13 +575,13 @@ METRIC_DOCS: dict[str, dict[str, Any]] = {
             "Sum of max(0, produced_qty - qty_max) across orders. n/a if no max bound."
         ),
         "formula": (
-            "For each order with a qty_max (explicit, or qty_target * upper_pct): "
-            "excess += max(0, produced_kg(order) - qty_max). produced_kg is the "
-            "sum of qty_kg over the order's production blocks when the calendar "
-            "carries real kg; when it does not (column absent, all-NaN or all-"
-            "zero) it is ESTIMATED as sum(run_hours * the line's average kg/h) "
-            "and excess_inventory_kg_estimated is set True. Returns None only "
-            "when there is no production data and no rate table at all."
+            "For each in-scope order with a qty_max (explicit, or qty_target * "
+            "upper_pct): excess += max(0, credited_kg(order) - qty_max). "
+            "credited_kg follows the adherence waterfall; a block's own qty_kg is "
+            "used when present, otherwise the block is ESTIMATED as run_hours x "
+            "the (line, sku) rate from capabilities_rates.csv, else the line's "
+            "average kg/h, and excess_inventory_kg_estimated is set True. None "
+            "when no kg can be determined at all."
         ),
         "direction": "lower",
         "cap_key": "cap_excess_kg",
@@ -545,9 +699,22 @@ class ScorecardResult:
     composite: float | None = None
     formulas: dict[str, str] = field(default_factory=lambda: dict(FORMULA_HELP))
     notes: list[str] = field(default_factory=list)
+    # Fix Q (2026-09-03). sanity: physical impossibilities found in the
+    # calendar (overlaps on a line, end <= start, negative starts, NaN
+    # hours) — a non-empty list means the composite describes a board that
+    # cannot exist; pages should refuse to rank it. degraded: scoring input
+    # files that were missing — the dependent categories are None and the
+    # result must not be ranked against fully-scored ones.
+    sanity: list[str] = field(default_factory=list)
+    degraded: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @property
+    def rankable(self) -> bool:
+        """True when nothing about this result forbids ranking it."""
+        return not self.sanity and not self.degraded and self.composite is not None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ScorecardResult":
@@ -563,7 +730,78 @@ class ScorecardResult:
             composite=data.get("composite"),
             formulas=dict(data.get("formulas") or FORMULA_HELP),
             notes=list(data.get("notes") or []),
+            sanity=list(data.get("sanity") or []),
+            degraded=list(data.get("degraded") or []),
         )
+
+
+def calendar_sanity(
+    calendar: pd.DataFrame, horizon_h: float | None = None,
+) -> tuple[list[str], list[str]]:
+    """Geometric sanity of a calendar (fix Q / adversarial-7, 2026-09-03).
+
+    Returns (errors, warnings). ERRORS make the calendar physically
+    impossible: NaN start/end, end <= start (a zero-length CIP included),
+    a production/CIP/trial block starting before hour 0, or two
+    production/CIP/trial blocks on one line overlapping (except CIP-on-CIP,
+    which score_cip merges into one clean and reports as duplicate rows —
+    a WARNING here). Blocks ending past the horizon are a WARNING (a
+    re-forecast MO legitimately runs off the board). Downtime overlays
+    (line_down / maintenance) are constraints, not schedule, and may sit
+    anywhere. Pure; never raises on odd dtypes.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    if calendar is None or calendar.empty:
+        return errors, warnings
+    df = calendar[calendar["block_type"].astype(str).isin(
+        ["production", "cip", "trial"])].copy()
+    if df.empty:
+        return errors, warnings
+    s = pd.to_numeric(df["start_h"], errors="coerce")
+    e = pd.to_numeric(df["end_h"], errors="coerce")
+    nan = s.isna() | e.isna()
+    if nan.any():
+        errors.append(f"{int(nan.sum())} block(s) with NaN start_h/end_h")
+    df = df[~nan].copy()
+    s, e = s[~nan], e[~nan]
+    bad_len = e <= s
+    if bad_len.any():
+        ids = list(df.loc[bad_len, "block_id"].astype(str).head(5))
+        errors.append(
+            f"{int(bad_len.sum())} block(s) with end_h <= start_h: {ids}")
+    neg = s < -1e-9
+    if neg.any():
+        ids = list(df.loc[neg, "block_id"].astype(str).head(5))
+        errors.append(f"{int(neg.sum())} block(s) starting before hour 0: {ids}")
+    if horizon_h is not None:
+        past = e > float(horizon_h) + 1e-6
+        if past.any():
+            warnings.append(
+                f"{int(past.sum())} block(s) end past the {horizon_h:g} h horizon")
+    df["_s"], df["_e"] = s, e
+    n_ov = 0
+    n_cip_ov = 0
+    examples: list[str] = []
+    for line, grp in df.sort_values("_s").groupby(df["line_id"].astype(str)):
+        rows = grp[["_s", "_e", "block_type", "block_id"]].to_dict("records")
+        max_e = -float("inf")
+        max_type = ""
+        for r in rows:
+            if r["_s"] < max_e - 1e-6:
+                if r["block_type"] == "cip" and max_type == "cip":
+                    n_cip_ov += 1
+                else:
+                    n_ov += 1
+                    if len(examples) < 5:
+                        examples.append(f"{grp['line_name'].iloc[0]}:{r['block_id']}")
+            if r["_e"] > max_e:
+                max_e, max_type = r["_e"], str(r["block_type"])
+    if n_ov:
+        errors.append(f"{n_ov} overlapping block pair(s) on a line: {examples}")
+    if n_cip_ov:
+        warnings.append(f"{n_cip_ov} overlapping/duplicate CIP row(s) merged into one clean")
+    return errors, warnings
 
 
 # The plant's own export names several flag columns differently (observed in
@@ -602,12 +840,52 @@ def _load_changeovers(ref: Path) -> pd.DataFrame:
 
 
 def _co_lookup(co_df: pd.DataFrame) -> dict[tuple[str, str], dict]:
+    """(from_sku, to_sku) -> standards row as a plain dict (last row wins
+    for a duplicated pair, in CSV order — the historical rule).
+
+    Fix Q / quality-4 (2026-09-03): built from to_dict("records") instead
+    of iterrows()+Series.to_dict() — same keys, same values (native Python
+    scalars instead of numpy scalars; every consumer casts with int()/
+    float()), ~10x faster on the 55k-row live matrix. tests/test_fix_Q.py
+    proves value-equality against the legacy build on the snapshot file.
+    """
     out: dict[tuple[str, str], dict] = {}
     if co_df.empty:
         return out
-    for _, r in co_df.iterrows():
-        out[(str(r["from_sku"]), str(r["to_sku"]))] = r.to_dict()
+    for rec in co_df.to_dict("records"):
+        out[(str(rec["from_sku"]), str(rec["to_sku"]))] = rec
     return out
+
+
+_CO_MAP_MEMO: dict[tuple[str, int], dict[tuple[str, str], dict]] = {}
+
+
+def load_co_map(ref: Path) -> dict[tuple[str, str], dict]:
+    """Memoised `_co_lookup(_load_changeovers(ref))` keyed by the standards
+    file's (resolved path, mtime_ns) — the same key discipline as
+    solver/changeover_cache. One build per file version per process instead
+    of one per score_calendar / gantt_kpis / weekly_breakdown call (quality-4:
+    three 4.3 s rebuilds per calendar render). A missing file returns {} and
+    is NOT memoised, so a file that appears later is picked up.
+    """
+    path = ref / "changeovers.csv"
+    if not path.exists():
+        alt = ref / "Changeovers.csv"
+        path = alt if alt.exists() else path
+    if not path.exists():
+        return {}
+    try:
+        key = (str(path.resolve()), int(path.stat().st_mtime_ns))
+    except OSError:
+        return _co_lookup(_load_changeovers(ref))
+    hit = _CO_MAP_MEMO.get(key)
+    if hit is not None:
+        return hit
+    built = _co_lookup(_load_changeovers(ref))
+    if len(_CO_MAP_MEMO) > 8:  # a handful of data dirs at most
+        _CO_MAP_MEMO.clear()
+    _CO_MAP_MEMO[key] = built
+    return built
 
 
 def _load_flat_line_rates(ref: Path) -> dict[str, float]:
@@ -720,10 +998,14 @@ def cip_last_clean_hours(
     walk reads phantom dirty time (2026-08-24: four legal 76-78 schedules
     failed cip_ok on a clean recorded mid-batch by the live pull).
 
-    Cleans at or before the anchor return nothing for that line: the walk's
-    legacy "clean at horizon start" seed (0.0) already covers them, and
-    seeding negative hours would strictly tighten the guard for real
-    pre-anchor dirty carryover — a separate decision, not taken here.
+    Cleans at or before the anchor are returned as NEGATIVE hours (fix Q /
+    C48, scorecard-5, 2026-09-03): the plant's CIP clock is wall time from
+    the previous clean, so a line 44.5 h dirty at the anchor carries that
+    dirt into the horizon — its first in-horizon clean is 44.5 h less early
+    and it runs overdue 44.5 h sooner. The old `h > 0` filter dropped every
+    live seed (all PreviousCIP values sit before a same-day anchor) and the
+    walk assumed 14 clean lines at hour 0. Lines with no PreviousCIP stay
+    absent (the walk's documented "assume clean at horizon start" seed).
 
     `max_h` (pass the frame's horizon) drops seeds at or beyond it: a
     "clean" dated past the horizon can't have preceded any block in it, and
@@ -740,7 +1022,7 @@ def cip_last_clean_hours(
         if prev.tzinfo is not None:  # feed writes naive wall time; tolerate
             prev = prev.tz_localize(None)
         h = (prev.to_pydatetime() - anchor).total_seconds() / 3600.0
-        if h > 0 and (max_h is None or h < float(max_h)):
+        if max_h is None or h < float(max_h):
             out[line] = h
     return out
 
@@ -753,32 +1035,48 @@ def _by_type(df: pd.DataFrame, btype: str) -> pd.DataFrame:
     return df[df["block_type"] == btype].copy()
 
 
+# Recipe vs format classification (fix Q / C35, changeover-7, scorecard-14,
+# 2026-09-03). Plant definition: FORMAT = packaging machinery retooled
+# (topload / FFS / casepacker); RECIPE = what is cooked or mixed changes —
+# conventional<->organic, cinnamon<->non, a flavor count change, or a TTP
+# (cooking/mixing) change. A pair with no standards row is a recipe change
+# by default (unknown = the expensive kind). A pair whose row carries NO
+# machine flag at all but a different SKU is a recipe-only change. The old
+# _is_recipe_change returned True on every branch (recipe_changes ==
+# sku_transitions on the live board) and _is_format_change counted TTP as
+# format (99.6 % of pairs) — both counts were the transition count.
+_FORMAT_FLAGS = ("topload_change", "ffs_change", "casepacker_change")
+_RECIPE_FLAGS = ("conv_to_org_change", "cinn_to_non", "ttp_change")
+
+
+def _flag_on(flags: dict, key: str) -> bool:
+    try:
+        return int(float(flags.get(key, 0) or 0)) == 1
+    except (TypeError, ValueError):
+        return False
+
+
 def _is_format_change(flags: dict | None) -> bool:
     if not flags:
         return False
-    return any(
-        int(flags.get(k, 0) or 0) == 1
-        for k in ("topload_change", "ttp_change", "ffs_change", "casepacker_change")
-    )
+    return any(_flag_on(flags, k) for k in _FORMAT_FLAGS)
 
 
 def _is_recipe_change(flags: dict | None, from_sku: str, to_sku: str) -> bool:
     if from_sku == to_sku:
         return False
-    if flags:
-        if any(
-            int(flags.get(k, 0) or 0) == 1
-            for k in ("conv_to_org_change", "cinn_to_non")
-        ):
-            return True
-        if float(flags.get("added_flavors", 0) or 0) > 0:
-            return True
-        # SKU change with no format flags → treat as recipe
-        if not _is_format_change(flags):
-            return True
-        # Both format and recipe possible — recipe if SKU family differs
+    if not flags:
+        return True  # unknown pair: recipe by definition
+    if any(_flag_on(flags, k) for k in _RECIPE_FLAGS):
         return True
-    return True
+    try:
+        af = float(flags.get("added_flavors", 0) or 0)
+        if af == af and af != 0:  # NaN-safe: adding OR removing flavors
+            return True           # re-doses the mix
+    except (TypeError, ValueError):
+        pass
+    # different SKU, no machine touched at all -> recipe-only change
+    return not _is_format_change(flags)
 
 
 def _round_half_up(x: float, ndigits: int = 0) -> float:
@@ -973,12 +1271,20 @@ def score_changeovers(
             a = wk_acc[i]
             weekly.append({
                 "week": int(week_bounds[i][1]),
+                # index into week_bounds — weekly_breakdown joins on it
+                # (fix Q / ui-5: one CO loop, one CIP waiver, everywhere)
+                "idx": int(i),
                 "start_h": round(marks[i], 2),
                 "span_h": round(_wk_end(i) - marks[i], 2),
                 "prod_h": round(a["prod_h"], 2),
                 "sku_transitions": int(a["transitions"]),
                 "recipe_changes": int(a["recipe"]),
                 "format_changes": int(a["fmt"]),
+                "topload_changes": int(a["topload"]),
+                "ffs_changes": int(a["ffs"]),
+                "casepacker_changes": int(a["casepacker"]),
+                "ttp_changes": int(a["ttp"]),
+                "recipe_only_changes": int(a["recipe_only"]),
                 "weighted_co": round(_weighted(
                     a["topload"], a["ffs"], a["casepacker"], a["ttp"],
                     a["recipe_only"]), 1),
@@ -1035,22 +1341,92 @@ def score_cip(
     last_clean = last_clean or {}
 
     def _seed(line_name: str, line_id: Any) -> float:
-        return float(last_clean.get(line_name)
-                     or last_clean.get(str(line_id)) or 0.0)
+        # `is not None` (not `or`): a seed of -44.5 h is a real value and a
+        # seed of 0.0 is "clean at horizon start" — both must survive.
+        for k in (line_name, str(line_id)):
+            v = last_clean.get(k)
+            if v is not None:
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    pass
+        return 0.0
+
     cips = _by_type(calendar, "cip").sort_values(["line_id", "start_h"])
     prod = _production(calendar)
     count = len(cips)
     hours = float((cips["end_h"] - cips["start_h"]).clip(lower=0).sum()) if count else 0.0
     forfeited = 0.0
     forfeited_kg = 0.0
+    early_h_total = 0.0
+    early_count = 0
+    displaced_total = 0.0
+    duplicate_rows = 0
+    events_total = 0
+    tol = float(cfg.get("cip_overdue_tolerance_h", 0.0) or 0.0)
     # Overdue-CIP count: a line that RUNS PAST its max interval without a clean
     # is a hygiene failure, not a virtue. The old "fewer CIPs = higher score"
     # rewarded a schedule that never cleaned a line (measured: a 0-CIP rough
-    # draft scored 100 while lines ran 500h past a 120h interval). Mirror
-    # check_cip_spacing: count each line-segment whose clock-since-last-CIP
-    # exceeds the interval. This makes "no CIPs" score ~0 on this component.
+    # draft scored 100 while lines ran 500h past a 120h interval). One event
+    # per (line, clean cycle) whose wall clock since the last clean exceeds
+    # the interval (+ cip_overdue_tolerance_h, default 0 — fix Q / C47: the
+    # old hard-coded +12 h grace hid a 131 h run on a 120 h interval).
     overdue = 0
+    overdue_inherited = 0
+    overdue_detail: list[dict[str, Any]] = []
 
+    def _events(line_cips: pd.DataFrame) -> list[tuple[float, float]]:
+        """Merge CIP rows on one line whose intervals touch or overlap
+        into single clean events (fix Q / C49, scorecard-9: a duplicated
+        projected clean or a solver cip_req clean drawn over a projected
+        one is ONE clean, not two). Returns [(start, end)] sorted."""
+        nonlocal duplicate_rows
+        out: list[list[float]] = []
+        for _, c in line_cips.sort_values("start_h").iterrows():
+            s, e = float(c["start_h"]), float(c["end_h"])
+            if s != s or e != e:
+                continue
+            if out and s <= out[-1][1] + 1e-6:
+                out[-1][1] = max(out[-1][1], e)
+                duplicate_rows += 1
+            else:
+                out.append([s, e])
+        return [(s, e) for s, e in out]
+
+    # ---- Forfeited pass (fix Q / C45, scorecard-4/5/9/12) ----------------
+    # The clean clock is WALL TIME from the previous clean — the same clock
+    # cip_info projects the CIP grid on and the same clock the overdue pass
+    # uses (the two halves of the category used to disagree). For each clean
+    # event: wall_since = start - previous clean end (seed = PreviousCIP,
+    # negative when before the anchor); early_h = max(0, interval -
+    # wall_since) is REPORTED (an early clean is legal); the CAPACITY price
+    # is the production the clean DISPLACES = min(dur, production hours on
+    # the line within one clean-duration either side of it), charged only
+    # when the clean is early — a clean at or past its interval is the
+    # mandated clean, not a decision. Idle time, planned downtime and
+    # pre-horizon hours are never charged.
+    prod_by_line: dict[Any, list[tuple[float, float, str]]] = {}
+    for _, p in prod.sort_values("start_h").iterrows():
+        ps, pe = float(p["start_h"]), float(p["end_h"])
+        if ps != ps or pe != pe:
+            continue
+        prod_by_line.setdefault(p["line_id"], []).append(
+            (ps, pe, str(p.get("attrs") or "")))
+
+    def _displaced(line_id: Any, cs: float, ce: float) -> float:
+        dur = max(0.0, ce - cs)
+        if dur <= 0:
+            return 0.0
+        lo, hi = cs - dur, ce + dur
+        near = 0.0
+        for ps, pe, _a in prod_by_line.get(line_id, ()):
+            near += max(0.0, min(pe, hi) - max(ps, lo))
+        return min(dur, near)
+
+    # Merged clean events per line, built ONCE and shared by both passes
+    # (merging twice double-counted cip_duplicate_rows: 4 instead of 2 on
+    # the 2026-09-02 board).
+    events_by_line: dict[Any, list[tuple[float, float]]] = {}
     for line_id, cip_grp in cips.groupby("line_id"):
         line_name = str(cip_grp["line_name"].iloc[0]) if len(cip_grp) else str(line_id)
         interval = float(
@@ -1059,64 +1435,86 @@ def score_cip(
             or cfg["cip_interval_fallback_h"]
         )
         rate = float(rates.get(line_name) or rates.get(str(line_id)) or 0.0)
-        line_prod = prod[prod["line_id"] == line_id].sort_values("start_h")
         last_cip_end = _seed(line_name, line_id)
-        for _, cip in cip_grp.iterrows():
-            cip_start = float(cip["start_h"])
-            run_since = 0.0
-            for _, p in line_prod.iterrows():
-                ps, pe = float(p["start_h"]), float(p["end_h"])
-                if pe <= last_cip_end:
-                    continue
-                if ps >= cip_start:
-                    break
-                run_since += max(0.0, min(pe, cip_start) - max(ps, last_cip_end))
-            lost_h = max(0.0, interval - run_since)
-            forfeited += lost_h
-            forfeited_kg += lost_h * rate
+        events_by_line[line_id] = _events(cip_grp)
+        for cs, ce in events_by_line[line_id]:
+            events_total += 1
+            wall_since = cs - last_cip_end
+            early_h = max(0.0, interval - wall_since)
+            disp = _displaced(line_id, cs, ce)
+            displaced_total += disp
+            if early_h > 1e-9:
+                early_count += 1
+                early_h_total += early_h
+                forfeited += disp
+                forfeited_kg += disp * rate
             # max(): a stale calendar block (drawn from a pre-refresh
             # cip_info) may END before the recorded clean it duplicates.
-            last_cip_end = max(last_cip_end, float(cip["end_h"]))
+            last_cip_end = max(last_cip_end, ce)
 
-    # Overdue pass: for lines that have production but few/no CIPs, walk the
-    # whole horizon and count how many times clock-since-last-CIP exceeds the
-    # interval. Production without a following clean before interval is overdue.
-    for line_id, line_prod in prod.groupby("line_id"):
+    # ---- Overdue pass (wall clock, same seed, same merged events) ---------
+    for line_id, rows in prod_by_line.items():
         # MUST be time-sorted: the fill-mode calendar stores committed blocks
         # and fill blocks in separate runs of rows, and walking them in file
         # order marched the CIP pointer past early cleans — 90 phantom
         # overdue events zeroed the CIP category (found 2026-08-14).
-        line_prod = line_prod.sort_values("start_h")
-        line_name = str(line_prod["line_name"].iloc[0]) if len(line_prod) else str(line_id)
+        line_rows = prod[prod["line_id"] == line_id]
+        line_name = str(line_rows["line_name"].iloc[0]) if len(line_rows) else str(line_id)
         interval = float(
             intervals.get(line_name)
             or intervals.get(str(line_id))
             or cfg["cip_interval_fallback_h"]
         )
-        line_cips = cips[cips["line_id"] == line_id].sort_values("start_h")
+        events = events_by_line.get(line_id, [])
         last_cip_end = _seed(line_name, line_id)
         cip_idx = 0
-        cip_starts = [float(c["start_h"]) for _, c in line_cips.iterrows()]
-        cip_ends = [float(c["end_h"]) for _, c in line_cips.iterrows()]
-        for _, p in line_prod.iterrows():
-            ps, pe = float(p["start_h"]), float(p["end_h"])
-            # apply any CIPs that start before this production block
-            while cip_idx < len(cip_starts) and cip_starts[cip_idx] <= ps:
-                last_cip_end = max(last_cip_end, cip_ends[cip_idx])
+        cycle_flagged = False
+        for ps, pe, attrs in rows:
+            # apply any cleans that start before this production block
+            while cip_idx < len(events) and events[cip_idx][0] <= ps:
+                last_cip_end = max(last_cip_end, events[cip_idx][1])
                 cip_idx += 1
+                cycle_flagged = False
             clock_at_end = pe - last_cip_end
-            if clock_at_end > interval + 12:
+            if clock_at_end > interval + tol and not cycle_flagged:
+                cycle_flagged = True
                 overdue += 1
+                # Inherited (fix Q / C47, scorecard-7): the block that trips
+                # the clock is a committed manprg block — the plant's own
+                # queue, which neither the solver nor the planner can
+                # resequence. Reported separately; the category gate counts
+                # only the rest, so the CIP score moves when the PLAN changes.
+                inh = "current_state:" in attrs
+                if inh:
+                    overdue_inherited += 1
+                if len(overdue_detail) < 20:
+                    overdue_detail.append({
+                        "line": line_name, "at_h": round(pe, 2),
+                        "clock_h": round(clock_at_end, 2),
+                        "interval_h": interval, "committed": bool(inh)})
 
     return {
         "cip_count": int(count),
         "cip_hours": round(hours, 2),
-        # Reported for continuity / diagnostics; the scored metric is the kg one.
+        # Distinct clean events after merging touching/overlapping rows.
+        "cip_events": int(events_total),
+        "cip_duplicate_rows": int(duplicate_rows),
+        # Production hours displaced by EARLY cleans (see the walk above);
+        # the scored metric is the kg version.
         "cip_forfeited_h": round(forfeited, 2),
         "cip_forfeited_kg": round(forfeited_kg, 2),
-        # Overdue cleanings: lines that ran past their max CIP interval.
+        # Wall-clock earliness, reported only: sum over early cleans of
+        # (interval - hours since the previous clean), and how many.
+        "cip_early_h": round(early_h_total, 2),
+        "cip_early_count": int(early_count),
+        # Production hours displaced by ALL cleans (diagnostic).
+        "cip_displaced_h": round(displaced_total, 2),
+        # Overdue clean cycles: lines that ran past their max CIP interval.
         # Drives the "not enough CIPs" side of the CIP score.
         "cip_overdue": int(overdue),
+        # ...of which the tripping block is committed plant state.
+        "cip_overdue_inherited": int(overdue_inherited),
+        "cip_overdue_detail": overdue_detail,
     }
 
 
@@ -1153,17 +1551,71 @@ def score_trials(calendar: pd.DataFrame, co_map: dict) -> dict[str, Any]:
     }
 
 
+def campaign_runs(prod: pd.DataFrame) -> list[dict[str, float]]:
+    """Maximal same-SKU runs per line (fix Q / scorecard-11).
+
+    A campaign is consecutive production blocks on one line, in start order,
+    with the same SKU — gaps (a projected CIP, a downtime) do not end it, so
+    seg_a/seg_b pieces of one order and adjacent same-SKU blocks merge. The
+    statistic is then invariant to how a physically identical plan is drawn
+    (one 48 h block vs twelve 4 h blocks). Same convention as
+    overnight_score.campaign_runs. Returns [{"hours", "kg", "blocks"}].
+    """
+    runs: list[dict[str, float]] = []
+    if prod is None or prod.empty:
+        return runs
+    for _, grp in prod.sort_values(["line_id", "start_h"]).groupby("line_id"):
+        cur: dict[str, float] | None = None
+        cur_sku: str | None = None
+        for _, b in grp.iterrows():
+            sku = str(b.get("sku", ""))
+            dur = max(0.0, float(b["end_h"]) - float(b["start_h"]))
+            kg = pd.to_numeric(pd.Series([b.get("qty_kg")]), errors="coerce").iloc[0]
+            kg = 0.0 if pd.isna(kg) else float(kg)
+            if cur is None or sku != cur_sku:
+                cur = {"hours": dur, "kg": kg, "blocks": 1}
+                cur_sku = sku
+                runs.append(cur)
+            else:
+                cur["hours"] += dur
+                cur["kg"] += kg
+                cur["blocks"] += 1
+    return runs
+
+
 def score_campaigns(calendar: pd.DataFrame, cfg: dict) -> dict[str, Any]:
+    """Run-length discipline.
+
+    avg_run_h / short_run_count are the legacy BLOCK statistics, kept for
+    continuity of saved scorecards. The SCORED statistics are the campaign
+    ones (fix Q / scorecard-11): avg_campaign_h (mean hours of a maximal
+    same-SKU run per line, see campaign_runs) and short_campaign_count
+    (campaigns shorter than short_run_h). avg_campaign_h_kgw is the
+    kg-weighted mean campaign length (None when the calendar carries no kg).
+    """
     prod = _production(calendar)
     if prod.empty:
-        return {"avg_run_h": None, "short_run_count": 0, "production_blocks": 0, "total_prod_h": 0.0}
+        return {"avg_run_h": None, "short_run_count": 0, "production_blocks": 0,
+                "total_prod_h": 0.0, "campaign_count": 0, "avg_campaign_h": None,
+                "avg_campaign_h_kgw": None, "short_campaign_count": 0}
     durs = (prod["end_h"] - prod["start_h"]).clip(lower=0)
-    short = int((durs < float(cfg["short_run_h"])).sum())
+    short_h = float(cfg["short_run_h"])
+    short = int((durs < short_h).sum())
+    runs = campaign_runs(prod)
+    hours = [r["hours"] for r in runs]
+    kgs = [r["kg"] for r in runs]
+    avg_c = sum(hours) / len(hours) if hours else None
+    kg_sum = sum(kgs)
+    avg_kgw = (sum(h * k for h, k in zip(hours, kgs)) / kg_sum) if kg_sum > 0 else None
     return {
         "avg_run_h": round(float(durs.mean()), 2),
         "short_run_count": short,
         "production_blocks": int(len(prod)),
         "total_prod_h": round(float(durs.sum()), 2),
+        "campaign_count": int(len(runs)),
+        "avg_campaign_h": round(avg_c, 2) if avg_c is not None else None,
+        "avg_campaign_h_kgw": round(avg_kgw, 2) if avg_kgw is not None else None,
+        "short_campaign_count": int(sum(1 for h in hours if h < short_h)),
     }
 
 
@@ -1201,24 +1653,145 @@ def _estimated_produced(
     return out
 
 
+def _num_or(v: Any, default: float) -> float:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return default
+    return default if f != f else f
+
+
+def build_demand_targets(
+    data_dir: Path | str | None = None,
+    *,
+    demand: pd.DataFrame | None = None,
+    anchor: datetime | None = None,
+    shift_h: float | None = None,
+) -> list[dict[str, Any]]:
+    """ONE rule for the demand targets every adherence surface consumes
+    (fix Q / ui-2, 2026-09-03: pages/calendar.py, pages/compare.py and
+    pages/generate.py each built them differently — shifted / raw / no due
+    hours — so one board read 56 / 59 / 66 orders MET).
+
+    Rule (the compute_adherence / gantt_kpis / weekly_breakdown convention):
+      qty_min = qty_min column if present, else qty_target * lower_pct (0.9)
+      qty_max = qty_max column if present, else qty_target * upper_pct (1.1)
+      due_start_hour / due_end_hour = the file's hours + shift_h, where
+      shift_h = demand_source_anchor - planning anchor (positive when the
+      demand file's Monday is AFTER the planning anchor). Nothing is dropped
+      or clipped — the adherence table shows every order.
+
+    Pass `demand` to convert an already-loaded frame (shift_h defaults to 0
+    then — e.g. a load_demand frame is ALREADY in the planning frame); pass
+    `data_dir` to read reference/demand_plan.csv and derive shift_h from
+    demand_plan.source.json and the resolved (or given) anchor.
+    """
+    if demand is None:
+        if data_dir is None:
+            raise ValueError("build_demand_targets needs data_dir or demand")
+        path = reference_dir(Path(data_dir)) / "demand_plan.csv"
+        if not path.exists():
+            return []
+        demand = pd.read_csv(path, dtype={"sku": str})
+        if shift_h is None:
+            try:
+                from helpers.demand_coverage import demand_source_anchor
+
+                dem_anchor = demand_source_anchor(Path(data_dir))
+                if dem_anchor is not None:
+                    if anchor is None:
+                        from helpers import horizon as _hzmod
+                        anchor = _hzmod.resolve(load_toml()).anchor
+                    shift_h = (dem_anchor - anchor).total_seconds() / 3600.0
+            except Exception:  # noqa: BLE001 — frame meta must not kill a page
+                shift_h = 0.0
+    sh = float(shift_h or 0.0)
+    if demand is None or demand.empty:
+        return []
+    out: list[dict[str, Any]] = []
+    has_min = "qty_min" in demand.columns
+    has_max = "qty_max" in demand.columns
+    for rec in demand.to_dict("records"):
+        target = _num_or(rec.get("qty_target"), 0.0)
+        lo = _num_or(rec.get("lower_pct"), 0.9)
+        hi = _num_or(rec.get("upper_pct"), 1.1)
+        qmin = _num_or(rec.get("qty_min"), float("nan")) if has_min else float("nan")
+        qmax = _num_or(rec.get("qty_max"), float("nan")) if has_max else float("nan")
+        row: dict[str, Any] = {
+            "order_id": str(rec.get("order_id", "")),
+            "sku": str(rec.get("sku", "")),
+            "qty_min": target * lo if qmin != qmin else qmin,
+            "qty_max": target * hi if qmax != qmax else qmax,
+            "due_start_hour": _num_or(rec.get("due_start_hour"), 0.0) + sh,
+            "due_end_hour": _num_or(rec.get("due_end_hour"), 0.0) + sh,
+        }
+        if "week_index" in demand.columns:
+            row["week_index"] = int(_num_or(rec.get("week_index"), 0))
+        out.append(row)
+    return out
+
+
+def _load_caps(ref: Path) -> dict[str, dict[str, float]]:
+    """line_name -> {sku -> kg/h} for capable rows of capabilities_rates.csv
+    (the compute_adherence rate table). {} when the file is absent."""
+    caps: dict[str, dict[str, float]] = {}
+    caps_p = ref / "capabilities_rates.csv"
+    if not caps_p.exists():
+        return caps
+    try:
+        cdf = pd.read_csv(caps_p, dtype={"sku": str})
+    except Exception:  # noqa: BLE001
+        return caps
+    rate_col = ("calc_rate_kgph" if "calc_rate_kgph" in cdf.columns
+                else "rate_kgph" if "rate_kgph" in cdf.columns else None)
+    if not rate_col or "line_name" not in cdf.columns or "sku" not in cdf.columns:
+        return caps
+    for rec in cdf.to_dict("records"):
+        if int(_num_or(rec.get("capable"), 0)) != 1:
+            continue
+        caps.setdefault(str(rec.get("line_name", "")), {})[str(rec["sku"])] = (
+            _num_or(rec.get(rate_col), 0.0))
+    return caps
+
+
 def score_service(
     calendar: pd.DataFrame,
     cfg: dict,
     demand: pd.DataFrame | None,
     data_dir: Path | None = None,
     rates: dict[str, float] | None = None,
+    *,
+    horizon_h: float | None = None,
+    caps: dict[str, dict[str, float]] | None = None,
 ) -> dict[str, Any]:
-    """Service metrics: lateness, at-risk orders and excess inventory kg.
+    """Service metrics (fix Q / C22, scorecard-2/3/6/10, 2026-09-03).
 
-    Excess kg needs produced kg per order. When the calendar carries real
-    `qty_kg` (solver schedules do since P3) that is used as-is and
-    `excess_inventory_kg_estimated` is False. When it does not, the kg are
-    ESTIMATED as run_hours x the line's average rate (the same avg-rate table
-    used to value forfeited CIP kg), and the flag is True -- so the score
-    still includes the kg part instead of silently dropping it. `rates` is
-    the pre-loaded line -> kg/h map; when absent it is loaded from
-    `data_dir/reference/`. With neither, no estimate is possible and the
-    previous behaviour (excess None) stands.
+    Rules:
+      * scope: demand rows whose due window STARTS inside the horizon
+        (due_start_hour < horizon_h). Orders due in weeks the plan cannot
+        reach are reported as orders_beyond_horizon, never as late.
+      * credit: production is credited to orders with the SAME position-
+        aware waterfall the adherence table uses (_credit_blocks_to_orders /
+        compute_adherence) — committed MO-id blocks credit the SKU's orders
+        by due-window overlap, not by exact order_id.
+      * delivered: an order is delivered at the hour its credited kg first
+        reaches qty_min (qty_min <= 0: the last crediting block's end).
+        Credited kg below qty_min = not delivered = late.
+      * deadline: due_end_hour is the INCLUSIVE last hour of the week
+        (import writes due_start + 167), so on time <=> delivered_h <=
+        due_end_hour + 1 — the solver's own convention (model_builder,
+        greedy_fill). The old `end > due` called the last hour late.
+      * at risk: on time AND delivered_h >= due_end_hour + 1 - at_risk_h.
+        A WARNING metric only — reported, never scored (the old at-risk
+        penalty made a just-in-time delivery score worse than no delivery).
+      * on_time_kg_pct: quantity-weighted service level = sum over in-scope
+        orders of min(kg credited by the deadline, target) / sum(target),
+        target = the (qty_min+qty_max)/2 midpoint convention.
+      * excess_inventory_kg: sum of max(0, credited - qty_max) as before;
+        credited kg are the block's own qty_kg, else ESTIMATED as run_hours
+        x the (line, sku) rate from caps, else the line's average rate
+        (`rates`), flagged excess_inventory_kg_estimated. None when no kg
+        can be determined at all.
     """
     if demand is None or demand.empty:
         return {
@@ -1229,65 +1802,92 @@ def score_service(
             "available": False,
         }
     prod = _production(calendar)
-    at_risk = 0
-    late = 0
-    excess = 0.0
     at_risk_h = float(cfg["at_risk_h"])
+    if rates is None and data_dir is not None:
+        rates = _load_line_avg_rates(reference_dir(data_dir))
+    if caps is None:
+        caps = _load_caps(reference_dir(data_dir)) if data_dir is not None else {}
 
-    # Aggregate scheduled end and qty by order_id
-    estimated = False
-    if prod.empty:
-        scheduled_end: dict[str, float] = {}
-        produced: dict[str, float] = {}
+    targets_all = build_demand_targets(demand=demand)
+    n_total = len(targets_all)
+    if horizon_h is not None:
+        targets = [t for t in targets_all
+                   if float(t["due_start_hour"]) < float(horizon_h)]
     else:
-        scheduled_end = prod.groupby("order_id")["end_h"].max().to_dict()
-        has_qty = (
-            "qty_kg" in prod.columns
-            and pd.to_numeric(prod["qty_kg"], errors="coerce").fillna(0).abs().sum() > 0
-        )
-        if has_qty:
-            produced = (
-                pd.to_numeric(prod["qty_kg"], errors="coerce")
-                .fillna(0)
-                .groupby(prod["order_id"])
-                .sum()
-                .to_dict()
-            )
-        else:
-            produced = _estimated_produced(prod, data_dir, rates)
-            estimated = bool(produced)
+        targets = targets_all
+    beyond = n_total - len(targets)
 
-    for _, o in demand.iterrows():
-        oid = str(o.get("order_id", ""))
-        due = float(o.get("due_end_hour", o.get("due_end", 0)) or 0)
-        end = scheduled_end.get(oid)
-        if end is None:
+    # Credit against EVERY demand order (in scope or not): a block in a
+    # beyond-horizon window must not be re-credited to an in-scope order.
+    sched, contrib, n_est = _credit_blocks_to_orders(
+        prod, targets_all, caps, fallback_rates=rates or None)
+    kg_known = any(kg > 0 for kg in sched.values()) or (
+        not prod.empty and n_est < len(prod))
+    estimated = bool(n_est) and kg_known
+
+    late = 0
+    at_risk = 0
+    on_time = 0
+    unfilled = 0
+    excess = 0.0
+    on_time_kg = 0.0
+    demand_kg = 0.0
+    for t in targets:
+        oid = str(t["order_id"])
+        qmin = float(t["qty_min"] or 0.0)
+        qmax = float(t["qty_max"] or 0.0)
+        due = float(t["due_end_hour"] or 0.0)
+        deadline = due + 1.0
+        target = ((qmin + qmax) / 2.0 if qmin > 0 and qmax >= qmin
+                  else max(qmin, qmax))
+        demand_kg += target
+        events = sorted(contrib.get(oid, []), key=lambda ev: ev[0])
+        credited = sched.get(oid, 0.0)
+        by_deadline = sum(kg for e_h, kg in events if e_h <= deadline + 1e-9)
+        on_time_kg += min(by_deadline, target) if target > 0 else 0.0
+        if qmax > 0 and credited > 0:
+            excess += max(0.0, credited - qmax)
+        if not events:
             late += 1
             continue
-        if end > due:
+        delivered_h: float | None = None
+        if qmin > 0:
+            cum = 0.0
+            for e_h, kg in events:
+                cum += kg
+                if cum >= qmin - 1e-6:
+                    delivered_h = e_h
+                    break
+            if delivered_h is None:
+                unfilled += 1
+                late += 1
+                continue
+        else:
+            delivered_h = max(e_h for e_h, _ in events)
+        if delivered_h > deadline + 1e-9:
             late += 1
-        elif end >= due - at_risk_h:
-            at_risk += 1
+        else:
+            on_time += 1
+            if delivered_h >= deadline - at_risk_h - 1e-9:
+                at_risk += 1
 
-        qty_max = o.get("qty_max")
-        if qty_max is None or (isinstance(qty_max, float) and pd.isna(qty_max)):
-            # derive from target * upper_pct if present
-            target = o.get("qty_target")
-            upper = o.get("upper_pct")
-            if target is not None and upper is not None and not pd.isna(target) and not pd.isna(upper):
-                qty_max = float(target) * float(upper)
-            else:
-                qty_max = None
-        if qty_max is not None and oid in produced:
-            excess += max(0.0, float(produced[oid]) - float(qty_max))
-
+    n_scope = len(targets)
     return {
         "orders_at_risk": at_risk,
         "orders_late": late,
-        "excess_inventory_kg": round(excess, 1) if produced else None,
+        "orders_on_time": on_time,
+        "orders_unfilled": unfilled,
+        "orders_in_scope": n_scope,
+        "orders_beyond_horizon": int(beyond),
+        "orders_total": int(n_total),
+        "on_time_kg": round(on_time_kg, 1),
+        "demand_kg": round(demand_kg, 1),
+        "on_time_kg_pct": (round(100.0 * on_time_kg / demand_kg, 1)
+                           if demand_kg > 0 else None),
+        "excess_inventory_kg": round(excess, 1) if kg_known else None,
         "excess_inventory_kg_estimated": estimated,
+        "credit_rule": "position-aware waterfall (compute_adherence)",
         "available": True,
-        "orders_total": int(len(demand)),
     }
 
 
@@ -1311,12 +1911,32 @@ def _score_higher_better(value: float | None, target: float) -> float | None:
     return _clamp01(100.0 * float(value) / target)
 
 
-def category_scores(raw: dict[str, dict], cfg: dict) -> dict[str, float | None]:
+def category_scores(
+    raw: dict[str, dict],
+    cfg: dict,
+    degraded: list[str] | None = None,
+) -> dict[str, float | None]:
+    """Category scores 0-100 (None = n/a).
+
+    Fix Q (scorecard-1 / adversarial-8 / quality-2, 2026-09-03):
+      * a calendar with NO production scores service 0 and campaigns 0 and
+        leaves changeovers / cip None (nothing to judge) — the old defaults
+        gave 100 on every "nothing happened" metric and ranked an empty
+        calendar 81 vs the live board 49;
+      * `degraded` lists missing scoring inputs (see score_calendar); the
+        category that depends on one becomes None instead of scoring on
+        absence — except a hygiene gate already at 0, which stays 0 (a
+        missing file must never IMPROVE a score).
+    """
     co = raw["changeovers"]
     cip = raw["cip"]
     tr = raw["trials"]
     camp = raw["campaigns"]
     svc = raw["service"]
+    degraded = degraded or []
+    # production present? (old saved scorecards lack the key -> assume yes)
+    _nblk = camp.get("production_blocks")
+    has_prod = True if _nblk is None else int(_nblk or 0) > 0
 
     # Per-ISO-week changeover score (2026-08-25): the caps are ONE-WEEK
     # calibrations, and a multi-week horizon's TOTALS saturate them (112
@@ -1333,7 +1953,10 @@ def category_scores(raw: dict[str, dict], cfg: dict) -> dict[str, float | None]:
     # total_co_hours is REPORTED but not scored (2026-08-25): it prices
     # transitions from changeovers.csv setup_hours, which the plant does
     # not yet trust. The scored signal is the weighted severity count.
-    if co_weeks:
+    co_na = (not has_prod) or ("weekly" in co and not co_weeks)
+    if co_na:
+        co_s: list[float | None] = []  # nothing produced -> n/a, not 100
+    elif co_weeks:
         lam = float(cfg.get("co_week_decay", 0.6) or 0.6)
         floor_pts = 100.0 * float(cfg.get("co_week_score_floor", 0.05) or 0.0)
         cap_w = float(cfg.get("cap_weighted_co") or 120)
@@ -1378,11 +2001,24 @@ def category_scores(raw: dict[str, dict], cfg: dict) -> dict[str, float | None]:
     # reported-only (same reason as ever). Old scorecards lack
     # cip_req_violations -> treated as 0, so compliance reduces to the
     # legacy overdue check.
-    _viol = int(co.get("cip_req_violations") or 0)
+    #
+    # Fix Q (C47 / scorecard-7, 2026-09-03): INHERITED events — a violation
+    # or overdue cycle inside the plant's own committed manprg sequence,
+    # which neither the solver nor the planner can resequence — are
+    # reported (cip_req_inherited, cip_overdue_inherited) but do NOT gate
+    # the category: the category must move when the PLAN changes, and it
+    # was a constant 0 on every real board because of one committed pair.
+    _viol = (int(co.get("cip_req_violations") or 0)
+             - int(co.get("cip_req_inherited") or 0))
     _overdue = cip.get("cip_overdue")
-    if _overdue is not None and (int(_overdue or 0) > 0 or _viol > 0):
+    _ovd = (int(_overdue or 0) - int(cip.get("cip_overdue_inherited") or 0)
+            if _overdue is not None else None)
+    cip_gated = _ovd is not None and (_ovd > 0 or _viol > 0)
+    if cip_gated:
         # Compliance GATES the category: hygiene failure -> 0, full stop.
         cip_s: list[float | None] = [0.0]
+    elif not has_prod:
+        cip_s = []  # nothing ran -> nothing to keep clean -> n/a
     else:
         cip_s = [
             _score_lower_better(
@@ -1402,27 +2038,47 @@ def category_scores(raw: dict[str, dict], cfg: dict) -> dict[str, float | None]:
         ]
     else:
         trial_s = []
-    camp_parts = [
-        _score_lower_better(camp["short_run_count"], cfg["cap_short_runs"]),
-    ]
-    if camp.get("avg_run_h") is not None:
-        # Monotonic "longer is better" with a floor. The plant confirms long,
-        # consolidated runs are always preferable, so ONLY short runs are
-        # penalised: the score ramps linearly from 0 to 100 as avg_run_h goes
-        # 0 -> campaign_run_floor_h and stays at 100 above the floor. The old
-        # symmetric target (target_avg_run_h) is left in config but unused.
-        avg = float(camp["avg_run_h"])
-        floor = float(cfg.get("campaign_run_floor_h") or 0.0)
-        camp_parts.append(_score_higher_better(avg, floor))
+    # Campaigns (fix Q / scorecard-11): scored on CAMPAIGNS (maximal same-
+    # SKU runs), not on how the plan happens to be cut into rows. Old
+    # scorecards without the campaign keys fall back to the block stats.
+    if not has_prod:
+        camp_parts: list[float | None] = [0.0]  # nothing produced -> 0
+    else:
+        short_n = camp.get("short_campaign_count", camp.get("short_run_count"))
+        camp_parts = [_score_lower_better(short_n, cfg["cap_short_runs"])]
+        avg_h = camp.get("avg_campaign_h", camp.get("avg_run_h"))
+        if avg_h is not None:
+            # Monotonic "longer is better" with a floor. The plant confirms
+            # long, consolidated runs are always preferable, so ONLY short
+            # runs are penalised: the score ramps linearly from 0 to 100 as
+            # the average campaign goes 0 -> campaign_run_floor_h and stays
+            # at 100 above the floor. The old symmetric target
+            # (target_avg_run_h) is left in config but unused.
+            floor = float(cfg.get("campaign_run_floor_h") or 0.0)
+            camp_parts.append(_score_higher_better(float(avg_h), floor))
 
+    # Service (fix Q / scorecard-2/3/6/10): two service LEVELS, both 0-100
+    # without caps — on-time orders / in-scope orders and on-time kg /
+    # demand kg — plus the excess-kg penalty. at-risk is a warning, not a
+    # score (the old penalty made a just-in-time delivery worse than none).
+    # Old saved scorecards (no orders_in_scope) keep the legacy cap formula.
     if svc.get("available"):
-        svc_parts = [
-            _score_lower_better(svc["orders_late"], cfg["cap_orders_late"]),
-            _score_lower_better(svc["orders_at_risk"], cfg["cap_orders_at_risk"]),
-        ]
+        n_scope = svc.get("orders_in_scope")
+        svc_parts: list[float | None] = []
+        if n_scope is None:
+            svc_parts = [
+                _score_lower_better(svc["orders_late"], cfg["cap_orders_late"]),
+                _score_lower_better(svc["orders_at_risk"], cfg["cap_orders_at_risk"]),
+            ]
+        elif int(n_scope) > 0:
+            svc_parts.append(_clamp01(
+                100.0 * (1.0 - float(svc["orders_late"]) / float(n_scope))))
+            if svc.get("on_time_kg_pct") is not None:
+                svc_parts.append(_clamp01(float(svc["on_time_kg_pct"])))
         if svc.get("excess_inventory_kg") is not None:
             svc_parts.append(_score_lower_better(svc["excess_inventory_kg"], cfg["cap_excess_kg"]))
-        service_score: float | None = sum(svc_parts) / len(svc_parts)
+        service_score: float | None = (
+            sum(svc_parts) / len(svc_parts) if svc_parts else None)
     else:
         service_score = None
 
@@ -1430,13 +2086,24 @@ def category_scores(raw: dict[str, dict], cfg: dict) -> dict[str, float | None]:
         vals = [p for p in parts if p is not None]
         return round(sum(vals) / len(vals), 1) if vals else 0.0
 
-    return {
-        "changeovers": co_week_score if co_week_score is not None else avg(co_s),
-        "cip": avg(cip_s),
+    out: dict[str, float | None] = {
+        "changeovers": (co_week_score if co_week_score is not None
+                        else (None if not co_s else avg(co_s))),
+        "cip": None if not cip_s else avg(cip_s),
         "trials": None if not trial_s else avg(trial_s),
         "campaigns": avg(camp_parts),
         "service": None if service_score is None else round(service_score, 1),
     }
+    # Missing scoring inputs: the dependent category is n/a — never a
+    # better number (quality-2). A hygiene gate at 0 stays 0.
+    _deg = " ".join(degraded).lower()
+    if "changeovers.csv" in _deg:
+        out["changeovers"] = None
+    if any(k in _deg for k in ("line_cip_hrs", "rates", "cip_info")) and not cip_gated:
+        out["cip"] = None
+    if "demand_plan" in _deg:
+        out["service"] = None
+    return out
 
 
 def composite_score(cats: dict[str, float | None], cfg: dict) -> float | None:
@@ -1553,6 +2220,7 @@ def _apply_fill_window(
 def _residual_fill_demand(
     demand: pd.DataFrame,
     committed_prod: pd.DataFrame,
+    ledger_inputs: dict[str, Any] | None = None,
 ) -> tuple[pd.DataFrame, int]:
     """Demand minus committed production — what the fill was ASKED to make.
 
@@ -1562,6 +2230,15 @@ def _residual_fill_demand(
     re-derived from the reduced target, and orders fully covered by the
     committed plan are DROPPED — they are the plant's work, and counting
     them "late" against the fill was the core unfairness this view fixes.
+
+    `ledger_inputs` (fix Q / C57, netting-5, 2026-09-03) carries the SAME
+    extra ledger legs staging used, forwarded to subtract_committed /
+    build_ledger: {"completed": [...completed-MO rows with made kg...],
+    "history_demand": {(sku, iso_week): kg}, "anchor": datetime,
+    "lookback_weeks": int}. Without them the residual counted kg already
+    in the warehouse (193,592 kg on the 2026-09-02 snapshot) as still due.
+    The caller (scenario runner / compare page) owns the ledger; this
+    function only applies it.
 
     Returns (residual demand, number of fully-covered orders dropped).
     """
@@ -1587,8 +2264,13 @@ def _residual_fill_demand(
             b += 168.0
     except Exception:  # noqa: BLE001 — scoring must not die on frame meta
         week_bounds = None  # subtract_committed falls back to the 168h grid
+    li = dict(ledger_inputs or {})
+    extra: dict[str, Any] = {}
+    for k in ("anchor", "completed", "history_demand", "lookback_weeks"):
+        if li.get(k) is not None:
+            extra[k] = li[k]
     residual, _notes = subtract_committed(
-        demand, committed_prod, week_bounds=week_bounds)
+        demand, committed_prod, week_bounds=week_bounds, **extra)
     tgt = pd.to_numeric(residual["qty_target"], errors="coerce").fillna(0.0)
     if "upper_pct" in residual.columns:
         residual["qty_max"] = tgt * pd.to_numeric(
@@ -1610,6 +2292,145 @@ def _residual_fill_demand(
 # tests/test_kpi_parity.py holds a golden fixture asserting Python and the
 # built TypeScript agree; change rules here and there together.
 # ---------------------------------------------------------------------------
+
+
+def _credit_blocks_to_orders(
+    prod: pd.DataFrame,
+    demand_targets: list[dict[str, Any]],
+    caps: dict[str, dict[str, float]],
+    covered_by_order: dict[str, float] | None = None,
+    fallback_rates: dict[str, float] | None = None,
+) -> tuple[dict[str, float], dict[str, list[tuple[float, float]]], int]:
+    """THE crediting rule — production blocks -> demand orders (kg).
+
+    Extracted verbatim from compute_adherence (fix Q / scorecard-6,
+    2026-09-03) so score_service can credit orders with the SAME
+    position-aware waterfall the adherence table shows on the same page,
+    instead of an exact order_id groupby that credited nothing for
+    committed MO-id blocks. compute_adherence's arithmetic is unchanged
+    (tests/test_kpi_parity.py goldens pin it).
+
+    Returns (credited kg per order_id, per-order list of (block end_h, kg)
+    credit events in credit order, number of blocks whose kg had to be
+    ESTIMATED from a rate). `fallback_rates` (line -> kg/h) prices a block
+    whose (line, sku) has no caps entry — compute_adherence passes None,
+    so its behaviour is identical to before; score_service passes the
+    line-average table so an estimate is possible without a caps row.
+    Covered (non-board) kg is recorded as a credit event at end_h = -inf
+    (already made before the horizon).
+    """
+    sched: dict[str, float] = {}
+    contrib: dict[str, list[tuple[float, float]]] = {}
+    estimated = 0
+
+    def _credit(oid: str, kg: float, end_h: float) -> None:
+        sched[oid] = sched.get(oid, 0.0) + kg
+        contrib.setdefault(oid, []).append((end_h, kg))
+
+    # (sku, kg, start_h, end_h, own_order_id or "") — EVERY block keeps its
+    # position for pass 1; a matching order id is a PREFERENCE for leftover
+    # kg, not a bypass (2026-09-01: a 280256-W37 run scheduled mostly in
+    # W38 hours credited W37 outright and W38 read 0%).
+    blocks: list[tuple[str, float, float, float, str]] = []
+    demand_ids = {str(d.get("order_id", "")) for d in demand_targets}
+    for _, b in prod.iterrows():
+        line = str(b.get("line_name", "") or "")
+        sku = str(b.get("sku", "") or "")
+        kg = pd.to_numeric(pd.Series([b.get("qty_kg")]), errors="coerce").iloc[0]
+        if pd.isna(kg) or kg <= 0:
+            rate = float((caps.get(line) or {}).get(sku, 0) or 0)
+            if rate <= 0 and fallback_rates:
+                rate = float(fallback_rates.get(line)
+                             or fallback_rates.get(str(b.get("line_id", "")))
+                             or 0.0)
+            kg = rate * max(0.0, float(b["end_h"]) - float(b["start_h"]))
+            estimated += 1
+        oid = str(b.get("order_id", "") or "")
+        blocks.append((sku, float(kg), float(b["start_h"]), float(b["end_h"]),
+                       oid if oid in demand_ids else ""))
+
+    if covered_by_order is not None:
+        for oid, kg in covered_by_order.items():
+            if str(oid) in demand_ids and kg and kg > 0:
+                _credit(str(oid), float(kg), float("-inf"))
+
+    by_sku: dict[str, list[dict[str, Any]]] = {}
+    for d in demand_targets:
+        by_sku.setdefault(str(d.get("sku", "")), []).append(d)
+    for orders in by_sku.values():
+        orders.sort(key=lambda d: float(d.get("due_start_hour", 0) or 0))
+
+    # Pass 1 — POSITION-AWARE (user rule 2026-09-01), EVERY block: it first
+    # credits the same-SKU orders whose due windows OVERLAP its own hours,
+    # each offered the block's kg pro-rated by overlap share of the block's
+    # duration and capped at the order's max. Kg the windows could not take
+    # (hours outside every window, or a full week) then goes to the block's
+    # OWN order if it has one with room — the order id is the planner's
+    # intent and wins where position is silent — and only after that joins
+    # the SKU pool for pass 2. Due windows must be in the CALENDAR's hour
+    # frame (the page shifts demand-frame hours via demand_source_anchor;
+    # load_demand does the same); zero-width windows (callers that carry no
+    # due hours) make pass 1 a no-op and the own-order credit the whole
+    # story — exactly the legacy behavior.
+    caps_by_oid = {
+        str(d.get("order_id", "")): max(float(d.get("qty_max", 0) or 0),
+                                        float(d.get("qty_min", 0) or 0))
+        for d in demand_targets}
+    leftover_by_sku: dict[str, list[tuple[float, float]]] = {}
+    for sku, kg, s, e, own in sorted(blocks, key=lambda t: (t[2], t[3])):
+        remaining = kg
+        dur = max(e - s, 1e-9)
+        for d in by_sku.get(sku, []):
+            ds = float(d.get("due_start_hour", 0) or 0)
+            de = float(d.get("due_end_hour", 0) or 0)
+            ov = max(0.0, min(e, de) - max(s, ds))
+            if ov <= 0:
+                continue
+            oid = str(d.get("order_id", ""))
+            have = sched.get(oid, 0.0)
+            take = min(kg * (ov / dur), max(0.0, caps_by_oid[oid] - have), remaining)
+            if take > 0:
+                _credit(oid, take, e)
+                remaining -= take
+        if remaining > 1e-9 and own:
+            # UNCAPPED, exactly like the legacy direct credit: an order the
+            # planner over-books must read OVER, not silently shed kg into
+            # the pool (parity golden O3: 600 kg on a 550 cap is OVER).
+            _credit(own, remaining, e)
+            remaining = 0.0
+        if remaining > 1e-9:
+            leftover_by_sku.setdefault(sku, []).append((e, remaining))
+
+    # Pass 2 — legacy earliest-due waterfall for whatever pass 1 could not
+    # place positionally (plant logic: what is running covers the nearest
+    # due). Caps unchanged; surplus beyond every order's max stays
+    # uncredited (serves weeks not on this board). The pool is consumed in
+    # block order so each credit event keeps the end_h of the block it came
+    # from (score_service needs the hour; the kg totals are unchanged).
+    for sku, pool in leftover_by_sku.items():
+        pool_total = sum(k for _, k in pool)
+        for d in by_sku.get(sku, []):
+            if pool_total <= 1e-9:
+                break
+            oid = str(d.get("order_id", ""))
+            have = sched.get(oid, 0.0)
+            cap = max(float(d.get("qty_max", 0) or 0),
+                      float(d.get("qty_min", 0) or 0))
+            take = min(pool_total, max(0.0, cap - have))
+            if take > 0:
+                pool_total -= take
+                # drain the pool front-to-back for the credit events
+                left = take
+                while left > 1e-12 and pool:
+                    e_h, k = pool[0]
+                    part = min(k, left)
+                    _credit(oid, part, e_h)
+                    left -= part
+                    if k - part <= 1e-12:
+                        pool.pop(0)
+                    else:
+                        pool[0] = (e_h, k - part)
+    return sched, contrib, estimated
 
 
 def compute_adherence(
@@ -1644,93 +2465,9 @@ def compute_adherence(
         planner's band is 90-110 of target, not of qty_min
       - MET when qty_min <= scheduled <= qty_max (qty_max <= 0 = unbounded)
     """
-    prod = _production(calendar)
-    sched: dict[str, float] = {}
-    # (sku, kg, start_h, end_h, own_order_id or "") — EVERY block keeps its
-    # position for pass 1; a matching order id is a PREFERENCE for leftover
-    # kg, not a bypass (2026-09-01: a 280256-W37 run scheduled mostly in
-    # W38 hours credited W37 outright and W38 read 0%).
-    blocks: list[tuple[str, float, float, float, str]] = []
-    demand_ids = {str(d.get("order_id", "")) for d in demand_targets}
-    for _, b in prod.iterrows():
-        line = str(b.get("line_name", "") or "")
-        sku = str(b.get("sku", "") or "")
-        kg = pd.to_numeric(pd.Series([b.get("qty_kg")]), errors="coerce").iloc[0]
-        if pd.isna(kg) or kg <= 0:
-            rate = float((caps.get(line) or {}).get(sku, 0) or 0)
-            kg = rate * max(0.0, float(b["end_h"]) - float(b["start_h"]))
-        oid = str(b.get("order_id", "") or "")
-        blocks.append((sku, float(kg), float(b["start_h"]), float(b["end_h"]),
-                       oid if oid in demand_ids else ""))
-
-    if covered_by_order is not None:
-        for oid, kg in covered_by_order.items():
-            if str(oid) in demand_ids and kg and kg > 0:
-                sched[str(oid)] = sched.get(str(oid), 0.0) + float(kg)
-
-    by_sku: dict[str, list[dict[str, Any]]] = {}
-    for d in demand_targets:
-        by_sku.setdefault(str(d.get("sku", "")), []).append(d)
-    for orders in by_sku.values():
-        orders.sort(key=lambda d: float(d.get("due_start_hour", 0) or 0))
-
-    # Pass 1 — POSITION-AWARE (user rule 2026-09-01), EVERY block: it first
-    # credits the same-SKU orders whose due windows OVERLAP its own hours,
-    # each offered the block's kg pro-rated by overlap share of the block's
-    # duration and capped at the order's max. Kg the windows could not take
-    # (hours outside every window, or a full week) then goes to the block's
-    # OWN order if it has one with room — the order id is the planner's
-    # intent and wins where position is silent — and only after that joins
-    # the SKU pool for pass 2. Due windows must be in the CALENDAR's hour
-    # frame (the page shifts demand-frame hours via demand_source_anchor;
-    # load_demand does the same); zero-width windows (callers that carry no
-    # due hours) make pass 1 a no-op and the own-order credit the whole
-    # story — exactly the legacy behavior.
-    caps_by_oid = {
-        str(d.get("order_id", "")): max(float(d.get("qty_max", 0) or 0),
-                                        float(d.get("qty_min", 0) or 0))
-        for d in demand_targets}
-    leftover_by_sku: dict[str, float] = {}
-    for sku, kg, s, e, own in sorted(blocks, key=lambda t: (t[2], t[3])):
-        remaining = kg
-        dur = max(e - s, 1e-9)
-        for d in by_sku.get(sku, []):
-            ds = float(d.get("due_start_hour", 0) or 0)
-            de = float(d.get("due_end_hour", 0) or 0)
-            ov = max(0.0, min(e, de) - max(s, ds))
-            if ov <= 0:
-                continue
-            oid = str(d.get("order_id", ""))
-            have = sched.get(oid, 0.0)
-            take = min(kg * (ov / dur), max(0.0, caps_by_oid[oid] - have), remaining)
-            if take > 0:
-                sched[oid] = have + take
-                remaining -= take
-        if remaining > 1e-9 and own:
-            # UNCAPPED, exactly like the legacy direct credit: an order the
-            # planner over-books must read OVER, not silently shed kg into
-            # the pool (parity golden O3: 600 kg on a 550 cap is OVER).
-            sched[own] = sched.get(own, 0.0) + remaining
-            remaining = 0.0
-        if remaining > 1e-9:
-            leftover_by_sku[sku] = leftover_by_sku.get(sku, 0.0) + remaining
-
-    # Pass 2 — legacy earliest-due waterfall for whatever pass 1 could not
-    # place positionally (plant logic: what is running covers the nearest
-    # due). Caps unchanged; surplus beyond every order's max stays
-    # uncredited (serves weeks not on this board).
-    for sku, kg in leftover_by_sku.items():
-        for d in by_sku.get(sku, []):
-            if kg <= 1e-9:
-                break
-            oid = str(d.get("order_id", ""))
-            have = sched.get(oid, 0.0)
-            cap = max(float(d.get("qty_max", 0) or 0),
-                      float(d.get("qty_min", 0) or 0))
-            take = min(kg, max(0.0, cap - have))
-            if take > 0:
-                sched[oid] = have + take
-                kg -= take
+    sched, _contrib, _est = _credit_blocks_to_orders(
+        _production(calendar), demand_targets, caps,
+        covered_by_order=covered_by_order)
 
     rows: list[dict[str, Any]] = []
     for d in demand_targets:
@@ -1780,7 +2517,7 @@ def gantt_kpis(
     cfg = cfg or scorecard_config()
     if co_map is None:
         ref = reference_dir(data_dir) if data_dir else reference_dir()
-        co_map = _co_lookup(_load_changeovers(ref))
+        co_map = load_co_map(ref)
 
     adherence = compute_adherence(calendar, demand_targets, caps,
                                   covered_by_order=covered_by_order)
@@ -1846,25 +2583,45 @@ def score_calendar(
     cfg: dict | None = None,
     fill_gates: dict[str, float] | None = None,
     cip_last_clean: dict[str, float] | None = None,
+    ledger_inputs: dict[str, Any] | None = None,
 ) -> ScorecardResult:
+    """Score one calendar. See METRIC_DOCS / KNOWN_LIMITATIONS for rules.
+
+    `ledger_inputs` (fill-window view only) forwards the staging ledger's
+    extra legs to the residual-demand subtraction — see
+    _residual_fill_demand. `sanity` / `degraded` on the result flag a
+    physically impossible calendar / a missing scoring input; both are
+    persisted with the result so a ranking page can refuse it.
+    """
     cfg = cfg or scorecard_config()
     ref = reference_dir(data_dir) if data_dir else reference_dir()
-    co_map = _co_lookup(_load_changeovers(ref))
+    co_map = load_co_map(ref)
     intervals = _load_cip_intervals(ref, float(cfg["cip_interval_fallback_h"]))
     rates = _load_line_avg_rates(ref)
     demand = load_demand(ref)
 
     notes: list[str] = []
+    degraded: list[str] = []
     if calendar.empty:
-        notes.append("Calendar is empty — all metrics are zero / n/a.")
+        notes.append("Calendar is empty — nothing produced: service 0, "
+                     "campaigns 0, changeovers / CIP n/a.")
     if not co_map:
-        notes.append("No changeover standards loaded — using default CO hour estimates.")
+        degraded.append("changeovers.csv")
+        notes.append("SCORING INPUT MISSING: no changeover standards — the "
+                     "changeovers category is n/a (absence of standards is "
+                     "not evidence of zero changeovers).")
+    if not intervals:
+        degraded.append("line_cip_hrs.csv")
+        notes.append("SCORING INPUT MISSING: line_cip_hrs.csv — CIP intervals "
+                     "unknown, the CIP category is n/a unless a hygiene gate trips.")
     if not rates:
+        degraded.append("capabilities_rates.csv / line_rates.csv")
         notes.append(
-            "No capabilities_rates.csv — forfeited CIP kg cannot be valued and reads 0."
-        )
+            "SCORING INPUT MISSING: no rate table — forfeited CIP kg cannot be "
+            "valued, the CIP category is n/a unless a hygiene gate trips.")
     if demand is None:
-        notes.append("No demand_plan.csv — Service metrics are n/a.")
+        degraded.append("demand_plan.csv")
+        notes.append("SCORING INPUT MISSING: demand_plan.csv — Service metrics are n/a.")
 
     # Normalize dtypes ONCE. In-memory calendars (scenario reassembly)
     # concatenate committed + fill frames with mixed line_id types (int vs
@@ -1883,17 +2640,6 @@ def score_calendar(
         if _c in calendar.columns:
             calendar[_c] = pd.to_numeric(calendar[_c], errors="coerce")
 
-    if fill_gates is not None:
-        calendar, _committed_prod = _apply_fill_window(calendar, fill_gates)
-        n_covered = 0
-        if demand is not None:
-            demand, n_covered = _residual_fill_demand(demand, _committed_prod)
-        notes.append(
-            "Fill-window view: committed blocks before each line's gate are "
-            "excluded (changeover base + CIP history kept); demand reduced "
-            f"by committed production ({n_covered} fully-covered order(s) "
-            "left to the plant's own plan).")
-
     # ISO-week bounds for the per-week changeover score. Same frame rule as
     # weekly_breakdown (rolling anchor from the live toml); a resolve
     # failure degrades to flat totals, never takes scoring down.
@@ -1906,6 +2652,17 @@ def score_calendar(
     except Exception:  # noqa: BLE001
         _hz, _week_bounds, _horizon_h = None, None, None
 
+    # Physical sanity BEFORE any number is reported (adversarial-7): an
+    # impossible calendar is flagged in `sanity` and in the notes; the
+    # numbers are still computed so the planner can see what is wrong, but
+    # ranking pages must refuse a result with a non-empty sanity list.
+    sanity, warn = calendar_sanity(calendar, _horizon_h)
+    for w in warn:
+        notes.append(f"Sanity warning: {w}")
+    for err in sanity:
+        notes.append(f"SANITY: {err} — this calendar cannot physically run; "
+                     "its scores are not comparable.")
+
     # Default the CIP clean-clock seed from cip_info history. A clean the
     # live pull records mid-day exists only as PreviousCIP — the projected
     # grid anchors on it but draws no calendar block — so a seedless walk
@@ -1913,25 +2670,54 @@ def score_calendar(
     # cip_overdue == 0 that zeroes CIP on every UI rescore. Only
     # compute_guards passed the seed explicitly; every page path scored
     # seedless. An explicit argument (compute_guards, including its {} =
-    # "score without seed" failure path) still wins; the seed is a
-    # LENIENCY, so any failure here degrades to seedless, never to a
-    # failed score.
+    # "score without seed" failure path) still wins. Fix Q: pre-anchor
+    # cleans now seed NEGATIVE hours (the plant's wall clock), and a
+    # missing cip_info.csv is a degraded input (the seedless walk assumes
+    # every line clean at hour 0, which can only flatter the score).
     if cip_last_clean is None and data_dir is not None and _hz is not None:
-        try:
-            cip_last_clean = cip_last_clean_hours(
-                ref, _hz.anchor, max_h=_horizon_h)
-        except Exception:  # noqa: BLE001
-            cip_last_clean = None
+        if (ref / "cip_info.csv").exists():
+            try:
+                cip_last_clean = cip_last_clean_hours(
+                    ref, _hz.anchor, max_h=_horizon_h)
+            except Exception:  # noqa: BLE001
+                cip_last_clean = None
+        else:
+            degraded.append("cip_info.csv")
+            notes.append("SCORING INPUT MISSING: cip_info.csv — no clean-clock "
+                         "seed; the CIP category is n/a unless a hygiene gate trips.")
+
+    # The CIP walk runs on the UNWINDOWED calendar (scorecard-8): the
+    # fill-window view drops pre-gate production, and a clean clock
+    # measured against the remaining rows charged the same board 58 %
+    # more forfeited kg than its full-calendar score.
+    cip_raw = score_cip(calendar, cfg, intervals, rates, cip_last_clean)
+
+    if fill_gates is not None:
+        calendar, _committed_prod = _apply_fill_window(calendar, fill_gates)
+        n_covered = 0
+        if demand is not None:
+            demand, n_covered = _residual_fill_demand(
+                demand, _committed_prod, ledger_inputs)
+        notes.append(
+            "Fill-window view: committed blocks before each line's gate are "
+            "excluded (changeover base + CIP history kept; the CIP clock is "
+            "walked on the full calendar); demand reduced by committed "
+            f"production ({n_covered} fully-covered order(s) left to the "
+            "plant's own plan)"
+            + (" and the staging ledger's completed/history legs."
+               if ledger_inputs else "."))
 
     raw = {
         "changeovers": score_changeovers(
             calendar, cfg, co_map, _week_bounds, _horizon_h),
-        "cip": score_cip(calendar, cfg, intervals, rates, cip_last_clean),
+        "cip": cip_raw,
         "trials": score_trials(calendar, co_map),
         "campaigns": score_campaigns(calendar, cfg),
-        "service": score_service(calendar, cfg, demand, data_dir, rates),
+        "service": score_service(calendar, cfg, demand, data_dir, rates,
+                                 horizon_h=_horizon_h,
+                                 caps=_load_caps(ref)),
     }
-    cats = category_scores(raw, cfg)
+    cats = category_scores(raw, cfg, degraded=degraded)
     comp = composite_score(cats, cfg)
 
     return ScorecardResult(
@@ -1945,6 +2731,8 @@ def score_calendar(
         category_scores=cats,
         composite=comp,
         notes=notes,
+        sanity=sanity,
+        degraded=degraded,
     )
 
 
@@ -2017,12 +2805,18 @@ def delta_narrative(baseline: ScorecardResult, proposed: ScorecardResult) -> lis
         ("cip", "cip_hours", "CIP hours"),
         ("cip", "cip_forfeited_h", "forfeited CIP hours"),
         ("cip", "cip_forfeited_kg", "forfeited CIP kg"),
+        ("cip", "cip_early_h", "early-clean hours"),
+        ("cip", "cip_overdue", "overdue CIP cycles"),
+        ("changeovers", "cip_req_violations", "required-CIP violations"),
         ("trials", "trial_hours", "trial hours"),
         ("trials", "trial_disruptions", "trial disruptions"),
-        ("campaigns", "short_run_count", "short runs"),
-        ("campaigns", "avg_run_h", "avg run hours"),
+        ("campaigns", "short_campaign_count", "short campaigns"),
+        ("campaigns", "avg_campaign_h", "avg campaign hours"),
+        ("campaigns", "short_run_count", "short runs (rows)"),
+        ("campaigns", "avg_run_h", "avg run hours (rows)"),
         ("service", "orders_late", "late orders"),
-        ("service", "orders_at_risk", "orders at risk"),
+        ("service", "on_time_kg_pct", "on-time kg %"),
+        ("service", "orders_at_risk", "orders at risk (warning)"),
     ]
     for section, key, label in pairs:
         a = getattr(baseline, section).get(key)
@@ -2036,7 +2830,7 @@ def delta_narrative(baseline: ScorecardResult, proposed: ScorecardResult) -> lis
         diff = db - da
         if abs(diff) < 1e-6:
             continue
-        better_higher = key in ("avg_run_h",)
+        better_higher = key in ("avg_run_h", "avg_campaign_h", "on_time_kg_pct")
         improved = (diff > 0) if better_higher else (diff < 0)
         sign = "+" if diff > 0 else ""
         tag = "better" if improved else "worse"
@@ -2069,26 +2863,24 @@ def contribution_breakdown(
         "campaigns": float(cfg["weight_campaigns"]),
         "trials": float(cfg["weight_trials"]),
     }
-    # Cap saturation hints
+    # Cap saturation hints — the SCORED metrics only (fix Q: the old table
+    # pointed at recipe/format/cip_hours/at_risk caps the scoring path never
+    # used, so a board with four pinned sub-scores showed no hint at all).
     caps = {
         "changeovers": [
-            ("recipe_changes", "cap_recipe_changes"),
-            ("format_changes", "cap_format_changes"),
-            # total_co_hours dropped 2026-08-25: reported, not scored, so a
-            # saturated cap is not a scoring problem worth hinting about.
+            ("weighted_co", "cap_weighted_co"),
         ],
         "cip": [
-            ("cip_hours", "cap_cip_hours"),
             ("cip_forfeited_kg", "cap_cip_forfeited_kg"),
         ],
         "trials": [
             ("trial_hours", "cap_trial_hours"),
             ("trial_disruptions", "cap_trial_disruptions"),
         ],
-        "campaigns": [("short_run_count", "cap_short_runs")],
+        "campaigns": [("short_campaign_count", "cap_short_runs"),
+                      ("short_run_count", "cap_short_runs")],
         "service": [
-            ("orders_late", "cap_orders_late"),
-            ("orders_at_risk", "cap_orders_at_risk"),
+            ("excess_inventory_kg", "cap_excess_kg"),
         ],
     }
     rows: list[dict[str, Any]] = []
@@ -2162,7 +2954,7 @@ def weekly_breakdown(
 
     cfg = cfg or scorecard_config()
     ref = reference_dir(data_dir) if data_dir else reference_dir()
-    co_map = _co_lookup(_load_changeovers(ref))
+    co_map = load_co_map(ref)
     demand = load_demand(ref)
     hz = _hzmod.resolve(_lt())
     bounds = _iso_week_bounds(hz.anchor, float(hz.hours))
@@ -2206,35 +2998,24 @@ def weekly_breakdown(
         if dur < short_h:
             agg[wk]["short_runs"] += 1
 
-    w_top = float(cfg.get("co_weight_topload", 3.0))
-    w_ffs = float(cfg.get("co_weight_ffs", 3.0))
-    w_cp = float(cfg.get("co_weight_casepacker", 2.0))
-    w_ttp = float(cfg.get("co_weight_ttp", 1.0))
-    w_ro = float(cfg.get("co_weight_recipe_only", 1.0))
-    for _, grp in prod.sort_values(["line_id", "start_h"]).groupby("line_id"):
-        rows = grp.to_dict("records")
-        for i in range(1, len(rows)):
-            a, b = rows[i - 1], rows[i]
-            f_sku, t_sku = str(a.get("sku", "")), str(b.get("sku", ""))
-            if f_sku == t_sku:
-                continue
-            wk = _wk_of(float(b["start_h"]))
-            if wk not in agg:
-                continue
-            flags = co_map.get((f_sku, t_sku))
-            touched = False
-            for key, name, w in (("topload_change", "topload", w_top),
-                                 ("ffs_change", "ffs", w_ffs),
-                                 ("casepacker_change", "casepacker", w_cp),
-                                 ("ttp_change", "ttp", w_ttp)):
-                if flags and int(flags.get(key, 0) or 0) == 1:
-                    agg[wk][name] += 1
-                    agg[wk]["weighted_co"] += w
-                    touched = True
-            if not touched:
-                agg[wk]["recipe_only"] += 1
-                agg[wk]["weighted_co"] += w_ro
-            agg[wk]["co_hours"] += _co_transition_hours(flags, f_sku, t_sku, cfg)
+    # Changeovers per week come from score_changeovers' own weekly rows
+    # (fix Q / ui-5, C30): ONE transition loop, ONE CIP waiver. The old
+    # private loop here skipped the waiver, so the week table summed 112
+    # transitions under a KPI bar reading 85 for the same board.
+    co_weekly = score_changeovers(
+        cal, cfg, co_map, week_bounds=bounds, horizon_h=float(hz.hours)
+    ).get("weekly") or []
+    for w in co_weekly:
+        wk = int(w.get("idx", -1))
+        if wk not in agg:
+            continue
+        agg[wk]["topload"] += int(w.get("topload_changes", 0) or 0)
+        agg[wk]["ffs"] += int(w.get("ffs_changes", 0) or 0)
+        agg[wk]["casepacker"] += int(w.get("casepacker_changes", 0) or 0)
+        agg[wk]["ttp"] += int(w.get("ttp_changes", 0) or 0)
+        agg[wk]["recipe_only"] += int(w.get("recipe_only_changes", 0) or 0)
+        agg[wk]["weighted_co"] += float(w.get("weighted_co", 0.0) or 0.0)
+        agg[wk]["co_hours"] += float(w.get("co_hours", 0.0) or 0.0)
 
     cips = _by_type(cal, "cip")
     for _, c in cips.iterrows():
@@ -2245,40 +3026,10 @@ def weekly_breakdown(
                 0.0, float(c["end_h"]) - float(c["start_h"]))
 
     if demand is not None and len(demand):
-        caps: dict[str, dict[str, float]] = {}
-        caps_p = ref / "capabilities_rates.csv"
-        if caps_p.exists():
-            _cdf = pd.read_csv(caps_p, dtype={"sku": str})
-            rate_col = ("calc_rate_kgph" if "calc_rate_kgph" in _cdf.columns
-                        else "rate_kgph" if "rate_kgph" in _cdf.columns
-                        else None)
-            if rate_col:
-                for _, r in _cdf.iterrows():
-                    if int(pd.to_numeric(r.get("capable"), errors="coerce")
-                           or 0) == 1:
-                        caps.setdefault(str(r.get("line_name", "")), {})[
-                            str(r["sku"])] = float(
-                            pd.to_numeric(r.get(rate_col), errors="coerce")
-                            or 0)
-        targets = []
-        for _, d in demand.iterrows():
-            t = float(pd.to_numeric(d.get("qty_target"), errors="coerce") or 0)
-            lo = float(pd.to_numeric(d.get("lower_pct"), errors="coerce") or 0.9)
-            hi = float(pd.to_numeric(d.get("upper_pct"), errors="coerce") or 1.1)
-            qmin = d.get("qty_min")
-            qmax = d.get("qty_max")
-            targets.append({
-                "order_id": str(d.get("order_id", "")),
-                "sku": str(d.get("sku", "")),
-                "qty_min": float(pd.to_numeric(qmin, errors="coerce")
-                                 if qmin is not None else t * lo) or t * lo,
-                "qty_max": float(pd.to_numeric(qmax, errors="coerce")
-                                 if qmax is not None else t * hi) or t * hi,
-                "due_start_hour": float(pd.to_numeric(
-                    d.get("due_start_hour"), errors="coerce") or 0),
-                "due_end_hour": float(pd.to_numeric(
-                    d.get("due_end_hour"), errors="coerce") or 0),
-            })
+        caps = _load_caps(ref)
+        # load_demand already shifted the due hours into the planning
+        # frame -> shift 0 here (fix Q / ui-2: one target-building rule).
+        targets = build_demand_targets(demand=demand)
         rows_adh = compute_adherence(cal, targets, caps)
         by_order = {r["order_id"]: r for r in rows_adh}
         for t in targets:

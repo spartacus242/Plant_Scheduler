@@ -6,7 +6,13 @@
 # with and a floor to measure real schedules against.
 #
 # Rules (deliberately naive, no optimization, no solver):
-#   * each order stays inside the week AZAP asked for (week 0 -> h0-167, ...)
+#   * each order stays inside the week AZAP asked for: the order's OWN due
+#     window [due_start_hour, due_end_hour + 1) shifted into the planning
+#     frame exactly as scorecard_engine.load_demand shifts it (fix Q /
+#     scorecard-13, 2026-09-03: the old 168 h grid from hour 0 was out of
+#     phase with the graded deadlines by the anchor gap, so part of the
+#     strawman's lateness was a frame artefact). Rows without due hours
+#     fall back to the week_index * 168 grid.
 #   * assign to the fastest capable line (capabilities_rates.capable == 1)
 #   * run hours = qty_target / calc_rate_kgph
 #   * lay orders out back-to-back per line, no overlaps, no changeover/CIP logic
@@ -91,16 +97,42 @@ def _capable_lines(caps: pd.DataFrame) -> dict[str, list[tuple[float, int, str]]
     return out
 
 
+def _demand_frame_shift_h(dd: Path, anchor=None) -> float:
+    """Hours to SUBTRACT from the demand file's due hours to land in the
+    planning frame: planning anchor - demand_plan.source.json anchor (the
+    load_demand rule). 0 when either anchor is unknown; never raises."""
+    try:
+        from helpers.demand_coverage import demand_source_anchor
+
+        dem_anchor = demand_source_anchor(dd)
+        if dem_anchor is None:
+            return 0.0
+        if anchor is None:
+            from helpers import horizon as _hz
+            from helpers.config import load_toml as _lt
+
+            anchor = _hz.resolve(_lt()).anchor
+        return (anchor - dem_anchor).total_seconds() / 3600.0
+    except Exception:  # noqa: BLE001 — the strawman must never crash
+        return 0.0
+
+
 def build_naive_calendar(
     data_dir: Path,
     *,
     horizon_hours: int = DEFAULT_HORIZON_H,
     strategy: str = "fastest",
+    anchor=None,
 ) -> NaiveResult:
-    """Lay the demand plan out as-is. Never raises on missing/malformed CSVs."""
+    """Lay the demand plan out as-is. Never raises on missing/malformed CSVs.
+
+    `anchor` (datetime) pins the planning frame the due windows are shifted
+    into; default = the resolved live frame (helpers.horizon.resolve).
+    """
     res = NaiveResult()
     dd = Path(data_dir)
     ref = dd / "reference"
+    shift_h = _demand_frame_shift_h(dd, anchor)
 
     demand = _read_csv(ref / "demand_plan.csv")
     caps = _read_csv(ref / "capabilities_rates.csv")
@@ -163,8 +195,21 @@ def build_naive_calendar(
             res.unplaced.append({"order_id": order_id, "sku": sku, "reason": "no capable line in capabilities_rates.csv"})
             continue
 
-        week_start = week * WEEK_HOURS
-        week_end = min(float(horizon_hours), (week + 1) * WEEK_HOURS)
+        # The order's own due window in the planning frame (inclusive
+        # due_end_hour -> exclusive +1, the solver/scorecard convention);
+        # the 168 h grid only when the file carries no due hours.
+        ds = r.get("due_start_hour")
+        de = r.get("due_end_hour")
+        if ds is not None and de is not None and _num(ds, -1.0) >= 0 and _num(de, -1.0) >= 0:
+            week_start = max(0.0, _num(ds) - shift_h)
+            week_end = min(float(horizon_hours), _num(de) + 1.0 - shift_h)
+        else:
+            week_start = week * WEEK_HOURS
+            week_end = min(float(horizon_hours), (week + 1) * WEEK_HOURS)
+        if week_end <= week_start:
+            res.unplaced.append({"order_id": order_id, "sku": sku,
+                                 "reason": "due window lies outside the horizon"})
+            continue
 
         if strategy == "least_loaded":
             options = sorted(options, key=lambda t: (load.get(t[1], 0.0), -t[0]))

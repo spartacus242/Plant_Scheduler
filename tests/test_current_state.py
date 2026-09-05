@@ -173,7 +173,10 @@ def test_slow_line_pushes_reforecast_end_later():
     # manprg's pro-rata estimate said now + 7.5h = 19.5 — kept for honesty
     assert st.running[0]["manprg_end"] == pd.Timestamp(NOW) + timedelta(hours=7.5)
     assert "reforecast=" in blk["attrs"]
-    assert "running 50% slow" in blk["attrs"]
+    # wording updated 2026-09-03 (fix CA-9 / audit C07): pace 0.5 used to
+    # print "running 50% slow", which reads like a 50% time stretch; the
+    # honest number is the time factor 1/pace = 2.0x.
+    assert "at 50% of planned rate (2.0x longer)" in blk["attrs"]
     assert "re-forecast from actual rate" in blk["sku_description"]
     assert not any("re-forecast unavailable" in w for w in st.warnings)
 
@@ -186,7 +189,8 @@ def test_fast_line_pulls_reforecast_end_earlier():
     blk = _run_blk(st)
     assert blk["end_h"] == pytest.approx(13.25)
     assert st.running[0]["manprg_end"] == pd.Timestamp(NOW) + timedelta(hours=5)
-    assert "running 60% fast" in blk["attrs"]
+    # fix CA-9 / C07 wording: 16 cas/h over a 10 cas/h plan = 160% of plan
+    assert "at 160% of planned rate (1.6x faster)" in blk["attrs"]
 
 
 def test_reforecast_agreeing_with_manprg_adds_no_noise():
@@ -225,20 +229,43 @@ def test_guard_low_completion_falls_back():
     _assert_fallback(st, 21.9, "% complete")
 
 
-def test_guard_future_start_falls_back():
-    # started-in-the-future telemetry is garbage; nominal end = start + 10h.
+def test_guard_future_start_is_queued_not_running():
+    # Updated 2026-09-03 (fix CA-7 / audit adversarial-5). This test used to
+    # pin the row as RUNNING with the re-forecast falling back to the manprg
+    # estimate (block 14-24, locked) — which GATED the line until h24 on
+    # garbage telemetry (live repro: a 09/10 start with 500 cases gated P09
+    # for 195 h). A future-dated "started" row is data noise: it is QUEUED
+    # at its own start (14h -> 24h), unlocked, with a warning naming the MO.
     st = _state([{"mo": "RUN", "made_cas": 10.0, "left_cas": 90.0,
                   "start_dt": pd.Timestamp(NOW) + timedelta(hours=2)}],
                 caps=_caps())
-    _assert_fallback(st, 24.0, "not in the past")
+    assert st.running == []
+    assert [q["mo"] for q in st.queued] == ["RUN"]
+    blk = st.blocks.iloc[0]
+    assert "current_state:queued" in blk["attrs"]
+    assert bool(blk["locked"]) is False
+    assert blk["start_h"] == pytest.approx(14.0) and blk["end_h"] == pytest.approx(24.0)
+    assert st.line_running_free_h["P09"] == pytest.approx(12.0), \
+        "a future-dated row must never gate the line"
+    assert any("RUN" in w and "future" in w for w in st.warnings), st.warnings
 
 
-def test_guard_rate_below_band_falls_back():
-    # 5 cas in 50h = 0.1 cas/h, far under 0.25x of the 10 cas/h catalog.
+def test_guard_rate_below_band_is_clamped_not_dropped():
+    # Updated 2026-09-03 (fix CA-2 / audit C02). 5 cas in 50h = 0.1 cas/h,
+    # far under 0.25x of the 10 cas/h catalog. This used to FALL BACK to the
+    # manprg estimate (21.5) — a cliff: pace 0.26 committed the line for
+    # +305h while 0.24 gave +79h. Now the rate is CLAMPED to the band floor
+    # (2.5 cas/h) and the re-forecast continues: 95 left / 2.5 = 38h ->
+    # end_h = 12 + 38 = 50, with a "rate clamped" warning and attrs token.
     st = _state([{"mo": "RUN", "made_cas": 5.0, "left_cas": 95.0,
                   "start_dt": pd.Timestamp(NOW) - timedelta(hours=50)}],
                 caps=_caps())
-    _assert_fallback(st, 21.5, "outside")   # manprg: now + 10*0.95
+    blk = _run_blk(st)
+    assert blk["end_h"] == pytest.approx(50.0)
+    assert "rate_clamped" in blk["attrs"]
+    assert "reforecast=" in blk["attrs"] and "[rate clamped]" in blk["attrs"]
+    assert any("rate clamped" in w for w in st.warnings), st.warnings
+    assert not any("re-forecast unavailable" in w for w in st.warnings)
 
 
 def test_guard_rate_above_band_falls_back():
@@ -298,10 +325,19 @@ def test_netting_prorates_a_reforecast_stretched_mo_across_weeks():
 
     # planned 1000 cas over 100h (50 t); 100 cas in 40h = 2.5 cas/h (0.25x
     # of catalog — inside the band edge). 900 left -> end = now + 360h.
+    #
+    # Updated 2026-09-03 (fix CA-3 / audit C04): the running block now
+    # carries the REMAINING kg (900/1000 * 50 t = 45 t) and the 5 t already
+    # made travel as a `made_part` actuals row (start = true start Aug 8
+    # 20:00, end = as_of = now Aug 10 12:00, midpoint Aug 9 16:00 -> ISO
+    # W32). A W32 demand row absorbs it so the ledger shows the full 50 t.
     rows = [{"mo": "RUN", "hours": 100.0, "fct_cas": 1000.0,
              "made_cas": 100.0, "left_cas": 900.0, "fct_kg": 50000.0,
+             "made_kg": 5000.0,
              "start_dt": pd.Timestamp(NOW) - timedelta(hours=40)}]
     demand = pd.DataFrame([
+        {"order_id": "O-W32", "sku": "280581", "qty_target": 5000.0,
+         "due_start_hour": -168.0, "due_end_hour": 0.0},
         {"order_id": "O-W33", "sku": "280581", "qty_target": 60000.0,
          "due_start_hour": 0.0, "due_end_hour": 168.0},
         {"order_id": "O-W34", "sku": "280581", "qty_target": 60000.0,
@@ -318,28 +354,34 @@ def test_netting_prorates_a_reforecast_stretched_mo_across_weeks():
     off = _state(rows, cfg={**no_cip,
                             "scheduler": {"reforecast_running_mo_ends": False}},
                  caps=_caps())
-    led_off = build_ledger(demand, off.blocks, anchor=ANCHOR)
+    led_off = build_ledger(demand, off.blocks, completed=off.completed,
+                           anchor=ANCHOR)
     by_order_off = {r.order_id: r for r in led_off.rows}
-    assert by_order_off["O-W33"].committed_kg == pytest.approx(50000.0)
+    assert by_order_off["O-W33"].committed_kg == pytest.approx(45000.0)
     assert by_order_off["O-W34"].committed_kg == 0.0
+    assert by_order_off["O-W32"].produced_kg == pytest.approx(5000.0)
 
     # re-forecast: end hour 372 -> block [0, 372] spans W33/W34/W35.
-    # Hand-computed overlap shares of the 372h run:
-    #   W33 hours [0,168)   = 168/372 -> 50000*168/372 = 22580.645 kg
-    #   W34 hours [168,336) = 168/372 -> 22580.645 kg
-    #   W35 hours [336,372) =  36/372 ->  4838.710 kg (no demand row: carry)
+    # Hand-computed overlap shares of the 372h run (45 t remaining):
+    #   W33 hours [0,168)   = 168/372 -> 45000*168/372 = 20322.581 kg
+    #   W34 hours [168,336) = 168/372 -> 20322.581 kg
+    #   W35 hours [336,372) =  36/372 ->  4354.839 kg (no demand row: carry)
     on = _state(rows, cfg=no_cip, caps=_caps())
     assert _run_blk(on)["end_h"] == pytest.approx(372.0)
-    led_on = build_ledger(demand, on.blocks, anchor=ANCHOR)
+    assert _run_blk(on)["qty_kg"] == pytest.approx(45000.0)
+    led_on = build_ledger(demand, on.blocks, completed=on.completed,
+                          anchor=ANCHOR)
     by_order_on = {r.order_id: r for r in led_on.rows}
-    w33_kg = 50000.0 * 168.0 / 372.0
+    w33_kg = 45000.0 * 168.0 / 372.0
     assert by_order_on["O-W33"].committed_kg == pytest.approx(w33_kg)
     assert by_order_on["O-W33"].applied_kg == pytest.approx(w33_kg)
     assert by_order_on["O-W34"].committed_kg == pytest.approx(w33_kg)
     assert by_order_on["O-W34"].applied_kg == pytest.approx(w33_kg)
-    # the whole block still credits exactly once: shares sum to 50 t
-    assert sum(r.committed_kg for r in led_on.rows) + 50000.0 * 36.0 / 372.0 \
-        == pytest.approx(50000.0)
+    assert by_order_on["O-W32"].produced_kg == pytest.approx(5000.0)
+    # the whole MO still credits exactly once: 45 t of shares + 5 t made
+    assert sum(r.committed_kg for r in led_on.rows) + 45000.0 * 36.0 / 372.0 \
+        == pytest.approx(45000.0)
+    assert led_on.produced_total_kg == pytest.approx(5000.0)
 
 
 # --------------------------------------------------------------- CIP
@@ -474,16 +516,37 @@ def test_cip_after_production_leaves_production_whole():
     assert len(kept) == 1
 
 
-def test_cip_swallowing_mo_keeps_mo_and_drops_cip():
+def test_cip_overlapping_a_queued_mo_start_pushes_the_mo():
+    # Updated 2026-09-03 (fix CA-4 / audit C09). A CIP [5,25] over a QUEUED
+    # MO [10,20] used to DROP the clean and keep the MO in place. A queued
+    # MO is not running yet, so the committed clean wins and the MO is
+    # pushed behind it: [25, 35] (its 10h intact), marked split+pushed=15.
     from helpers.current_state import _clip_prod_around_cips
     warnings: list[str] = []
     out, kept = _clip_prod_around_cips(
         [_prod_block(start_h=10.0, end_h=20.0)],
         [_cip_block(start_h=5.0, end_h=25.0)],
         warnings=warnings, line="P09")
+    assert len(out) == 1 and out[0]["start_h"] == 25.0 and out[0]["end_h"] == 35.0
+    assert "split" in out[0]["attrs"] and "pushed=15" in out[0]["attrs"]
+    assert len(kept) == 1, "a committed clean is never deleted for a queued MO"
+    assert warnings == []
+
+
+def test_cip_overlapping_a_running_mo_start_is_dropped():
+    # The plant IS producing now: a clean drawn over the running MO's start
+    # is stale/misplaced and cannot push an in-progress MO. Old rule kept.
+    from helpers.current_state import _clip_prod_around_cips
+    warnings: list[str] = []
+    run = _prod_block(start_h=10.0, end_h=20.0)
+    run["attrs"] = "current_state:running;pct=40.0"
+    run["locked"] = True
+    out, kept = _clip_prod_around_cips(
+        [run], [_cip_block(start_h=5.0, end_h=25.0)],
+        warnings=warnings, line="P09")
     assert len(out) == 1 and out[0]["start_h"] == 10.0 and out[0]["end_h"] == 20.0
-    assert len(kept) == 0, "CIP that swallows an MO is dropped"
-    assert any("covers MO" in w for w in warnings)
+    assert len(kept) == 0, "CIP over a RUNNING MO's start is dropped"
+    assert any("running MO" in w for w in warnings)
 
 
 def test_multiple_cips_split_into_three_pieces():
@@ -493,8 +556,12 @@ def test_multiple_cips_split_into_three_pieces():
     out, kept = _clip_prod_around_cips(
         [_prod_block(start_h=0.0, end_h=100.0)], cips, warnings=[], line="P09")
     assert len(out) == 3
+    # Updated 2026-09-03 (fix CA-4 / audit C09): two 6h cleans inside a 100h
+    # MO used to leave 88h of production; the MO keeps its 100h, so the
+    # tail is pushed by 12h: [0,20) + [26,50) + [56,112) = 20+24+56 = 100h.
     assert [(b["start_h"], b["end_h"]) for b in out] == \
-        [(0.0, 20.0), (26.0, 50.0), (56.0, 100.0)]
+        [(0.0, 20.0), (26.0, 50.0), (56.0, 112.0)]
+    assert all("pushed=12" in b["attrs"] for b in out)
     assert len(kept) == 2
 
 

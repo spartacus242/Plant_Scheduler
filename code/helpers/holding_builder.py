@@ -129,13 +129,19 @@ def build_holding(
 
 
 def average_rate_per_sku(capabilities: pd.DataFrame) -> dict[str, float]:
-    """Mean calc_rate_kgph across capable lines, per SKU."""
+    """Mean calc_rate_kgph across capable lines, per SKU.
+
+    "Capable" means capable == 1 AND a positive rate (INTEGRATE, agent FE
+    handoff / ui-4): a capable row carrying a 0 rate used to pull the mean
+    down while the client's meanCapableRate ignored it, so the server card
+    and the client re-price disagreed on the first edit.
+    """
     df = capabilities.copy()
     df["sku"] = df["sku"].astype(str).str.strip()
     df["capable"] = pd.to_numeric(df.get("capable", 0), errors="coerce").fillna(0)
     df["calc_rate_kgph"] = pd.to_numeric(
         df.get("calc_rate_kgph", 0), errors="coerce").fillna(0.0)
-    ok = df[df["capable"] == 1]
+    ok = df[(df["capable"] == 1) & (df["calc_rate_kgph"] > 0)]
     return ok.groupby("sku")["calc_rate_kgph"].mean().to_dict()
 
 

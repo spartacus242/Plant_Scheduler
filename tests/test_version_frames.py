@@ -40,7 +40,17 @@ def test_promote_rebases_into_board_frame(tmp_path, monkeypatch):
     assert float(shifted.iloc[0]["end_h"]) == 188.0
 
 
-def test_unstamped_version_assumes_board_frame(tmp_path):
+def test_unstamped_version_refuses_unless_told_the_frame(tmp_path):
+    """UPDATED 2026-09-03 (fix quality-12, agent W). This test used to pin
+    the OLD behaviour — an unstamped version silently 'assumed the board
+    frame' (shift 0). That silently re-created the very bug the stamp was
+    introduced for: a version whose stamp failed to write promoted a whole
+    week into the past with no symptom. A missing/unreadable stamp must now
+    REFUSE (ValueError) unless the caller explicitly asserts the frame with
+    assume_board_frame=True, in which case the hours pass through unshifted
+    (5.0 stays 5.0)."""
+    import pytest
+
     from helpers import version_manager as vm
 
     dd = tmp_path / "data"
@@ -48,6 +58,10 @@ def test_unstamped_version_assumes_board_frame(tmp_path):
     (dd / "versions" / "v2" / "metadata.json").write_text(
         json.dumps({"name": "v2"}), encoding="utf-8")
     cal = pd.DataFrame([{"start_h": 5.0, "end_h": 9.0}])
-    shifted, shift = vm.calendar_in_board_frame(cal, "v2", dd)
+    assert vm.board_frame_shift_h("v2", dd) is None
+    with pytest.raises(ValueError, match="planning_anchor"):
+        vm.calendar_in_board_frame(cal, "v2", dd)
+    shifted, shift = vm.calendar_in_board_frame(
+        cal, "v2", dd, assume_board_frame=True)
     assert shift == 0.0
     assert float(shifted.iloc[0]["start_h"]) == 5.0

@@ -97,7 +97,13 @@ elif _live_stale:
 
 cip_cfg = cfg.get("cip", {})
 
-cal = load_calendar(cal_path)
+# Corrupt rows (blank/unparsable hours) are DROPPED with a warning, never
+# moved to hour 0 (fix quality-8, 2026-09-03) — saving would have made the
+# relocation permanent.
+_load_warnings: list[str] = []
+cal = load_calendar(cal_path, warnings=_load_warnings)
+for _lw in _load_warnings[:6]:
+    st.warning(f"⚠️ {_lw}")
 if cal.empty:
     st.warning("No calendar yet. Import a schedule on the **Schedule Scorecard** page.")
     st.stop()
@@ -171,11 +177,24 @@ with st.expander("🏭 Rebuild calendar from current plant state (manprg + cip_i
         st.error(f"Could not read the live feeds: {_exc}")
     if _cs is not None:
         _c = _cs.counts
+        # manprg CONTENT age (fix CA-1 / C03): the re-forecast measures the
+        # running MOs' pace up to the export's observation time, not the
+        # render clock — say when that was (INTEGRATE, agent CA handoff).
+        _asof = getattr(_cs, "as_of", None)
+        _asof_txt = ""
+        if _asof is not None:
+            try:
+                _age_h = (_cs.now - _asof).total_seconds() / 3600.0
+                _asof_txt = (f" manprg content observed {_asof:%a %m-%d %H:%M} "
+                             f"({_age_h:.1f} h ago, "
+                             f"{getattr(_cs, 'as_of_source', '') or 'stamp'}).")
+            except Exception:  # noqa: BLE001 — caption only
+                _asof_txt = ""
         st.caption(
             f"Ground truth: **{_c['running']}** running MO(s) (locked), "
             f"**{_c['queued']}** queued, **{_c['completed']}** completed "
             f"(not shown), **{_c['cip']}** CIP block(s) → "
-            f"{_c['blocks']} blocks.")
+            f"{_c['blocks']} blocks." + _asof_txt)
         for _w in _cs.warnings[:6]:
             st.caption(f"⚠️ {_w}")
         if len(_cs.blocks):
@@ -337,8 +356,10 @@ with st.expander("🌅 Start of day — downtime · view options", expanded=Fals
             st.session_state.pop("cal_baseline_score", None)
             st.rerun()
 _past_rows = cal.iloc[0:0]
+# wall clock as a BOARD-frame hour: drives the hide-past split and the
+# 'completed' flag on the export (both frames must agree, 2026-09-03)
+_now_h = (_horizon.now - _anchor).total_seconds() / 3600.0
 if _hide_past:
-    _now_h = (_horizon.now - _anchor).total_seconds() / 3600.0
     _mask_past = cal["end_h"].astype(float) <= _now_h
     _past_rows = cal[_mask_past].copy()
     cal = cal[~_mask_past].copy()
@@ -396,29 +417,19 @@ if co_path.exists():
     changeovers = load_changeover_setup_nested(co_path)
 
 demand_targets = []
+_dem_anchor0 = None
 dem_path = reference_dir(dd) / "demand_plan.csv"
 if dem_path.exists():
-    # Due windows shift from the demand file's OWN frame into the board's
-    # (demand_plan.source.json anchor vs the storage anchor) — the
-    # position-aware credit pass overlaps them against block hours, so a
-    # frame skew (24h after an anchor roll) would misplace credit.
+    # ONE rule for the demand targets (fix Q / ui-2, INTEGRATE applying the
+    # Q->W handoff): helpers.scorecard_engine.build_demand_targets — qty_min /
+    # qty_max from the columns or target x pct, due hours shifted from the
+    # demand file's OWN frame into the board's (demand_plan.source.json
+    # anchor vs the storage anchor `_anchor`) so the position-aware credit
+    # pass overlaps them against block hours in one frame.
     from helpers.demand_coverage import demand_source_anchor as _dsa
+    from helpers.scorecard_engine import build_demand_targets as _bdt
     _dem_anchor0 = _dsa(dd)
-    _dem_shift_h = ((_dem_anchor0 - _anchor).total_seconds() / 3600.0
-                    if _dem_anchor0 else 0.0)
-    ddf = pd.read_csv(dem_path)
-    for _, r in ddf.iterrows():
-        target = float(r.get("qty_target", 0) or 0)
-        lo = float(r.get("lower_pct", 0.9) or 0.9)
-        hi = float(r.get("upper_pct", 1.1) or 1.1)
-        demand_targets.append({
-            "order_id": str(r["order_id"]),
-            "sku": str(r["sku"]),
-            "qty_min": target * lo,
-            "qty_max": target * hi,
-            "due_start_hour": float(r.get("due_start_hour", 0) or 0) + _dem_shift_h,
-            "due_end_hour": float(r.get("due_end_hour", 0) or 0) + _dem_shift_h,
-        })
+    demand_targets = _bdt(dd, anchor=_anchor)
 
 # Downtimes are CONSTRAINTS, not schedule (user rule 2026-09-01): the
 # export (calendar_blocks.csv) never carries them — the plant is simply not
@@ -543,6 +554,15 @@ if "cal_baseline_score" not in st.session_state or st.session_state.get("cal_bas
 
 if "cal_reset_gen" not in st.session_state:
     st.session_state["cal_reset_gen"] = 0
+# Remember the board file's mtime at the moment the Gantt was (re)mounted:
+# the component holds its own copy of the board from then on, so a Save
+# writes THAT state. If the file changed underneath (another tab, a promote,
+# the bridge) the save still wins but the planner is told and a backup
+# holds the clobbered board (fix writeback-13, 2026-09-03).
+if st.session_state.get("cal_mount_gen") != st.session_state["cal_reset_gen"]:
+    st.session_state["cal_mount_gen"] = st.session_state["cal_reset_gen"]
+    st.session_state["cal_mount_mtime"] = (
+        cal_path.stat().st_mtime if cal_path.exists() else None)
 
 # ---- Now-running table: current MO per line from manprg ----
 # Only MOs actually in progress (not completed, not future) belong here —
@@ -586,7 +606,19 @@ try:
         str(o) for o in cal.loc[
             cal["block_type"] == "production", "order_id"].dropna().astype(str)
         if o and o.lower() != "nan"}
-    _led0 = _blfd(dd, cfg, made_only=True, exclude_mos=_board_oids)
+    # order_id -> attrs of the board's production rows: a running MO's
+    # pre-anchor `made_part` kg is credited only when its board block is a
+    # post-CA-3 block (remaining kg, `made_kg=` token) — see
+    # build_ledger_from_data.
+    _board_attrs: dict = {}
+    if "attrs" in cal.columns:
+        for _o, _a in cal.loc[cal["block_type"] == "production",
+                              ["order_id", "attrs"]].itertuples(index=False):
+            if _o is not None and str(_o).lower() != "nan":
+                _board_attrs[str(_o)] = (_board_attrs.get(str(_o), "") + ";"
+                                         + str(_a or ""))
+    _led0 = _blfd(dd, cfg, made_only=True, exclude_mos=_board_oids,
+                  board_attrs=_board_attrs)
     if _led0 is not None:
         _made_credit = _led0.applied_by_order()
 except Exception:  # noqa: BLE001 — numbers degrade to board-only
@@ -769,6 +801,16 @@ server_kpis = gantt_kpis(
     covered_by_order=_made_credit,
 )
 
+# Supply timeline (contract §5/§7): the SAVED stock report only — this
+# page never recomputes it (~35 s); Stock Check's Refresh does. An old
+# cache without supply_meta yields None and the Gantt shows no chips.
+from helpers.calendar_io import board_supply_summary, build_stock_payload
+from helpers.stock_report_cache import load_cached as _load_stock_cached
+_stock_cached = _load_stock_cached(dd)
+_stock_payload = (build_stock_payload(_stock_cached.report, cfg, _anchor,
+                                      cases_left=_left_by_mo)
+                  if _stock_cached else None)
+
 state = gantt_calendar(
     schedule=schedule,
     cip_windows=windows,
@@ -783,6 +825,8 @@ state = gantt_calendar(
     line_capable_skus=_line_capable,
     co_flags=_co_flags,
     sku_descriptions=_desc_map,
+    stock=_stock_payload,
+    focus_block=st.query_params.get("focus"),
     config={
         "planning_anchor": f"{_anchor:%Y-%m-%d %H:%M:%S}",
         "cip_duration_h": int(cip_cfg.get("duration_h", 6)),
@@ -796,6 +840,11 @@ state = gantt_calendar(
         "horizon_hours": int(_horizon.hours),
         "locked_through_h": None if _lock_h is None else float(_lock_h),
         "demand_base_iso_week": _demand_base_iso_week(),
+        # The demand file's own anchor (demand_plan.source.json) so the
+        # frontend pins the demand week's ISO year outright instead of
+        # inferring it from the base week (agent FE handoff W-4).
+        "demand_anchor": (f"{_dem_anchor0:%Y-%m-%d %H:%M:%S}"
+                          if _dem_anchor0 is not None else None),
     },
     height=820,
     key=f"gantt_calendar_{st.session_state['cal_reset_gen']}",
@@ -808,6 +857,28 @@ if state and state.get("schedule") is not None:
     holding = state.get("holdingArea") or []
     if state.get("lastAction"):
         st.caption(f"Last action: {state['lastAction']}")
+
+# Supply caption: the pushed board re-graded server-side with the same
+# engine + payload as the client chips (<50 ms), so both show one number.
+if _stock_payload:
+    _sup = board_supply_summary(
+        working[working["block_type"] == "production"].to_dict("records"),
+        _stock_payload, cfg, locked_through_h=_lock_h, caps=caps)
+    _as_of = _stock_payload["as_of"]
+    _sup_cap = (f"Supply: {_sup['short']} short · {_sup['dependent']} "
+                f"delivery-dependent · {_sup['no_data']} no data · "
+                f"stock {_as_of['stock_rm']} · POs {_as_of['po']}")
+    if _stock_cached.stale:
+        _sup_cap += " · report stale — press Refresh on Stock Check"
+    st.caption(_sup_cap)
+    if _sup["short"] > 0:
+        st.warning(
+            f"⛔ {_sup['short']} block(s) run out of a component before any "
+            "counted PO lands — open the block for the PO to chase, or move "
+            "it past its safe-from hour.")
+else:
+    st.caption("Supply check: no stock report yet — open Stock Check and "
+               "press Refresh from VIF.")
 
 # Fingerprint the pushed board state: order_id + kg + LINE + START of
 # production rows. Positions are in the hash deliberately (2026-09-01):
@@ -869,6 +940,15 @@ else:
     if _live_sig is not None:
         st.session_state["cal_live_score_sig"] = _live_sig
         st.session_state["cal_live_score"] = live.to_dict()
+# A what-if that fails the geometry sanity check or lost a scoring input
+# still shows its numbers, but the composite is NOT rankable (fix Q /
+# adversarial-7, scorecard-1; INTEGRATE applying the Q->W handoff).
+if not getattr(live, "rankable", True):
+    _why = [n for n in (getattr(live, "notes", None) or [])
+            if str(n).startswith(("SANITY", "SCORING INPUT MISSING"))]
+    st.warning("What-if composite is not rankable — "
+               + ("; ".join(str(n) for n in _why[:4]) if _why
+                  else "sanity errors or missing scoring inputs (see notes)"))
 baseline_dict = st.session_state.get("cal_baseline_score") or {}
 if baseline_dict:
     baseline = ScorecardResult.from_dict(baseline_dict)
@@ -878,20 +958,51 @@ if baseline_dict:
 
 render_scorecard(live, show_formulas=False)
 
+# THE FULL BOARD for every write path (fix writeback-3 / writeback-12,
+# 2026-09-03): hidden (already-finished) rows are merged back so hiding the
+# past never deletes it — from disk, from a named version (whose promote
+# would otherwise erase finished production) or from the Excel export.
+# Display-only overlays (cip_info / downtimes) are stripped — they are a
+# live-feed visualization, not calendar data.
+_full_board = drop_display_overlays(
+    working if _past_rows.empty
+    else pd.concat([_past_rows, working], ignore_index=True))
+
 b1, b2 = st.columns(2)
 with b1:
+    # Server-side 2-week lock (fix writeback-9): a save that moves, resizes,
+    # adds or removes a block starting before the lock is refused unless the
+    # planner ticks the override — the Gantt's immovable flag alone did not
+    # stop drops INTO the window or a stale mount from re-planning it.
+    _lock_override = False
+    if _lock_h is not None and _lock_h > 0:
+        _lock_override = st.checkbox(
+            "Override the 2-week lock for this save", value=False,
+            key="cal_lock_override",
+            help="Blocks starting before the lock are committed to the plant. "
+                 "Tick only when the plant has agreed to the change.")
     if st.button("Save calendar to disk", type="primary", use_container_width=True):
         if n_holding:
             st.warning(f"Saving without {n_holding} held block(s). Holding area cleared.")
-        # Merge hidden (already-finished) rows back so hiding the past never
-        # deletes it from disk. Display-only cip_info overlays are stripped —
-        # they are a live-feed visualization, not calendar data.
-        _out = working if _past_rows.empty else pd.concat(
-            [_past_rows, working], ignore_index=True)
-        save_calendar(drop_display_overlays(_out), cal_path)
-        st.session_state["cal_holding"] = []
-        st.session_state.pop("cal_baseline_score", None)
-        st.success("Saved calendar_blocks.csv")
+        from helpers.week_lock import LockViolation as _LockViolation
+        try:
+            _res = save_calendar(
+                _full_board, cal_path,
+                expected_mtime=st.session_state.get("cal_mount_mtime"),
+                lock_h=_lock_h, lock_override=_lock_override)
+        except _LockViolation as _lv:
+            st.error("🔒 Not saved — " + str(_lv).replace("\n", "  \n"))
+        else:
+            st.session_state["cal_mount_mtime"] = (
+                cal_path.stat().st_mtime if cal_path.exists() else None)
+            st.session_state["cal_holding"] = []
+            st.session_state.pop("cal_baseline_score", None)
+            for _w in _res.get("warnings") or []:
+                st.warning(f"⚠️ {_w}")
+            _bk = _res.get("backup")
+            st.success("Saved calendar_blocks.csv" +
+                       (f" (previous board backed up to {Path(_bk).name})"
+                        if _bk else ""))
 with b2:
     save_name = st.text_input("Version name", value="Option 1",
                               key="cal_save_name")
@@ -899,12 +1010,16 @@ with b2:
         if n_holding:
             st.warning(f"Version will omit {n_holding} held block(s).")
         try:
+            # planning_anchor=_anchor: this board's hours are offsets from
+            # the STORAGE anchor, not the rolling one — stamping the rolling
+            # anchor shifted every block by the un-rolled gap on promote.
             slug = save_version(
                 save_name or "Option",
-                drop_display_overlays(working),
+                _full_board,
                 live.to_dict(),
                 dd,
                 source="digital_twin",
+                planning_anchor=_anchor,
             )
             st.session_state["cal_holding"] = []
             st.success(f"Saved version `{slug}` — see Version Compare")
@@ -923,7 +1038,10 @@ st.caption(
 )
 _lc1, _lc2, _lc3 = st.columns(3)
 with _lc1:
-    _default_lock = default_lock_through(_anchor)
+    # Two whole weeks from TODAY (the rolling anchor), not from the storage
+    # anchor: on a stale board the latter locked less than two weeks
+    # (audit writeback-15 side note, 2026-09-03).
+    _default_lock = default_lock_through(_horizon.anchor)
     if st.button(f"🔒 Lock weeks 1–2 (through {_default_lock:%a %m-%d})",
                  use_container_width=True):
         write_lock(dd, _default_lock)
@@ -949,8 +1067,10 @@ from datetime import datetime as _dtnow
 if (_live_sig is None
         or st.session_state.get("cal_export_sig") != _live_sig
         or "cal_export_bytes" not in st.session_state):
+    # Whole board incl. finished rows, flagged in a 'status' column
+    # (writeback-12); rendered from the storage anchor the hours live in.
     st.session_state["cal_export_bytes"] = export_calendar_excel(
-        drop_display_overlays(working), live.to_dict())
+        _full_board, live.to_dict(), anchor=_anchor, now_h=_now_h)
     st.session_state["cal_export_sig"] = _live_sig
 _xc1, _xc2 = st.columns([1, 2])
 with _xc1:
@@ -962,7 +1082,8 @@ with _xc1:
     )
 with _xc2:
     st.caption(
-        "Exports the board as shown (including unsaved edits). "
+        "Exports the whole board (including unsaved edits and blocks that "
+        "already finished — flagged `completed` in the status column). "
         "MO changes for VIF write-back: Compare & Promote page."
     )
 

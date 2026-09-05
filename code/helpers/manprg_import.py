@@ -10,13 +10,27 @@
 #
 # Current MO per line = the row with the latest Start datetime that has
 # Qty made (Cas) > 0. Completion % = Qty made / Fct qty.
+#
+# AS-OF (audit C01, 2026-09-03): the export carries NO observation timestamp,
+# and its 'Qty made' counters are batch-posted, so "cases made / hours since
+# start" is only honest when the hours are measured up to the moment the
+# CONTENT was observed — not the moment a page happens to render. The bridge
+# (scripts/fs-live-pull.py) stamps data/reference/manprg.asof.json whenever
+# the manprg content changes; `read_manprg` exposes that as `as_of` (falling
+# back to the newest file mtime when no stamp exists or its sha no longer
+# matches the files).
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+
+ASOF_STAMP_NAME = "manprg.asof.json"
 
 COLS = [
     "start_date", "start_time", "line", "mo", "item", "designation",
@@ -48,6 +62,63 @@ class ManprgResult:
     # helpers/current_state.py to rebuild the calendar from ground truth;
     # the aggregates above are lossy (one row per line / per MO only).
     frame: pd.DataFrame | None = None
+    # When the manprg CONTENT was observed (C01): the bridge's as-of stamp,
+    # else the newest file mtime. None only when no file could be read.
+    as_of: pd.Timestamp | None = None
+    as_of_source: str = ""      # "stamp" | "mtime" | ""
+
+
+def content_sha256(paths: list[str | Path]) -> str:
+    """sha256 over the raw bytes of the existing files, in the given order.
+
+    Mirrored VERBATIM in scripts/fs-live-pull.py (the bridge may run without
+    the repo on sys.path); keep both in step.
+    """
+    h = hashlib.sha256()
+    for p in paths:
+        p = Path(p)
+        if p.is_file():
+            h.update(p.read_bytes())
+    return h.hexdigest()
+
+
+def read_asof_stamp(paths: list[str | Path],
+                    stamp_path: str | Path | None = None,
+                    ) -> tuple[pd.Timestamp | None, str, list[str]]:
+    """(as_of, source, warnings) for the manprg files.
+
+    The stamp (next to the first existing file unless `stamp_path` is given)
+    is trusted only when its sha256 matches the files' current content — a
+    file replaced by hand or by another tool must not inherit an old stamp.
+    Without a usable stamp the newest file mtime is the observation time.
+    """
+    warnings: list[str] = []
+    existing = [Path(p) for p in paths if Path(p).is_file()]
+    if not existing:
+        return None, "", warnings
+    sp = Path(stamp_path) if stamp_path else existing[0].parent / ASOF_STAMP_NAME
+    if sp.is_file():
+        try:
+            meta = json.loads(sp.read_text(encoding="utf-8"))
+            ts = pd.Timestamp(str(meta.get("as_of") or ""))
+            if pd.isna(ts):
+                raise ValueError("as_of missing")
+            if ts.tzinfo is not None:
+                # local wall-clock, like every other timestamp in the app
+                local_tz = datetime.now().astimezone().tzinfo
+                ts = ts.tz_convert(local_tz).tz_localize(None)
+            sha = str(meta.get("sha256") or "")
+            if sha and sha != content_sha256(paths):
+                warnings.append(
+                    f"{sp.name}: sha256 does not match the manprg files — "
+                    "content changed outside the bridge; using file mtime "
+                    "as the observation time")
+            else:
+                return ts, "stamp", warnings
+        except (OSError, ValueError, TypeError) as exc:
+            warnings.append(f"{sp.name} unreadable ({exc}); using file mtime")
+    mtime = max(p.stat().st_mtime for p in existing)
+    return pd.Timestamp(datetime.fromtimestamp(mtime)), "mtime", warnings
 
 
 def _read_one(path: str | Path) -> pd.DataFrame:
@@ -86,6 +157,8 @@ def read_manprg(paths: list[str | Path]) -> ManprgResult:
     df = df.drop_duplicates(subset=["mo", "line"], keep="last")
     res.rows = len(df)
     res.frame = df.reset_index(drop=True)
+    res.as_of, res.as_of_source, asof_warn = read_asof_stamp(list(paths))
+    res.warnings.extend(asof_warn)
 
     def _progress(r) -> LineProgress:
         fct = r["fct_cas"] if pd.notna(r["fct_cas"]) else 0.0

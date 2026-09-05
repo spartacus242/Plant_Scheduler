@@ -85,6 +85,10 @@ class CoverageLedger:
     produced_total_kg: float = 0.0
     anchor_week_key: int | None = None
     notes: list[str] = field(default_factory=list)
+    # (sku, week_key) -> kg made in a PAST week with neither a live nor a
+    # history demand row to settle against; excluded from the carry unless
+    # build_ledger(carry_unsettled_past=True). See C54 / netting-2.
+    unsettled_past: dict[tuple[str, int], float] = field(default_factory=dict)
 
     def applied_by_order(self) -> dict[str, float]:
         return {r.order_id: r.applied_kg for r in self.rows if r.applied_kg > _EPS}
@@ -321,6 +325,7 @@ def build_ledger(
     week_bounds: list[float] | None = None,
     history_demand: dict[tuple[str, int], float] | None = None,
     lookback_weeks: int = 4,
+    carry_unsettled_past: bool = False,
 ) -> CoverageLedger:
     """Per SKU×week: gross demand vs committed+produced supply, carry-forward.
 
@@ -334,6 +339,15 @@ def build_ledger(
     as misses). Past production nets against ITS OWN week's demand there
     first, so a completed pre-build never double-credits surviving weeks.
     Entries colliding with a live demand row are skipped.
+
+    `carry_unsettled_past` (fix C54 / netting-2): kg MADE in a week BEFORE
+    the anchor week for which neither a live nor a history demand row
+    exists cannot be told apart from last week's own consumption — the live
+    demand feed starts at the current week, so every completed MO of the
+    prior week used to roll 100% into this week's targets, silently. The
+    default excludes such kg from the carry and reports it (ledger.notes
+    carries a WARNING string, `unsettled_past` the per-week detail); True
+    restores the old carry-forward.
     """
     ledger = CoverageLedger()
     if anchor is not None:
@@ -375,6 +389,23 @@ def build_ledger(
 
     history: dict[tuple[str, int], float] = {
         k: v for k, v in (history_demand or {}).items() if k not in live_keys}
+
+    if not carry_unsettled_past and ledger.anchor_week_key is not None:
+        for (sku, key), kg in list(produced.items()):
+            if (key < ledger.anchor_week_key and (sku, key) not in live_keys
+                    and (sku, key) not in (history_demand or {})):
+                ledger.unsettled_past[(sku, key)] = round(kg, 1)
+                del produced[(sku, key)]
+        if ledger.unsettled_past:
+            tot = sum(ledger.unsettled_past.values())
+            detail = ", ".join(
+                f"{s} {kg:,.0f} kg in {_key_label(k, iso_mode)}"
+                for (s, k), kg in sorted(ledger.unsettled_past.items(),
+                                         key=lambda kv: -kv[1])[:5])
+            ledger.notes.append(
+                f"WARNING: {tot:,.0f} kg of past production has no demand week "
+                f"to settle against and is NOT carried forward ({detail}) — "
+                "import the prior week's demand or accept it as inventory")
 
     skus = (set(dem_rows)
             | {s for s, _ in planned} | {s for s, _ in produced}
@@ -431,11 +462,27 @@ def build_ledger(
 def apply_ledger(
     demand: pd.DataFrame,
     ledger: CoverageLedger,
+    *,
+    explicit_bounds: bool = False,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Reduce qty_target by each order's applied kg (never below zero).
 
-    The pct bounds stay untouched, so qty_min/qty_max scale with the
-    reduced target — same contract subtract_committed always had.
+    Default (`explicit_bounds=False`): the pct bounds stay untouched, so
+    qty_min/qty_max scale with the reduced target — the contract
+    subtract_committed always had (the scorecard's fill-window residual
+    still relies on it).
+
+    `explicit_bounds=True` (fix C56 / netting-4, the F staging path): the
+    planner's band is [lower_pct x GROSS, upper_pct x GROSS]; the committed
+    credit C is production that already sits inside that band, so the
+    residual order's bounds are ``max(0, pct x gross - C)`` — NOT ``pct x
+    (gross - C)``, which shrank the tolerance with the residual (live: 20
+    non-DNS orders asked for 28 t MORE minimum fill and were allowed 479 t
+    LESS headroom than the planner's band). Rows that received credit get
+    explicit qty_min/qty_max and BLANK pct columns (data_loader prefers pct
+    when both are present), plus a `credit_kg` column for later policies
+    (agent_policy.trim_dns_demand, C58). Residuals <= 0.5 kg are zeroed
+    (netting-7: a 0.4 kg target became a phantom qmin 0 / qmax 1 order).
     """
     notes: list[str] = []
     if demand is None or demand.empty or not ledger.rows:
@@ -449,6 +496,12 @@ def apply_ledger(
     applied = ledger.applied_by_order()
     if not applied:
         return df, notes
+    if explicit_bounds:
+        for col in ("qty_min", "qty_max", "lower_pct", "upper_pct", "credit_kg"):
+            if col not in df.columns:
+                df[col] = float("nan")
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
+        df["credit_kg"] = df["credit_kg"].fillna(0.0)
     oid_series = df["order_id"].astype(str)
     for oid, kg in applied.items():
         hits = df.index[oid_series == oid]
@@ -459,10 +512,28 @@ def apply_ledger(
         consumed = min(target, kg)
         if consumed <= 0:
             continue
-        df.at[idx, "qty_target"] = round(target - consumed, 1)
+        residual = round(target - consumed, 1)
+        if residual <= _EPS:
+            residual = 0.0
+        df.at[idx, "qty_target"] = residual
+        if explicit_bounds:
+            lo, hi = df.at[idx, "lower_pct"], df.at[idx, "upper_pct"]
+            if pd.notna(lo) and pd.notna(hi):
+                gmin, gmax = target * float(lo), target * float(hi)
+            else:
+                qmin_raw, qmax_raw = df.at[idx, "qty_min"], df.at[idx, "qty_max"]
+                gmin = float(qmin_raw) if pd.notna(qmin_raw) else target
+                gmax = float(qmax_raw) if pd.notna(qmax_raw) else target
+            df.at[idx, "qty_min"] = round(max(0.0, gmin - consumed), 1)
+            df.at[idx, "qty_max"] = round(max(0.0, gmax - consumed), 1)
+            if residual <= 0.0:
+                df.at[idx, "qty_min"] = 0.0
+            df.at[idx, "lower_pct"] = float("nan")
+            df.at[idx, "upper_pct"] = float("nan")
+            df.at[idx, "credit_kg"] = round(consumed, 1)
         notes.append(
             f"{oid}: committed plan already makes {consumed:,.0f} kg - "
-            f"fill target {target:,.0f}->{target - consumed:,.0f} kg")
+            f"fill target {target:,.0f}->{residual:,.0f} kg")
     return df, notes
 
 
@@ -483,6 +554,28 @@ def demand_source_anchor(dd: Path) -> datetime | None:
         return None
 
 
+def keep_completed_row(row: dict, exclude_mos: set[str],
+                       board_attrs: dict[str, str] | None) -> bool:
+    """made_only credit rule for one completed-leg row (INTEGRATE, agent CA
+    handoff to CB, fix CA-3). A row whose MO is NOT on the board is always
+    credited. A row whose MO IS on the board is dropped (the block carries
+    its kg) — EXCEPT a `made_part` row (kg a RUNNING MO made BEFORE the
+    anchor, which no board block represents once the running block holds
+    only the remaining kg): it is kept when no board attrs are known, or
+    when the MO's board block is a post-fix block (`made_kg=` token). A
+    board saved BEFORE CA-3 still draws the running block at FULL Fct kg;
+    crediting made_part on top would double count, so that row is dropped
+    until the board is rebuilt."""
+    mo = str(row.get("mo") or "")
+    if mo not in exclude_mos:
+        return True
+    if str(row.get("kind") or "") != "made_part":
+        return False
+    if board_attrs is None:
+        return True
+    return "made_kg=" in str(board_attrs.get(mo) or "")
+
+
 def build_ledger_from_data(
     data_dir: Path | str,
     cfg: dict | None = None,
@@ -491,6 +584,7 @@ def build_ledger_from_data(
     lookback_weeks: int = 4,
     made_only: bool = False,
     exclude_mos: set[str] | None = None,
+    board_attrs: dict[str, str] | None = None,
 ) -> CoverageLedger | None:
     """Ledger for the live data dir: reference demand vs manprg current state.
 
@@ -538,8 +632,19 @@ def build_ledger_from_data(
     if made_only:
         blocks = None
         if completed and exclude_mos:
+            # `made_part` rows (fix CA-3) carry the kg a RUNNING MO made
+            # BEFORE the anchor; the board block of that MO holds only the
+            # REMAINING kg (its attrs carry a `made_kg=` token). Dropping
+            # the row because the MO is on the board under-credited holding
+            # by the made share (272 t on the snapshot) — INTEGRATE, agent
+            # CA handoff to CB. Rule: a made_part row is kept when no board
+            # attrs are known (post-fix boards) or when the board block for
+            # that MO is a post-fix block (`made_kg=` in attrs); a board
+            # saved BEFORE CA-3 still draws the running block at FULL Fct
+            # kg, so crediting made_part on top would double count — such a
+            # row is dropped until the board is rebuilt.
             completed = [r for r in completed
-                         if str(r.get("mo") or "") not in exclude_mos]
+                         if keep_completed_row(r, exclude_mos, board_attrs)]
     else:
         blocks = state.blocks
         cal_path = dd / "calendar_blocks.csv"

@@ -40,6 +40,37 @@ def safe_write_csv(df: pd.DataFrame, path: Path | str, *, sanitize: bool = True,
         raise
 
 
+def backup_file(path: Path | str, backup_dir: Path | str | None = None,
+                *, tag: str = "") -> Path | None:
+    """Copy `path` to `<backup_dir>/<stem>[.<tag>].<YYYYmmdd-HHMMSS>[-N]<suffix>`
+    before it is overwritten. None when the source does not exist.
+
+    Fix writeback-13 (audit 2026-09-03): only promote_version and pages/data
+    backed the official board up; the board Save, float-link saves, the
+    scorecard import and generate's naive_set_base overwrote it with no
+    recovery path. Every writer now goes through save_calendar, which calls
+    this. Default backup_dir = <path.parent>/_backups (data/_backups for the
+    board). A same-second collision gets a -N suffix so nothing is clobbered.
+    """
+    import shutil
+    from datetime import datetime
+
+    src = Path(path)
+    if not src.exists():
+        return None
+    bdir = Path(backup_dir) if backup_dir is not None else src.parent / "_backups"
+    bdir.mkdir(parents=True, exist_ok=True)
+    stamp = f"{datetime.now():%Y%m%d-%H%M%S}"
+    mid = f".{tag}" if tag else ""
+    dest = bdir / f"{src.stem}{mid}.{stamp}{src.suffix}"
+    n = 1
+    while dest.exists():
+        n += 1
+        dest = bdir / f"{src.stem}{mid}.{stamp}-{n}{src.suffix}"
+    shutil.copy2(src, dest)
+    return dest
+
+
 def safe_write_json(obj: dict, path: Path | str) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

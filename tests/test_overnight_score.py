@@ -1,8 +1,11 @@
-# tests/test_overnight_score.py — overnight_score v1 (frozen composite).
+# tests/test_overnight_score.py — overnight_score v2 (frozen composite).
 #
 # Every subscore is asserted against a HAND-COMPUTED fixture: the formula is
-# frozen as v1, so these numbers must never drift. A change in expectation
-# here means a version bump, not an edit.
+# frozen per version, so these numbers must never drift. A change in
+# expectation here means a version bump, not an edit. v1 -> v2 (2026-09-03,
+# fix Q): changeover rule aligned with the scorecard - CIP-in-gap waiver and
+# a recipe-only (1.0) missing-pair default; see test_transition_cost_* and
+# tests/test_fix_Q.py.
 
 from __future__ import annotations
 
@@ -92,9 +95,16 @@ def test_transition_cost_uses_scoring_weights_not_solver_weights():
              "added_flavors": 2}
     # 10 + 8 + 4 + 1 + 0.5*2 = 24
     assert transition_cost(flags) == pytest.approx(24.0)
-    # flavor removal is clamped, never a reward
-    assert transition_cost({"added_flavors": -3}) == 0.0
-    assert transition_cost(None) == 0.0
+    # v2 (fix Q / C30, changeover-2, 2026-09-03): the missing-pair default is
+    # the SCORECARD's - a pair with no standards row, or a row with no flag
+    # set, is a recipe-only change costing CO_SCORE_RECIPE_ONLY_WEIGHT (1.0),
+    # never 0. v1 priced an unknown pair at 0, so a plan built from SKUs the
+    # standards file does not know read as changeover-free. Flavor removal
+    # is still clamped (never a reward) - it now falls to the recipe-only
+    # floor instead of 0.
+    assert transition_cost({"added_flavors": -3}) == 1.0
+    assert transition_cost(None) == 1.0
+    assert transition_cost({"ffs_change": 0, "ttp_change": 0}) == 1.0
 
 
 def test_weighted_co_load_counts_incoming_fill_pairs_only():

@@ -112,11 +112,29 @@ def build_greedy_fill(
     orders.sort(key=lambda d: (int(d.get("week_index", 0)),
                                -float(d.get("qty_target", 0) or 0)))
 
+    def _num(v):
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        return None if math.isnan(f) else f
+
     for d in orders:
         sku = str(d["sku"])
         target = float(d["qty_target"])
-        qmin = target * float(d.get("lower_pct", 0.9) or 0.9)
-        qmax = target * float(d.get("upper_pct", 1.1) or 1.1)
+        # Same precedence as solver/data_loader._parse_demand: pct bounds
+        # when both are present, else explicit qty_min/qty_max. Netted F rows
+        # arrive with blank pct + explicit bounds (demand_coverage, C56), and
+        # `float(nan) or 0.9` is nan (truthy) — so the old expression would
+        # have produced nan bounds and placed nothing.
+        lo, hi = _num(d.get("lower_pct")), _num(d.get("upper_pct"))
+        if lo is not None and hi is not None:
+            qmin, qmax = target * lo, target * hi
+        else:
+            qmin = _num(d.get("qty_min"))
+            qmax = _num(d.get("qty_max"))
+            qmin = target * 0.9 if qmin is None else qmin
+            qmax = target * 1.1 if qmax is None else qmax
         ds = float(d.get("due_start_hour", 0) or 0)
         de = min(horizon_h, float(d.get("due_end_hour", 0) or 0) + 1)
         remaining = target

@@ -80,7 +80,15 @@ def test_current_mo_parses_locked_orders(tmp_path):
     o = mos[0]
     assert o["order_id"] == "29901|CUR"
     assert o["locked_line"] == 0          # P09 -> line_id 0
-    assert o["qty_min"] == 15200 and o["qty_max"] == 15200
+    # Fix SA-5 (audit C61, 2026-09-03): the bounds bracket the remaining kg
+    # at whole hours of the locked line's rate instead of pinning
+    # qty_min == qty_max == remaining, which the model (produced =
+    # round(rate) x integer hours) could satisfy only when remaining was an
+    # exact multiple of the rate — Scenario E level 0 was structurally
+    # INFEASIBLE. Hand: 15200 / 540 = 28.15 h -> 28 h x 540 = 15120,
+    # 29 h x 540 = 15660; the raw remaining kg stays in qty_remaining.
+    assert o["qty_min"] == 15120 and o["qty_max"] == 15660
+    assert o["qty_remaining"] == 15200
     assert o["priority"] == 0
 
 
@@ -123,7 +131,14 @@ def test_mo_changes_reports_trim_split_reorder(tmp_path):
                "in_bounds": True}]
     write_mo_changes(tmp_path, d, schedule, bounds)
     out = pd.read_csv(tmp_path / "mo_changes.csv", dtype={"mo": str})
-    assert len(out) == 1
+    # Fix V / writeback-7 (2026-09-03): a split MO is written as its PIECES
+    # (one row per block, piece 1..split_count), not as one 20-45 window
+    # spanning the CIP gap 30-40. Both rows carry the MO-level tonnage and
+    # reason; the hours are the block's own.
+    assert len(out) == 2
+    assert list(out["piece"]) == [1, 2]
+    assert list(out["new_start_h"]) == [20, 40]
+    assert list(out["new_end_h"]) == [30, 45]
     row = out.iloc[0]
     assert row["mo"] == "29901"
     assert row["orig_qty_kg"] == 10000 and row["new_qty_kg"] == 8500
@@ -158,8 +173,13 @@ def test_mo_changes_writes_header_when_no_mos(tmp_path):
     d = _make_data(tmp_path)
     write_mo_changes(tmp_path, d, [], [])
     out = pd.read_csv(tmp_path / "mo_changes.csv")
-    assert list(out.columns) == ["mo", "line_name", "sku", "source",
-                                 "orig_qty_kg", "new_qty_kg", "delta_kg",
-                                 "orig_start_h", "new_start_h", "new_end_h",
-                                 "split_count", "reason"]
+    # The historical twelve columns stay first and unchanged; fix V
+    # (writeback-5/6/7, 2026-09-03) appends the piece / provenance /
+    # wall-clock columns after them (see phase2_scheduler.MO_CHANGES_COLUMNS).
+    assert list(out.columns)[:12] == ["mo", "line_name", "sku", "source",
+                                      "orig_qty_kg", "new_qty_kg", "delta_kg",
+                                      "orig_start_h", "new_start_h", "new_end_h",
+                                      "split_count", "reason"]
+    from phase2_scheduler import MO_CHANGES_COLUMNS
+    assert list(out.columns) == MO_CHANGES_COLUMNS
     assert len(out) == 0

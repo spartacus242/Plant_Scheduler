@@ -63,6 +63,41 @@ sched_cfg = cfg.get("scheduler", {})
 default_tl = int(sched_cfg.get("time_limit", 60))
 cip_cfg = cfg.get("cip", {})
 
+# Fix V-1 (audit C81, 2026-09-03): every solve is followed by the independent
+# validator (code/solver/independent_validator.py). A plan carrying
+# ERROR-severity PHYSICAL violations (overlap, in downtime, CIP interval,
+# changeover gap, before gate) is NOT saved as a version unless the planner
+# ticks this override - the run's result stays in the work dir either way.
+_allow_invalid_save = st.checkbox(
+    "Save plans with physical validation errors anyway (override)",
+    value=False, key="fs_allow_invalid_save",
+    help="Default OFF: a schedule the independent validator flags with an "
+         "ERROR-severity physical violation (OVERLAP, IN_DOWNTIME, "
+         "CIP_INTERVAL, CHANGEOVER_GAP, BEFORE_GATE) is shown but not saved "
+         "as a version. Tick to save it anyway; the version then carries the "
+         "validator counts for Compare/Promote to show.")
+
+
+def _expected_wall_s(time_limit: int, *, two_pass: bool, two_phase: bool) -> tuple[int, int]:
+    """(typical, ceiling) wall seconds for one scenario at this per-solve budget.
+
+    The slider value is the budget of ONE CP-SAT solve, not the run: a two-pass
+    fill run is pass 1 + anchor (<= 120 s) + pass 2; a two-phase run solves
+    week 0 and week 1; every solve may climb up to 4 relax-ladder levels on
+    UNKNOWN/INFEASIBLE. ~60 s covers staging, model builds and scoring.
+    """
+    tl = int(time_limit)
+    if two_pass:
+        return tl + min(120, tl) + tl + 60, 4 * tl + min(120, tl) + tl + 60
+    if two_phase:
+        return 2 * tl + 60, 8 * tl + 60
+    return tl + 60, 4 * tl + 60
+
+
+def _fmt_wall(seconds: int) -> str:
+    m, sec = divmod(int(seconds), 60)
+    return f"{m} min {sec:02d} s" if m else f"{sec} s"
+
 # Structures the scenario Gantt preview needs (same shapes the calendar builds).
 import pandas as _pd
 from helpers.lines_model import expand_caps_with_groups, is_double, side_of
@@ -89,13 +124,11 @@ if _co_p.exists():
 demand_targets: list = []
 _dem_p = _ref_dir(dd) / "demand_plan.csv"
 if _dem_p.exists():
-    for _, r in _pd.read_csv(_dem_p).iterrows():
-        t = float(r.get("qty_target", 0) or 0)
-        demand_targets.append({
-            "order_id": str(r["order_id"]), "sku": str(r["sku"]),
-            "qty_min": t * float(r.get("lower_pct", 0.9) or 0.9),
-            "qty_max": t * float(r.get("upper_pct", 1.1) or 1.1),
-        })
+    # ONE rule for the demand targets (fix Q / ui-2; INTEGRATE applying the
+    # Q handoff): the old inline loop passed no due hours, so the
+    # position-aware credit pass was a no-op on this page.
+    from helpers.scorecard_engine import build_demand_targets as _bdt
+    demand_targets = _bdt(dd)
 
 lines: list = []
 _lp = dd / "lines.csv"
@@ -212,7 +245,20 @@ def _feasibility_summary(feas: dict) -> str:
     extras = []
     if late:
         ids = ", ".join(str(o.get("order_id")) for o in late[:4])
-        extras.append(f"{len(late)} order(s) late ({ids})")
+        # Soft due weeks (plant decision 2026-09-04 #2): lateness inside the
+        # horizon is a PRICED trade-off the solver chose, not a violation.
+        _kgw = feas.get("late_kg_weeks")
+        _pol = str(feas.get("due_week_policy") or "")
+        _tail = ""
+        if _pol == "soft":
+            _tail = (f" — {float(_kgw) / 1000:,.1f} t-weeks late, a priced trade-off "
+                     "(soft due weeks)") if _kgw else " (soft due weeks: priced trade-off)"
+        extras.append(f"{len(late)} order(s) late ({ids}){_tail}")
+    _early = feas.get("early_orders") or []
+    if _early and feas.get("early_kg_weeks"):
+        extras.append(
+            f"{len(_early)} order(s) pre-built early "
+            f"({float(feas['early_kg_weeks']) / 1000:,.1f} t-weeks)")
     if short:
         ids = ", ".join(str(o.get("order_id")) for o in short[:4])
         extras.append(f"{len(short)} order(s) short of min ({ids})")
@@ -222,7 +268,65 @@ def _feasibility_summary(feas: dict) -> str:
         extras.append(f"{len(moved)} order(s) moved out of AZAP's week ({ids})")
     elif feas.get("cross_week"):
         extras.append("cross-week on, no order left its AZAP week")
+    # Fix V-1 (C81) / C63: the independent validator's verdict and the
+    # changeover-time label travel with the summary the planner reads.
+    val = feas.get("validation") or {}
+    if val.get("n_errors") is None:
+        extras.append("independent validator: not run")
+    else:
+        extras.append(
+            f"validator: {val.get('n_errors', 0)} error(s) "
+            f"({val.get('physical_errors', 0) or 0} physical), "
+            f"{val.get('n_warnings', 0)} warning(s)")
+    if feas.get("setup_times_enforced") is False:
+        extras.append("UNSAFE: changeover times NOT enforced")
+    _mw = feas.get("model_warnings") or []
+    if _mw:
+        extras.append(f"{len(_mw)} model warning(s) (CIP overdue at the gate)")
+    tp = feas.get("two_pass") or {}
+    if tp.get("adopted"):
+        extras.append(f"two-pass: {tp['adopted']} adopted")
     return " — ".join([base] + extras) if extras else base
+
+
+def _validation_gate(feas: dict | None) -> tuple[int | None, list[str]]:
+    """(physical error count or None when not validated, top violations)."""
+    val = (feas or {}).get("validation") or {}
+    phys = val.get("physical_errors")
+    return (None if phys is None else int(phys)), list(val.get("top_violations") or [])
+
+
+_STAGING_WARN_PREFIXES = ("WARNING:", "CIP CHECK —", "GATE CHECK —",
+                          "CIP CHECK -", "GATE CHECK -")
+
+
+def _staging_warnings(log: str | None, limit: int = 12) -> list[str]:
+    """Staging / ledger warnings buried in the run log (agent CB handoff, C54).
+
+    scenario_runner writes `WARNING: ...` (ledger notes), `CIP CHECK — ...`
+    and `GATE CHECK — ...` (staging checks) as plain log lines; the planner
+    never saw them unless the log expander was opened. Returns the distinct
+    lines carrying one of those prefixes (leading log timestamps such as
+    `[12:34:56] ` stripped), in order, capped at `limit`.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in (log or "").splitlines():
+        line = raw.strip()
+        # leading tag: a log timestamp "[12:34:56] " or the runner's
+        # "[current state] " prefix (its notes are "; "-joined on one line)
+        if line.startswith("[") and "] " in line:
+            line = line.split("] ", 1)[1].strip()
+        if not any(p in line for p in _STAGING_WARN_PREFIXES):
+            continue
+        for part in line.split("; "):
+            part = part.strip()
+            if part.startswith(_STAGING_WARN_PREFIXES) and part not in seen:
+                seen.add(part)
+                out.append(part)
+                if len(out) >= limit:
+                    return out
+    return out
 
 
 def _generate_one(
@@ -324,6 +428,8 @@ def _generate_one(
             feas = result.get("feasibility")
             summary = _feasibility_summary(feas) if feas else "no schedule"
             status.update(label=f"{scenario['name']} — {summary}", state="error")
+            for _sw in _staging_warnings(result.get("log")):
+                st.warning(_sw)
             with st.expander("Solver log"):
                 if feas:
                     st.markdown("**Feasibility report**")
@@ -333,6 +439,40 @@ def _generate_one(
                     st.markdown("**Blockages diagnostic**")
                     st.code(blockages, language="text")
                 st.code(result.get("log") or "(empty)", language="text")
+            return False
+        feas = result.get("feasibility") or {}
+        # Agent CB handoff (C54): ledger WARNINGs and staging CIP/GATE checks
+        # were plain log lines - surface them where the planner looks.
+        for _sw in _staging_warnings(result.get("log")):
+            st.warning(_sw)
+        # Agent SB handoff (fix SB-3): model-build warnings — a line already
+        # past its CIP interval at the gate gets its clean pinned at the
+        # gate; the planner must see that.
+        for _mw in (feas.get("model_warnings") or [])[:8]:
+            st.warning(f"Model: {_mw}")
+        if feas.get("setup_times_enforced") is False:
+            st.error(
+                "UNSAFE: this plan was solved at relax level 3 (ignore_co) — "
+                "changeover times were NOT enforced, so two SKUs may sit "
+                "back-to-back with no setup time. Do not promote it without "
+                "checking every changeover on the Gantt.")
+        _phys, _top = _validation_gate(feas)
+        if _phys and not st.session_state.get("fs_allow_invalid_save", False):
+            status.update(
+                label=f"{scenario['name']} — NOT saved: {_phys} physical "
+                      "validation error(s)", state="error")
+            st.error(
+                f"The independent validator found **{_phys} ERROR-severity "
+                "physical violation(s)** (overlap / downtime / CIP interval / "
+                "changeover gap / gate). The plan was NOT saved as a version. "
+                "Tick *Save plans with physical validation errors anyway* at "
+                "the top of the page and re-run to keep it.")
+            for _t in _top[:12]:
+                st.write(f"- `{_t}`")
+            st.caption("Solver: " + _feasibility_summary(feas))
+            with st.expander("Solver log"):
+                st.code((result.get("log") or "")[-4000:], language="text")
+            clear_pending_manifest(dd / "_scenario_work" / str(scenario["id"]))
             return False
         try:
             saved = save_scenario_version(scenario, result, dd)
@@ -347,9 +487,17 @@ def _generate_one(
                 + ". User-named versions are never evicted.")
         status.update(label=f"{saved['name']} → `{saved['slug']}`",
                       state="complete")
-        feas = result.get("feasibility")
         if feas:
             st.caption("Solver: " + _feasibility_summary(feas))
+            if _phys:
+                st.warning(
+                    f"Saved with override: {_phys} physical validation "
+                    "error(s) — Compare/Promote will show them.")
+                for _t in _top[:12]:
+                    st.write(f"- `{_t}`")
+            elif _phys is None:
+                st.caption("The independent validator did not run on this "
+                           "plan (older solver output) — treat it as unchecked.")
         sc = result["scorecard"]
         st.metric("Composite", f"{sc.composite:.0f}" if sc.composite is not None else "n/a")
         st.markdown("**vs baseline**")
@@ -410,6 +558,12 @@ with _fc1:
         "Solve budget", [300, 600, 1200], index=1,
         format_func=lambda s: f"{s // 60} min per pass", key="f_budget",
         help="Two passes each get this budget (plus a short anchor step).")
+    _f_typ, _f_max = _expected_wall_s(int(_f_tl), two_pass=True, two_phase=False)
+    st.caption(
+        f"Expected wall time ≈ **{_fmt_wall(_f_typ)}** (pass 1 {int(_f_tl)} s + "
+        f"anchor ≤ {min(120, int(_f_tl))} s + pass 2 {int(_f_tl)} s + staging); "
+        f"ceiling ≈ {_fmt_wall(_f_max)} if the relax ladder escalates. "
+        "The budget is per solve, not per run.")
 with _fc2:
     _f_dns = st.checkbox(
         "Cap component-blocked SKUs (stock policy)", value=True, key="f_dns",
@@ -630,6 +784,33 @@ if cross_week_on:
         f"Deviation costs {int(_obj_cfg_flex.get('week_deviation_weight', 40))} "
         "per order-hour outside the requested week."
     )
+_sched_cfg_flex = (cfg.get("scheduler") or {})
+_due_pol = str(_sched_cfg_flex.get("due_week_policy", "hard") or "hard").strip().lower()
+if _due_pol == "soft":
+    st.caption(
+        "Due weeks are **soft** (opt-in, `[scheduler] due_week_policy = \"soft\"`; "
+        "plant decision 2026-09-04 #2): the demand file's week numbers are a "
+        "preference in both directions. Orders may be pre-built early (early-fill "
+        "policy above) or finish late inside the horizon; every kg in the wrong week "
+        "is priced per kg-week -- late "
+        f"{int(_sched_cfg_flex.get('late_kg_week_weight', 200_000)):,} and early "
+        f"{int(_sched_cfg_flex.get('early_kg_week_weight', 50_000)):,} per tonne-week "
+        "(10 t one week late ~ one FFS changeover; early = 1/4 of late) -- so a "
+        "SKU's runs merge into one campaign only when the changeovers saved are "
+        "worth more. Late orders are reported as a trade-off, not a violation. "
+        "Not the shipped default: at 600 s it delivered 38 % less on-time kg than "
+        "hard weeks (bench 2026-09-04). Remove the key or set it to \"hard\" to "
+        "restore the walls."
+    )
+else:
+    st.caption(
+        "Due weeks are **hard** (the shipped default; `[scheduler] due_week_policy = "
+        "\"hard\"`): an order must finish inside its demand week at relax levels "
+        "0-1; level 2 prices lateness per hour. Pre-building an earlier week is "
+        "still allowed (early-fill policy above) and graded by the early kg-week "
+        "price. Set the key to \"soft\" to opt in to the plant's 2026-09-04 #2 "
+        "policy (weeks as a priced preference; measured -38 % on-time kg at 600 s, "
+        "so opt in only with a benchmark).")
 
 # -- Solver time limit -----------------------------------------------------
 # A single-phase full-horizon model (336h in one CP-SAT model) is a much harder
@@ -663,6 +844,14 @@ tl = st.number_input(
         f"{SINGLE_PHASE_TL}s or more to return a good schedule."
     ),
 )
+_w_typ, _w_max = _expected_wall_s(
+    int(tl), two_pass=False, two_phase=not single_phase_run)
+st.caption(
+    f"Expected wall time per scenario ≈ **{_fmt_wall(_w_typ)}** "
+    f"({'one full-horizon solve' if single_phase_run else 'week-0 + week-1 solves'} "
+    f"of {int(tl)} s each + staging); ceiling ≈ {_fmt_wall(_w_max)} when every "
+    "solve climbs the 4-level relax ladder. The value above is one CP-SAT "
+    "solve's budget, not the run's duration.")
 if single_phase_run:
     if int(tl) < TL_WARN_BELOW:
         st.warning(
@@ -738,11 +927,13 @@ with oc2:
         help="Balanced mode only. Multiplier on the weighted changeover cost.",
     )
     w_cip = st.number_input(
-        "cip_defer_weight", min_value=0, max_value=1000,
+        "cip_defer_weight (retired — no effect)", min_value=0, max_value=1000,
         value=int(_obj_cfg.get("cip_defer_weight", 5)), step=1,
-        help="Reward per hour a CIP starts LATER (cleans drift toward "
-             "their legal deadline instead of hour 0). All modes; the max "
-             "CIP interval itself stays hard.",
+        help="RETIRED 2026-09-03 (fix SB-4): the per-hour reward for a LATER "
+             "CIP start paid the solver to split runs and add phantom "
+             "cleans. The model now charges every clean dur x median line "
+             "rate kg instead. The value is saved for config compatibility "
+             "but never reaches the model.",
     )
     w_over_target = st.slider(
         "over_target_reward_pct", min_value=0.0, max_value=5.0,
@@ -767,9 +958,13 @@ with oc3:
         "week_deviation_weight", min_value=0, max_value=10000,
         value=int(_obj_cfg.get("week_deviation_weight", 40)), step=5,
         help=(
-            "Cross-week mode only. Cost per hour an order runs outside AZAP's "
-            "requested week. Lower = more willing to move a SKU between week 1 "
-            "and week 2 to build a longer run."
+            "Cost per HOUR an order starts before its own due week (cross-week "
+            "mode: per hour outside AZAP's week, both sides). Since 2026-09-04 "
+            "only a tiebreaker under the kg-week price [scheduler] "
+            "early_kg_week_weight (flowstate.toml; 50,000 per tonne-week = 1/4 "
+            "of late_kg_week_weight, whose 10 t x 1 week late ~ one FFS "
+            "changeover applies only under the opt-in due_week_policy = "
+            "\"soft\"; the shipped default \"hard\" keeps due-week ends as walls)."
         ),
     )
     w_cip_flex = st.number_input(

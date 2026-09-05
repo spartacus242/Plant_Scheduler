@@ -101,9 +101,13 @@ def test_split_mo_qty_prorated_across_cip_pieces():
         [dict(mo)], [dict(cip)], warnings=warnings, line="P09")
     assert len(pieces) == 2 and len(kept) == 1
     a, b = sorted(pieces, key=lambda p: p["start_h"])
-    # 40h + 54h pieces of a 94h productive window
-    assert abs(a["qty_kg"] - 50000.0 * 40 / 94) < 1.0
-    assert abs(b["qty_kg"] - 50000.0 * 54 / 94) < 1.0
+    # Updated 2026-09-03 (fix CA-4 / audit C09): the clean no longer eats
+    # 6h of the MO — the tail is pushed to [46, 106], so the pieces are
+    # 40h + 60h of the FULL 100h window: 20,000 + 30,000 kg.
+    assert (a["start_h"], a["end_h"]) == (0.0, 40.0)
+    assert (b["start_h"], b["end_h"]) == (46.0, 106.0)
+    assert abs(a["qty_kg"] - 50000.0 * 40 / 100) < 1.0
+    assert abs(b["qty_kg"] - 50000.0 * 60 / 100) < 1.0
     # total is exactly the MO quantity — nothing invented, nothing lost
     assert round(a["qty_kg"] + b["qty_kg"], 2) == 50000.0
 

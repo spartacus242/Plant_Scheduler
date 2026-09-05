@@ -465,12 +465,18 @@ def test_cip_seed_for_another_line_keeps_legacy_zero_seed():
 def test_cip_seed_not_lowered_by_earlier_stale_block():
     """A stale calendar CIP (drawn from a pre-refresh cip_info) ends at 17.0,
     BEFORE the recorded clean at 17.63. The walk must keep the later seed:
-    production ending exactly at 17.63+144+12 passes on the seed clock and
-    would trip on the stale block's clock."""
+    production ending exactly at 17.63+144 passes on the seed clock and
+    would trip on the stale block's clock (17.0 + 144 = 161.0 < 161.63).
+
+    Updated 2026-09-03 (fix Q / C47): the test used to end the block at
+    17.63+144+12 because score_cip granted a hard-coded +12 h grace; that
+    grace hid a 131 h run on a 120 h interval (audit cip-8) and is gone
+    (cip_overdue_tolerance_h, default 0). The seed-vs-stale-block mechanism
+    this test pins is unchanged."""
     cal = _calendar([
         _block(block_id="c1", block_type="cip", start_h=11.0, end_h=17.0,
                order_id="", sku=""),
-        _block(block_id="b1", start_h=20.0, end_h=173.63),
+        _block(block_id="b1", start_h=20.0, end_h=161.63),
     ])
     raw = score_cip(cal, CFG, {"P09": 144.0}, None, {"P09": 17.63})
     assert raw["cip_overdue"] == 0
@@ -483,8 +489,18 @@ def test_cip_genuinely_dirty_line_still_trips_with_seed():
 
 
 def test_cip_last_clean_hours_reads_previous_cip(tmp_path):
-    """Only cleans AFTER the anchor land in the map; pre-anchor and NULL
-    lines are absent (legacy 0.0 seed covers them); missing file -> {}."""
+    """Every recorded clean lands in the map: after the anchor as positive
+    hours, BEFORE the anchor as NEGATIVE hours (P09: 2026-08-20 06:00 is
+    3 d 18 h = 90 h before the 08-24 anchor -> -90.0). NULL lines are
+    absent (the walk's "clean at hour 0" seed covers them); missing file
+    -> {}.
+
+    Updated 2026-09-03 (fix Q / C48, scorecard-5): the test used to pin the
+    `h > 0` filter that DROPPED every pre-anchor clean - on the live feed
+    every PreviousCIP sits before a same-day anchor, so the seed was always
+    empty and the walk assumed 14 clean lines at hour 0 (forfeited kg
+    overstated, overdue understated). The plant's clock is wall time from
+    the previous clean, so a line 90 h dirty at the anchor carries -90 h."""
     from datetime import datetime
 
     from helpers.scorecard_engine import cip_last_clean_hours
@@ -498,8 +514,9 @@ def test_cip_last_clean_hours_reads_previous_cip(tmp_path):
         "3,P10,NULL,120,NULL,\n",
         encoding="utf-8-sig")
     got = cip_last_clean_hours(ref, anchor)
-    assert set(got) == {"P15"}
+    assert set(got) == {"P15", "P09"}
     assert abs(got["P15"] - (17.0 + 38.0 / 60.0)) < 1e-6
+    assert abs(got["P09"] - (-90.0)) < 1e-6  # 08-20 06:00 -> 08-24 00:00
 
     assert cip_last_clean_hours(tmp_path / "nowhere", anchor) == {}
 
@@ -543,6 +560,13 @@ def _seed_data_dir(tmp_path):
         encoding="utf-8-sig")
     (ref / "line_cip_hrs.csv").write_text(
         "line_name,line_id,max_cip_hrs\nP09,9,144\n", encoding="utf-8")
+    # Fix Q (quality-2, 2026-09-03): a missing rate table now makes the CIP
+    # category n/a (forfeited kg cannot be valued -> a flattering 0 kg is
+    # not allowed). These tests are about the clean-clock SEED, so give the
+    # data dir a rate table and keep asserting the 100 / 0 gate outcomes.
+    (ref / "capabilities_rates.csv").write_text(
+        "line_name,line_id,sku,capable,calc_rate_kgph\nP09,9,S1,1,700\n",
+        encoding="utf-8")
     return tmp_path
 
 
@@ -560,9 +584,10 @@ def _pin_horizon(monkeypatch, anchor, hours=504):
 def test_score_calendar_seeds_cip_clock_from_cip_info_by_default(
         tmp_path, monkeypatch):
     """data_dir alone must wire the seed: production ending 161.6 h in reads
-    overdue on the legacy hour-0 clock (161.6 > 144+12) but clean on the
-    recorded 17.63 h seed (143.97 <= 156). An explicit {} (compute_guards'
-    unreadable-cip_info path) still means "score without seed"."""
+    overdue on the legacy hour-0 clock (161.6 > 144) but clean on the
+    recorded 17.63 h seed (143.97 <= 144). An explicit {} (compute_guards'
+    unreadable-cip_info path) still means "score without seed".
+    (2026-09-03: the +12 h grace in the old docstring is gone - fix Q / C47.)"""
     from datetime import datetime
 
     _pin_horizon(monkeypatch, datetime(2026, 8, 24))

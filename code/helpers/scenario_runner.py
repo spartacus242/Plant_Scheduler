@@ -87,7 +87,7 @@ _COMMON_KNOBS = [
     {
         "param": "objective.cip_defer_weight",
         "config": "objective.cip_defer_weight",
-        "effect": "Reward per hour a CIP STARTS LATER — CIPs drift toward their legal deadline instead of being dumped at hour 0. The line's max CIP interval stays hard.",
+        "effect": "RETIRED 2026-09-03 (fix SB-4): the per-hour reward for a later CIP start no longer reaches the model; every clean costs dur x median line rate kg instead (cip_count_cost). Kept for config compatibility only. The line's max CIP interval stays hard.",
     },
     {
         "param": "objective.late_weight",
@@ -119,7 +119,7 @@ _COMMON_KNOBS = [
     {
         "param": "objective.cip_flex_weight",
         "config": "objective.cip_flex_weight",
-        "effect": "CIP flexibility mode only: percent the cip_defer reward is scaled to, so a CIP can be pulled EARLIER to absorb a changeover. The line's max allowable CIP interval stays HARD.",
+        "effect": "RETIRED 2026-09-03 (fix SB-4): scaled the retired cip_defer reward; the cip_flex mode is now a no-op (a CIP may always be pulled earlier to absorb a changeover). The line's max allowable CIP interval stays HARD.",
     },
     {
         "param": "objective.over_target_reward_pct",
@@ -132,7 +132,7 @@ _FORMULA_MIN_CO = (
     "minimize  100 * weighted_changeover_cost"
     " + makespan"
     " + idle_h * idle_weight"
-    " - cip_deferred_h * cip_defer_weight"
+    " + cip_count_cost   (dur x median line rate kg per clean; the cip_defer reward was retired 2026-09-03)"
     " + late_h * late_weight"
     "\n(no per-machine weights available -> 10000 * changeover_count replaces the first term)"
 )
@@ -142,7 +142,7 @@ _FORMULA_SPREAD = (
     " + weighted_changeover_cost"
     " + makespan"
     " + idle_h * idle_weight"
-    " - cip_deferred_h * cip_defer_weight"
+    " + cip_count_cost   (dur x median line rate kg per clean; the cip_defer reward was retired 2026-09-03)"
     " + late_h * late_weight"
     "\n(no per-machine weights available -> 10 * changeover_count replaces the changeover term)"
 )
@@ -151,7 +151,7 @@ _FORMULA_BALANCED = (
     "minimize  makespan * makespan_weight"
     " + weighted_changeover_cost * changeover_weight"
     " + idle_h * idle_weight"
-    " - cip_deferred_h * cip_defer_weight"
+    " + cip_count_cost   (dur x median line rate kg per clean; the cip_defer reward was retired 2026-09-03)"
     " + late_h * late_weight"
 )
 
@@ -335,9 +335,13 @@ SCENARIOS = [
         # user's "never leave large blocks of idle time" rule.
         # Changeover pressure (user, 2026-08-14): FFS & topload swaps are
         # the expensive ones — push the solver hard on those specifically.
-        # At weight 300 a topload swap costs ~46 kg of tier-1 production
-        # equivalent (FFS ~61 kg, TTP ~3 kg): strong resequencing pressure
-        # that still never trades away meaningful target tonnage.
+        # Pass-1 kg-equivalents under these weights (audit objective-9 /
+        # agent SA, 2026-09-03 — the earlier "~46 kg / 61 kg / 3 kg" claim
+        # was wrong by x333): a topload swap costs 455 x 300 / 1e6 = 0.137 kg
+        # of tier-1 production, an FFS swap 605 x 300 / 1e6 = 0.18 kg, a
+        # TTP+casepacker pair 30 x 300 / 1e6 = 0.009 kg (TTP alone 0.003 kg).
+        # Pass 1 therefore does NOT minimise changeovers; pass 2 (two-pass
+        # CO) does, at the fill exchange rate K (model_builder).
         "overrides": {"idle_weight": 3, "changeover_weight": 300,
                       "topload_weight": 450, "ffs_weight": 600},
         "intent": (
@@ -546,6 +550,54 @@ def _prepare_work_dir(data_dir: Path, work: Path) -> None:
         )
 
 
+class StagingError(RuntimeError):
+    """A staging step that decides WHAT the solver solves failed. Raised
+    instead of swallowed (audit quality-5 / C21, 2026-09-02): a silently
+    skipped config write left the solver on a stale anchor or without the
+    scenario's objective overrides while the run 'succeeded'."""
+
+
+def _work_cfg_path(data_dir: Path) -> Path | None:
+    """The config the run should read: the toml next to the caller's data
+    dir (fix staging-9 — never the live repo root when another data_dir is
+    passed), or None to let load_toml fall back to its default."""
+    p = Path(data_dir).resolve().parent / "flowstate.toml"
+    return p if p.exists() else None
+
+
+def _known_lines(dd: Path) -> set[str]:
+    """Upper-case line names from <data_dir>/lines.csv ('' when absent)."""
+    from helpers.calendar_io import load_lines as _ll
+    try:
+        df = _ll(Path(dd) / "lines.csv")
+    except Exception:  # noqa: BLE001 — a bad lines.csv means no filtering
+        return set()
+    if df is None or not len(df) or "line_name" not in df.columns:
+        return set()
+    return {str(x).strip().upper() for x in df["line_name"] if str(x).strip()}
+
+
+def _last_completed_sku(cs) -> dict[str, str]:
+    """Per line, the SKU of the most recently STARTED completed manprg MO
+    (fix staging-4): the best evidence of what a line with no committed
+    production last ran. Trials/CIP rows carry no changeover identity."""
+    out: dict[str, tuple] = {}
+    for r in getattr(cs, "completed", None) or []:
+        ln = str(r.get("line") or "").strip().upper()
+        sku = str(r.get("item") or "").strip()
+        st = r.get("start_dt")
+        if not ln or not sku or sku.upper() in ("CIP", "TRIALS") or st is None:
+            continue
+        try:
+            import pandas as _pd
+            key = _pd.Timestamp(st)
+        except Exception:  # noqa: BLE001
+            continue
+        if ln not in out or key > out[ln][0]:
+            out[ln] = (key, sku)
+    return {ln: v[1] for ln, v in out.items()}
+
+
 def _stage_time_frame(work: Path, dd: Path, hz) -> list[str]:
     """Put every staged input into ONE time frame (audit 2026-08-15).
 
@@ -570,17 +622,33 @@ def _stage_time_frame(work: Path, dd: Path, hz) -> list[str]:
     from helpers.plan_fill import rebase_demand
 
     notes: list[str] = []
-    try:
-        import tomllib as _tl
-        import tomli_w as _tw
-        _tp = work / "flowstate.toml"
-        with open(_tp, "rb") as _fh:
-            _tcfg = _tl.load(_fh)
-        _tcfg["planning_start_date"] = hz.anchor.strftime("%Y-%m-%d %H:%M:%S")
-        with open(_tp, "wb") as _fh:
-            _tw.dump(_tcfg, _fh)
-    except Exception:  # noqa: BLE001 — stamp cosmetics must not kill a solve
-        pass
+    _tp = work / "flowstate.toml"
+    if _tp.exists():
+        # The anchor goes into [scheduler] (fix C21 / time-5 / staging-5):
+        # phase2_scheduler.params_from_config and timefmt.planning_anchor
+        # read cfg["scheduler"]["planning_start_date"]; the old top-level
+        # key was read by nobody, so every staged CSV spoke the hz frame
+        # while the solver kept the root toml's anchor (192h skew measured
+        # on the snapshot). A root-level copy stays for legacy readers.
+        # NOT best-effort any more: this stamp decides the solver's frame.
+        try:
+            import tomllib as _tl
+            import tomli_w as _tw
+            with open(_tp, "rb") as _fh:
+                _tcfg = _tl.load(_fh)
+            _stamp = hz.anchor.strftime("%Y-%m-%d %H:%M:%S")
+            _tcfg.setdefault("scheduler", {})["planning_start_date"] = _stamp
+            _tcfg["planning_start_date"] = _stamp
+            with open(_tp, "wb") as _fh:
+                _tw.dump(_tcfg, _fh)
+        except Exception as _exc:  # noqa: BLE001
+            raise StagingError(
+                f"could not stamp [scheduler].planning_start_date = "
+                f"{hz.anchor:%Y-%m-%d %H:%M} into {_tp}: {_exc}") from _exc
+        notes.append(f"work toml [scheduler].planning_start_date = "
+                     f"{hz.anchor:%Y-%m-%d %H:%M} (staging frame)")
+    else:
+        notes.append("no work flowstate.toml to stamp the staging anchor into")
 
     dem_path = work / "demand_plan.csv"
     src_meta = dd / "reference" / "demand_plan.source.json"
@@ -610,8 +678,24 @@ def _stage_time_frame(work: Path, dd: Path, hz) -> list[str]:
         from helpers.downtime_store import stage_solver_downtimes
 
         n_dt = stage_solver_downtimes(dt_src, work / "downtimes.csv", hz.anchor)
+        # Blocked time rounds OUTWARD to whole hours here (fix C11 / time-4
+        # / staging-7): the wall-clock file yields fractional hours
+        # (0.0..47.983) and the solver's loader truncates with int(), so a
+        # line declared down until 23:59 was schedulable from 23:00 and a
+        # sub-hour outage vanished. floor(start)/ceil(end) makes the
+        # loader's truncation a no-op for every scenario, coalesced or not.
+        import math as _m
+        _dtp = work / "downtimes.csv"
+        _wdt = _pd.read_csv(_dtp)
+        if len(_wdt):
+            _s = _pd.to_numeric(_wdt["start_hour"], errors="coerce")
+            _e = _pd.to_numeric(_wdt["end_hour"], errors="coerce")
+            _wdt["start_hour"] = [int(_m.floor(v)) if _pd.notna(v) else v for v in _s]
+            _wdt["end_hour"] = [int(_m.ceil(v)) if _pd.notna(v) else v for v in _e]
+            _wdt.to_csv(_dtp, index=False)
         notes.append(f"downtimes derived from wall-clock file ({n_dt} row(s), "
-                     f"hour 0 = {hz.anchor:%Y-%m-%d %H:%M})")
+                     f"hour 0 = {hz.anchor:%Y-%m-%d %H:%M}; hours rounded "
+                     "outward: floor start / ceil end)")
     return notes
 
 
@@ -686,9 +770,11 @@ def _overlay_current_state(
     from helpers.horizon import resolve as _hr
     from helpers.paths import data_dir as _dd
 
-    dd = data_dir if Path(data_dir).name == "data" else _dd()
-    dd = Path(dd)
-    cfg = _lt()
+    # One run, one data root (fix staging-9): the caller's data_dir, whatever
+    # its folder name; the old `name == "data"` test silently redirected
+    # every other caller to the LIVE repo data dir (helpers.paths.data_dir).
+    dd = Path(data_dir) if data_dir is not None else Path(_dd())
+    cfg = _lt(_work_cfg_path(dd))
     hz = _hr(cfg)
     ds = _ds(cfg)
     mp_paths = [p.strip() for p in str(ds.get("manprg_files", "")).split(";")
@@ -699,16 +785,33 @@ def _overlay_current_state(
         dd / "reference" / "cip_info.csv")
     notes.extend(_stage_time_frame(work, dd, hz))
     try:
+        # One clock for the whole staging (fix CA-1 / C03, INTEGRATE): the
+        # horizon's `now`; `as_of` defaults to the manprg content stamp.
         cs = _bcs(hz, manprg_paths=mp_paths, cip_path=cip_path,
                   lines=_ll(dd / "lines.csv"), cfg=cfg,
-                  caps_path=dd / "reference" / "capabilities_rates.csv")
+                  caps_path=dd / "reference" / "capabilities_rates.csv",
+                  now=hz.now)
     except Exception as exc:  # noqa: BLE001
         return notes + [f"current-state overlay skipped: {exc}"]
+    # Unknown manprg lines (fix adversarial-11): a name lines.csv does not
+    # know must be reported and skipped, never staged under an invented id.
+    _known = _known_lines(dd)
+    if _known:
+        _unk = sorted({str(r.get("line", "")).strip().upper()
+                       for r in list(cs.running) + list(cs.queued)
+                       if str(r.get("line", "")).strip().upper() not in _known})
+        if _unk:
+            notes.append(f"unknown manprg line(s) skipped (not in lines.csv): "
+                         f"{', '.join(_unk)}")
+            cs.running = [r for r in cs.running
+                          if str(r.get("line", "")).strip().upper() in _known]
+            cs.queued = [r for r in cs.queued
+                         if str(r.get("line", "")).strip().upper() in _known]
 
     init_path = Path(work) / "initial_states.csv"
     if not init_path.exists():
         return ["current-state overlay skipped: no initial_states.csv in work dir"]
-    init = _pd.read_csv(init_path)
+    init = _pd.read_csv(init_path, dtype={"initial_sku": str})
     if init.empty:
         return ["current-state overlay skipped: initial_states.csv is empty"]
 
@@ -716,8 +819,12 @@ def _overlay_current_state(
     # position. (line_free_h is the end of the running MO PLUS every queued MO
     # behind it; it is NOT used for the gate because queued MOs are re-placed
     # from the demand plan, not locked.)
+    # Gates round UP (fix C11 / adversarial-9): int() floored 49.137 -> 49,
+    # letting new work start up to 59 minutes before the running MO ends.
+    import math as _mth
     running_free_map = {
-        ln.upper(): max(0, int(h)) for ln, h in cs.line_running_free_h.items()
+        ln.upper(): max(0, int(_mth.ceil(float(h))))
+        for ln, h in cs.line_running_free_h.items()
     }
     _use_cmo = str(
         cfg.get("scheduler", {}).get("use_current_mo", "")).strip().lower()
@@ -745,6 +852,12 @@ def _overlay_current_state(
     # position the planner described. queued MOs are re-placed from the demand
     # plan, so they must NOT widen the gate (that would double-block).
     gate_map = running_free_map
+    # Lines with no RUNNING MO must not inherit the fixture's initial_sku /
+    # long-shutdown fields (fix staging-4: reference initial_states.csv was
+    # last hand-edited 2026-08-13). Use the last COMPLETED manprg SKU on the
+    # line when known, else CLEAN, and zero the long-shutdown fields.
+    _last_done = _last_completed_sku(cs)
+    _from_fixture: list[str] = []
     for idx, row in init.iterrows():
         ln = str(row.get("line_name", "")).strip().upper()
         if ln in gate_map and gate_map[ln] > 0:
@@ -752,6 +865,13 @@ def _overlay_current_state(
             changed += 1
         if ln in sku_map and sku_map[ln]:
             init.at[idx, "initial_sku"] = sku_map[ln]
+        else:
+            init.at[idx, "initial_sku"] = _last_done.get(ln, "CLEAN")
+            for _col, _val in (("long_shutdown_flag", 0),
+                               ("long_shutdown_extra_setup_hours", 0)):
+                if _col in init.columns:
+                    init.at[idx, _col] = _val
+            _from_fixture.append(f"{ln}->{_last_done.get(ln, 'CLEAN')}")
         if ln in carry_map and "carryover_run_hours_since_last_cip_at_t0" in init.columns:
             init.at[idx, "carryover_run_hours_since_last_cip_at_t0"] = carry_map[ln]
 
@@ -759,6 +879,11 @@ def _overlay_current_state(
     notes.append(
         f"current state overlaid: {changed} line(s) gated to running-MO end, "
         f"{len(sku_map)} initial SKU(s), {len(carry_map)} CIP carryover(s)")
+    if _from_fixture:
+        notes.append(
+            f"{len(_from_fixture)} line(s) without a running MO staged from "
+            "their last completed manprg SKU or CLEAN (fixture initial_sku / "
+            f"long-shutdown ignored): {', '.join(_from_fixture)}")
 
     # ── current_mo.csv: running + queued MOs as solver input ─────────────
     # Each row is an MO locked to its manprg line; the solver may split /
@@ -806,53 +931,75 @@ def _overlay_current_state(
         dt = _pd.read_csv(dt_path) if dt_path.exists() else _pd.DataFrame(
             columns=["line_id", "line_name", "start_hour", "end_hour", "reason"])
         from helpers.calendar_io import load_lines as _ll2
+        from helpers.plan_fill import coalesce_windows as _cw
         lines_df = _ll2(Path(dd) / "lines.csv")
         lid_map = {str(r["line_name"]).upper(): int(r["line_id"])
                    for _, r in lines_df.iterrows()} if len(lines_df) else {}
-        add = _pd.DataFrame([{
+        # Outward rounding (C11) and a UNION with the existing line-downs
+        # (fix staging-12): a trial overlapping a real downtime used to be
+        # appended as a second fixed interval, which makes NoOverlap
+        # infeasible at every relax level — the F path always coalesced.
+        add = [{
             "line_id": lid_map.get(w["line"], 0), "line_name": w["line"],
-            "start_hour": int(w["start"]), "end_hour": int(round(w["end"])),
+            "start_hour": int(_mth.floor(w["start"])),
+            "end_hour": int(_mth.ceil(w["end"])),
             "reason": "Trial (manprg)",
-        } for w in trial_windows])
-        _pd.concat([dt, add], ignore_index=True).to_csv(dt_path, index=False)
+        } for w in trial_windows]
+        merged = _cw([
+            {"line_id": r.get("line_id", 0), "line_name": r["line_name"],
+             "start_hour": r["start_hour"], "end_hour": r["end_hour"],
+             "reason": r.get("reason", "blocked")}
+            for r in dt.to_dict("records") + add])
+        _pd.DataFrame(merged, columns=["line_id", "line_name", "start_hour",
+                                       "end_hour", "reason"]).to_csv(
+            dt_path, index=False)
         notes.append(
             f"{len(trial_windows)} manprg TRIALS window(s) blocked as downtime "
-            "(trials are blocked hours, never orders)")
+            "(trials are blocked hours, never orders; unioned with line-downs)")
 
+    # The RUNNING MO is NOT emitted as a locked order (fix C64 / modelcore-7
+    # / adversarial-2). Its remaining work is already expressed by the gate
+    # above (available_from = running-MO end); emitting it here as well
+    # demanded the same tonnage twice (487 t live) on a line whose hours
+    # were already reserved for it. Decision: keep the gate, drop the row —
+    # a running MO cannot be re-planned anyway. Queued MOs stay locked orders.
     cmo_rows = []
-    for r in cs.running:
-        if _is_trial(r):
-            continue
-        left_cas = float(r.get("left_cas", 0) or 0)
-        fct_cas = float(r.get("fct_cas", 0) or 0)
-        qty_kg = float(r.get("qty_kg", 0) or 0)
-        remaining = round(qty_kg * (left_cas / fct_cas), 3) \
-            if fct_cas > 0 else qty_kg
-        cmo_rows.append({
-            "mo": r["mo"], "line_name": str(r["line"]).upper(),
-            "sku": r["item"], "remaining_kg": remaining,
-            # full horizon, not the pre-rolling 336h window (audit
-            # 2026-08-15): a running MO finishing after hour 335 was
-            # forced late/infeasible by construction
-            "due_start_h": 0, "due_end_h": int(hz.hours) - 1,
-            "locked_line": 1, "source": "manprg",
-        })
+    _n_running_skipped = sum(1 for r in cs.running if not _is_trial(r))
+    if _n_running_skipped:
+        notes.append(
+            f"{_n_running_skipped} running MO(s) kept as the line gate only "
+            "(not emitted to current_mo.csv: the gate already reserves their "
+            "remaining hours)")
     for r in cs.queued:
         if _is_trial(r):
             continue
         remaining = round(float(r.get("qty_kg", 0) or 0), 3)
         start_h = max(0, int(_hours_h(r.get("placed_start"), hz.anchor)))
         end_h = max(start_h + 1, int(_hours_h(r.get("placed_end"), hz.anchor)))
+        # The MO's manprg planned start in solver hours (INTEGRATE, agent V
+        # handoff to CB): write_mo_changes reports it as orig_start_h with
+        # orig_start_src = "manprg" instead of the Flowstate projection.
+        _ms = r.get("start_dt")
+        try:
+            manprg_start_h = (round(_hours_h(_ms, hz.anchor), 3)
+                              if _ms is not None and not _pd.isna(_ms) else None)
+        except Exception:  # noqa: BLE001 — optional column
+            manprg_start_h = None
         cmo_rows.append({
             "mo": r["mo"], "line_name": str(r["line"]).upper(),
             "sku": r["item"], "remaining_kg": remaining,
             "due_start_h": start_h, "due_end_h": end_h,
             "locked_line": 1, "source": "manprg",
+            "manprg_start_h": manprg_start_h,
         })
     if cmo_rows:
         _pd.DataFrame(cmo_rows).to_csv(Path(work) / "current_mo.csv", index=False)
         notes.append(
             f"current_mo.csv: {len(cmo_rows)} MO(s) locked to their manprg line")
+    # Same as the F path: the current-state reader's warnings (unknown
+    # lines skipped, missing PreviousCIP, ...) belong in the run log.
+    for w in cs.warnings[:4]:
+        notes.append(f"current-state warning: {w}")
     return notes
 
 
@@ -861,6 +1008,51 @@ def _hours_h(when, anchor) -> float:
     import pandas as _pd
     ts = _pd.Timestamp(when).to_pydatetime()
     return (ts - anchor).total_seconds() / 3600.0
+
+
+def _jsonable_row(row: dict) -> dict:
+    """A completed-MO row as plain JSON: Timestamps -> "%Y-%m-%d %H:%M:%S",
+    NaN -> None, numpy scalars -> Python."""
+    import math as _m
+    from datetime import datetime as _dt
+
+    import pandas as _pd
+    out: dict = {}
+    for k, v in (row or {}).items():
+        if v is None or v is _pd.NaT:
+            out[k] = None
+        elif isinstance(v, (_pd.Timestamp, _dt)):
+            out[k] = _pd.Timestamp(v).strftime("%Y-%m-%d %H:%M:%S")
+        elif isinstance(v, (bool, int, str)):
+            out[k] = v
+        elif isinstance(v, float):
+            out[k] = None if _m.isnan(v) else v
+        elif hasattr(v, "item"):  # numpy scalar
+            try:
+                x = v.item()
+                out[k] = None if (isinstance(x, float) and _m.isnan(x)) else x
+            except Exception:  # noqa: BLE001
+                out[k] = str(v)
+        else:
+            out[k] = str(v)
+    return out
+
+
+def _write_fill_ledger_json(work: Path, anchor, hist: dict | None,
+                            completed: list | None, lookback_weeks: int = 4) -> Path:
+    """work/fill_ledger.json — the legs _overlay_fill gave build_ledger, in
+    the JSON contract compare._fill_ledger_inputs converts back."""
+    import json as _json
+    payload = {
+        "anchor": anchor.strftime("%Y-%m-%d %H:%M:%S"),
+        "history_demand": {f"{s}|{int(w)}": float(k)
+                           for (s, w), k in (hist or {}).items()},
+        "completed": [_jsonable_row(r) for r in (completed or [])],
+        "lookback_weeks": int(lookback_weeks),
+    }
+    p = Path(work) / "fill_ledger.json"
+    p.write_text(_json.dumps(payload, indent=1), encoding="utf-8")
+    return p
 
 
 def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
@@ -891,8 +1083,9 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
                                    pinned_blocks)
 
     notes: list[str] = []
-    dd = Path(data_dir) if Path(data_dir).name == "data" else Path(_dd())
-    cfg = _lt()
+    # One run, one data root (fix staging-9) — see _overlay_current_state.
+    dd = Path(data_dir) if data_dir is not None else Path(_dd())
+    cfg = _lt(_work_cfg_path(dd))
     hz = _hr(cfg)
     H = float(hz.hours)
     ds = _ds(cfg)
@@ -902,20 +1095,53 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
     cip_path = str(ds.get("cip_info_csv", "")).strip() or str(
         dd / "reference" / "cip_info.csv")
     notes.extend(_stage_time_frame(work, dd, hz))
+    # One clock for the whole staging (fix CA-1 / C03, INTEGRATE): the
+    # horizon's `now`; `as_of` defaults to the manprg content stamp; the
+    # no-history CIP grid is phased from initial_states' carryover (CA-8).
+    _init_path = dd / "reference" / "initial_states.csv"
+    _init_df = None
+    if _init_path.exists():
+        try:
+            _init_df = _pd.read_csv(_init_path)
+        except Exception:  # noqa: BLE001 — optional input
+            _init_df = None
     cs = _bcs(hz, manprg_paths=mp_paths, cip_path=cip_path,
               lines=_ll(dd / "lines.csv"), cfg=cfg,
-              caps_path=dd / "reference" / "capabilities_rates.csv")
+              caps_path=dd / "reference" / "capabilities_rates.csv",
+              now=hz.now, initial_states=_init_df)
     blocks = cs.blocks
+    # Unknown manprg lines are reported and skipped (fix adversarial-11),
+    # never staged under the invented line_id current_state gives them.
+    from helpers.plan_fill import filter_known_lines as _fkl
+    blocks, _unknown = _fkl(blocks, _known_lines(dd))
+    if _unknown:
+        notes.append(f"unknown manprg line(s) skipped (not in lines.csv): "
+                     f"{', '.join(_unknown)}")
 
     # Planner-placed CIPs (Plant Calendar popup / gap picker, 2026-09-01):
     # committed windows like pinned production. Where the planner has a CIP
     # on a line, the plant-projected cleans for that line are dropped —
     # the planner's clean re-forecasts the grid, and the board already
     # regenerated its later projected CIPs from it (staged below too).
+    # planner_cip_blocks matches a POSITIVE planner: token (fix C41): the
+    # cleans this pipeline drew last run (solver:cip_req) are re-derived by
+    # _collect_result, never inherited as the planner's re-forecast.
     from helpers.calendar_io import load_calendar as _lcal
     from helpers.plan_fill import planner_cip_blocks as _pcb
+    from helpers.plan_fill import rebase_board as _rbb
     cal_path = dd / "calendar_blocks.csv"
-    pcips = _pcb(_lcal(cal_path)) if cal_path.exists() else None
+    board = _lcal(cal_path) if cal_path.exists() else None
+    if board is not None and len(board) and hz.stale:
+        # The board stores hours against the CONFIG anchor; staging speaks
+        # hz.anchor hours (fix C55 / netting-3 / staging-6). Rolling the
+        # board is a manual button, so an un-rolled board staged pinned
+        # blocks and planner CIPs shift_h hours late.
+        board, _n_past = _rbb(board, hz.shift_h)
+        notes.append(
+            f"board re-based {hz.shift_h:+.0f}h into the staging frame "
+            f"(board anchor {hz.config_anchor:%Y-%m-%d} -> "
+            f"{hz.anchor:%Y-%m-%d}; {_n_past} fully-past block(s) dropped)")
+    pcips = _pcb(board) if board is not None else None
     if pcips is not None and len(pcips) and "attrs" in blocks.columns:
         _pl = {str(x).upper() for x in pcips["line_name"]}
         _drop = ((blocks["block_type"].astype(str) == "cip")
@@ -934,7 +1160,7 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
     # deep in the fill region must not gate the whole line before it, and
     # the changeover base belongs to the committed TAIL, not to a mid-
     # horizon pin.
-    pinned = pinned_blocks(_lcal(cal_path)) if cal_path.exists() else None
+    pinned = pinned_blocks(board) if board is not None else None
     if pinned is not None and len(pinned):
         blocks_all = _pd.concat([blocks, pinned], ignore_index=True)
         notes.append(
@@ -945,9 +1171,26 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
     if pcips is not None and len(pcips):
         blocks_all = _pd.concat([blocks_all, pcips], ignore_index=True)
 
+    # Staging assertion (fix C41): every line with committed production
+    # must keep a clean grid through the horizon — loud note otherwise.
+    from helpers.cip_import import read_cip_info as _rci_f
+    from helpers.plan_fill import cip_grid_gaps as _cgg
+    try:
+        _ivs = {ln.upper(): float(info.max_hours_between)
+                for ln, info in _rci_f(cip_path).by_line.items()
+                if info.max_hours_between}
+    except Exception:  # noqa: BLE001 — the check degrades to the default interval
+        _ivs = {}
+    _default_iv = float((cfg.get("cip") or {}).get("interval_h", 120) or 120)
+    for _n in _cgg(blocks_all, _ivs, H, default_interval_h=_default_iv):
+        notes.append(f"CIP CHECK — {_n}")
+
     # 1. committed windows -> downtimes (existing line-downs kept). The
     # TRUE committed blocks are stashed alongside so the proposal calendar
     # can show them as production/trial/CIP instead of fake maintenance.
+    # Committed CIPs stay SEPARATE pure "Committed CIP" rows (fix C29
+    # staging side) so the model's fixed-window waiver and the validator's
+    # CIP_INTERVAL check see each clean's real start/end.
     windows = committed_windows(blocks_all, H)
     blocks_all.to_csv(work / "committed_blocks.csv", index=False)
     dt_path = work / "downtimes.csv"
@@ -959,12 +1202,15 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
         {"line_id": r.get("line_id", 0), "line_name": r["line_name"],
          "start_hour": r["start_hour"], "end_hour": r["end_hour"],
          "reason": r.get("reason", "blocked")}
-        for r in combined])
+        for r in combined], keep_cips_separate=True)
     _pd.DataFrame(merged, columns=["line_id", "line_name", "start_hour",
                                    "end_hour", "reason"]).to_csv(
         dt_path, index=False)
+    _n_cip_rows = sum(1 for r in merged
+                      if str(r.get("reason", "")).strip() == "Committed CIP")
     notes.append(f"{len(windows)} committed window(s) fixed as blocked time "
-                 "(running+queued MOs, trials, projected CIPs)")
+                 f"(running+queued MOs, trials, projected CIPs; {_n_cip_rows} "
+                 "pure Committed CIP row(s) kept separate)")
 
     # 2. initial states: fill starts at the committed tail OR NOW, whichever
     #    is later; changeover base = last committed SKU, dirty-clock
@@ -981,9 +1227,15 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
                      "may start in the past")
     free = line_free_from(blocks, H)
     last_sku = last_sku_per_line(blocks)
+    # Lines with NO committed production (fix staging-4): never inherit
+    # the fixture's initial_sku / long-shutdown fields — use the last
+    # completed manprg SKU on the line when known, else CLEAN, zero the
+    # long-shutdown fields, and say so.
+    _last_done = _last_completed_sku(cs)
+    _from_fixture: list[str] = []
     init_path = work / "initial_states.csv"
     if init_path.exists():
-        init = _pd.read_csv(init_path)
+        init = _pd.read_csv(init_path, dtype={"initial_sku": str})
         n_gated = 0
         gates: dict[str, float] = {}
         for idx, row in init.iterrows():
@@ -995,6 +1247,13 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
                 n_gated += 1
             if ln in last_sku:
                 init.at[idx, "initial_sku"] = last_sku[ln]
+            else:
+                init.at[idx, "initial_sku"] = _last_done.get(ln, "CLEAN")
+                for _col, _val in (("long_shutdown_flag", 0),
+                                   ("long_shutdown_extra_setup_hours", 0)):
+                    if _col in init.columns:
+                        init.at[idx, _col] = _val
+                _from_fixture.append(f"{ln}->{_last_done.get(ln, 'CLEAN')}")
             if "carryover_run_hours_since_last_cip_at_t0" in init.columns:
                 init.at[idx, "carryover_run_hours_since_last_cip_at_t0"] = 0
         init.to_csv(init_path, index=False)
@@ -1006,6 +1265,17 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
             _json.dumps({"gates": gates}, indent=1), encoding="utf-8")
         notes.append(f"{n_gated} line(s) gated to their committed tail; "
                      f"{len(last_sku)} changeover base SKU(s) set")
+        if _from_fixture:
+            notes.append(
+                f"{len(_from_fixture)} line(s) without committed production "
+                "staged from their last completed manprg SKU or CLEAN "
+                f"(fixture initial_sku / long-shutdown ignored): "
+                f"{', '.join(_from_fixture)}")
+        # A line gated at/near the horizon has no fill capacity at all
+        # (fix staging-10): say so loudly and name the block responsible.
+        from helpers.plan_fill import gate_warnings as _gw
+        for _n in _gw(gates, blocks, H):
+            notes.append(f"GATE CHECK — {_n}")
 
     # 3. solver CIP standdown (projected CIPs carry the cleans)
     cip_hrs_path = work / "line_cip_hrs.csv"
@@ -1042,15 +1312,41 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
         if _ref_dem.exists() and _dem_anchor is not None:
             hist = demand_week_grid(
                 _pd.read_csv(_ref_dem, dtype={"sku": str}), _dem_anchor)
+        # Past production with no demand week to settle against is held
+        # back and reported (C54) — carry_unsettled_past stays False here.
         ledger = build_ledger(dem, blocks_all, completed=cs.completed,
                               anchor=hz.anchor, history_demand=hist)
-        dem2, sub_notes = apply_ledger(dem, ledger)
+        # Persist the ledger LEGS with the work dir (INTEGRATE, agents Q + V
+        # handoff C-2 / C57): Compare's fill-window view re-nets the residual
+        # with plan_fill.subtract_committed and, without these legs, counted
+        # kg already made as still due. JSON-safe contract pinned by
+        # tests/test_fix_V.py::test_compare_fill_ledger_inputs_roundtrip:
+        # anchor "%Y-%m-%d %H:%M:%S", history_demand {"<sku>|<week>": kg},
+        # completed rows with start_dt/end_dt as strings, lookback_weeks int.
+        try:
+            _write_fill_ledger_json(work, hz.anchor, hist, cs.completed)
+        except Exception as _fl_exc:  # noqa: BLE001 — telemetry, never a gate
+            notes.append(f"fill_ledger.json not written: {_fl_exc}")
+        # Explicit bounds = planner band on the GROSS minus credit (C56);
+        # sub-kg residuals zeroed and zero-target rows dropped (netting-7)
+        # so no phantom qmin 0 / qmax 1 order reaches the solver.
+        dem2, sub_notes = apply_ledger(dem, ledger, explicit_bounds=True)
+        _tgt = _pd.to_numeric(dem2["qty_target"], errors="coerce").fillna(0.0)
+        _zero = _tgt <= 0.0
+        if _zero.any():
+            notes.append(
+                f"{int(_zero.sum())} fully-covered order(s) dropped from the "
+                "work demand (zero residual target): "
+                + ", ".join(str(o) for o in dem2.loc[_zero, "order_id"].head(8)))
+            dem2 = dem2[~_zero].copy()
         dem2.to_csv(dem_path, index=False)
         ledger.to_frame().to_csv(work / "coverage_ledger.csv", index=False)
         notes.append(f"demand reduced by committed production on "
                      f"{len(sub_notes)} order(s) "
-                     "(SKU-week ledger: coverage_ledger.csv)")
+                     "(SKU-week ledger: coverage_ledger.csv; bounds = planner "
+                     "band minus committed credit)")
         notes.extend(ledger.notes[:2])
+        notes.extend(n for n in ledger.notes[2:] if n.startswith("WARNING"))
         notes.extend(sub_notes[:5])
         if ledger.overcommitted:
             _oc = sorted(ledger.overcommitted.items(),
@@ -1090,6 +1386,22 @@ def _work_input_signature(work: Path) -> str:
     return h.hexdigest()
 
 
+def _seed_setup_hours(setups: dict) -> dict[str, dict[str, float]]:
+    """Physical setup hours as the SOLVER will see them (audit 2026-09-03,
+    greedy-seed / solver setup-rule parity; SA-4 / C36 switched the loader
+    to round UP). data_loader turns every changeover standard into whole
+    model hours with changeover_cache.round_setup_hours (0.25 -> 1, 1.25 ->
+    2, 3.0 -> 3) and then floors cip_req_after pairs at the CIP duration
+    (apply_cip_req_setup_floor — mirrored in _greedy_seed's pair loop). A
+    seed built on the raw quarter-hour standards left gaps 15-45 minutes
+    SHORTER than the model's, so the warm start violated the model's own
+    setup constraint and CP-SAT silently discarded the hint. Returns a
+    fresh nested dict (the loader's cache is never mutated)."""
+    from solver.changeover_cache import round_setup_hours
+    return {str(f): {str(t): float(round_setup_hours(v)) for t, v in (row or {}).items()}
+            for f, row in (setups or {}).items()}
+
+
 def _greedy_seed(work: Path) -> list[str]:
     """Scenario F: construct a dense fill greedily and write it as the
     solver's warm start (prev_schedule.csv + a matching prev_feasibility.json
@@ -1127,7 +1439,11 @@ def _greedy_seed(work: Path) -> list[str]:
                 rates[(ln, str(r["sku"]))] = flat[ln]
 
     from solver.changeover_cache import load_changeover_setup_nested
-    setups = load_changeover_setup_nested(work / "changeovers.csv")
+    # Copy: the loader memoises and returns its cached dict — never mutate.
+    # Rounded UP to whole hours like the solver's loader (see
+    # _seed_setup_hours); the cip_req floor is applied in the loop below.
+    setups = _seed_setup_hours(
+        load_changeover_setup_nested(work / "changeovers.csv"))
 
     # Format-aware transition costs: the same weighted machine economics the
     # solver optimizes ([changeover] in the work toml, AFTER scenario
@@ -1154,6 +1470,13 @@ def _greedy_seed(work: Path) -> list[str]:
     co_df = normalize_co_columns(
         _pd.read_csv(work / "changeovers.csv",
                      dtype={"from_sku": str, "to_sku": str}))
+    # Same setup-TIME rule as the solver's loader (data_loader applies
+    # changeover_cache.apply_cip_req_setup_floor): a cip_req_after pair's
+    # gap is at least one CIP duration, so the seed leaves the clean's slot
+    # exactly where the model will insist on it (otherwise the hint is
+    # infeasible and CP-SAT discards it).
+    _cip_floor_h = float(int((cfg.get("cip") or {}).get("duration_h", 6) or 6))
+    _n_floored = 0
     for _r in co_df.itertuples(index=False):
         _c = _base_w + sum(
             w for col, w in _w.items()
@@ -1162,6 +1485,14 @@ def _greedy_seed(work: Path) -> list[str]:
         # clamp at 0 exactly like the model's pair_cost (model_builder).
         _c += _flavor_w * int(getattr(_r, "added_flavors", 0) or 0)
         co_cost.setdefault(str(_r.from_sku), {})[str(_r.to_sku)] = max(0.0, _c)
+        if int(getattr(_r, "cip_req_after", 0) or 0) == 1 and _cip_floor_h > 0:
+            _row = setups.setdefault(str(_r.from_sku), {})
+            if float(_row.get(str(_r.to_sku), 0) or 0) < _cip_floor_h:
+                _row[str(_r.to_sku)] = float(_cip_floor_h)
+                _n_floored += 1
+    if _n_floored:
+        notes.append(f"greedy seed: {_n_floored} cip_req pair(s) floored to "
+                     f"the {_cip_floor_h:g}h clean (same rule as the solver)")
 
     blocked: dict[str, list[tuple[float, float]]] = {}
     for _, r in dt.iterrows():
@@ -1301,21 +1632,21 @@ def _patch_work_toml(
                 cfg.setdefault("objective", {})[f"co_{key}"] = value
         with open(toml, "wb") as fh:
             tomli_w.dump(cfg, fh)
-    except Exception:
-        # Never let config rewriting kill a solve; fall back to time-limit only.
-        if time_limit is not None:
-            try:
-                import re
-
-                text = toml.read_text(encoding="utf-8")
-                text = re.sub(r"time_limit\s*=\s*\d+", f"time_limit = {int(time_limit)}", text)
-                toml.write_text(text, encoding="utf-8")
-            except Exception:
-                pass
+    except Exception as exc:
+        # Loud (fix quality-5): the old fallback re-applied only the time
+        # limit and silently DROPPED every objective override (Scenario F's
+        # idle/changeover/topload/ffs weights), so the run 'succeeded' on
+        # the wrong objective. A config the solver cannot be given is a
+        # failed run, not a cosmetic hiccup.
+        raise StagingError(
+            f"could not write scenario overrides {sorted(overrides)} into "
+            f"{toml}: {exc}") from exc
 
 
 def _set_work_scheduler_flag(toml: Path, key: str, value) -> None:
-    """Set one [scheduler] key in a work-dir flowstate.toml (best-effort)."""
+    """Set one [scheduler] key in a work-dir flowstate.toml. Raises
+    StagingError on failure (fix quality-5): a silently missing
+    soft_demand / two_pass_co flag changes WHAT the solver solves."""
     try:
         try:
             import tomllib
@@ -1327,8 +1658,9 @@ def _set_work_scheduler_flag(toml: Path, key: str, value) -> None:
         cfg.setdefault("scheduler", {})[key] = value
         with open(toml, "wb") as fh:
             tomli_w.dump(cfg, fh)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        raise StagingError(
+            f"could not set [scheduler].{key} = {value!r} in {toml}: {exc}") from exc
 
 
 def _set_work_use_current_mo(toml: Path, value: bool) -> None:
@@ -1337,8 +1669,9 @@ def _set_work_use_current_mo(toml: Path, value: bool) -> None:
     Keeps the solver's relax-ladder skip (USE_CURRENT_MO -> jump to
     ignore_co) consistent with the overlay's per-scenario decision. A fresh-
     generation scenario must not skip to ignore_co — that was how a
-    "minimum changeovers" solve silently ignored changeovers. Best-effort:
-    a failure to write here must not kill a solve, so swallow it.
+    "minimum changeovers" solve silently ignored changeovers. Raises
+    StagingError on failure (fix quality-5): the flag decides the relax
+    ladder, so a swallowed write error solved a different problem.
     """
     try:
         try:
@@ -1351,8 +1684,10 @@ def _set_work_use_current_mo(toml: Path, value: bool) -> None:
         cfg.setdefault("scheduler", {})["use_current_mo"] = bool(value)
         with open(toml, "wb") as fh:
             tomli_w.dump(cfg, fh)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        raise StagingError(
+            f"could not set [scheduler].use_current_mo = {value!r} in {toml}: "
+            f"{exc}") from exc
 
 
 def _read_feasibility(work: Path) -> dict[str, Any] | None:
@@ -1506,6 +1841,28 @@ def _pid_alive(pid: Any) -> bool:
     return True
 
 
+def _kill_pid(pid: Any) -> bool:
+    """Terminate a detached solver process (and its children on Windows).
+    Returns True when a kill was attempted on a live pid."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0 or not _pid_alive(pid):
+        return False
+    try:
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           capture_output=True, text=True, timeout=30)
+        else:
+            import os
+            import signal
+            os.kill(pid, signal.SIGKILL)
+    except Exception:  # noqa: BLE001 — best effort; the caller re-checks liveness
+        return False
+    return True
+
+
 def resume_scenario(
     scenario: dict[str, Any],
     data_dir: Path,
@@ -1515,9 +1872,13 @@ def resume_scenario(
     """Reattach to a solve whose page run was killed mid-poll.
 
     Same contract as run_scenario: polls solver_progress.json while the
-    recorded pid is alive, then collects the work-dir outputs. The exit code
-    is unknowable after a detach, so outputs are the truth: a schedule on
-    disk counts as success.
+    recorded pid is alive, then collects the work-dir outputs. The process
+    exit code is gone after a detach, so the solver's OWN status record is
+    the truth instead (fix C82 / orchestration-6): feasibility_report.json
+    says INFEASIBLE exactly when the solver exited 2 — and it leaves a
+    PARTIAL schedule_phase2.csv (week-0-only rows) behind, so "a schedule
+    on disk" was never proof of success. An over-budget solver is KILLED
+    (the attended path already does) and reported as failed, not collected.
     """
     import json as _pj
     import time as _time
@@ -1533,6 +1894,7 @@ def resume_scenario(
     timeout_s = float(m.get("timeout_s") or 0) or max(
         120, float(m.get("time_limit") or 60) * 4 + 60)
     pid = m.get("pid")
+    killed = False
     while _pid_alive(pid):
         elapsed = (_dt.now() - t0).total_seconds() if t0 else 0.0
         prog = None
@@ -1548,13 +1910,25 @@ def resume_scenario(
             except Exception:  # noqa: BLE001 — UI must not kill a solve
                 pass
         if t0 is not None and elapsed > timeout_s:
-            break  # over budget: collect what exists instead of spinning
+            _kill_pid(pid)
+            killed = True
+            break
         _time.sleep(2.0)
     so_p = work / "_solver_stdout.txt"
     se_p = work / "_solver_stderr.txt"
     stdout = so_p.read_text(encoding="utf-8", errors="replace") if so_p.exists() else ""
     stderr = se_p.read_text(encoding="utf-8", errors="replace") if se_p.exists() else ""
-    rc = 0 if (work / "schedule_phase2.csv").exists() else 1
+    if killed:
+        rc = -9
+        stderr += (f"\n[resume] solver pid {pid} exceeded its {timeout_s:.0f}s "
+                   "budget and was killed; partial outputs are NOT collected")
+    else:
+        rc = 0 if (work / "schedule_phase2.csv").exists() else 1
+        feas = _read_feasibility(work)
+        if feas and str(feas.get("status", "")).upper() == "INFEASIBLE":
+            rc = 2   # phase2_scheduler._handle_infeasible exits 2 after writing this
+            stderr += ("\n[resume] feasibility_report.json says INFEASIBLE — "
+                       "the partial schedule on disk is not a result")
     result = _collect_result(
         scenario, work, data_dir, rc, stdout, stderr,
         [str(n) for n in (m.get("cs_notes") or [])])
@@ -1564,6 +1938,36 @@ def resume_scenario(
     if not result["ok"]:
         clear_pending_manifest(work)  # nothing to save — stop reattaching
     return result
+
+
+def _board_identity_kwargs(work: Path, data_dir: Path) -> dict[str, Any]:
+    """`board=` / `board_shift_h=` for import_solver_schedule (W HANDOFF C-3,
+    audit writeback-4): the proposal keeps the board's block ids, locks and
+    planner tokens for work the solver left in place, so versions and the
+    leaderboard are diffable by id (promote_version reconciles again anyway).
+    The board lives in the CONFIG frame (data root toml), the schedule in
+    the staged frame (work toml [scheduler].planning_start_date, C21), so
+    board_shift_h = board_anchor - schedule_anchor in hours. Never raises:
+    without a readable board the import is byte-for-byte what it was."""
+    try:
+        from helpers.calendar_io import load_calendar as _lc_board
+        from helpers.config import load_toml as _lt_b
+        from helpers.timefmt import planning_anchor as _pa_b
+
+        cal_path = Path(data_dir) / "calendar_blocks.csv"
+        if not cal_path.exists():
+            return {}
+        board = _lc_board(cal_path)
+        if board is None or not len(board):
+            return {}
+        root_toml = _work_cfg_path(Path(data_dir))
+        work_toml = Path(work) / "flowstate.toml"
+        board_anchor = _pa_b(_lt_b(root_toml) if root_toml else None)
+        sched_anchor = _pa_b(_lt_b(work_toml)) if work_toml.exists() else board_anchor
+        shift = (board_anchor - sched_anchor).total_seconds() / 3600.0
+        return {"board": board, "board_shift_h": float(shift)}
+    except Exception:  # noqa: BLE001 — identity is an enhancement, never a gate
+        return {}
 
 
 def _collect_result(
@@ -1619,6 +2023,7 @@ def _collect_result(
             sched,
             cip if cip.exists() else None,
             real_dt if real_dt.exists() else None,
+            **_board_identity_kwargs(work, data_dir),
         )
         calendar = (_pd2.concat([committed, fill_part], ignore_index=True)
                     if committed is not None and len(committed) else fill_part)
@@ -1633,7 +2038,12 @@ def _collect_result(
             from helpers.plan_fill import materialize_required_cips as _mrc
             from helpers.scorecard_engine import (_co_lookup as _col_cip,
                                                   _load_changeovers as _lco_cip)
-            _cip_h = float((_lt_cip().get("cip") or {}).get("duration_h", 6) or 6)
+            # the WORK toml (staging-9): never the live repo config when the
+            # caller runs against another data root
+            _cip_toml = work / "flowstate.toml"
+            _cip_cfg = _lt_cip(_cip_toml if _cip_toml.exists()
+                               else _work_cfg_path(Path(data_dir)))
+            _cip_h = float((_cip_cfg.get("cip") or {}).get("duration_h", 6) or 6)
             calendar, _cip_notes = _mrc(
                 calendar, _col_cip(_lco_cip(Path(data_dir) / "reference")), _cip_h)
             if _cip_notes:
@@ -1645,9 +2055,11 @@ def _collect_result(
             sched,
             cip if cip.exists() else None,
             work / "downtimes.csv" if (work / "downtimes.csv").exists() else None,
+            **_board_identity_kwargs(work, data_dir),
         )
     score = score_calendar(calendar, week_label=scenario["name"], data_dir=data_dir)
     fill_gates = None
+    fill_ledger = None
     if fill_mode:
         gates_path = work / "fill_gates.json"
         if gates_path.exists():
@@ -1658,6 +2070,17 @@ def _collect_result(
                     gates_path.read_text(encoding="utf-8")).get("gates") or None
             except Exception:  # noqa: BLE001 — gates are an enhancement, not a gate
                 fill_gates = None
+        # The staging ledger's legs (INTEGRATE, agents Q + V handoff, C57):
+        # saved with the version so Compare's fill-window residual is netted
+        # against what the proposal was staged against.
+        ledger_path = work / "fill_ledger.json"
+        if ledger_path.exists():
+            try:
+                import json as _json2
+
+                fill_ledger = _json2.loads(ledger_path.read_text(encoding="utf-8")) or None
+            except Exception:  # noqa: BLE001 — telemetry
+                fill_ledger = None
     return {
         "ok": True,
         "returncode": returncode,
@@ -1668,6 +2091,7 @@ def _collect_result(
         "relax_level": relax_level,
         "diag_blockages": diag_blockages,
         "fill_gates": fill_gates,
+        "fill_ledger": fill_ledger,
     }
 
 
@@ -1711,6 +2135,22 @@ def run_scenario(
     from datetime import datetime as _dt_run
     _started_at = _dt_run.now().isoformat(timespec="seconds")
     work = (Path(data_dir) / work_root / scenario["id"]).resolve()
+    # Refuse to wipe a work dir whose solver is still running (fix
+    # quality-7): the pending manifest lives INSIDE the work dir, so the
+    # rmtree destroyed the only record of the live run (or raised
+    # PermissionError on Windows mid-wipe, leaving a half-deleted dir).
+    _live = read_pending_manifest(work)
+    if _live and not pending_is_stale(_live) and _pid_alive(_live.get("pid")):
+        return {
+            "ok": False, "returncode": -2,
+            "log": (f"refused: a solver (pid {_live.get('pid')}, started "
+                    f"{_live.get('started_at')}) is still running in {work}. "
+                    "Wait for it (the Generate page reattaches to it) or stop "
+                    "it before starting another run of this scenario."),
+            "calendar": None, "scorecard": None, "feasibility": None,
+            "relax_level": None, "diag_blockages": "",
+            "started_at": _started_at,
+        }
     _prepare_work_dir(Path(data_dir).resolve(), work)
 
     # Only scenario E ("current state + demand") treats the manprg running /
@@ -1725,11 +2165,27 @@ def run_scenario(
     lock_current_mo = bool(scenario.get("lock_current_mo", scenario["id"] == "E"))
     if fill_mode:
         lock_current_mo = False
-    _set_work_use_current_mo(work / "flowstate.toml", lock_current_mo)
-    if scenario.get("soft_demand"):
-        _set_work_scheduler_flag(work / "flowstate.toml", "soft_demand", True)
-    if scenario.get("two_pass_co"):
-        _set_work_scheduler_flag(work / "flowstate.toml", "two_pass_co", True)
+
+    def _staging_failed(exc: BaseException) -> dict[str, Any]:
+        import traceback as _tb
+        return {
+            "ok": False, "returncode": -1,
+            "log": "staging FAILED:\n" + "".join(
+                _tb.format_exception(type(exc), exc, exc.__traceback__)),
+            "calendar": None, "scorecard": None, "feasibility": None,
+            "relax_level": None, "diag_blockages": "", "started_at": _started_at,
+        }
+
+    # Config writes are fatal when they fail (fix quality-5): each of these
+    # flags decides WHAT the solver solves.
+    try:
+        _set_work_use_current_mo(work / "flowstate.toml", lock_current_mo)
+        if scenario.get("soft_demand"):
+            _set_work_scheduler_flag(work / "flowstate.toml", "soft_demand", True)
+        if scenario.get("two_pass_co"):
+            _set_work_scheduler_flag(work / "flowstate.toml", "two_pass_co", True)
+    except StagingError as _exc:
+        return _staging_failed(_exc)
 
     # Inject the current plant state. Scenario F fixes the committed plan as
     # blocked line-time (fill mode); every other scenario uses the classic
@@ -1743,18 +2199,21 @@ def run_scenario(
             _cs_notes = _overlay_current_state(
                 work, data_dir, lock_current_mo=lock_current_mo)
     except Exception as _exc:  # noqa: BLE001
-        if fill_mode:
+        if fill_mode or isinstance(_exc, StagingError):
             # Fill staging IS the scenario — a half-staged work dir would
             # solve the wrong problem convincingly (measured: a dtype crash
             # in demand subtraction left UNSUBTRACTED demand and the run
-            # 'succeeded'). Fail loudly instead.
+            # 'succeeded'). Fail loudly instead. A StagingError (time-frame
+            # stamp, config write) is fatal for EVERY scenario: it decides
+            # the frame / objective the solver runs on.
             import traceback as _tb
             return {
                 "ok": False, "returncode": -1,
-                "log": "fill staging FAILED:\n" + _tb.format_exc(),
+                "log": ("fill staging FAILED:\n" if fill_mode
+                        else "staging FAILED:\n") + _tb.format_exc(),
                 "calendar": None, "scorecard": None,
                 "feasibility": None, "relax_level": None,
-                "diag_blockages": "",
+                "diag_blockages": "", "started_at": _started_at,
             }
         _cs_notes = [f"current-state overlay FAILED: {_exc}"]
 
@@ -1794,7 +2253,10 @@ def run_scenario(
         cmd.append("--cip-flex")
     # legacy reads time_limit + all weights from the toml; patch the work copy.
     eff_overrides = overrides if overrides is not None else scenario.get("overrides")
-    _patch_work_toml(toml, time_limit, eff_overrides)
+    try:
+        _patch_work_toml(toml, time_limit, eff_overrides)
+    except StagingError as _exc:
+        return _staging_failed(_exc)
 
     # Scenario F: stage the warm start AFTER all input patching — including
     # the toml weight overrides above, which the greedy seed's format-aware
@@ -1946,6 +2408,23 @@ def save_scenario_version(
         # Fill-window scoring (Compare page) needs the staging gates saved
         # WITH the proposal — they cannot be re-derived from the calendar.
         extra["fill_gates"] = result["fill_gates"]
+    # INTEGRATE (agent V handoff C-1/C-2): Compare reads metadata["feasibility"]
+    # for the validation line / Promote gate, metadata["scenario_id"] to tie
+    # the promoted plan to its mo_changes.csv, and metadata["fill_ledger"] to
+    # net the fill-window residual against the staging legs.
+    feas = result.get("feasibility") or {}
+    if isinstance(feas, dict) and feas:
+        extra["feasibility"] = {
+            k: feas[k] for k in (
+                "relax_level", "relax_mode", "status", "ignore_co",
+                "setup_times_enforced", "validation", "two_pass",
+                "committed_mo_bounds", "deterministic", "search_workers",
+                "model_warnings")
+            if k in feas}
+    if scenario.get("id") is not None:
+        extra["scenario_id"] = str(scenario["id"])
+    if result.get("fill_ledger"):
+        extra["fill_ledger"] = result["fill_ledger"]
     before = {v["slug"] for v in list_versions(data_dir)}
     slug = save_version(
         name,

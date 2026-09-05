@@ -1,16 +1,26 @@
-# helpers/overnight_score.py — overnight_score v1: the frozen cross-generation
+# helpers/overnight_score.py — overnight_score v2: the frozen cross-generation
 # composite for the nightly optimizer (scripts/overnight_batch.py).
 #
 # Pure functions only — no file IO, no config reads. The IO shell (staging a
 # generation, loading the frames, computing the capacity bound once per
-# generation) lives in the batch script. The formula is FROZEN as v1: every
-# SCORE dict carries {"version": "v1"} so leaderboards from different nights
-# stay comparable; a formula change must bump the version, never edit v1.
+# generation) lives in the batch script. The formula is FROZEN per version:
+# every SCORE dict carries {"version": ...} so leaderboards from different
+# nights stay comparable; a formula change must bump the version.
+#
+# v2 (fix Q / C30, changeover-2, 2026-09-03) — the changeover rule is now the
+# SAME as the scorecard's (scorecard_engine.score_changeovers / kpi.ts):
+#   * a transition whose gap fully contains a CIP block on that line is
+#     WAIVED (retooling happens during the clean) — v1 charged it in full;
+#   * a pair with NO standards row, or a row with no machine/recipe flag
+#     set, is a recipe-only change costing CO_SCORE_RECIPE_ONLY_WEIGHT —
+#     v1 priced an unknown pair at 0 (absence of standards read as free).
+# Leaderboards scored under v1 are not comparable with v2 ones.
 #
 # composite = 0.40*fill + 0.30*changeovers + 0.15*campaign + 0.15*on_time
 # (all subscores 0-100).
 #
-# Definitions (v1, exact):
+# Definitions (v2, exact — identical to v1 except the changeover rule noted
+# above):
 #   solver-placed block  production block whose order_id is a staged demand
 #                        order id, excluding blocks whose attrs carry the
 #                        exact token 'pinned' or any 'current_state:' token.
@@ -38,7 +48,9 @@
 #                        _apply_fill_window's changeover-base rule). Pairs
 #                        classify via the changeovers.csv flags exactly like
 #                        the co_pairs machinery; a pair with no standards row
-#                        contributes 0 load but still counts as a transition.
+#                        (or no flag set) is a recipe-only change and costs
+#                        CO_SCORE_RECIPE_ONLY_WEIGHT. A pair whose gap fully
+#                        contains a CIP block is waived (not a transition).
 #   campaign             a campaign is a maximal run of consecutive
 #                        solver-placed blocks with the same SKU on one line
 #                        (time order; gaps ignored — a projected CIP splitting
@@ -52,7 +64,7 @@
 #                        due-window midpoint. Orders due beyond the horizon
 #                        are excluded (weekly_breakdown convention).
 #
-# Edge rules (v1): net demand <= 0 -> fill=100, on_time=100. No solver-placed
+# Edge rules (unchanged since v1): net demand <= 0 -> fill=100, on_time=100. No solver-placed
 # production while demand > 0 -> all four subscores 0. Placed production with
 # zero transitions -> changeovers = 100.
 
@@ -63,7 +75,7 @@ from typing import Any
 
 import pandas as pd
 
-OVERNIGHT_SCORE_VERSION = "v1"
+OVERNIGHT_SCORE_VERSION = "v2"
 
 COMPOSITE_WEIGHTS = {
     "fill": 0.40,
@@ -84,6 +96,11 @@ CO_SCORE_WEIGHTS = {
     "ttp_change": 1.0,
 }
 CO_SCORE_FLAVOR_WEIGHT = 0.5     # per added flavor, clamped at >= 0
+# v2: a transition with NO flag set (or no standards row) is a recipe-only
+# change — the cheapest kind, priced like the cheapest machine (TTP), the
+# scorecard's co_weight_recipe_only convention. Never 0: absence of a
+# standards row must not read as a free changeover.
+CO_SCORE_RECIPE_ONLY_WEIGHT = 1.0
 CO_LOAD_CAP_PER_100H = 80.0      # weighted CO points per 100 placed hours -> 0
 CAMPAIGN_CAP_H = 40.0            # avg campaign run-hours scoring 100
 
@@ -222,9 +239,15 @@ def fill_subscore(
 
 
 def transition_cost(flags: dict | None) -> float:
-    """v1 scoring cost of one SKU transition (frozen constants above)."""
+    """v2 scoring cost of one SKU transition (frozen constants above).
+
+    Same missing-pair rule as the scorecard: no standards row, or a row
+    with no flag set, is a recipe-only change (CO_SCORE_RECIPE_ONLY_WEIGHT),
+    never 0. Only call this for a pair the CIP waiver did not remove
+    (weighted_co_load applies the waiver).
+    """
     if not flags:
-        return 0.0
+        return CO_SCORE_RECIPE_ONLY_WEIGHT
     cost = sum(
         w for key, w in CO_SCORE_WEIGHTS.items()
         if int(flags.get(key, 0) or 0) == 1)
@@ -232,6 +255,8 @@ def transition_cost(flags: dict | None) -> float:
     # model's pair_cost so a removal is never a reward here either.
     cost += CO_SCORE_FLAVOR_WEIGHT * max(
         0, int(flags.get("added_flavors", 0) or 0))
+    if cost <= 0:
+        return CO_SCORE_RECIPE_ONLY_WEIGHT
     return cost
 
 
@@ -242,18 +267,37 @@ def weighted_co_load(
 ) -> tuple[float, int]:
     """(weighted load, transition count) over pairs whose incoming block is
     solver-placed. Pairs walk consecutive production blocks per line in
-    start order — the co_pairs counting convention."""
+    start order — the co_pairs counting convention. A pair whose gap fully
+    contains a CIP block on the same line is WAIVED (v2; the scorecard /
+    kpi.ts rule: the clean subsumes the changeover work) — it is neither a
+    transition nor a cost."""
     prod = calendar[calendar["block_type"].astype(str) == "production"]
     load = 0.0
     transitions = 0
     key = "line_name" if "line_name" in prod.columns else "line_id"
-    for _, grp in prod.sort_values([key, "start_h"]).groupby(
+    cips = calendar[calendar["block_type"].astype(str) == "cip"]
+    cips_by_line: dict[str, list[tuple[float, float]]] = {}
+    for _, c in cips.iterrows():
+        try:
+            cips_by_line.setdefault(str(c.get(key, "")).upper(), []).append(
+                (float(c["start_h"]), float(c["end_h"])))
+        except (TypeError, ValueError):
+            continue
+
+    def _cip_between(line: str, a_end: float, b_start: float) -> bool:
+        return any(cs >= a_end - 1e-6 and ce <= b_start + 1e-6
+                   for cs, ce in cips_by_line.get(line, ()))
+
+    for line, grp in prod.sort_values([key, "start_h"]).groupby(
             prod[key].astype(str).str.upper()):
         idx = list(grp.index)
         rows = grp.to_dict("records")
         for i in range(1, len(rows)):
             frm, to = str(rows[i - 1].get("sku", "")), str(rows[i].get("sku", ""))
             if frm == to or idx[i] not in fill_index:
+                continue
+            if _cip_between(str(line), float(rows[i - 1]["end_h"]),
+                            float(rows[i]["start_h"])):
                 continue
             transitions += 1
             load += transition_cost(co_map.get((frm, to)))
