@@ -5,6 +5,7 @@
 import React from "react";
 import type { DragPreview } from "../utils/dragPreview";
 import { hourToStamp, hourToShortStamp } from "../utils/layout";
+import { chipFor } from "../utils/supplyGlue";
 
 interface Props {
   preview: DragPreview;
@@ -26,6 +27,15 @@ export const DragPreviewBadge: React.FC<Props> = ({ preview, anchor }) => {
   const endLabel = hourToStamp(endHour, anchor);
   const delta = hours - sourceHours;
   const deltaLabel = delta === 0 ? "" : delta > 0 ? ` (+${delta}h)` : ` (${delta}h)`;
+  // Supply row (contract §9): orange when the run leans on a truck or runs
+  // dry, grey when it is only informational (backed / minor / no data);
+  // nothing for a plain OK. The ghost never turns red for supply — only a
+  // hard_block refusal does, and that arrives through `valid`.
+  const chip = chipFor(preview.supply);
+  const supplyColor = chip === null ? null
+    : chip.tone === "crit" ? "#ff8a80"
+      : chip.tone === "warn" ? "#ffcc80"
+        : "#b0bec5";
 
   return (
     <div
@@ -77,6 +87,18 @@ export const DragPreviewBadge: React.FC<Props> = ({ preview, anchor }) => {
         <div style={{ ...rowStyle, color: "#ffcc80", fontWeight: 700 }}>
           <span>One-sided</span>
           <span>half rate - stretched</span>
+        </div>
+      )}
+      {chip && supplyColor && preview.supplyText && (
+        <div
+          data-testid="drag-preview-supply"
+          style={{
+            marginTop: 3, paddingTop: 3, borderTop: "1px solid rgba(255,255,255,0.18)",
+            color: supplyColor, fontWeight: chip.tone === "muted" ? 500 : 700,
+            whiteSpace: "normal", maxWidth: 360, lineHeight: "14px",
+          }}
+        >
+          {preview.supplyText}
         </div>
       )}
       {!valid && reason && (

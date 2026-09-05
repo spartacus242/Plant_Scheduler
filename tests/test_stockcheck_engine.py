@@ -136,7 +136,18 @@ def test_in_house_items_never_gate(snap):
 
 def test_report_end_to_end(snap, tmp_path):
     from stockcheck.api import stock_check_report
-    rep = stock_check_report(ROOT / "data", VIF)
+    # po_path/receiving_path False: the flat report must not depend on
+    # whatever bridge files happen to sit in the live data dir (the supply
+    # section is exercised on synthetic inputs in
+    # test_stockcheck_report_supply.py)
+    rep = stock_check_report(ROOT / "data", VIF, po_path=False,
+                             receiving_path=False)
     assert "schedule_view" in rep and "demand_view" in rep
     assert rep["source_files"].get("ediact 3.csv")
     assert isinstance(rep["item_reverse"], dict)
+    # §4 additive keys ride along even without a PO feed
+    assert rep["inbound"]["state"] == "missing"
+    assert rep["supply_meta"]["feed_state"] == "missing"
+    assert {"anchor", "sku_needs", "quality"} <= set(rep)
+    for row in rep["schedule_view"]:
+        assert row["key"] and row["supply"]["verdict"] in ("OK", "NO_DATA")

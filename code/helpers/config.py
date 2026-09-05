@@ -31,6 +31,7 @@ def datasources_config(cfg: dict | None = None) -> dict[str, Any]:
         "manprg_files": "",                   # two paths, ';'-separated
         "cip_info_csv": "",
         "demand_summary_csv": "",             # weekly AZAP baseline (Week, Product, kg_tons)
+        "po_report_path": "",                 # IT's open-PO extract (xlsx/csv); "" = bridge file
         "sql_enabled": False,
         "sql_dsn": "",                        # ODBC connection string for NPA
     }
@@ -105,4 +106,49 @@ def scorecard_config(cfg: dict | None = None) -> dict[str, Any]:
     }
     for k, v in defaults.items():
         sc.setdefault(k, v)
+    return sc
+
+
+def stock_config(cfg: dict | None = None) -> dict[str, Any]:
+    """Return [stock] section with supply-timeline defaults applied.
+
+    Rules for the open-PO receipt gate and the per-block supply verdict
+    (contracts 2026-09-01 §1). Hours are floats; the buffer L is
+    24 x min_days_after_delivery. Lists are copied so a caller mutating
+    them never edits the defaults.
+    """
+    cfg = cfg if cfg is not None else load_toml()
+    sc = dict(cfg.get("stock", {}))
+    defaults = {
+        # Buffer L (h) = 24 x this: a receipt must land this many days before
+        # the block's reference hour to count as reliable ("OK · backed").
+        "min_days_after_delivery": 4,
+        # "block_start" measures the lead to the block start; "depletion"
+        # measures it to the hour on-hand runs out (later, more lenient).
+        "lead_measured_from": "block_start",
+        # A packaging receipt is usable from HH:00 local on its receipt date.
+        "receipt_ready_hour": 16,
+        # Raw arrival areas add a QC release delay before the lot is usable.
+        "raw_qc_offset_h": 72,
+        # When a dock appointment is joined (po8 within +/-1 d), ready =
+        # appointment time + this.
+        "appt_ready_offset_h": 2,
+        # Feed older than this (by content: max receipt date vs today) is stale.
+        "po_ignore_after_h": 168,
+        # Landed rule: lots with a batch date >= receipt_date - 3 d summing to
+        # >= this fraction of the PO qty mean the line already arrived.
+        "landed_match_frac": 0.95,
+        # Dependent share below this reads as minor (grey/info, not orange).
+        "dependent_frac_floor": 0.05,
+        # Warn-only by default; true rejects only SHORT with zero on-hand and
+        # zero inbound on a fresh feed.
+        "hard_block": False,
+        # Block cases from the board's qty_kg when present, else rate x hours.
+        "use_board_qty_kg": True,
+        "raw_areas": ["RB1", "AMB", "RC1"],
+        # Count only from a joined "SL3 TRANSFER" appointment, else excluded.
+        "offsite_areas": ["SL3"],
+    }
+    for k, v in defaults.items():
+        sc.setdefault(k, list(v) if isinstance(v, list) else v)
     return sc

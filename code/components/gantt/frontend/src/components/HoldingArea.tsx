@@ -3,11 +3,16 @@
 // 2026-08-14): W34 orders stack under a W34 header, biggest tonnage first,
 // card text "SKU-W34: 6X12X90, 37.8h" (format from sku_info).
 
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { useDroppable, useDraggable } from "@dnd-kit/core";
-import type { ScheduleBlock } from "../types";
+import type { DemandTarget, ScheduleBlock, StockArgs } from "../types";
 import { skuColor } from "../utils/colors";
 import { displayOrderId, isoWeekLabel } from "../utils/layout";
+import { meanCapableRate } from "../utils/holdingDerive";
+import { blockKey } from "../utils/blockIdentity";
+import type { Timelines } from "../utils/stockRisk";
+import { earliestSafeStartFor, safeStartPill, type SafeStartPill, type StampFn } from "../utils/supplyGlue";
+import { SafeStartTag } from "./SkuPickerPopover";
 
 interface Props {
   blocks: ScheduleBlock[];
@@ -19,15 +24,33 @@ interface Props {
   /** SKU currently highlighted on the chart: matching cards get the same
    * gold ring, the rest dim — one highlight, both surfaces. */
   highlightSku?: string | null;
+  /** Supply timeline (contract 2026-09-01 §9): with a payload every
+   * production card carries a before-placement pill — the earliest clear
+   * start for the card's kg at its mean rate, judged alone against the
+   * placed board. stock null/absent = no pill anywhere. */
+  stock?: StockArgs | null;
+  supplyTimelines?: Timelines | null;
+  caps?: Record<string, Record<string, number>>;
+  lockedThroughH?: number | null;
+  /** "Now" in board hours (sandbox-supplied, refreshed with the board): the
+   * pills judge from max(now, lock) like the Place popover's rows, never
+   * from a lock boundary already in the past. */
+  nowH?: number | null;
+  demandTargets?: DemandTarget[];
+  supplyStamp?: StampFn | null;
 }
 
 const HoldingCard: React.FC<{
   block: ScheduleBlock; anchor: Date; skuFormats: Record<string, string>;
   onCardContextMenu?: (block: ScheduleBlock, x: number, y: number, shiftKey: boolean) => void;
   highlightSku?: string | null;
-}> = ({ block, anchor, skuFormats, onCardContextMenu, highlightSku }) => {
+  pill?: SafeStartPill | null;
+}> = ({ block, anchor, skuFormats, onCardContextMenu, highlightSku, pill = null }) => {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
-    id: `holding_${block.id}`,
+    // The piece key, not the id: two parked pieces of one split MO share
+    // an id and would collide in dnd-kit's registry. The drop resolves the
+    // card from the carried `block`, never from this id.
+    id: `holding_${blockKey(block)}`,
     data: { block, fromHolding: true },
   });
   const bg = skuColor(block.sku, block.block_type);
@@ -93,6 +116,11 @@ const HoldingCard: React.FC<{
           ? `CIP, ${block.run_hours.toFixed(1)}h`
           : `${displayOrderId(block.order_id, anchor)}: ${fmt}, ${block.run_hours.toFixed(1)}h`}
       </div>
+      {pill && (
+        <div style={{ position: "relative", padding: "0 10px 4px", lineHeight: "16px" }}>
+          <SafeStartTag pill={pill} />
+        </div>
+      )}
     </div>
   );
 };
@@ -108,9 +136,42 @@ function weekIndexOf(orderId: string): number | null {
   return m ? parseInt(m[1], 10) : null;
 }
 
-export const HoldingArea: React.FC<Props> = ({ blocks, anchor, skuFormats, onCardContextMenu, highlightSku }) => {
+export const HoldingArea: React.FC<Props> = ({
+  blocks, anchor, skuFormats, onCardContextMenu, highlightSku,
+  stock = null, supplyTimelines = null, caps, lockedThroughH = null, demandTargets, supplyStamp = null,
+  nowH = null,
+}) => {
   const [expanded, setExpanded] = useState(true);
   const { setNodeRef, isOver } = useDroppable({ id: "holding_area" });
+
+  // One pill per production card, judged alone against the placed board:
+  // the card's kg at its mean capable rate (the basis of its hours; the
+  // card's own kg/h when no line is capable), from the first plannable
+  // hour (max of now and the lock boundary, else hour 0 — the Place
+  // popover's base, so card and rows never disagree), with "after due
+  // window" against the order's due_end_hour. Recomputed only when the
+  // cards, the board's timelines or the payload change.
+  const pills = useMemo<Map<string, SafeStartPill> | null>(() => {
+    if (!stock || !supplyTimelines || !supplyStamp) return null;
+    const dueEnd = new Map<string, number>();
+    for (const d of demandTargets ?? []) {
+      if (d.due_end_hour != null) dueEnd.set(d.order_id, d.due_end_hour);
+    }
+    const fromH = Math.max(0, nowH ?? 0, lockedThroughH ?? 0);
+    // Keyed by piece (blockKey): two parked pieces of one split MO share
+    // an id but carry different kg, so each needs its own pill.
+    const out = new Map<string, SafeStartPill>();
+    for (const b of blocks) {
+      if (b.block_type !== "sku") continue;
+      const kg = b.qty_kg ?? 0;
+      const rate = meanCapableRate(caps ?? {}, b.sku)
+        || (kg > 0 && b.run_hours > 0 ? kg / b.run_hours : 0);
+      const res = earliestSafeStartFor(b.sku, kg, rate, fromH, supplyTimelines, stock,
+                                       { fallbackHours: b.run_hours });
+      out.set(blockKey(b), safeStartPill(res, supplyStamp, dueEnd.get(b.order_id) ?? null));
+    }
+    return out;
+  }, [blocks, stock, supplyTimelines, caps, lockedThroughH, nowH, demandTargets, supplyStamp]);
 
   // Group into week columns; unsuffixed blocks land in "Unassigned".
   const byWeek = new Map<number, ScheduleBlock[]>();
@@ -162,8 +223,9 @@ export const HoldingArea: React.FC<Props> = ({ blocks, anchor, skuFormats, onCar
                 <span style={{ fontWeight: 400, color: "#90a4ae" }}> · {byWeek.get(wk)!.length}</span>
               </div>
               {byWeek.get(wk)!.sort(qtyDesc).map((b) => (
-                <HoldingCard key={b.id} block={b} anchor={anchor} skuFormats={skuFormats}
-                             onCardContextMenu={onCardContextMenu} highlightSku={highlightSku} />
+                <HoldingCard key={blockKey(b)} block={b} anchor={anchor} skuFormats={skuFormats}
+                             onCardContextMenu={onCardContextMenu} highlightSku={highlightSku}
+                             pill={pills?.get(blockKey(b)) ?? null} />
               ))}
             </div>
           ))}
@@ -174,8 +236,9 @@ export const HoldingArea: React.FC<Props> = ({ blocks, anchor, skuFormats, onCar
                 <span style={{ fontWeight: 400, color: "#90a4ae" }}> · {loose.length}</span>
               </div>
               {loose.sort(qtyDesc).map((b) => (
-                <HoldingCard key={b.id} block={b} anchor={anchor} skuFormats={skuFormats}
-                             onCardContextMenu={onCardContextMenu} highlightSku={highlightSku} />
+                <HoldingCard key={blockKey(b)} block={b} anchor={anchor} skuFormats={skuFormats}
+                             onCardContextMenu={onCardContextMenu} highlightSku={highlightSku}
+                             pill={pills?.get(blockKey(b)) ?? null} />
               ))}
             </div>
           )}

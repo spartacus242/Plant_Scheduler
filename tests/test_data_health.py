@@ -23,6 +23,9 @@ NOT_APPLICABLE = dh.NOT_APPLICABLE
 # fixtures
 # ---------------------------------------------------------------------------
 
+RECV_XLSM = "Shipping Receiving Schedule NPA - 2024.xlsm"
+
+
 def _touch(path: Path, age_h: float = 0.1) -> None:
     """Create a file if missing (with content 'x'), and set a controlled age."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -73,6 +76,9 @@ def _min_catalog(dd: Path) -> None:
     _touch(dd / 'reference' / 'demand_plan_summary.csv', 0.1)
     # VIF exports for the stock check (P1 live link) — anchored by ediact 3
     _touch(dd / "reference" / "ediact 3.csv", 0.1)
+    # supply timeline feeds: IT's open-PO extract + the weekly receiving xlsm
+    _touch(dd / "reference" / "open_pos.xlsx", 0.1)
+    _touch(dd / "reference" / RECV_XLSM, 0.1)
 
 
 def _cfg(**overrides) -> dict:
@@ -237,6 +243,169 @@ def test_demand_summary_health_row_cadence_and_configured_path(tmp_path):
     hit = next(h for h in health if h.key == "demand_summary")
     assert hit.cadence_h == 168.0
     assert hit.state == OK  # uses the configured path, not the missing default
+
+
+# ---------------------------------------------------------------------------
+# supply timeline feeds: open-PO report + receiving xlsm (2026-09-01)
+# ---------------------------------------------------------------------------
+
+def test_default_cadences_include_supply_feeds():
+    assert dh.DEFAULT_CADENCE_H["open_pos"] == 26.0
+    assert dh.DEFAULT_CADENCE_H["receiving"] == 168.0
+
+
+def test_open_pos_fresh_ok(tmp_path):
+    dd = _empty_data_dir(tmp_path)
+    _min_catalog(dd)
+    health = dh.assess(dd, _cfg())
+    rows = [h for h in health if h.key == "open_pos"]
+    assert len(rows) == 1
+    assert rows[0].state == OK
+    assert rows[0].cadence_h == 26.0
+    assert rows[0].actions == ()
+
+
+def test_open_pos_stale_by_mtime(tmp_path):
+    dd = _empty_data_dir(tmp_path)
+    _min_catalog(dd)
+    _touch(dd / "reference" / "open_pos.xlsx", age_h=30.0)
+    health = dh.assess(dd, _cfg())
+    hit = next(h for h in health if h.key == "open_pos")
+    assert hit.state == STALE
+    assert any("open_pos.xlsx" in a for a in hit.actions)
+
+
+def test_open_pos_missing_names_bridge_file(tmp_path):
+    """No dev fixture exists for this feed: absence is MISSING (blocking),
+    never the STALE downgrade the VIF rule gives, and the action names the
+    bridge delivery file so the planner knows what to ask IT for."""
+    dd = _empty_data_dir(tmp_path)
+    _min_catalog(dd)
+    (dd / "reference" / "open_pos.xlsx").unlink()
+    (dd / "stockcheck").mkdir()  # a stockcheck dir alone must not downgrade
+    health = dh.assess(dd, _cfg())
+    hit = next(h for h in health if h.key == "open_pos")
+    assert hit.state == MISSING
+    assert hit.severity == 2
+    assert any("open_pos.xlsx" in a for a in hit.actions)
+
+
+def test_open_pos_csv_fallback_ok(tmp_path):
+    dd = _empty_data_dir(tmp_path)
+    _min_catalog(dd)
+    (dd / "reference" / "open_pos.xlsx").unlink()
+    _touch(dd / "reference" / "open_pos.csv", 0.1)
+    health = dh.assess(dd, _cfg())
+    hit = next(h for h in health if h.key == "open_pos")
+    assert hit.state == OK
+    assert "open_pos.csv" in hit.detail
+
+
+def test_open_pos_configured_path_override(tmp_path):
+    """[datasources] po_report_path is authoritative: honored when it exists,
+    reported MISSING (naming the configured path) when it does not — even
+    though the bridge copy is present."""
+    dd = _empty_data_dir(tmp_path)
+    _min_catalog(dd)
+    custom = tmp_path / "it_drop" / "NPA Open POs -8.24.xlsx"
+    _touch(custom, 0.1)
+    cfg = _cfg()
+    cfg["datasources"]["po_report_path"] = str(custom)
+    hit = next(h for h in dh.assess(dd, cfg) if h.key == "open_pos")
+    assert hit.state == OK
+    assert custom.name in hit.detail
+
+    cfg["datasources"]["po_report_path"] = str(tmp_path / "nowhere.xlsx")
+    hit = next(h for h in dh.assess(dd, cfg) if h.key == "open_pos")
+    assert hit.state == MISSING
+    assert "nowhere.xlsx" in hit.detail
+
+
+def test_open_pos_cadence_override_via_health_section(tmp_path):
+    """[health] cadence_h overrides the code default, same mechanism as the
+    other feeds."""
+    dd = _empty_data_dir(tmp_path)
+    _min_catalog(dd)
+    _touch(dd / "reference" / "open_pos.xlsx", age_h=30.0)
+    cfg = _cfg()
+    cfg["health"] = {"cadence_h": {"open_pos": 48}}
+    hit = next(h for h in dh.assess(dd, cfg) if h.key == "open_pos")
+    assert hit.state == OK
+    assert hit.cadence_h == 48
+
+
+def test_receiving_fresh_ok(tmp_path):
+    dd = _empty_data_dir(tmp_path)
+    _min_catalog(dd)
+    health = dh.assess(dd, _cfg())
+    rows = [h for h in health if h.key == "receiving"]
+    assert len(rows) == 1
+    assert rows[0].state == OK
+    assert rows[0].cadence_h == 168.0
+
+
+def test_receiving_stale_weekly_cadence(tmp_path):
+    dd = _empty_data_dir(tmp_path)
+    _min_catalog(dd)
+    _touch(dd / "reference" / RECV_XLSM, age_h=200.0)
+    hit = next(h for h in dh.assess(dd, _cfg()) if h.key == "receiving")
+    assert hit.state == STALE
+    # 30 h old is fine for a weekly file (must not inherit the VIF cadence)
+    _touch(dd / "reference" / RECV_XLSM, age_h=30.0)
+    hit = next(h for h in dh.assess(dd, _cfg()) if h.key == "receiving")
+    assert hit.state == OK
+
+
+def test_receiving_missing_vs_dev_fixture_downgrade(tmp_path):
+    dd = _empty_data_dir(tmp_path)
+    _min_catalog(dd)
+    (dd / "reference" / RECV_XLSM).unlink()
+    hit = next(h for h in dh.assess(dd, _cfg()) if h.key == "receiving")
+    assert hit.state == MISSING
+    # the bundled dev fixture keeps the Receiving tab usable -> warn, not block
+    _touch(dd / "stockcheck" / "dev_receiving_schedule.xlsm", 0.1)
+    hit = next(h for h in dh.assess(dd, _cfg()) if h.key == "receiving")
+    assert hit.state == STALE
+    assert "dev fixture" in hit.detail
+
+
+def test_datasources_config_po_report_path(tmp_path):
+    assert datasources_config({})["po_report_path"] == ""
+    toml_path = tmp_path / "flowstate.toml"
+    toml_path.write_text(
+        '[datasources]\npo_report_path = "C:/it/NPA Open POs.xlsx"\n',
+        encoding="utf-8")
+    ds = datasources_config(load_toml(toml_path))
+    assert ds["po_report_path"] == "C:/it/NPA Open POs.xlsx"
+
+
+def test_stock_config_defaults_and_override(tmp_path):
+    from helpers.config import stock_config
+    sc = stock_config({})
+    assert sc["min_days_after_delivery"] == 4
+    assert sc["lead_measured_from"] == "block_start"
+    assert sc["receipt_ready_hour"] == 16
+    assert sc["raw_qc_offset_h"] == 72
+    assert sc["appt_ready_offset_h"] == 2
+    assert sc["po_ignore_after_h"] == 168
+    assert sc["landed_match_frac"] == 0.95
+    assert sc["dependent_frac_floor"] == 0.05
+    assert sc["hard_block"] is False
+    assert sc["use_board_qty_kg"] is True
+    assert sc["raw_areas"] == ["RB1", "AMB", "RC1"]
+    assert sc["offsite_areas"] == ["SL3"]
+    # list defaults are copies: mutating one result never leaks into the next
+    sc["raw_areas"].append("XX")
+    assert stock_config({})["raw_areas"] == ["RB1", "AMB", "RC1"]
+    toml_path = tmp_path / "flowstate.toml"
+    toml_path.write_text(
+        '[stock]\nmin_days_after_delivery = 6\nhard_block = true\n'
+        'offsite_areas = ["SL3", "SL4"]\n', encoding="utf-8")
+    sc = stock_config(load_toml(toml_path))
+    assert sc["min_days_after_delivery"] == 6
+    assert sc["hard_block"] is True
+    assert sc["offsite_areas"] == ["SL3", "SL4"]
+    assert sc["receipt_ready_hour"] == 16  # untouched keys keep defaults
 
 
 # ---------------------------------------------------------------------------
@@ -475,3 +644,30 @@ def test_summary_counts(tmp_path):
     (dd / "reference" / "line_cip_hrs.csv").unlink()
     counts = dh.summary(dh.assess(dd, _cfg()))
     assert counts[MISSING] >= 1
+
+
+def test_open_pos_configured_directory_is_missing(tmp_path):
+    """po_report_path pointing at IT's drop FOLDER (instead of the file)
+    exists but is no report: MISSING, naming the path and the reason —
+    never OK on the strength of the bridge copy sitting in data/reference."""
+    dd = _empty_data_dir(tmp_path)
+    _min_catalog(dd)
+    folder = tmp_path / "it_drop"
+    folder.mkdir()
+    cfg = _cfg()
+    cfg["datasources"]["po_report_path"] = str(folder)
+    hit = next(h for h in dh.assess(dd, cfg) if h.key == "open_pos")
+    assert hit.state == MISSING and hit.severity == 2
+    assert "it_drop" in hit.detail and "directory" in hit.detail
+
+
+def test_open_pos_bridge_directory_is_missing(tmp_path):
+    """A folder named open_pos.xlsx in data/reference is skipped by the
+    resolver (is_file), so the row reads MISSING like an absent file."""
+    dd = _empty_data_dir(tmp_path)
+    _min_catalog(dd)
+    (dd / "reference" / "open_pos.xlsx").unlink()
+    (dd / "reference" / "open_pos.xlsx").mkdir()
+    hit = next(h for h in dh.assess(dd, _cfg()) if h.key == "open_pos")
+    assert hit.state == MISSING
+    assert "open_pos.xlsx / open_pos.csv not found" in hit.detail

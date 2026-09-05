@@ -17,6 +17,8 @@ import {
 } from "../utils/layout";
 import type { ResizeState } from "../hooks/useBlockResize";
 import type { InsertPlan } from "../utils/dragPreview";
+import type { Supply } from "../utils/stockRisk";
+import { blockKey } from "../utils/blockIdentity";
 
 interface Props {
   schedule: ScheduleBlock[];
@@ -44,12 +46,15 @@ interface Props {
     fill: string;
   } | null;
   svgRef?: React.RefObject<SVGSVGElement | null>;
-  onResizeStart: (blockId: string, edge: "left" | "right", startH: number, endH: number, clientX: number, hourWidth: number) => void;
-  onContextMenu: (e: React.MouseEvent, blockId: string) => void;
+  /** Supply verdict per piece (null when there is no stock payload or the
+   * key is acknowledged) — GanttBlock draws chip / hatch / tick from it. */
+  supplyFor?: ((block: ScheduleBlock) => Supply | null) | null;
+  onResizeStart: (block: ScheduleBlock, edge: "left" | "right", startH: number, endH: number, clientX: number, hourWidth: number) => void;
+  onContextMenu: (e: React.MouseEvent, block: ScheduleBlock) => void;
   /** Right-click on EMPTY row space: opens the blank-space SKU picker at
    * that (line, hour). Blocks stop propagation, so this only fires on gaps. */
   onEmptyContextMenu?: (e: React.MouseEvent, lineName: string, lineId: number, hour: number) => void;
-  onBlockClick: (blockId: string) => void;
+  onBlockClick: (block: ScheduleBlock) => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
   onResetZoom: () => void;
@@ -145,6 +150,7 @@ const LineLabelsOverlay: React.FC<{ rows: GanttRow[]; svgHeight: number }> = ({ 
 export const GanttChart: React.FC<Props> = ({
   schedule, cipWindows, lines, viewStart, viewEnd, hourWidth, anchor,
   resizing, highlightSku, capableLines, lockedThroughH, insertPreview, dropGhost, svgRef: externalSvgRef,
+  supplyFor = null,
   onResizeStart, onContextMenu, onEmptyContextMenu, onBlockClick, onZoomIn, onZoomOut, onResetZoom,
 }) => {
   const localSvgRef = useRef<SVGSVGElement>(null);
@@ -326,7 +332,9 @@ export const GanttChart: React.FC<Props> = ({
           {/* Insert preview: dashed outline of the displaced block at its
               slid-right position + insertion marker. */}
           {insertPreview && (() => {
-            const nb = allBlocks.find((b) => b.id === insertPreview.nextId);
+            // By piece key: a split MO's second piece shares its id, and
+            // the id lookup drew the ghost on the first piece instead.
+            const nb = allBlocks.find((b) => blockKey(b) === insertPreview.nextKey);
             if (!nb) return null;
             const li = rowIndexOf(rows, nb.line_name);
             if (li < 0) return null;
@@ -357,11 +365,13 @@ export const GanttChart: React.FC<Props> = ({
             // A block named for a single side shades only its half of the row;
             // anything on the group spans the full height (both sides running).
             const slot = blockSlot(rows[lineIndex], block.line_name, LINE_HEIGHT);
-            const isThisResizing = resizing.blockId === block.id;
+            // Piece key, not id: split MO pieces share an id.
+            const key = blockKey(block);
+            const isThisResizing = resizing.key === key;
             const isHighlighted = highlightSku !== null && block.sku === highlightSku && !isWindowBlock(block.block_type);
             const isDimmed = highlightSku !== null && !isHighlighted;
             return (
-              <g key={block.id} transform={`translate(0, ${y})`}>
+              <g key={key} transform={`translate(0, ${y})`}>
                 <GanttBlock
                   block={block}
                   lineIndex={lineIndex}
@@ -373,6 +383,7 @@ export const GanttChart: React.FC<Props> = ({
                   previewEnd={isThisResizing ? resizing.previewEnd : undefined}
                   isHighlighted={isHighlighted}
                   isDimmed={isDimmed}
+                  supply={supplyFor ? supplyFor(block) : null}
                   immovable={Boolean(block.locked) || Boolean(block.pinned)
                     || (block.attrs ?? "").includes("current_state:")
                     || (lockedThroughH != null

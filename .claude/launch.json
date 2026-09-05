@@ -5,6 +5,12 @@
       "name": "flowstate",
       "url": "http://localhost:8501",
       "port": 8501
+    },
+    {
+      "name": "flowstate-test",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "streamlit", "run", "code/app.py", "--server.headless", "true", "--server.port", "8502"],
+      "port": 8502
     }
   ]
 }

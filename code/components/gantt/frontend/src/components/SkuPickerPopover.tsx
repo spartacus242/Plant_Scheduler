@@ -8,9 +8,14 @@
 // the snap-left placement (start, hours, kg). Rows that cannot fit render
 // disabled with the reason.
 
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { hourToStamp } from "../utils/layout";
 import type { PlacementPlan } from "../utils/skuPicker";
+import type { StockArgs } from "../types";
+import type { Timelines } from "../utils/stockRisk";
+import {
+  earliestSafeStartFor, safeStartPill, type PillTone, type SafeStartPill, type StampFn,
+} from "../utils/supplyGlue";
 
 export interface PickerRowData {
   sku: string;
@@ -37,6 +42,12 @@ interface Props {
   /** Ad-hoc trial run at this gap (trials ARE schedule — they go to the
    * ERP with production, unlike downtimes). null = done, string = why not. */
   onAddTrial?: (sku: string, hours: number) => string | null;
+  /** Supply timeline (contract 2026-09-01 §9): with a payload the table
+   * grows a "Supply" column — the before-placement pill per placeable
+   * row; stock null = no column at all (read-only mounts, old cache). */
+  stock?: StockArgs | null;
+  supplyTimelines?: Timelines | null;
+  supplyStamp?: StampFn | null;
   onClose: () => void;
 }
 
@@ -99,14 +110,71 @@ export const Chips: React.FC<{
   );
 };
 
+const PILL_STYLE: Record<PillTone, React.CSSProperties> = {
+  ok: { background: "#f1f3f5", color: "#78909c", border: "1px solid #e0e0e5" },
+  muted: { background: "#eceff1", color: "#607d8b", border: "1px solid #cfd8dc" },
+  warn: { background: "#fff3e0", color: "#e65100", border: "1px solid #ffcc80" },
+  crit: { background: "#fdecea", color: "#b71c1c", border: "1px solid #f5c6cb" },
+};
+
+/** The before-placement supply pill (§9) — one look on holding cards,
+ * picker rows and place rows; the title carries the planner sentences. */
+export const SafeStartTag: React.FC<{ pill: SafeStartPill | null | undefined }> = ({ pill }) => {
+  if (!pill) return null;
+  return (
+    <span
+      data-testid="safe-start-pill"
+      data-tone={pill.tone}
+      title={pill.title}
+      style={{
+        display: "inline-block", padding: "0 6px", borderRadius: 8, whiteSpace: "nowrap",
+        fontSize: pill.tone === "ok" ? 10 : 10.5, fontWeight: 700, lineHeight: "16px",
+        ...PILL_STYLE[pill.tone],
+      }}
+    >
+      {pill.text}
+    </span>
+  );
+};
+
+/** Pill for a candidate row: the run the Place button would create (the
+ * plan's kg over the plan's hours, from the plan's start) judged alone
+ * against the placed board — so the pill and the post-commit banner agree.
+ * null without a stock payload or for a plan that places nothing. */
+export function planPill(
+  sku: string, plan: { startHour: number; durationH: number; qtyKg: number }, lineName: string,
+  stock: StockArgs | null | undefined, timelines: Timelines | null | undefined,
+  stamp: StampFn | null | undefined, dueEndH?: number | null,
+): SafeStartPill | null {
+  if (!stock || !timelines || !stamp || !(plan.durationH > 0)) return null;
+  const kg = plan.qtyKg > 0 ? plan.qtyKg : 0;
+  const res = earliestSafeStartFor(
+    sku, kg, kg > 0 ? kg / plan.durationH : 0, plan.startHour, timelines, stock,
+    { lineName, fallbackHours: plan.durationH },
+  );
+  return safeStartPill(res, stamp, dueEndH);
+}
+
 export const SkuPickerPopover: React.FC<Props> = ({
   lineName, hour, x, y, anchor, rows, onPlace, onClose, onAddCip, onAddTrial,
+  stock = null, supplyTimelines = null, supplyStamp = null,
 }) => {
   const [trialSku, setTrialSku] = useState("");
   const [trialH, setTrialH] = useState("8");
   const [err, setErr] = useState<string | null>(null);
-  // Keep the table on screen: it is wide, so pull it left/up near the edges.
-  const left = Math.max(8, Math.min(x, (window.innerWidth || 1200) - 700));
+  const showSupply = stock !== null;
+  // One pill per placeable row (a blocked row shows its reason instead),
+  // recomputed only when the rows or the board's timelines change.
+  const pills = useMemo<(SafeStartPill | null)[]>(
+    () => rows.map((r) => (r.plan.reason === null
+      ? planPill(r.sku, r.plan, lineName, stock, supplyTimelines, supplyStamp)
+      : null)),
+    [rows, lineName, stock, supplyTimelines, supplyStamp],
+  );
+  // Keep the table on screen: it is wide, so pull it left/up near the edges
+  // (wider still with the Supply column).
+  const maxW = showSupply ? 800 : 690;
+  const left = Math.max(8, Math.min(x, (window.innerWidth || 1200) - (maxW + 10)));
   const top = Math.max(8, Math.min(y, (window.innerHeight || 800) - 420));
   return (
     <div
@@ -114,7 +182,7 @@ export const SkuPickerPopover: React.FC<Props> = ({
         position: "fixed", left, top, zIndex: 1000,
         background: "#fff", border: "1px solid #ccc", borderRadius: 8,
         boxShadow: "0 4px 16px rgba(0,0,0,0.18)", padding: "10px 12px",
-        maxWidth: 690,
+        maxWidth: maxW,
       }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
@@ -183,10 +251,11 @@ export const SkuPickerPopover: React.FC<Props> = ({
                 <th style={TH}>← changeover</th>
                 <th style={TH}>changeover →</th>
                 <th style={TH}>Placement</th>
+                {showSupply && <th style={TH}>Supply</th>}
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => {
+              {rows.map((r, i) => {
                 const blocked = r.plan.reason !== null;
                 return (
                   <tr key={r.sku} style={{ opacity: blocked ? 0.45 : 1 }} title={r.plan.reason ?? undefined}>
@@ -234,6 +303,9 @@ export const SkuPickerPopover: React.FC<Props> = ({
                           `${r.plan.durationH.toFixed(1)}h · ` +
                           `${Math.round(r.plan.qtyKg).toLocaleString()} kg`}
                     </td>
+                    {showSupply && (
+                      <td style={TD}><SafeStartTag pill={pills[i]} /></td>
+                    )}
                   </tr>
                 );
               })}

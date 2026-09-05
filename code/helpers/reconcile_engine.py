@@ -20,9 +20,10 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -150,6 +151,229 @@ def stock_findings(report: dict) -> list[Finding]:
             context={"block_id": b.get("block_id"), "sku": b.get("sku"),
                      "line_name": b.get("line_name"), "status": status},
         ))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Rule: STOCK (time-phased) — supply-timeline verdicts per block
+# ---------------------------------------------------------------------------
+
+# stockcheck.timeline vocabulary (contract 2026-09-01 §3.4): SHORT = the run
+# stops even counting inbound; DEPENDENT = it only runs because a PO lands
+# in time; NO_DATA = cannot know (never a finding); OK = silent.
+_SUPPLY_SHORT = "SHORT"
+_SUPPLY_DEPENDENT = "DEPENDENT"
+# The open-PO extract must look at least this far ahead, else blocks past
+# its edge read NO_DATA instead of SHORT and the planner is flying blind.
+_PO_WINDOW_MIN_DAYS = 7
+
+
+def _hour(v) -> float:
+    try:
+        h = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    return h if math.isfinite(h) else 0.0
+
+
+def _to_date(v) -> date | None:
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    try:
+        return date.fromisoformat(str(v).strip()[:10])
+    except ValueError:
+        return None
+
+
+def _kg_txt(v) -> str:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return ""
+    return f" · {f:,.0f} kg" if math.isfinite(f) and f > 0 else ""
+
+
+def _supply_title(sup: dict, verdict: str, frame) -> str:
+    """verdict_text with real stamps; a malformed Supply (bad binding,
+    non-numeric fraction) still gets a headline instead of killing the rule."""
+    from stockcheck.timeline import verdict_text
+    try:
+        return verdict_text(sup, frame)
+    except Exception:  # noqa: BLE001 — text is decoration, the finding is not
+        glyph = "⛔" if verdict == _SUPPLY_SHORT else "🚚"
+        return f"{glyph} {sup.get('item') or '?'}: {verdict} — detail unreadable"
+
+
+def _supply_block_finding(b: dict, sup: dict, verdict: str, sev: int, frame,
+                          hour_to_iso, hour_to_stamp) -> Finding:
+    block_id = str(b.get("block_id") or "")
+    sku = str(b.get("sku") or "")
+    line = str(b.get("line_name") or "")
+    start_h = _hour(b.get("start_h"))
+    binding = sup.get("binding")
+    po = str(binding.get("po8") or "") if isinstance(binding, dict) else ""
+    chase = sup.get("action") == "chase_po"
+    who = f"PO {po}" if po else "the inbound"
+    if verdict == _SUPPLY_SHORT:
+        action = (f"Expedite {who} with the supplier — the block is locked/running"
+                  if chase else
+                  "Move or shrink the run on the Plant Calendar, or expedite "
+                  + who)
+    else:
+        action = (f"Confirm {who}'s date with the supplier — the block is "
+                  "locked/running" if chase else
+                  f"Confirm {who}'s date, or move the run past its "
+                  "safe-from hour")
+    return Finding(
+        key=f"supply:{block_id}@{hour_to_iso(start_h, frame)}",
+        category=STOCK, severity=sev,
+        title=_supply_title(sup, verdict, frame),
+        detail=(f"{sku} on {line}, starts {hour_to_stamp(start_h, frame)}"
+                f"{_kg_txt(b.get('qty_kg'))} — "
+                f"{'locked/running' if chase else 'movable'}"),
+        action=action,
+        page="pages/calendar.py",
+        # "line" is the contract key (§6); "line_name" mirrors stock_findings
+        context={"block_id": block_id, "sku": sku, "line": line,
+                 "line_name": line, "start_h": start_h, "verdict": verdict,
+                 "item": sup.get("item"), "action": sup.get("action"),
+                 "po8": po or None, "safe_from_h": sup.get("safe_from_h"),
+                 "focus": block_id},
+    )
+
+
+def _feed_stamps(inbound: dict, meta: dict) -> str:
+    """'POs 2026-09-01 06:10 · stock rm … · stock pkg …' — the as-of trail
+    a planner quotes back to IT when the numbers look wrong."""
+    parts = []
+    po_stamp = inbound.get("as_of") or inbound.get("source_mtime")
+    if po_stamp:
+        parts.append(f"POs {po_stamp}")
+    snap = meta.get("snapshot_stamp") or {}
+    for k, label in (("rm", "stock rm"), ("pkg", "stock pkg")):
+        if snap.get(k):
+            parts.append(f"{label} {snap[k]}")
+    return " · ".join(parts)
+
+
+def supply_findings(report: dict, anchor=None, *, today=None) -> list[Finding]:
+    """Supply-timeline verdicts -> findings (pure; contract §6).
+
+    Reads the additive report keys `supply_meta`, `inbound` and each
+    schedule_view row's `supply`. A report saved before the timeline shipped
+    carries none of them and yields NOTHING (stock_findings still covers
+    it) — old caches must neither crash nor invent findings.
+
+    Hours are stamped in the REPORT's frame (`report["anchor"]`, the anchor
+    its hours were computed against); `anchor` is only the fallback for a
+    report without one. Keys carry the block start as an ISO stamp, so the
+    same block keeps the same key after an anchor roll shifts every stored
+    hour. `today` (date/datetime) gates the PO-window check; tests pin it.
+    """
+    out: list[Finding] = []
+    if not report or report.get("error"):
+        return out
+    meta = report.get("supply_meta")
+    if not isinstance(meta, dict):
+        return out
+    # lazy: the engine stays importable without the stockcheck package
+    from helpers.timefmt import hour_to_iso, hour_to_stamp, parse_datetime
+
+    # An unparseable report anchor must not silently restamp every key in
+    # DEFAULT_ANCHOR's frame (parse_anchor's fallback) — use the argument.
+    frame = parse_datetime(report.get("anchor")) or anchor
+    feed_state = str(meta.get("feed_state") or "")
+
+    for b in report.get("schedule_view", []) or []:
+        if not isinstance(b, dict):
+            continue
+        sup = b.get("supply")
+        if not isinstance(sup, dict):
+            continue
+        verdict = sup.get("verdict")
+        if verdict == _SUPPLY_SHORT:
+            # On a missing/stale feed a SHORT may just be an unseen truck.
+            sev = BLOCKING if feed_state == "ok" else WARN
+        elif verdict == _SUPPLY_DEPENDENT:
+            if sup.get("minor"):
+                continue  # grey chip on the board, not a finding
+            sev = WARN
+        else:
+            continue  # OK / NO_DATA / anything newer than this engine
+        try:
+            out.append(_supply_block_finding(b, sup, verdict, sev, frame,
+                                             hour_to_iso, hour_to_stamp))
+        except Exception:  # noqa: BLE001 — one rotten row must not drop the rest
+            continue
+
+    # One DATA finding on the feed itself — always present once the report
+    # knows about supply, so the planner sees WHY verdicts read NO_DATA.
+    inbound = report.get("inbound")
+    inbound = inbound if isinstance(inbound, dict) else {}
+    state = str(inbound.get("state") or feed_state or "missing")
+    stamps = _feed_stamps(inbound, meta)
+    max_rd = _to_date(inbound.get("max_receipt_date"))
+    today_d = _to_date(today) or date.today()
+    src = str(inbound.get("source_path") or "")
+    join = inbound.get("join") or {}
+    n_rows = inbound.get("n_rows")
+    n_used = join.get("used")
+    tail = f" ({stamps})" if stamps else ""
+    if state == "missing":
+        sev = WARN
+        title = "Open-PO feed missing — supply verdicts read NO_DATA"
+        detail = ((f"Configured path {src} does not exist" if src else
+                   "No [datasources] po_report_path and no "
+                   "data/reference/open_pos.xlsx from the bridge") + tail)
+        action = ("Ask IT for the NPA Open POs export (the bridge delivers "
+                  "open_pos.xlsx) or set po_report_path on Settings")
+    elif state == "empty":
+        sev = WARN
+        title = "Open-PO feed has no lines — supply verdicts read NO_DATA"
+        detail = f"{src or 'open-PO extract'} parsed to zero rows{tail}"
+        action = "Re-export the open POs; check the sheet has a header row"
+    elif state == "stale":
+        sev = WARN
+        title = ("Open-PO feed is stale — latest receipt date "
+                 f"{max_rd.isoformat() if max_rd else '?'} is in the past")
+        detail = ("Every open PO in the extract was due before today, so "
+                  f"nothing inbound can be counted{tail}")
+        action = "Ask IT for a fresh NPA Open POs export"
+    elif state != "ok":
+        sev = WARN
+        title = f"Open-PO feed state '{state}' — supply verdicts read NO_DATA"
+        detail = f"{src}{tail}"
+        action = "Check the Inbound tab on Stock Check"
+    elif max_rd is not None and max_rd < today_d + timedelta(days=_PO_WINDOW_MIN_DAYS):
+        sev = WARN
+        title = (f"PO window ends {max_rd:%a %m/%d} — ask IT for a wider "
+                 "export")
+        detail = ("Blocks that run out after the last receipt date read "
+                  f"NO_DATA, not SHORT; {n_rows if n_rows is not None else '?'} "
+                  f"lines, {n_used if n_used is not None else '?'} counted{tail}")
+        action = "Request an open-PO export covering at least the next 7 days"
+    else:
+        sev = INFO
+        title = (f"Open-PO feed OK — {n_rows if n_rows is not None else '?'} "
+                 f"lines, {n_used if n_used is not None else '?'} counted, "
+                 f"window to {max_rd.isoformat() if max_rd else '?'}")
+        detail = f"{src}{tail}".strip()
+        action = "Nothing to do — the Inbound tab on Stock Check lists every line's fate"
+    out.append(Finding(
+        key="supply_feed", category=DATA, severity=sev,
+        title=title, detail=detail, action=action,
+        page="pages/stock_check.py",
+        context={"state": state, "source_path": src or None,
+                 "source_mtime": inbound.get("source_mtime"),
+                 "as_of": inbound.get("as_of"),
+                 "max_receipt_date": inbound.get("max_receipt_date"),
+                 "n_rows": n_rows, "n_used": n_used,
+                 "snapshot_stamp": meta.get("snapshot_stamp")},
+    ))
     return out
 
 
@@ -632,6 +856,32 @@ def stock_report_inputs(data_dir: Path | str) -> tuple[str, dict]:
     return vif, dict(sc.get("toggles", {}) or {})
 
 
+def open_po_path(data_dir: Path | str, cfg: dict | None = None) -> Path | None:
+    """Open-PO report (IT's "NPA Open POs" extract) for the supply timeline.
+
+    Order: [datasources] po_report_path -> data/reference/open_pos.xlsx (the
+    bridge's fixed delivery name) -> open_pos.csv -> None. A configured
+    override is authoritative even when the file is absent (cip_info
+    precedent): the consumer then reports "missing at <configured path>"
+    instead of silently reading a different file. None = nothing configured
+    and no bridge copy landed. `cfg` lets health/tests avoid flowstate.toml.
+    """
+    from helpers.config import datasources_config, load_toml
+    dd = Path(data_dir)
+    ds = datasources_config(cfg if cfg is not None else load_toml())
+    override = str(ds.get("po_report_path", "") or "").strip()
+    if override:
+        return Path(override)
+    ref = dd / "reference"
+    for name in ("open_pos.xlsx", "open_pos.csv"):
+        # is_file: a stray FOLDER by that name is not a report to hand the
+        # loader. The override above is returned as-is by contract; its
+        # consumers (data_health, the report) say why it is unusable.
+        if (ref / name).is_file():
+            return ref / name
+    return None
+
+
 # ---------------------------------------------------------------------------
 # assess_plan — the IO shell. Never raises; broken inputs become findings.
 # ---------------------------------------------------------------------------
@@ -673,6 +923,12 @@ def assess_plan(
     # building a VIF snapshot here would make Reconcile slow and share-bound).
     if stock_report is not None:
         guard("stock", lambda: stock_findings(stock_report))
+        # SUPPLY — time-phased verdicts ride on the same report, stamped in
+        # its own anchor frame (the toml anchor is only the fallback); a
+        # cache saved before the timeline shipped yields nothing.
+        from helpers.timefmt import planning_anchor
+        guard("supply", lambda: supply_findings(
+            stock_report, planning_anchor(cfg), today=hz.now))
 
     # COVERAGE — the reference demand file keeps its OWN anchor (hour 0 =
     # the Monday of its earliest week, demand_plan.source.json), so orders

@@ -4,10 +4,12 @@
 
 import type { ScheduleBlock, LineInfo } from "../types";
 import { isCapable, recalcDuration, findOverlapsOnLine, getRate } from "./validation";
+import { blockKey, sameBlock } from "./blockIdentity";
 import { hourToStamp } from "./layout";
 import type { SideDowntime } from "./abLines";
 import { groupOf, hasOneSidedStretch, isDouble } from "./abLines";
 import type { DropPlan } from "./dropPlan";
+import type { Supply } from "./stockRisk";
 
 export interface InsertPlan {
   /** Where the dragged block lands (after the left neighbour + its setup). */
@@ -15,6 +17,9 @@ export interface InsertPlan {
   insEnd: number;
   /** The displaced block (first whose span the drop point hits). */
   nextId: string;
+  /** Its PIECE key (blockIdentity.blockKey): split MO pieces share an id,
+   * so callers resolve the displaced block by key, never by nextId alone. */
+  nextKey: string;
   nextLabel: string;
   /** Uniform right-shift applied to the displaced block and everything after it. */
   deltaH: number;
@@ -46,6 +51,12 @@ export interface DragPreview {
    * INSERTED there, sliding the displaced block (and everything after it on
    * the line) to the right. */
   insert?: InsertPlan | null;
+  /** Supply verdict of the dragged block AT the preview position (stock
+   * payload present, production blocks only) — set by the caller after the
+   * geometric preview, never by computeDragPreview. */
+  supply?: Supply | null;
+  /** The planner sentence for `supply`, stamped with the page anchor. */
+  supplyText?: string | null;
 }
 
 export interface InsertContext {
@@ -72,7 +83,9 @@ export function computeInsertPlan(
   ctx: InsertContext,
 ): InsertPlan | null {
   const others = allBlocks
-    .filter((b) => b.id !== dragged.id && b.line_name === targetLine)
+    // The dragged PIECE only (split MO pieces share an id): its sibling is
+    // a real neighbour that must be displaced, not skipped.
+    .filter((b) => !sameBlock(b, dragged) && b.line_name === targetLine)
     // Display-only cip_info overlays are not calendar data (stripped on
     // save, redrawn from the live feed) - they neither shift nor block an
     // insert; a resulting overlap shows in the KPI bar and Reconcile.
@@ -107,6 +120,7 @@ export function computeInsertPlan(
     insStart,
     insEnd,
     nextId: next.id,
+    nextKey: blockKey(next),
     nextLabel: String(next.sku || next.label || next.block_type),
     deltaH,
     shiftedCount: shifted.length,
@@ -211,7 +225,10 @@ export function computeDragPreview(input: DragPreviewInput): DragPreview | null 
   const oneSided = hasOneSidedStretch(targetGroup, startHour, endHour, downtime);
 
   let insert: InsertPlan | null = null;
-  if (valid && findOverlapsOnLine(allBlocks, targetLineName, block.id, startHour, endHour)) {
+  // Exclude the dragged PIECE only: excluding by id let a split MO piece be
+  // dropped over its own sibling (same id, different start).
+  const obstacles = allBlocks.filter((b) => !sameBlock(b, block));
+  if (valid && findOverlapsOnLine(obstacles, targetLineName, "", startHour, endHour)) {
     // Holding restores never insert-shift on drop, so the preview must not
     // promise one - an overlapping landing is a plain refusal there.
     insert = insertCtx && !fromHolding
@@ -255,10 +272,25 @@ export function samePreview(a: DragPreview | null, b: DragPreview | null): boole
     (a.insert != null && b.insert != null &&
       a.insert.insStart === b.insert.insStart &&
       a.insert.insEnd === b.insert.insEnd &&
-      a.insert.nextId === b.insert.nextId &&
+      a.insert.nextKey === b.insert.nextKey &&
       a.insert.deltaH === b.insert.deltaH &&
       a.insert.shiftedCount === b.insert.shiftedCount &&
       a.insert.blockedReason === b.insert.blockedReason);
+  // A fresh Supply object every frame: compare what the badge renders.
+  const sa = a.supply ?? null;
+  const sb = b.supply ?? null;
+  const sameSupply =
+    sa === sb ||
+    (sa != null && sb != null &&
+      sa.verdict === sb.verdict &&
+      sa.minor === sb.minor &&
+      sa.backed === sb.backed &&
+      sa.item === sb.item &&
+      sa.covered_frac === sb.covered_frac &&
+      sa.lead_h === sb.lead_h &&
+      sa.safe_from_h === sb.safe_from_h &&
+      sa.depletion_h === sb.depletion_h &&
+      (a.supplyText ?? null) === (b.supplyText ?? null));
   return (
     a.targetLine === b.targetLine &&
     a.startHour === b.startHour &&
@@ -270,6 +302,7 @@ export function samePreview(a: DragPreview | null, b: DragPreview | null): boole
     a.valid === b.valid &&
     a.reason === b.reason &&
     a.oneSided === b.oneSided &&
-    sameInsert
+    sameInsert &&
+    sameSupply
   );
 }

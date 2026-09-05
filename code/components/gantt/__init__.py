@@ -34,6 +34,8 @@ def gantt_calendar(
     line_capable_skus: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     co_flags: Optional[Dict[str, int]] = None,
     sku_descriptions: Optional[Dict[str, str]] = None,
+    stock: Optional[Dict[str, Any]] = None,
+    focus_block: Optional[str] = None,
     height: int = 800,
     key: str = "gantt_calendar",
 ) -> Optional[Dict[str, Any]]:
@@ -52,6 +54,11 @@ def gantt_calendar(
     bitmask per SKU pair — build with helpers.calendar_io.build_line_capable_skus
     / build_co_flags.
 
+    `stock` is the StockArgs payload (helpers.calendar_io.build_stock_payload)
+    behind the per-block supply chips; None hides every supply surface.
+    `focus_block` is a block id to scroll to and highlight on mount
+    (Reconcile finding -> ?focus=<block_id>).
+
     Returns None until interaction, then schedule / cipWindows / holdingArea / lastAction.
     """
     return _component_func(
@@ -68,6 +75,8 @@ def gantt_calendar(
         lineCapableSkus=line_capable_skus or {},
         coFlags=co_flags or {},
         skuDescriptions=sku_descriptions or {},
+        stock=stock,
+        focusBlock=focus_block,
         config=config or {
             "planning_anchor": "2026-02-15 00:00:00",
             "cip_duration_h": 6,

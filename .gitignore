@@ -66,6 +66,8 @@ data/reference/jestkexp2.csv
 data/reference/azapart.csv
 data/reference/rmpkitems.csv
 data/reference/Shipping Receiving Schedule NPA - 2024.xlsm
+data/reference/open_pos.xlsx
+data/reference/open_pos.csv
 
 # Generated scorecard runs (the app writes these on every run)
 data/scorecards/Week-*.json
@@ -84,3 +86,9 @@ data/_scenario_regeneration/
 # never commit credentials or local version sandboxes
 github repo key.txt
 data/versions/
+
+# Runtime state / logs written by the app and the live-data bridge (never committed)
+data/promoted.json
+data/reference/manprg.asof.json
+scripts/fs-live-pull.log
+code/solver/solver_error.txt

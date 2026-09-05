@@ -1,0 +1,4171 @@
+{
+ "rules": {
+  "min_days_after_delivery": 4,
+  "lead_measured_from": "block_start",
+  "receipt_ready_hour": 16,
+  "raw_qc_offset_h": 72,
+  "appt_ready_offset_h": 2,
+  "po_ignore_after_h": 168,
+  "landed_match_frac": 0.95,
+  "dependent_frac_floor": 0.05,
+  "hard_block": false,
+  "use_board_qty_kg": true,
+  "raw_areas": [
+   "RB1",
+   "AMB",
+   "RC1"
+  ],
+  "offsite_areas": [
+   "SL3"
+  ]
+ },
+ "cases": [
+  {
+   "name": "A_worked_table_L96",
+   "rules": {
+    "min_days_after_delivery": 4,
+    "lead_measured_from": "block_start",
+    "receipt_ready_hour": 16,
+    "raw_qc_offset_h": 72,
+    "appt_ready_offset_h": 2,
+    "po_ignore_after_h": 168,
+    "landed_match_frac": 0.95,
+    "dependent_frac_floor": 0.05,
+    "hard_block": false,
+    "use_board_qty_kg": true,
+    "raw_areas": [
+     "RB1",
+     "AMB",
+     "RC1"
+    ],
+    "offsite_areas": [
+     "SL3"
+    ]
+   },
+   "inputs": {
+    "blocks": [
+     {
+      "key": "cs_87c620df4a@0.02",
+      "block_id": "cs_87c620df4a",
+      "sku": "280351",
+      "line_name": "P10",
+      "start_h": 0.017,
+      "end_h": 119.733,
+      "cases": 29283.0,
+      "locked": true,
+      "running": true,
+      "cases_left": null
+     },
+     {
+      "key": "cs_44c4bde023@71.85",
+      "block_id": "cs_44c4bde023",
+      "sku": "280351",
+      "line_name": "P19",
+      "start_h": 71.85,
+      "end_h": 131.5,
+      "cases": 41435.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     },
+     {
+      "key": "cs_87c620df4a@125.73",
+      "block_id": "cs_87c620df4a",
+      "sku": "280351",
+      "line_name": "P10",
+      "start_h": 125.733,
+      "end_h": 188.112,
+      "cases": 15258.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     }
+    ],
+    "sku_needs": {
+     "280351": {
+      "kg_per_case": 2.16,
+      "items": [
+       {
+        "item": "754751",
+        "per_case": 1.0,
+        "unit": "EA",
+        "alts": []
+       }
+      ]
+     }
+    },
+    "opening": {
+     "754751": 36000.0
+    },
+    "tracked": [
+     "754751"
+    ],
+    "in_house": [
+     "BT001",
+     "BT002"
+    ],
+    "receipts": {
+     "754751": [
+      {
+       "ready_h": 40.0,
+       "qty": 67200.0,
+       "po8": "30043543",
+       "tier": "erp",
+       "receipt_date": "2026-09-02",
+       "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+      }
+     ]
+    },
+    "snapshot_h": {
+     "754751": 14.8
+    },
+    "feed_state": "ok",
+    "receipts_window_end_h": 800.0
+   },
+   "expected": {
+    "cs_87c620df4a@0.02": {
+     "key": "cs_87c620df4a@0.02",
+     "verdict": "DEPENDENT",
+     "backed": false,
+     "minor": false,
+     "mid_run": true,
+     "item": "754751",
+     "covered_frac": 0.767361,
+     "depletion_h": 95.321493,
+     "lead_h": -39.983,
+     "safe_from_h": 136.0,
+     "binding": {
+      "po8": "30043543",
+      "qty": 67200.0,
+      "ready_h": 40.0,
+      "receipt_date": "2026-09-02",
+      "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+     },
+     "action": "chase_po",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 25667.020607,
+       "opening_at_start": 36000.0,
+       "minH": -22928.246173,
+       "minP": 29835.981824,
+       "minR": -22928.246173,
+       "verdict": "DEPENDENT",
+       "backed": false,
+       "covered_frac": 0.767361,
+       "depletion_h": 95.321493,
+       "covered_frac_planned": 1.0,
+       "depletion_planned_h": null,
+       "binding": {
+        "po8": "30043543",
+        "qty": 67200.0,
+        "ready_h": 40.0,
+        "receipt_date": "2026-09-02",
+        "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+       },
+       "lead_h": -39.983,
+       "safe_from_h": 136.0,
+       "dependent_frac": 0.893296,
+       "minor": false,
+       "mid_run": true
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {
+      "754751": [
+       "cs_44c4bde023@71.85"
+      ]
+     },
+     "text": "🚚 754751: on hand covers 77% (runs out h95.3) · PO 30043543 lands h40.0 — 1.7 d after start (mid-run) (min 4 d) · safe from h136.0"
+    },
+    "cs_44c4bde023@71.85": {
+     "key": "cs_44c4bde023@71.85",
+     "verdict": "DEPENDENT",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 0.393487,
+     "depletion_h": 95.321493,
+     "lead_h": 31.85,
+     "safe_from_h": 136.0,
+     "binding": {
+      "po8": "30043543",
+      "qty": 67200.0,
+      "ready_h": 40.0,
+      "receipt_date": "2026-09-02",
+      "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+     },
+     "action": "move",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 41435.0,
+       "opening_at_start": 22045.34774,
+       "minH": -32512.637738,
+       "minP": 34687.362262,
+       "minR": -32512.637738,
+       "verdict": "DEPENDENT",
+       "backed": false,
+       "covered_frac": 0.393487,
+       "depletion_h": 95.321493,
+       "covered_frac_planned": 1.0,
+       "depletion_planned_h": null,
+       "binding": {
+        "po8": "30043543",
+        "qty": 67200.0,
+        "ready_h": 40.0,
+        "receipt_date": "2026-09-02",
+        "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+       },
+       "lead_h": 31.85,
+       "safe_from_h": 136.0,
+       "dependent_frac": 0.784666,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {
+      "754751": [
+       "cs_87c620df4a@0.02",
+       "cs_87c620df4a@125.73"
+      ]
+     },
+     "text": "🚚 754751: on hand covers 39% (runs out h95.3) · PO 30043543 lands h40.0 — 1.3 d before start (min 4 d) · safe from h136.0"
+    },
+    "cs_87c620df4a@125.73": {
+     "key": "cs_87c620df4a@125.73",
+     "verdict": "DEPENDENT",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 0.0,
+     "depletion_h": 125.733,
+     "lead_h": 85.733,
+     "safe_from_h": 136.0,
+     "binding": {
+      "po8": "30043543",
+      "qty": 67200.0,
+      "ready_h": 40.0,
+      "receipt_date": "2026-09-02",
+      "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+     },
+     "action": "move",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 15258.0,
+       "opening_at_start": -27096.058411,
+       "minH": -46360.020607,
+       "minP": 20839.979393,
+       "minR": -46360.020607,
+       "verdict": "DEPENDENT",
+       "backed": false,
+       "covered_frac": 0.0,
+       "depletion_h": 125.733,
+       "covered_frac_planned": 1.0,
+       "depletion_planned_h": null,
+       "binding": {
+        "po8": "30043543",
+        "qty": 67200.0,
+        "ready_h": 40.0,
+        "receipt_date": "2026-09-02",
+        "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+       },
+       "lead_h": 85.733,
+       "safe_from_h": 136.0,
+       "dependent_frac": 1.0,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {
+      "754751": [
+       "cs_44c4bde023@71.85"
+      ]
+     },
+     "text": "🚚 754751: on hand covers 0% (runs out h125.7) · PO 30043543 lands h40.0 — 3.6 d before start (min 4 d) · safe from h136.0"
+    }
+   },
+   "expected_draws": {
+    "754751": [
+     {
+      "key": "cs_87c620df4a@0.02",
+      "a": 14.8,
+      "e": 119.733,
+      "qty": 25667.020607
+     },
+     {
+      "key": "cs_44c4bde023@71.85",
+      "a": 71.85,
+      "e": 131.5,
+      "qty": 41435.0
+     },
+     {
+      "key": "cs_87c620df4a@125.73",
+      "a": 125.733,
+      "e": 188.112,
+      "qty": 15258.0
+     }
+    ]
+   },
+   "earliest_clear_start": null
+  },
+  {
+   "name": "B_zero_buffer",
+   "rules": {
+    "min_days_after_delivery": 0,
+    "lead_measured_from": "block_start",
+    "receipt_ready_hour": 16,
+    "raw_qc_offset_h": 72,
+    "appt_ready_offset_h": 2,
+    "po_ignore_after_h": 168,
+    "landed_match_frac": 0.95,
+    "dependent_frac_floor": 0.05,
+    "hard_block": false,
+    "use_board_qty_kg": true,
+    "raw_areas": [
+     "RB1",
+     "AMB",
+     "RC1"
+    ],
+    "offsite_areas": [
+     "SL3"
+    ]
+   },
+   "inputs": {
+    "blocks": [
+     {
+      "key": "cs_87c620df4a@0.02",
+      "block_id": "cs_87c620df4a",
+      "sku": "280351",
+      "line_name": "P10",
+      "start_h": 0.017,
+      "end_h": 119.733,
+      "cases": 29283.0,
+      "locked": true,
+      "running": true,
+      "cases_left": null
+     },
+     {
+      "key": "cs_44c4bde023@71.85",
+      "block_id": "cs_44c4bde023",
+      "sku": "280351",
+      "line_name": "P19",
+      "start_h": 71.85,
+      "end_h": 131.5,
+      "cases": 41435.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     },
+     {
+      "key": "cs_87c620df4a@125.73",
+      "block_id": "cs_87c620df4a",
+      "sku": "280351",
+      "line_name": "P10",
+      "start_h": 125.733,
+      "end_h": 188.112,
+      "cases": 15258.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     }
+    ],
+    "sku_needs": {
+     "280351": {
+      "kg_per_case": 2.16,
+      "items": [
+       {
+        "item": "754751",
+        "per_case": 1.0,
+        "unit": "EA",
+        "alts": []
+       }
+      ]
+     }
+    },
+    "opening": {
+     "754751": 36000.0
+    },
+    "tracked": [
+     "754751"
+    ],
+    "in_house": [
+     "BT001",
+     "BT002"
+    ],
+    "receipts": {
+     "754751": [
+      {
+       "ready_h": 40.0,
+       "qty": 67200.0,
+       "po8": "30043543",
+       "tier": "erp",
+       "receipt_date": "2026-09-02",
+       "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+      }
+     ]
+    },
+    "snapshot_h": {
+     "754751": 14.8
+    },
+    "feed_state": "ok",
+    "receipts_window_end_h": 800.0
+   },
+   "expected": {
+    "cs_87c620df4a@0.02": {
+     "key": "cs_87c620df4a@0.02",
+     "verdict": "DEPENDENT",
+     "backed": false,
+     "minor": false,
+     "mid_run": true,
+     "item": "754751",
+     "covered_frac": 0.767361,
+     "depletion_h": 95.321493,
+     "lead_h": -39.983,
+     "safe_from_h": 40.0,
+     "binding": {
+      "po8": "30043543",
+      "qty": 67200.0,
+      "ready_h": 40.0,
+      "receipt_date": "2026-09-02",
+      "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+     },
+     "action": "chase_po",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 25667.020607,
+       "opening_at_start": 36000.0,
+       "minH": -22928.246173,
+       "minP": 29835.981824,
+       "minR": -22928.246173,
+       "verdict": "DEPENDENT",
+       "backed": false,
+       "covered_frac": 0.767361,
+       "depletion_h": 95.321493,
+       "covered_frac_planned": 1.0,
+       "depletion_planned_h": null,
+       "binding": {
+        "po8": "30043543",
+        "qty": 67200.0,
+        "ready_h": 40.0,
+        "receipt_date": "2026-09-02",
+        "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+       },
+       "lead_h": -39.983,
+       "safe_from_h": 40.0,
+       "dependent_frac": 0.893296,
+       "minor": false,
+       "mid_run": true
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {
+      "754751": [
+       "cs_44c4bde023@71.85"
+      ]
+     },
+     "text": "🚚 754751: on hand covers 77% (runs out h95.3) · PO 30043543 lands h40.0 — 1.7 d after start (mid-run) (min 0 d) · safe from h40.0"
+    },
+    "cs_44c4bde023@71.85": {
+     "key": "cs_44c4bde023@71.85",
+     "verdict": "OK",
+     "backed": true,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 0.393487,
+     "depletion_h": 95.321493,
+     "lead_h": 31.85,
+     "safe_from_h": 40.0,
+     "binding": {
+      "po8": "30043543",
+      "qty": 67200.0,
+      "ready_h": 40.0,
+      "receipt_date": "2026-09-02",
+      "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+     },
+     "action": "none",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 41435.0,
+       "opening_at_start": 22045.34774,
+       "minH": -32512.637738,
+       "minP": 34687.362262,
+       "minR": 34687.362262,
+       "verdict": "OK",
+       "backed": true,
+       "covered_frac": 0.393487,
+       "depletion_h": 95.321493,
+       "covered_frac_planned": 1.0,
+       "depletion_planned_h": null,
+       "binding": {
+        "po8": "30043543",
+        "qty": 67200.0,
+        "ready_h": 40.0,
+        "receipt_date": "2026-09-02",
+        "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+       },
+       "lead_h": 31.85,
+       "safe_from_h": 40.0,
+       "dependent_frac": 0.784666,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {
+      "754751": [
+       "cs_87c620df4a@0.02",
+       "cs_87c620df4a@125.73"
+      ]
+     },
+     "text": "🚚 754751: on hand covers 39% (runs out h95.3) · PO 30043543 lands h40.0 — 1.3 d before start (min 0 d) · backed"
+    },
+    "cs_87c620df4a@125.73": {
+     "key": "cs_87c620df4a@125.73",
+     "verdict": "OK",
+     "backed": true,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 0.0,
+     "depletion_h": 125.733,
+     "lead_h": 85.733,
+     "safe_from_h": 40.0,
+     "binding": {
+      "po8": "30043543",
+      "qty": 67200.0,
+      "ready_h": 40.0,
+      "receipt_date": "2026-09-02",
+      "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+     },
+     "action": "none",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 15258.0,
+       "opening_at_start": -27096.058411,
+       "minH": -46360.020607,
+       "minP": 20839.979393,
+       "minR": 20839.979393,
+       "verdict": "OK",
+       "backed": true,
+       "covered_frac": 0.0,
+       "depletion_h": 125.733,
+       "covered_frac_planned": 1.0,
+       "depletion_planned_h": null,
+       "binding": {
+        "po8": "30043543",
+        "qty": 67200.0,
+        "ready_h": 40.0,
+        "receipt_date": "2026-09-02",
+        "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+       },
+       "lead_h": 85.733,
+       "safe_from_h": 40.0,
+       "dependent_frac": 1.0,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {
+      "754751": [
+       "cs_44c4bde023@71.85"
+      ]
+     },
+     "text": "🚚 754751: on hand covers 0% (runs out h125.7) · PO 30043543 lands h40.0 — 3.6 d before start (min 0 d) · backed"
+    }
+   },
+   "expected_draws": {
+    "754751": [
+     {
+      "key": "cs_87c620df4a@0.02",
+      "a": 14.8,
+      "e": 119.733,
+      "qty": 25667.020607
+     },
+     {
+      "key": "cs_44c4bde023@71.85",
+      "a": 71.85,
+      "e": 131.5,
+      "qty": 41435.0
+     },
+     {
+      "key": "cs_87c620df4a@125.73",
+      "a": 125.733,
+      "e": 188.112,
+      "qty": 15258.0
+     }
+    ]
+   },
+   "earliest_clear_start": null
+  },
+  {
+   "name": "C_receipt_after_crossing",
+   "rules": {
+    "min_days_after_delivery": 4,
+    "lead_measured_from": "block_start",
+    "receipt_ready_hour": 16,
+    "raw_qc_offset_h": 72,
+    "appt_ready_offset_h": 2,
+    "po_ignore_after_h": 168,
+    "landed_match_frac": 0.95,
+    "dependent_frac_floor": 0.05,
+    "hard_block": false,
+    "use_board_qty_kg": true,
+    "raw_areas": [
+     "RB1",
+     "AMB",
+     "RC1"
+    ],
+    "offsite_areas": [
+     "SL3"
+    ]
+   },
+   "inputs": {
+    "blocks": [
+     {
+      "key": "cs_87c620df4a@0.02",
+      "block_id": "cs_87c620df4a",
+      "sku": "280351",
+      "line_name": "P10",
+      "start_h": 0.017,
+      "end_h": 119.733,
+      "cases": 29283.0,
+      "locked": true,
+      "running": true,
+      "cases_left": null
+     },
+     {
+      "key": "cs_44c4bde023@71.85",
+      "block_id": "cs_44c4bde023",
+      "sku": "280351",
+      "line_name": "P19",
+      "start_h": 71.85,
+      "end_h": 131.5,
+      "cases": 41435.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     },
+     {
+      "key": "cs_87c620df4a@125.73",
+      "block_id": "cs_87c620df4a",
+      "sku": "280351",
+      "line_name": "P10",
+      "start_h": 125.733,
+      "end_h": 188.112,
+      "cases": 15258.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     }
+    ],
+    "sku_needs": {
+     "280351": {
+      "kg_per_case": 2.16,
+      "items": [
+       {
+        "item": "754751",
+        "per_case": 1.0,
+        "unit": "EA",
+        "alts": []
+       }
+      ]
+     }
+    },
+    "opening": {
+     "754751": 36000.0
+    },
+    "tracked": [
+     "754751"
+    ],
+    "in_house": [
+     "BT001",
+     "BT002"
+    ],
+    "receipts": {
+     "754751": [
+      {
+       "ready_h": 112.0,
+       "qty": 67200.0,
+       "po8": "30043543",
+       "tier": "erp",
+       "receipt_date": "2026-09-05",
+       "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-05 · ERP date"
+      }
+     ]
+    },
+    "snapshot_h": {
+     "754751": 14.8
+    },
+    "feed_state": "ok",
+    "receipts_window_end_h": 800.0
+   },
+   "expected": {
+    "cs_87c620df4a@0.02": {
+     "key": "cs_87c620df4a@0.02",
+     "verdict": "SHORT",
+     "backed": false,
+     "minor": false,
+     "mid_run": true,
+     "item": "754751",
+     "covered_frac": 0.767361,
+     "depletion_h": 95.321493,
+     "lead_h": -111.983,
+     "safe_from_h": 208.0,
+     "binding": {
+      "po8": "30043543",
+      "qty": 67200.0,
+      "ready_h": 112.0,
+      "receipt_date": "2026-09-05",
+      "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-05 · ERP date"
+     },
+     "action": "chase_po",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 25667.020607,
+       "opening_at_start": 36000.0,
+       "minH": -22928.246173,
+       "minP": -15665.108907,
+       "minR": -22928.246173,
+       "verdict": "SHORT",
+       "backed": false,
+       "covered_frac": 0.767361,
+       "depletion_h": 95.321493,
+       "covered_frac_planned": 0.767361,
+       "depletion_planned_h": 95.321493,
+       "binding": {
+        "po8": "30043543",
+        "qty": 67200.0,
+        "ready_h": 112.0,
+        "receipt_date": "2026-09-05",
+        "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-05 · ERP date"
+       },
+       "lead_h": -111.983,
+       "safe_from_h": 208.0,
+       "dependent_frac": 0.893296,
+       "minor": false,
+       "mid_run": true
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {
+      "754751": [
+       "cs_44c4bde023@71.85"
+      ]
+     },
+     "text": "⛔ 754751: on hand covers 77% (runs out h95.3) · even with PO 30043543 (h112.0) the line stops h95.3"
+    },
+    "cs_44c4bde023@71.85": {
+     "key": "cs_44c4bde023@71.85",
+     "verdict": "SHORT",
+     "backed": false,
+     "minor": false,
+     "mid_run": true,
+     "item": "754751",
+     "covered_frac": 0.393487,
+     "depletion_h": 95.321493,
+     "lead_h": -40.15,
+     "safe_from_h": 208.0,
+     "binding": {
+      "po8": "30043543",
+      "qty": 67200.0,
+      "ready_h": 112.0,
+      "receipt_date": "2026-09-05",
+      "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-05 · ERP date"
+     },
+     "action": "move",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 41435.0,
+       "opening_at_start": 22045.34774,
+       "minH": -32512.637738,
+       "minP": -15665.108907,
+       "minR": -32512.637738,
+       "verdict": "SHORT",
+       "backed": false,
+       "covered_frac": 0.393487,
+       "depletion_h": 95.321493,
+       "covered_frac_planned": 0.393487,
+       "depletion_planned_h": 95.321493,
+       "binding": {
+        "po8": "30043543",
+        "qty": 67200.0,
+        "ready_h": 112.0,
+        "receipt_date": "2026-09-05",
+        "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-05 · ERP date"
+       },
+       "lead_h": -40.15,
+       "safe_from_h": 208.0,
+       "dependent_frac": 0.784666,
+       "minor": false,
+       "mid_run": true
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {
+      "754751": [
+       "cs_87c620df4a@0.02",
+       "cs_87c620df4a@125.73"
+      ]
+     },
+     "text": "⛔ 754751: on hand covers 39% (runs out h95.3) · even with PO 30043543 (h112.0) the line stops h95.3"
+    },
+    "cs_87c620df4a@125.73": {
+     "key": "cs_87c620df4a@125.73",
+     "verdict": "DEPENDENT",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 0.0,
+     "depletion_h": 125.733,
+     "lead_h": 13.733,
+     "safe_from_h": 208.0,
+     "binding": {
+      "po8": "30043543",
+      "qty": 67200.0,
+      "ready_h": 112.0,
+      "receipt_date": "2026-09-05",
+      "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-05 · ERP date"
+     },
+     "action": "move",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 15258.0,
+       "opening_at_start": -27096.058411,
+       "minH": -46360.020607,
+       "minP": 20839.979393,
+       "minR": -46360.020607,
+       "verdict": "DEPENDENT",
+       "backed": false,
+       "covered_frac": 0.0,
+       "depletion_h": 125.733,
+       "covered_frac_planned": 1.0,
+       "depletion_planned_h": null,
+       "binding": {
+        "po8": "30043543",
+        "qty": 67200.0,
+        "ready_h": 112.0,
+        "receipt_date": "2026-09-05",
+        "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-05 · ERP date"
+       },
+       "lead_h": 13.733,
+       "safe_from_h": 208.0,
+       "dependent_frac": 1.0,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {
+      "754751": [
+       "cs_44c4bde023@71.85"
+      ]
+     },
+     "text": "🚚 754751: on hand covers 0% (runs out h125.7) · PO 30043543 lands h112.0 — 14 h before start (min 4 d) · safe from h208.0"
+    }
+   },
+   "expected_draws": {
+    "754751": [
+     {
+      "key": "cs_87c620df4a@0.02",
+      "a": 14.8,
+      "e": 119.733,
+      "qty": 25667.020607
+     },
+     {
+      "key": "cs_44c4bde023@71.85",
+      "a": 71.85,
+      "e": 131.5,
+      "qty": 41435.0
+     },
+     {
+      "key": "cs_87c620df4a@125.73",
+      "a": 125.733,
+      "e": 188.112,
+      "qty": 15258.0
+     }
+    ]
+   },
+   "earliest_clear_start": null
+  },
+  {
+   "name": "D1_window_exhausted",
+   "rules": {
+    "min_days_after_delivery": 4,
+    "lead_measured_from": "block_start",
+    "receipt_ready_hour": 16,
+    "raw_qc_offset_h": 72,
+    "appt_ready_offset_h": 2,
+    "po_ignore_after_h": 168,
+    "landed_match_frac": 0.95,
+    "dependent_frac_floor": 0.05,
+    "hard_block": false,
+    "use_board_qty_kg": true,
+    "raw_areas": [
+     "RB1",
+     "AMB",
+     "RC1"
+    ],
+    "offsite_areas": [
+     "SL3"
+    ]
+   },
+   "inputs": {
+    "blocks": [
+     {
+      "key": "cs_87c620df4a@0.02",
+      "block_id": "cs_87c620df4a",
+      "sku": "280351",
+      "line_name": "P10",
+      "start_h": 0.017,
+      "end_h": 119.733,
+      "cases": 29283.0,
+      "locked": true,
+      "running": true,
+      "cases_left": null
+     },
+     {
+      "key": "cs_44c4bde023@71.85",
+      "block_id": "cs_44c4bde023",
+      "sku": "280351",
+      "line_name": "P19",
+      "start_h": 71.85,
+      "end_h": 131.5,
+      "cases": 41435.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     },
+     {
+      "key": "cs_87c620df4a@125.73",
+      "block_id": "cs_87c620df4a",
+      "sku": "280351",
+      "line_name": "P10",
+      "start_h": 125.733,
+      "end_h": 188.112,
+      "cases": 15258.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     },
+     {
+      "key": "ok_blk@30.00",
+      "block_id": "ok_blk",
+      "sku": "280900",
+      "line_name": "P21",
+      "start_h": 30.0,
+      "end_h": 50.0,
+      "cases": 1000.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     }
+    ],
+    "sku_needs": {
+     "280351": {
+      "kg_per_case": 2.16,
+      "items": [
+       {
+        "item": "754751",
+        "per_case": 1.0,
+        "unit": "EA",
+        "alts": []
+       }
+      ]
+     },
+     "280900": {
+      "kg_per_case": 2.16,
+      "items": [
+       {
+        "item": "752420",
+        "per_case": 1.0,
+        "unit": "M2",
+        "alts": []
+       }
+      ]
+     }
+    },
+    "opening": {
+     "754751": 36000.0,
+     "752420": 50000.0
+    },
+    "tracked": [
+     "754751",
+     "752420"
+    ],
+    "in_house": [
+     "BT001",
+     "BT002"
+    ],
+    "receipts": {},
+    "snapshot_h": {
+     "754751": 14.8,
+     "752420": 14.8
+    },
+    "feed_state": "ok",
+    "receipts_window_end_h": 20.0
+   },
+   "expected": {
+    "cs_87c620df4a@0.02": {
+     "key": "cs_87c620df4a@0.02",
+     "verdict": "SHORT",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 0.767361,
+     "depletion_h": 95.321493,
+     "lead_h": null,
+     "safe_from_h": null,
+     "binding": null,
+     "action": "chase_po",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 25667.020607,
+       "opening_at_start": 36000.0,
+       "minH": -22928.246173,
+       "minP": -22928.246173,
+       "minR": -22928.246173,
+       "verdict": "SHORT",
+       "backed": false,
+       "covered_frac": 0.767361,
+       "depletion_h": 95.321493,
+       "covered_frac_planned": 0.767361,
+       "depletion_planned_h": 95.321493,
+       "binding": null,
+       "lead_h": null,
+       "safe_from_h": null,
+       "dependent_frac": 0.893296,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {
+      "754751": [
+       "cs_44c4bde023@71.85"
+      ]
+     },
+     "text": "⛔ 754751: on hand covers 77% (runs out h95.3) · no inbound counted"
+    },
+    "cs_44c4bde023@71.85": {
+     "key": "cs_44c4bde023@71.85",
+     "verdict": "SHORT",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 0.393487,
+     "depletion_h": 95.321493,
+     "lead_h": null,
+     "safe_from_h": null,
+     "binding": null,
+     "action": "move",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 41435.0,
+       "opening_at_start": 22045.34774,
+       "minH": -32512.637738,
+       "minP": -32512.637738,
+       "minR": -32512.637738,
+       "verdict": "SHORT",
+       "backed": false,
+       "covered_frac": 0.393487,
+       "depletion_h": 95.321493,
+       "covered_frac_planned": 0.393487,
+       "depletion_planned_h": 95.321493,
+       "binding": null,
+       "lead_h": null,
+       "safe_from_h": null,
+       "dependent_frac": 0.784666,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {
+      "754751": [
+       "cs_87c620df4a@0.02",
+       "cs_87c620df4a@125.73"
+      ]
+     },
+     "text": "⛔ 754751: on hand covers 39% (runs out h95.3) · no inbound counted"
+    },
+    "cs_87c620df4a@125.73": {
+     "key": "cs_87c620df4a@125.73",
+     "verdict": "SHORT",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 0.0,
+     "depletion_h": 125.733,
+     "lead_h": null,
+     "safe_from_h": null,
+     "binding": null,
+     "action": "move",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 15258.0,
+       "opening_at_start": -27096.058411,
+       "minH": -46360.020607,
+       "minP": -46360.020607,
+       "minR": -46360.020607,
+       "verdict": "SHORT",
+       "backed": false,
+       "covered_frac": 0.0,
+       "depletion_h": 125.733,
+       "covered_frac_planned": 0.0,
+       "depletion_planned_h": 125.733,
+       "binding": null,
+       "lead_h": null,
+       "safe_from_h": null,
+       "dependent_frac": 1.0,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {
+      "754751": [
+       "cs_44c4bde023@71.85"
+      ]
+     },
+     "text": "⛔ 754751: on hand covers 0% (runs out h125.7) · no inbound counted"
+    },
+    "ok_blk@30.00": {
+     "key": "ok_blk@30.00",
+     "verdict": "OK",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "752420",
+     "covered_frac": 1.0,
+     "depletion_h": null,
+     "lead_h": null,
+     "safe_from_h": null,
+     "binding": null,
+     "action": "none",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "752420",
+       "unit": "M2",
+       "need": 1000.0,
+       "opening_at_start": 50000.0,
+       "minH": 49000.0,
+       "minP": 49000.0,
+       "minR": 49000.0,
+       "verdict": "OK",
+       "backed": false,
+       "covered_frac": 1.0,
+       "depletion_h": null,
+       "covered_frac_planned": 1.0,
+       "depletion_planned_h": null,
+       "binding": null,
+       "lead_h": null,
+       "safe_from_h": null,
+       "dependent_frac": 0.0,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {},
+     "text": "✅ 752420: on hand covers the run"
+    }
+   },
+   "expected_draws": {
+    "754751": [
+     {
+      "key": "cs_87c620df4a@0.02",
+      "a": 14.8,
+      "e": 119.733,
+      "qty": 25667.020607
+     },
+     {
+      "key": "cs_44c4bde023@71.85",
+      "a": 71.85,
+      "e": 131.5,
+      "qty": 41435.0
+     },
+     {
+      "key": "cs_87c620df4a@125.73",
+      "a": 125.733,
+      "e": 188.112,
+      "qty": 15258.0
+     }
+    ],
+    "752420": [
+     {
+      "key": "ok_blk@30.00",
+      "a": 30.0,
+      "e": 50.0,
+      "qty": 1000.0
+     }
+    ]
+   },
+   "earliest_clear_start": null
+  },
+  {
+   "name": "D2_feed_missing",
+   "rules": {
+    "min_days_after_delivery": 4,
+    "lead_measured_from": "block_start",
+    "receipt_ready_hour": 16,
+    "raw_qc_offset_h": 72,
+    "appt_ready_offset_h": 2,
+    "po_ignore_after_h": 168,
+    "landed_match_frac": 0.95,
+    "dependent_frac_floor": 0.05,
+    "hard_block": false,
+    "use_board_qty_kg": true,
+    "raw_areas": [
+     "RB1",
+     "AMB",
+     "RC1"
+    ],
+    "offsite_areas": [
+     "SL3"
+    ]
+   },
+   "inputs": {
+    "blocks": [
+     {
+      "key": "cs_87c620df4a@0.02",
+      "block_id": "cs_87c620df4a",
+      "sku": "280351",
+      "line_name": "P10",
+      "start_h": 0.017,
+      "end_h": 119.733,
+      "cases": 29283.0,
+      "locked": true,
+      "running": true,
+      "cases_left": null
+     },
+     {
+      "key": "cs_44c4bde023@71.85",
+      "block_id": "cs_44c4bde023",
+      "sku": "280351",
+      "line_name": "P19",
+      "start_h": 71.85,
+      "end_h": 131.5,
+      "cases": 41435.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     },
+     {
+      "key": "cs_87c620df4a@125.73",
+      "block_id": "cs_87c620df4a",
+      "sku": "280351",
+      "line_name": "P10",
+      "start_h": 125.733,
+      "end_h": 188.112,
+      "cases": 15258.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     },
+     {
+      "key": "ok_blk@30.00",
+      "block_id": "ok_blk",
+      "sku": "280900",
+      "line_name": "P21",
+      "start_h": 30.0,
+      "end_h": 50.0,
+      "cases": 1000.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     }
+    ],
+    "sku_needs": {
+     "280351": {
+      "kg_per_case": 2.16,
+      "items": [
+       {
+        "item": "754751",
+        "per_case": 1.0,
+        "unit": "EA",
+        "alts": []
+       }
+      ]
+     },
+     "280900": {
+      "kg_per_case": 2.16,
+      "items": [
+       {
+        "item": "752420",
+        "per_case": 1.0,
+        "unit": "M2",
+        "alts": []
+       }
+      ]
+     }
+    },
+    "opening": {
+     "754751": 36000.0,
+     "752420": 50000.0
+    },
+    "tracked": [
+     "754751",
+     "752420"
+    ],
+    "in_house": [
+     "BT001",
+     "BT002"
+    ],
+    "receipts": {},
+    "snapshot_h": {
+     "754751": 14.8,
+     "752420": 14.8
+    },
+    "feed_state": "missing",
+    "receipts_window_end_h": 800.0
+   },
+   "expected": {
+    "cs_87c620df4a@0.02": {
+     "key": "cs_87c620df4a@0.02",
+     "verdict": "NO_DATA",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 0.767361,
+     "depletion_h": 95.321493,
+     "lead_h": null,
+     "safe_from_h": null,
+     "binding": null,
+     "action": "chase_po",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 25667.020607,
+       "opening_at_start": 36000.0,
+       "minH": -22928.246173,
+       "minP": -22928.246173,
+       "minR": -22928.246173,
+       "verdict": "NO_DATA",
+       "backed": false,
+       "covered_frac": 0.767361,
+       "depletion_h": 95.321493,
+       "covered_frac_planned": 0.767361,
+       "depletion_planned_h": 95.321493,
+       "binding": null,
+       "lead_h": null,
+       "safe_from_h": null,
+       "dependent_frac": 0.893296,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {
+      "754751": [
+       "cs_44c4bde023@71.85"
+      ]
+     },
+     "text": "? 754751: on hand covers 77% (runs out h95.3) · no inbound data covering the gap"
+    },
+    "cs_44c4bde023@71.85": {
+     "key": "cs_44c4bde023@71.85",
+     "verdict": "NO_DATA",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 0.393487,
+     "depletion_h": 95.321493,
+     "lead_h": null,
+     "safe_from_h": null,
+     "binding": null,
+     "action": "move",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 41435.0,
+       "opening_at_start": 22045.34774,
+       "minH": -32512.637738,
+       "minP": -32512.637738,
+       "minR": -32512.637738,
+       "verdict": "NO_DATA",
+       "backed": false,
+       "covered_frac": 0.393487,
+       "depletion_h": 95.321493,
+       "covered_frac_planned": 0.393487,
+       "depletion_planned_h": 95.321493,
+       "binding": null,
+       "lead_h": null,
+       "safe_from_h": null,
+       "dependent_frac": 0.784666,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {
+      "754751": [
+       "cs_87c620df4a@0.02",
+       "cs_87c620df4a@125.73"
+      ]
+     },
+     "text": "? 754751: on hand covers 39% (runs out h95.3) · no inbound data covering the gap"
+    },
+    "cs_87c620df4a@125.73": {
+     "key": "cs_87c620df4a@125.73",
+     "verdict": "NO_DATA",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 0.0,
+     "depletion_h": 125.733,
+     "lead_h": null,
+     "safe_from_h": null,
+     "binding": null,
+     "action": "move",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 15258.0,
+       "opening_at_start": -27096.058411,
+       "minH": -46360.020607,
+       "minP": -46360.020607,
+       "minR": -46360.020607,
+       "verdict": "NO_DATA",
+       "backed": false,
+       "covered_frac": 0.0,
+       "depletion_h": 125.733,
+       "covered_frac_planned": 0.0,
+       "depletion_planned_h": 125.733,
+       "binding": null,
+       "lead_h": null,
+       "safe_from_h": null,
+       "dependent_frac": 1.0,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {
+      "754751": [
+       "cs_44c4bde023@71.85"
+      ]
+     },
+     "text": "? 754751: on hand covers 0% (runs out h125.7) · no inbound data covering the gap"
+    },
+    "ok_blk@30.00": {
+     "key": "ok_blk@30.00",
+     "verdict": "OK",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "752420",
+     "covered_frac": 1.0,
+     "depletion_h": null,
+     "lead_h": null,
+     "safe_from_h": null,
+     "binding": null,
+     "action": "none",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "752420",
+       "unit": "M2",
+       "need": 1000.0,
+       "opening_at_start": 50000.0,
+       "minH": 49000.0,
+       "minP": 49000.0,
+       "minR": 49000.0,
+       "verdict": "OK",
+       "backed": false,
+       "covered_frac": 1.0,
+       "depletion_h": null,
+       "covered_frac_planned": 1.0,
+       "depletion_planned_h": null,
+       "binding": null,
+       "lead_h": null,
+       "safe_from_h": null,
+       "dependent_frac": 0.0,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {},
+     "text": "✅ 752420: on hand covers the run"
+    }
+   },
+   "expected_draws": {
+    "754751": [
+     {
+      "key": "cs_87c620df4a@0.02",
+      "a": 14.8,
+      "e": 119.733,
+      "qty": 25667.020607
+     },
+     {
+      "key": "cs_44c4bde023@71.85",
+      "a": 71.85,
+      "e": 131.5,
+      "qty": 41435.0
+     },
+     {
+      "key": "cs_87c620df4a@125.73",
+      "a": 125.733,
+      "e": 188.112,
+      "qty": 15258.0
+     }
+    ],
+    "752420": [
+     {
+      "key": "ok_blk@30.00",
+      "a": 30.0,
+      "e": 50.0,
+      "qty": 1000.0
+     }
+    ]
+   },
+   "earliest_clear_start": null
+  },
+  {
+   "name": "E1_stacked_both_needed",
+   "rules": {
+    "min_days_after_delivery": 4,
+    "lead_measured_from": "block_start",
+    "receipt_ready_hour": 16,
+    "raw_qc_offset_h": 72,
+    "appt_ready_offset_h": 2,
+    "po_ignore_after_h": 168,
+    "landed_match_frac": 0.95,
+    "dependent_frac_floor": 0.05,
+    "hard_block": false,
+    "use_board_qty_kg": true,
+    "raw_areas": [
+     "RB1",
+     "AMB",
+     "RC1"
+    ],
+    "offsite_areas": [
+     "SL3"
+    ]
+   },
+   "inputs": {
+    "blocks": [
+     {
+      "key": "cs_44c4bde023@71.85",
+      "block_id": "cs_44c4bde023",
+      "sku": "280351",
+      "line_name": "P19",
+      "start_h": 71.85,
+      "end_h": 131.5,
+      "cases": 41435.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     }
+    ],
+    "sku_needs": {
+     "280351": {
+      "kg_per_case": 2.16,
+      "items": [
+       {
+        "item": "754751",
+        "per_case": 1.0,
+        "unit": "EA",
+        "alts": []
+       }
+      ]
+     }
+    },
+    "opening": {
+     "754751": 36000.0
+    },
+    "tracked": [
+     "754751"
+    ],
+    "in_house": [
+     "BT001",
+     "BT002"
+    ],
+    "receipts": {
+     "754751": [
+      {
+       "ready_h": 30.0,
+       "qty": 3000.0,
+       "po8": "30043601",
+       "tier": "erp",
+       "receipt_date": "2026-09-02",
+       "label": "PO 30043601 · 754751 · 3,000 EA · 2026-09-02 · ERP date"
+      },
+      {
+       "ready_h": 50.0,
+       "qty": 3000.0,
+       "po8": "30043602",
+       "tier": "erp",
+       "receipt_date": "2026-09-03",
+       "label": "PO 30043602 · 754751 · 3,000 EA · 2026-09-03 · ERP date"
+      }
+     ]
+    },
+    "snapshot_h": {
+     "754751": 14.8
+    },
+    "feed_state": "ok",
+    "receipts_window_end_h": 800.0
+   },
+   "expected": {
+    "cs_44c4bde023@71.85": {
+     "key": "cs_44c4bde023@71.85",
+     "verdict": "DEPENDENT",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 0.868831,
+     "depletion_h": 123.675751,
+     "lead_h": 21.85,
+     "safe_from_h": 146.0,
+     "binding": {
+      "po8": "30043602",
+      "qty": 3000.0,
+      "ready_h": 50.0,
+      "receipt_date": "2026-09-03",
+      "label": "PO 30043602 · 754751 · 3,000 EA · 2026-09-03 · ERP date"
+     },
+     "action": "move",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 41435.0,
+       "opening_at_start": 36000.0,
+       "minH": -5435.0,
+       "minP": 565.0,
+       "minR": -5435.0,
+       "verdict": "DEPENDENT",
+       "backed": false,
+       "covered_frac": 0.868831,
+       "depletion_h": 123.675751,
+       "covered_frac_planned": 1.0,
+       "depletion_planned_h": null,
+       "binding": {
+        "po8": "30043602",
+        "qty": 3000.0,
+        "ready_h": 50.0,
+        "receipt_date": "2026-09-03",
+        "label": "PO 30043602 · 754751 · 3,000 EA · 2026-09-03 · ERP date"
+       },
+       "lead_h": 21.85,
+       "safe_from_h": 146.0,
+       "dependent_frac": 0.131169,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {},
+     "text": "🚚 754751: on hand covers 87% (runs out h123.7) · PO 30043602 lands h50.0 — 22 h before start (min 4 d) · safe from h146.0"
+    }
+   },
+   "expected_draws": {
+    "754751": [
+     {
+      "key": "cs_44c4bde023@71.85",
+      "a": 71.85,
+      "e": 131.5,
+      "qty": 41435.0
+     }
+    ]
+   },
+   "earliest_clear_start": null
+  },
+  {
+   "name": "E2_stacked_later_not_needed",
+   "rules": {
+    "min_days_after_delivery": 4,
+    "lead_measured_from": "block_start",
+    "receipt_ready_hour": 16,
+    "raw_qc_offset_h": 72,
+    "appt_ready_offset_h": 2,
+    "po_ignore_after_h": 168,
+    "landed_match_frac": 0.95,
+    "dependent_frac_floor": 0.05,
+    "hard_block": false,
+    "use_board_qty_kg": true,
+    "raw_areas": [
+     "RB1",
+     "AMB",
+     "RC1"
+    ],
+    "offsite_areas": [
+     "SL3"
+    ]
+   },
+   "inputs": {
+    "blocks": [
+     {
+      "key": "cs_44c4bde023@71.85",
+      "block_id": "cs_44c4bde023",
+      "sku": "280351",
+      "line_name": "P19",
+      "start_h": 71.85,
+      "end_h": 131.5,
+      "cases": 41435.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     }
+    ],
+    "sku_needs": {
+     "280351": {
+      "kg_per_case": 2.16,
+      "items": [
+       {
+        "item": "754751",
+        "per_case": 1.0,
+        "unit": "EA",
+        "alts": []
+       }
+      ]
+     }
+    },
+    "opening": {
+     "754751": 36000.0
+    },
+    "tracked": [
+     "754751"
+    ],
+    "in_house": [
+     "BT001",
+     "BT002"
+    ],
+    "receipts": {
+     "754751": [
+      {
+       "ready_h": 30.0,
+       "qty": 10000.0,
+       "po8": "30043601",
+       "tier": "erp",
+       "receipt_date": "2026-09-02",
+       "label": "PO 30043601 · 754751 · 10,000 EA · 2026-09-02 · ERP date"
+      },
+      {
+       "ready_h": 50.0,
+       "qty": 1000.0,
+       "po8": "30043602",
+       "tier": "erp",
+       "receipt_date": "2026-09-03",
+       "label": "PO 30043602 · 754751 · 1,000 EA · 2026-09-03 · ERP date"
+      }
+     ]
+    },
+    "snapshot_h": {
+     "754751": 14.8
+    },
+    "feed_state": "ok",
+    "receipts_window_end_h": 800.0
+   },
+   "expected": {
+    "cs_44c4bde023@71.85": {
+     "key": "cs_44c4bde023@71.85",
+     "verdict": "DEPENDENT",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 0.868831,
+     "depletion_h": 123.675751,
+     "lead_h": 41.85,
+     "safe_from_h": 126.0,
+     "binding": {
+      "po8": "30043601",
+      "qty": 10000.0,
+      "ready_h": 30.0,
+      "receipt_date": "2026-09-02",
+      "label": "PO 30043601 · 754751 · 10,000 EA · 2026-09-02 · ERP date"
+     },
+     "action": "move",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 41435.0,
+       "opening_at_start": 36000.0,
+       "minH": -5435.0,
+       "minP": 5565.0,
+       "minR": -5435.0,
+       "verdict": "DEPENDENT",
+       "backed": false,
+       "covered_frac": 0.868831,
+       "depletion_h": 123.675751,
+       "covered_frac_planned": 1.0,
+       "depletion_planned_h": null,
+       "binding": {
+        "po8": "30043601",
+        "qty": 10000.0,
+        "ready_h": 30.0,
+        "receipt_date": "2026-09-02",
+        "label": "PO 30043601 · 754751 · 10,000 EA · 2026-09-02 · ERP date"
+       },
+       "lead_h": 41.85,
+       "safe_from_h": 126.0,
+       "dependent_frac": 0.131169,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {},
+     "text": "🚚 754751: on hand covers 87% (runs out h123.7) · PO 30043601 lands h30.0 — 1.7 d before start (min 4 d) · safe from h126.0"
+    }
+   },
+   "expected_draws": {
+    "754751": [
+     {
+      "key": "cs_44c4bde023@71.85",
+      "a": 71.85,
+      "e": 131.5,
+      "qty": 41435.0
+     }
+    ]
+   },
+   "earliest_clear_start": null
+  },
+  {
+   "name": "F1_concurrent_lines_dependent",
+   "rules": {
+    "min_days_after_delivery": 4,
+    "lead_measured_from": "block_start",
+    "receipt_ready_hour": 16,
+    "raw_qc_offset_h": 72,
+    "appt_ready_offset_h": 2,
+    "po_ignore_after_h": 168,
+    "landed_match_frac": 0.95,
+    "dependent_frac_floor": 0.05,
+    "hard_block": false,
+    "use_board_qty_kg": true,
+    "raw_areas": [
+     "RB1",
+     "AMB",
+     "RC1"
+    ],
+    "offsite_areas": [
+     "SL3"
+    ]
+   },
+   "inputs": {
+    "blocks": [
+     {
+      "key": "cs_44c4bde023@71.85",
+      "block_id": "cs_44c4bde023",
+      "sku": "280351",
+      "line_name": "P19",
+      "start_h": 71.85,
+      "end_h": 131.5,
+      "cases": 41435.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     },
+     {
+      "key": "ln2@80.00",
+      "block_id": "ln2",
+      "sku": "280351",
+      "line_name": "P21",
+      "start_h": 80.0,
+      "end_h": 130.0,
+      "cases": 20000.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     }
+    ],
+    "sku_needs": {
+     "280351": {
+      "kg_per_case": 2.16,
+      "items": [
+       {
+        "item": "754751",
+        "per_case": 1.0,
+        "unit": "EA",
+        "alts": []
+       }
+      ]
+     }
+    },
+    "opening": {
+     "754751": 36000.0
+    },
+    "tracked": [
+     "754751"
+    ],
+    "in_house": [
+     "BT001",
+     "BT002"
+    ],
+    "receipts": {
+     "754751": [
+      {
+       "ready_h": 40.0,
+       "qty": 67200.0,
+       "po8": "30043543",
+       "tier": "erp",
+       "receipt_date": "2026-09-02",
+       "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+      }
+     ]
+    },
+    "snapshot_h": {
+     "754751": 14.8
+    },
+    "feed_state": "ok",
+    "receipts_window_end_h": 800.0
+   },
+   "expected": {
+    "cs_44c4bde023@71.85": {
+     "key": "cs_44c4bde023@71.85",
+     "verdict": "DEPENDENT",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 0.601271,
+     "depletion_h": 107.715824,
+     "lead_h": 31.85,
+     "safe_from_h": 136.0,
+     "binding": {
+      "po8": "30043543",
+      "qty": 67200.0,
+      "ready_h": 40.0,
+      "receipt_date": "2026-09-02",
+      "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+     },
+     "action": "move",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 41435.0,
+       "opening_at_start": 36000.0,
+       "minH": -25435.0,
+       "minP": 41765.0,
+       "minR": -25435.0,
+       "verdict": "DEPENDENT",
+       "backed": false,
+       "covered_frac": 0.601271,
+       "depletion_h": 107.715824,
+       "covered_frac_planned": 1.0,
+       "depletion_planned_h": null,
+       "binding": {
+        "po8": "30043543",
+        "qty": 67200.0,
+        "ready_h": 40.0,
+        "receipt_date": "2026-09-02",
+        "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+       },
+       "lead_h": 31.85,
+       "safe_from_h": 136.0,
+       "dependent_frac": 0.613853,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {
+      "754751": [
+       "ln2@80.00"
+      ]
+     },
+     "text": "🚚 754751: on hand covers 60% (runs out h107.7) · PO 30043543 lands h40.0 — 1.3 d before start (min 4 d) · safe from h136.0"
+    },
+    "ln2@80.00": {
+     "key": "ln2@80.00",
+     "verdict": "DEPENDENT",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 0.554316,
+     "depletion_h": 107.715824,
+     "lead_h": 40.0,
+     "safe_from_h": 136.0,
+     "binding": {
+      "po8": "30043543",
+      "qty": 67200.0,
+      "ready_h": 40.0,
+      "receipt_date": "2026-09-02",
+      "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+     },
+     "action": "move",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 20000.0,
+       "opening_at_start": 30338.72171,
+       "minH": -24393.04694,
+       "minP": 42806.95306,
+       "minR": -24393.04694,
+       "verdict": "DEPENDENT",
+       "backed": false,
+       "covered_frac": 0.554316,
+       "depletion_h": 107.715824,
+       "covered_frac_planned": 1.0,
+       "depletion_planned_h": null,
+       "binding": {
+        "po8": "30043543",
+        "qty": 67200.0,
+        "ready_h": 40.0,
+        "receipt_date": "2026-09-02",
+        "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+       },
+       "lead_h": 40.0,
+       "safe_from_h": 136.0,
+       "dependent_frac": 1.0,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {
+      "754751": [
+       "cs_44c4bde023@71.85"
+      ]
+     },
+     "text": "🚚 754751: on hand covers 55% (runs out h107.7) · PO 30043543 lands h40.0 — 1.7 d before start (min 4 d) · safe from h136.0"
+    }
+   },
+   "expected_draws": {
+    "754751": [
+     {
+      "key": "cs_44c4bde023@71.85",
+      "a": 71.85,
+      "e": 131.5,
+      "qty": 41435.0
+     },
+     {
+      "key": "ln2@80.00",
+      "a": 80.0,
+      "e": 130.0,
+      "qty": 20000.0
+     }
+    ]
+   },
+   "earliest_clear_start": null
+  },
+  {
+   "name": "F2_concurrent_lines_short",
+   "rules": {
+    "min_days_after_delivery": 4,
+    "lead_measured_from": "block_start",
+    "receipt_ready_hour": 16,
+    "raw_qc_offset_h": 72,
+    "appt_ready_offset_h": 2,
+    "po_ignore_after_h": 168,
+    "landed_match_frac": 0.95,
+    "dependent_frac_floor": 0.05,
+    "hard_block": false,
+    "use_board_qty_kg": true,
+    "raw_areas": [
+     "RB1",
+     "AMB",
+     "RC1"
+    ],
+    "offsite_areas": [
+     "SL3"
+    ]
+   },
+   "inputs": {
+    "blocks": [
+     {
+      "key": "cs_44c4bde023@71.85",
+      "block_id": "cs_44c4bde023",
+      "sku": "280351",
+      "line_name": "P19",
+      "start_h": 71.85,
+      "end_h": 131.5,
+      "cases": 41435.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     },
+     {
+      "key": "ln2@80.00",
+      "block_id": "ln2",
+      "sku": "280351",
+      "line_name": "P21",
+      "start_h": 80.0,
+      "end_h": 130.0,
+      "cases": 20000.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     }
+    ],
+    "sku_needs": {
+     "280351": {
+      "kg_per_case": 2.16,
+      "items": [
+       {
+        "item": "754751",
+        "per_case": 1.0,
+        "unit": "EA",
+        "alts": []
+       }
+      ]
+     }
+    },
+    "opening": {
+     "754751": 36000.0
+    },
+    "tracked": [
+     "754751"
+    ],
+    "in_house": [
+     "BT001",
+     "BT002"
+    ],
+    "receipts": {},
+    "snapshot_h": {
+     "754751": 14.8
+    },
+    "feed_state": "ok",
+    "receipts_window_end_h": 800.0
+   },
+   "expected": {
+    "cs_44c4bde023@71.85": {
+     "key": "cs_44c4bde023@71.85",
+     "verdict": "SHORT",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 0.601271,
+     "depletion_h": 107.715824,
+     "lead_h": null,
+     "safe_from_h": null,
+     "binding": null,
+     "action": "move",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 41435.0,
+       "opening_at_start": 36000.0,
+       "minH": -25435.0,
+       "minP": -25435.0,
+       "minR": -25435.0,
+       "verdict": "SHORT",
+       "backed": false,
+       "covered_frac": 0.601271,
+       "depletion_h": 107.715824,
+       "covered_frac_planned": 0.601271,
+       "depletion_planned_h": 107.715824,
+       "binding": null,
+       "lead_h": null,
+       "safe_from_h": null,
+       "dependent_frac": 0.613853,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {
+      "754751": [
+       "ln2@80.00"
+      ]
+     },
+     "text": "⛔ 754751: on hand covers 60% (runs out h107.7) · no inbound counted"
+    },
+    "ln2@80.00": {
+     "key": "ln2@80.00",
+     "verdict": "SHORT",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 0.554316,
+     "depletion_h": 107.715824,
+     "lead_h": null,
+     "safe_from_h": null,
+     "binding": null,
+     "action": "move",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 20000.0,
+       "opening_at_start": 30338.72171,
+       "minH": -24393.04694,
+       "minP": -24393.04694,
+       "minR": -24393.04694,
+       "verdict": "SHORT",
+       "backed": false,
+       "covered_frac": 0.554316,
+       "depletion_h": 107.715824,
+       "covered_frac_planned": 0.554316,
+       "depletion_planned_h": 107.715824,
+       "binding": null,
+       "lead_h": null,
+       "safe_from_h": null,
+       "dependent_frac": 1.0,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {
+      "754751": [
+       "cs_44c4bde023@71.85"
+      ]
+     },
+     "text": "⛔ 754751: on hand covers 55% (runs out h107.7) · no inbound counted"
+    }
+   },
+   "expected_draws": {
+    "754751": [
+     {
+      "key": "cs_44c4bde023@71.85",
+      "a": 71.85,
+      "e": 131.5,
+      "qty": 41435.0
+     },
+     {
+      "key": "ln2@80.00",
+      "a": 80.0,
+      "e": 130.0,
+      "qty": 20000.0
+     }
+    ]
+   },
+   "earliest_clear_start": null
+  },
+  {
+   "name": "G1_running_cases_left",
+   "rules": {
+    "min_days_after_delivery": 4,
+    "lead_measured_from": "block_start",
+    "receipt_ready_hour": 16,
+    "raw_qc_offset_h": 72,
+    "appt_ready_offset_h": 2,
+    "po_ignore_after_h": 168,
+    "landed_match_frac": 0.95,
+    "dependent_frac_floor": 0.05,
+    "hard_block": false,
+    "use_board_qty_kg": true,
+    "raw_areas": [
+     "RB1",
+     "AMB",
+     "RC1"
+    ],
+    "offsite_areas": [
+     "SL3"
+    ]
+   },
+   "inputs": {
+    "blocks": [
+     {
+      "key": "run_cl@0.02",
+      "block_id": "run_cl",
+      "sku": "280351",
+      "line_name": "P10",
+      "start_h": 0.017,
+      "end_h": 119.733,
+      "cases": 29283.0,
+      "locked": true,
+      "running": true,
+      "cases_left": 20000.0
+     },
+     {
+      "key": "done@0.00",
+      "block_id": "done",
+      "sku": "280351",
+      "line_name": "P10",
+      "start_h": 0.0,
+      "end_h": 10.0,
+      "cases": 5000.0,
+      "locked": true,
+      "running": true,
+      "cases_left": null
+     }
+    ],
+    "sku_needs": {
+     "280351": {
+      "kg_per_case": 2.16,
+      "items": [
+       {
+        "item": "754751",
+        "per_case": 1.0,
+        "unit": "EA",
+        "alts": []
+       }
+      ]
+     }
+    },
+    "opening": {
+     "754751": 36000.0
+    },
+    "tracked": [
+     "754751"
+    ],
+    "in_house": [
+     "BT001",
+     "BT002"
+    ],
+    "receipts": {},
+    "snapshot_h": {
+     "754751": 14.8
+    },
+    "feed_state": "ok",
+    "receipts_window_end_h": 800.0
+   },
+   "expected": {
+    "run_cl@0.02": {
+     "key": "run_cl@0.02",
+     "verdict": "OK",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 1.0,
+     "depletion_h": null,
+     "lead_h": null,
+     "safe_from_h": null,
+     "binding": null,
+     "action": "none",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 20000.0,
+       "opening_at_start": 36000.0,
+       "minH": 16000.0,
+       "minP": 16000.0,
+       "minR": 16000.0,
+       "verdict": "OK",
+       "backed": false,
+       "covered_frac": 1.0,
+       "depletion_h": null,
+       "covered_frac_planned": 1.0,
+       "depletion_planned_h": null,
+       "binding": null,
+       "lead_h": null,
+       "safe_from_h": null,
+       "dependent_frac": 0.0,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {},
+     "text": "✅ 754751: on hand covers the run"
+    },
+    "done@0.00": {
+     "key": "done@0.00",
+     "verdict": "OK",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 1.0,
+     "depletion_h": null,
+     "lead_h": null,
+     "safe_from_h": null,
+     "binding": null,
+     "action": "none",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 0.0,
+       "opening_at_start": 36000.0,
+       "minH": 36000.0,
+       "minP": 36000.0,
+       "minR": 36000.0,
+       "verdict": "OK",
+       "backed": false,
+       "covered_frac": 1.0,
+       "depletion_h": null,
+       "covered_frac_planned": 1.0,
+       "depletion_planned_h": null,
+       "binding": null,
+       "lead_h": null,
+       "safe_from_h": null,
+       "dependent_frac": 0.0,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {},
+     "text": "✅ 754751: on hand covers the run"
+    }
+   },
+   "expected_draws": {
+    "754751": [
+     {
+      "key": "run_cl@0.02",
+      "a": 14.8,
+      "e": 119.733,
+      "qty": 20000.0
+     }
+    ]
+   },
+   "earliest_clear_start": null
+  },
+  {
+   "name": "G2_running_fallback",
+   "rules": {
+    "min_days_after_delivery": 4,
+    "lead_measured_from": "block_start",
+    "receipt_ready_hour": 16,
+    "raw_qc_offset_h": 72,
+    "appt_ready_offset_h": 2,
+    "po_ignore_after_h": 168,
+    "landed_match_frac": 0.95,
+    "dependent_frac_floor": 0.05,
+    "hard_block": false,
+    "use_board_qty_kg": true,
+    "raw_areas": [
+     "RB1",
+     "AMB",
+     "RC1"
+    ],
+    "offsite_areas": [
+     "SL3"
+    ]
+   },
+   "inputs": {
+    "blocks": [
+     {
+      "key": "run_fb@0.02",
+      "block_id": "run_fb",
+      "sku": "280351",
+      "line_name": "P10",
+      "start_h": 0.017,
+      "end_h": 119.733,
+      "cases": 29283.0,
+      "locked": true,
+      "running": true,
+      "cases_left": null
+     },
+     {
+      "key": "done@0.00",
+      "block_id": "done",
+      "sku": "280351",
+      "line_name": "P10",
+      "start_h": 0.0,
+      "end_h": 10.0,
+      "cases": 5000.0,
+      "locked": true,
+      "running": true,
+      "cases_left": null
+     }
+    ],
+    "sku_needs": {
+     "280351": {
+      "kg_per_case": 2.16,
+      "items": [
+       {
+        "item": "754751",
+        "per_case": 1.0,
+        "unit": "EA",
+        "alts": []
+       }
+      ]
+     }
+    },
+    "opening": {
+     "754751": 36000.0
+    },
+    "tracked": [
+     "754751"
+    ],
+    "in_house": [
+     "BT001",
+     "BT002"
+    ],
+    "receipts": {},
+    "snapshot_h": {
+     "754751": 14.8
+    },
+    "feed_state": "ok",
+    "receipts_window_end_h": 800.0
+   },
+   "expected": {
+    "run_fb@0.02": {
+     "key": "run_fb@0.02",
+     "verdict": "OK",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 1.0,
+     "depletion_h": null,
+     "lead_h": null,
+     "safe_from_h": null,
+     "binding": null,
+     "action": "none",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 25667.020607,
+       "opening_at_start": 36000.0,
+       "minH": 10332.979393,
+       "minP": 10332.979393,
+       "minR": 10332.979393,
+       "verdict": "OK",
+       "backed": false,
+       "covered_frac": 1.0,
+       "depletion_h": null,
+       "covered_frac_planned": 1.0,
+       "depletion_planned_h": null,
+       "binding": null,
+       "lead_h": null,
+       "safe_from_h": null,
+       "dependent_frac": 0.0,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {},
+     "text": "✅ 754751: on hand covers the run"
+    },
+    "done@0.00": {
+     "key": "done@0.00",
+     "verdict": "OK",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 1.0,
+     "depletion_h": null,
+     "lead_h": null,
+     "safe_from_h": null,
+     "binding": null,
+     "action": "none",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 0.0,
+       "opening_at_start": 36000.0,
+       "minH": 36000.0,
+       "minP": 36000.0,
+       "minR": 36000.0,
+       "verdict": "OK",
+       "backed": false,
+       "covered_frac": 1.0,
+       "depletion_h": null,
+       "covered_frac_planned": 1.0,
+       "depletion_planned_h": null,
+       "binding": null,
+       "lead_h": null,
+       "safe_from_h": null,
+       "dependent_frac": 0.0,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {},
+     "text": "✅ 754751: on hand covers the run"
+    }
+   },
+   "expected_draws": {
+    "754751": [
+     {
+      "key": "run_fb@0.02",
+      "a": 14.8,
+      "e": 119.733,
+      "qty": 25667.020607
+     }
+    ]
+   },
+   "earliest_clear_start": null
+  },
+  {
+   "name": "H1_alt_pool_covers",
+   "rules": {
+    "min_days_after_delivery": 4,
+    "lead_measured_from": "block_start",
+    "receipt_ready_hour": 16,
+    "raw_qc_offset_h": 72,
+    "appt_ready_offset_h": 2,
+    "po_ignore_after_h": 168,
+    "landed_match_frac": 0.95,
+    "dependent_frac_floor": 0.05,
+    "hard_block": false,
+    "use_board_qty_kg": true,
+    "raw_areas": [
+     "RB1",
+     "AMB",
+     "RC1"
+    ],
+    "offsite_areas": [
+     "SL3"
+    ]
+   },
+   "inputs": {
+    "blocks": [
+     {
+      "key": "h1@20.00",
+      "block_id": "h1",
+      "sku": "280700",
+      "line_name": "P19",
+      "start_h": 20.0,
+      "end_h": 40.0,
+      "cases": 10000.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     }
+    ],
+    "sku_needs": {
+     "280700": {
+      "kg_per_case": 2.16,
+      "items": [
+       {
+        "item": "752700",
+        "per_case": 1.0,
+        "unit": "EA",
+        "alts": [
+         "752701"
+        ]
+       }
+      ]
+     }
+    },
+    "opening": {
+     "752700": 0.0,
+     "752701": 50000.0
+    },
+    "tracked": [
+     "752701"
+    ],
+    "in_house": [
+     "BT001",
+     "BT002"
+    ],
+    "receipts": {},
+    "snapshot_h": {
+     "752700": 14.8,
+     "752701": 14.8
+    },
+    "feed_state": "ok",
+    "receipts_window_end_h": 800.0
+   },
+   "expected": {
+    "h1@20.00": {
+     "key": "h1@20.00",
+     "verdict": "OK",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "752700",
+     "covered_frac": 1.0,
+     "depletion_h": null,
+     "lead_h": null,
+     "safe_from_h": null,
+     "binding": null,
+     "action": "none",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "752700",
+       "unit": "EA",
+       "need": 10000.0,
+       "opening_at_start": 50000.0,
+       "minH": 40000.0,
+       "minP": 40000.0,
+       "minR": 40000.0,
+       "verdict": "OK",
+       "backed": false,
+       "covered_frac": 1.0,
+       "depletion_h": null,
+       "covered_frac_planned": 1.0,
+       "depletion_planned_h": null,
+       "binding": null,
+       "lead_h": null,
+       "safe_from_h": null,
+       "dependent_frac": 0.0,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {},
+     "text": "✅ 752700: on hand covers the run"
+    }
+   },
+   "expected_draws": {
+    "752700": [],
+    "752701": [
+     {
+      "key": "h1@20.00",
+      "a": 20.0,
+      "e": 40.0,
+      "qty": 10000.0
+     }
+    ]
+   },
+   "earliest_clear_start": null
+  },
+  {
+   "name": "H2_alt_pool_drained",
+   "rules": {
+    "min_days_after_delivery": 4,
+    "lead_measured_from": "block_start",
+    "receipt_ready_hour": 16,
+    "raw_qc_offset_h": 72,
+    "appt_ready_offset_h": 2,
+    "po_ignore_after_h": 168,
+    "landed_match_frac": 0.95,
+    "dependent_frac_floor": 0.05,
+    "hard_block": false,
+    "use_board_qty_kg": true,
+    "raw_areas": [
+     "RB1",
+     "AMB",
+     "RC1"
+    ],
+    "offsite_areas": [
+     "SL3"
+    ]
+   },
+   "inputs": {
+    "blocks": [
+     {
+      "key": "h1@20.00",
+      "block_id": "h1",
+      "sku": "280700",
+      "line_name": "P19",
+      "start_h": 20.0,
+      "end_h": 40.0,
+      "cases": 10000.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     },
+     {
+      "key": "h2@20.00",
+      "block_id": "h2",
+      "sku": "280701",
+      "line_name": "P21",
+      "start_h": 20.0,
+      "end_h": 40.0,
+      "cases": 45000.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     }
+    ],
+    "sku_needs": {
+     "280700": {
+      "kg_per_case": 2.16,
+      "items": [
+       {
+        "item": "752700",
+        "per_case": 1.0,
+        "unit": "EA",
+        "alts": [
+         "752701"
+        ]
+       }
+      ]
+     },
+     "280701": {
+      "kg_per_case": 2.16,
+      "items": [
+       {
+        "item": "752701",
+        "per_case": 1.0,
+        "unit": "EA",
+        "alts": []
+       }
+      ]
+     }
+    },
+    "opening": {
+     "752700": 0.0,
+     "752701": 50000.0
+    },
+    "tracked": [
+     "752701"
+    ],
+    "in_house": [
+     "BT001",
+     "BT002"
+    ],
+    "receipts": {},
+    "snapshot_h": {
+     "752700": 14.8,
+     "752701": 14.8
+    },
+    "feed_state": "ok",
+    "receipts_window_end_h": 800.0
+   },
+   "expected": {
+    "h1@20.00": {
+     "key": "h1@20.00",
+     "verdict": "SHORT",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "752700",
+     "covered_frac": 0.909091,
+     "depletion_h": 38.181818,
+     "lead_h": null,
+     "safe_from_h": null,
+     "binding": null,
+     "action": "move",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "752700",
+       "unit": "EA",
+       "need": 10000.0,
+       "opening_at_start": 50000.0,
+       "minH": -5000.0,
+       "minP": -5000.0,
+       "minR": -5000.0,
+       "verdict": "SHORT",
+       "backed": false,
+       "covered_frac": 0.909091,
+       "depletion_h": 38.181818,
+       "covered_frac_planned": 0.909091,
+       "depletion_planned_h": 38.181818,
+       "binding": null,
+       "lead_h": null,
+       "safe_from_h": null,
+       "dependent_frac": 0.5,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {
+      "752701": [
+       "h2@20.00"
+      ]
+     },
+     "text": "⛔ 752700: on hand covers 91% (runs out h38.2) · no inbound counted"
+    },
+    "h2@20.00": {
+     "key": "h2@20.00",
+     "verdict": "SHORT",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "752701",
+     "covered_frac": 0.909091,
+     "depletion_h": 38.181818,
+     "lead_h": null,
+     "safe_from_h": null,
+     "binding": null,
+     "action": "move",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "752701",
+       "unit": "EA",
+       "need": 45000.0,
+       "opening_at_start": 50000.0,
+       "minH": -5000.0,
+       "minP": -5000.0,
+       "minR": -5000.0,
+       "verdict": "SHORT",
+       "backed": false,
+       "covered_frac": 0.909091,
+       "depletion_h": 38.181818,
+       "covered_frac_planned": 0.909091,
+       "depletion_planned_h": 38.181818,
+       "binding": null,
+       "lead_h": null,
+       "safe_from_h": null,
+       "dependent_frac": 0.111111,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {
+      "752701": [
+       "h1@20.00"
+      ]
+     },
+     "text": "⛔ 752701: on hand covers 91% (runs out h38.2) · no inbound counted"
+    }
+   },
+   "expected_draws": {
+    "752700": [],
+    "752701": [
+     {
+      "key": "h1@20.00",
+      "a": 20.0,
+      "e": 40.0,
+      "qty": 10000.0
+     },
+     {
+      "key": "h2@20.00",
+      "a": 20.0,
+      "e": 40.0,
+      "qty": 45000.0
+     }
+    ]
+   },
+   "earliest_clear_start": null
+  },
+  {
+   "name": "I_minor_dependent",
+   "rules": {
+    "min_days_after_delivery": 4,
+    "lead_measured_from": "block_start",
+    "receipt_ready_hour": 16,
+    "raw_qc_offset_h": 72,
+    "appt_ready_offset_h": 2,
+    "po_ignore_after_h": 168,
+    "landed_match_frac": 0.95,
+    "dependent_frac_floor": 0.05,
+    "hard_block": false,
+    "use_board_qty_kg": true,
+    "raw_areas": [
+     "RB1",
+     "AMB",
+     "RC1"
+    ],
+    "offsite_areas": [
+     "SL3"
+    ]
+   },
+   "inputs": {
+    "blocks": [
+     {
+      "key": "cs_44c4bde023@71.85",
+      "block_id": "cs_44c4bde023",
+      "sku": "280351",
+      "line_name": "P19",
+      "start_h": 71.85,
+      "end_h": 131.5,
+      "cases": 41435.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     }
+    ],
+    "sku_needs": {
+     "280351": {
+      "kg_per_case": 2.16,
+      "items": [
+       {
+        "item": "754751",
+        "per_case": 1.0,
+        "unit": "EA",
+        "alts": []
+       }
+      ]
+     }
+    },
+    "opening": {
+     "754751": 40000.0
+    },
+    "tracked": [
+     "754751"
+    ],
+    "in_house": [
+     "BT001",
+     "BT002"
+    ],
+    "receipts": {
+     "754751": [
+      {
+       "ready_h": 40.0,
+       "qty": 67200.0,
+       "po8": "30043543",
+       "tier": "erp",
+       "receipt_date": "2026-09-02",
+       "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+      }
+     ]
+    },
+    "snapshot_h": {
+     "754751": 14.8
+    },
+    "feed_state": "ok",
+    "receipts_window_end_h": 800.0
+   },
+   "expected": {
+    "cs_44c4bde023@71.85": {
+     "key": "cs_44c4bde023@71.85",
+     "verdict": "DEPENDENT",
+     "backed": false,
+     "minor": true,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 0.965367,
+     "depletion_h": 129.434168,
+     "lead_h": 31.85,
+     "safe_from_h": 136.0,
+     "binding": {
+      "po8": "30043543",
+      "qty": 67200.0,
+      "ready_h": 40.0,
+      "receipt_date": "2026-09-02",
+      "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+     },
+     "action": "move",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 41435.0,
+       "opening_at_start": 40000.0,
+       "minH": -1435.0,
+       "minP": 65765.0,
+       "minR": -1435.0,
+       "verdict": "DEPENDENT",
+       "backed": false,
+       "covered_frac": 0.965367,
+       "depletion_h": 129.434168,
+       "covered_frac_planned": 1.0,
+       "depletion_planned_h": null,
+       "binding": {
+        "po8": "30043543",
+        "qty": 67200.0,
+        "ready_h": 40.0,
+        "receipt_date": "2026-09-02",
+        "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+       },
+       "lead_h": 31.85,
+       "safe_from_h": 136.0,
+       "dependent_frac": 0.034633,
+       "minor": true,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {},
+     "text": "🚚 754751: on hand covers 97% (runs out h129.4) · PO 30043543 lands h40.0 — 1.3 d before start (min 4 d) · safe from h136.0 · minor share"
+    }
+   },
+   "expected_draws": {
+    "754751": [
+     {
+      "key": "cs_44c4bde023@71.85",
+      "a": 71.85,
+      "e": 131.5,
+      "qty": 41435.0
+     }
+    ]
+   },
+   "earliest_clear_start": null
+  },
+  {
+   "name": "J1_earliest_clear_start",
+   "rules": {
+    "min_days_after_delivery": 4,
+    "lead_measured_from": "block_start",
+    "receipt_ready_hour": 16,
+    "raw_qc_offset_h": 72,
+    "appt_ready_offset_h": 2,
+    "po_ignore_after_h": 168,
+    "landed_match_frac": 0.95,
+    "dependent_frac_floor": 0.05,
+    "hard_block": false,
+    "use_board_qty_kg": true,
+    "raw_areas": [
+     "RB1",
+     "AMB",
+     "RC1"
+    ],
+    "offsite_areas": [
+     "SL3"
+    ]
+   },
+   "inputs": {
+    "blocks": [
+     {
+      "key": "cs_87c620df4a@0.02",
+      "block_id": "cs_87c620df4a",
+      "sku": "280351",
+      "line_name": "P10",
+      "start_h": 0.017,
+      "end_h": 119.733,
+      "cases": 29283.0,
+      "locked": true,
+      "running": true,
+      "cases_left": null
+     },
+     {
+      "key": "cs_87c620df4a@125.73",
+      "block_id": "cs_87c620df4a",
+      "sku": "280351",
+      "line_name": "P10",
+      "start_h": 125.733,
+      "end_h": 188.112,
+      "cases": 15258.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     }
+    ],
+    "sku_needs": {
+     "280351": {
+      "kg_per_case": 2.16,
+      "items": [
+       {
+        "item": "754751",
+        "per_case": 1.0,
+        "unit": "EA",
+        "alts": []
+       }
+      ]
+     }
+    },
+    "opening": {
+     "754751": 36000.0
+    },
+    "tracked": [
+     "754751"
+    ],
+    "in_house": [
+     "BT001",
+     "BT002"
+    ],
+    "receipts": {
+     "754751": [
+      {
+       "ready_h": 40.0,
+       "qty": 67200.0,
+       "po8": "30043543",
+       "tier": "erp",
+       "receipt_date": "2026-09-02",
+       "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+      }
+     ]
+    },
+    "snapshot_h": {
+     "754751": 14.8
+    },
+    "feed_state": "ok",
+    "receipts_window_end_h": 800.0
+   },
+   "expected": {
+    "cs_87c620df4a@0.02": {
+     "key": "cs_87c620df4a@0.02",
+     "verdict": "OK",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 1.0,
+     "depletion_h": null,
+     "lead_h": null,
+     "safe_from_h": null,
+     "binding": null,
+     "action": "none",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 25667.020607,
+       "opening_at_start": 36000.0,
+       "minH": 10332.979393,
+       "minP": 29835.981824,
+       "minR": 10332.979393,
+       "verdict": "OK",
+       "backed": false,
+       "covered_frac": 1.0,
+       "depletion_h": null,
+       "covered_frac_planned": 1.0,
+       "depletion_planned_h": null,
+       "binding": null,
+       "lead_h": null,
+       "safe_from_h": null,
+       "dependent_frac": 0.0,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {},
+     "text": "✅ 754751: on hand covers the run"
+    },
+    "cs_87c620df4a@125.73": {
+     "key": "cs_87c620df4a@125.73",
+     "verdict": "DEPENDENT",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 0.677217,
+     "depletion_h": 167.977129,
+     "lead_h": 85.733,
+     "safe_from_h": 136.0,
+     "binding": {
+      "po8": "30043543",
+      "qty": 67200.0,
+      "ready_h": 40.0,
+      "receipt_date": "2026-09-02",
+      "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+     },
+     "action": "move",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 15258.0,
+       "opening_at_start": 10332.979393,
+       "minH": -4925.020607,
+       "minP": 62274.979393,
+       "minR": -4925.020607,
+       "verdict": "DEPENDENT",
+       "backed": false,
+       "covered_frac": 0.677217,
+       "depletion_h": 167.977129,
+       "covered_frac_planned": 1.0,
+       "depletion_planned_h": null,
+       "binding": {
+        "po8": "30043543",
+        "qty": 67200.0,
+        "ready_h": 40.0,
+        "receipt_date": "2026-09-02",
+        "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+       },
+       "lead_h": 85.733,
+       "safe_from_h": 136.0,
+       "dependent_frac": 0.322783,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {},
+     "text": "🚚 754751: on hand covers 68% (runs out h168.0) · PO 30043543 lands h40.0 — 3.6 d before start (min 4 d) · safe from h136.0"
+    }
+   },
+   "expected_draws": {
+    "754751": [
+     {
+      "key": "cs_87c620df4a@0.02",
+      "a": 14.8,
+      "e": 119.733,
+      "qty": 25667.020607
+     },
+     {
+      "key": "cs_87c620df4a@125.73",
+      "a": 125.733,
+      "e": 188.112,
+      "qty": 15258.0
+     }
+    ]
+   },
+   "earliest_clear_start": {
+    "args": {
+     "sku": "280351",
+     "cases": 41435.0,
+     "duration_h": 59.65,
+     "from_h": 71.85,
+     "line_name": "P19"
+    },
+    "expected": {
+     "safe_from_h": 136.0,
+     "verdict_now": {
+      "key": "virtual:280351@71.85",
+      "verdict": "DEPENDENT",
+      "backed": false,
+      "minor": false,
+      "mid_run": false,
+      "item": "754751",
+      "covered_frac": 0.393487,
+      "depletion_h": 95.321493,
+      "lead_h": 31.85,
+      "safe_from_h": 136.0,
+      "binding": {
+       "po8": "30043543",
+       "qty": 67200.0,
+       "ready_h": 40.0,
+       "receipt_date": "2026-09-02",
+       "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+      },
+      "action": "move",
+      "lead_from": "block_start",
+      "items": [
+       {
+        "item": "754751",
+        "unit": "EA",
+        "need": 41435.0,
+        "opening_at_start": 22045.34774,
+        "minH": -32512.637738,
+        "minP": 34687.362262,
+        "minR": -32512.637738,
+        "verdict": "DEPENDENT",
+        "backed": false,
+        "covered_frac": 0.393487,
+        "depletion_h": 95.321493,
+        "covered_frac_planned": 1.0,
+        "depletion_planned_h": null,
+        "binding": {
+         "po8": "30043543",
+         "qty": 67200.0,
+         "ready_h": 40.0,
+         "receipt_date": "2026-09-02",
+         "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+        },
+        "lead_h": 31.85,
+        "safe_from_h": 136.0,
+        "dependent_frac": 0.784666,
+        "minor": false,
+        "mid_run": false
+       }
+      ],
+      "untracked": [],
+      "co_consumers": {
+       "754751": [
+        "cs_87c620df4a@0.02",
+        "cs_87c620df4a@125.73"
+       ]
+      },
+      "text": "🚚 754751: on hand covers 39% (runs out h95.3) · PO 30043543 lands h40.0 — 1.3 d before start (min 4 d) · safe from h136.0"
+     },
+     "verdict_at_safe": {
+      "key": "virtual:280351@136.00",
+      "verdict": "OK",
+      "backed": true,
+      "minor": false,
+      "mid_run": false,
+      "item": "754751",
+      "covered_frac": 0.139609,
+      "depletion_h": 144.32767,
+      "lead_h": 96.0,
+      "safe_from_h": 136.0,
+      "binding": {
+       "po8": "30043543",
+       "qty": 67200.0,
+       "ready_h": 40.0,
+       "receipt_date": "2026-09-02",
+       "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+      },
+      "action": "none",
+      "lead_from": "block_start",
+      "items": [
+       {
+        "item": "754751",
+        "unit": "EA",
+        "need": 41435.0,
+        "opening_at_start": 7821.655293,
+        "minH": -46360.020607,
+        "minP": 20839.979393,
+        "minR": 20839.979393,
+        "verdict": "OK",
+        "backed": true,
+        "covered_frac": 0.139609,
+        "depletion_h": 144.32767,
+        "covered_frac_planned": 1.0,
+        "depletion_planned_h": null,
+        "binding": {
+         "po8": "30043543",
+         "qty": 67200.0,
+         "ready_h": 40.0,
+         "receipt_date": "2026-09-02",
+         "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+        },
+        "lead_h": 96.0,
+        "safe_from_h": 136.0,
+        "dependent_frac": 1.0,
+        "minor": false,
+        "mid_run": false
+       }
+      ],
+      "untracked": [],
+      "co_consumers": {
+       "754751": [
+        "cs_87c620df4a@125.73"
+       ]
+      },
+      "text": "🚚 754751: on hand covers 14% (runs out h144.3) · PO 30043543 lands h40.0 — 4.0 d before start (min 4 d) · backed"
+     }
+    }
+   }
+  },
+  {
+   "name": "J2_earliest_clear_start_no_receipts",
+   "rules": {
+    "min_days_after_delivery": 4,
+    "lead_measured_from": "block_start",
+    "receipt_ready_hour": 16,
+    "raw_qc_offset_h": 72,
+    "appt_ready_offset_h": 2,
+    "po_ignore_after_h": 168,
+    "landed_match_frac": 0.95,
+    "dependent_frac_floor": 0.05,
+    "hard_block": false,
+    "use_board_qty_kg": true,
+    "raw_areas": [
+     "RB1",
+     "AMB",
+     "RC1"
+    ],
+    "offsite_areas": [
+     "SL3"
+    ]
+   },
+   "inputs": {
+    "blocks": [
+     {
+      "key": "cs_87c620df4a@0.02",
+      "block_id": "cs_87c620df4a",
+      "sku": "280351",
+      "line_name": "P10",
+      "start_h": 0.017,
+      "end_h": 119.733,
+      "cases": 29283.0,
+      "locked": true,
+      "running": true,
+      "cases_left": null
+     },
+     {
+      "key": "cs_87c620df4a@125.73",
+      "block_id": "cs_87c620df4a",
+      "sku": "280351",
+      "line_name": "P10",
+      "start_h": 125.733,
+      "end_h": 188.112,
+      "cases": 15258.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     }
+    ],
+    "sku_needs": {
+     "280351": {
+      "kg_per_case": 2.16,
+      "items": [
+       {
+        "item": "754751",
+        "per_case": 1.0,
+        "unit": "EA",
+        "alts": []
+       }
+      ]
+     }
+    },
+    "opening": {
+     "754751": 36000.0
+    },
+    "tracked": [
+     "754751"
+    ],
+    "in_house": [
+     "BT001",
+     "BT002"
+    ],
+    "receipts": {},
+    "snapshot_h": {
+     "754751": 14.8
+    },
+    "feed_state": "ok",
+    "receipts_window_end_h": 800.0
+   },
+   "expected": {
+    "cs_87c620df4a@0.02": {
+     "key": "cs_87c620df4a@0.02",
+     "verdict": "OK",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 1.0,
+     "depletion_h": null,
+     "lead_h": null,
+     "safe_from_h": null,
+     "binding": null,
+     "action": "none",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 25667.020607,
+       "opening_at_start": 36000.0,
+       "minH": 10332.979393,
+       "minP": 10332.979393,
+       "minR": 10332.979393,
+       "verdict": "OK",
+       "backed": false,
+       "covered_frac": 1.0,
+       "depletion_h": null,
+       "covered_frac_planned": 1.0,
+       "depletion_planned_h": null,
+       "binding": null,
+       "lead_h": null,
+       "safe_from_h": null,
+       "dependent_frac": 0.0,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {},
+     "text": "✅ 754751: on hand covers the run"
+    },
+    "cs_87c620df4a@125.73": {
+     "key": "cs_87c620df4a@125.73",
+     "verdict": "SHORT",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 0.677217,
+     "depletion_h": 167.977129,
+     "lead_h": null,
+     "safe_from_h": null,
+     "binding": null,
+     "action": "move",
+     "lead_from": "block_start",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 15258.0,
+       "opening_at_start": 10332.979393,
+       "minH": -4925.020607,
+       "minP": -4925.020607,
+       "minR": -4925.020607,
+       "verdict": "SHORT",
+       "backed": false,
+       "covered_frac": 0.677217,
+       "depletion_h": 167.977129,
+       "covered_frac_planned": 0.677217,
+       "depletion_planned_h": 167.977129,
+       "binding": null,
+       "lead_h": null,
+       "safe_from_h": null,
+       "dependent_frac": 0.322783,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {},
+     "text": "⛔ 754751: on hand covers 68% (runs out h168.0) · no inbound counted"
+    }
+   },
+   "expected_draws": {
+    "754751": [
+     {
+      "key": "cs_87c620df4a@0.02",
+      "a": 14.8,
+      "e": 119.733,
+      "qty": 25667.020607
+     },
+     {
+      "key": "cs_87c620df4a@125.73",
+      "a": 125.733,
+      "e": 188.112,
+      "qty": 15258.0
+     }
+    ]
+   },
+   "earliest_clear_start": {
+    "args": {
+     "sku": "280351",
+     "cases": 41435.0,
+     "duration_h": 59.65,
+     "from_h": 71.85,
+     "line_name": "P19"
+    },
+    "expected": {
+     "safe_from_h": null,
+     "verdict_now": {
+      "key": "virtual:280351@71.85",
+      "verdict": "SHORT",
+      "backed": false,
+      "minor": false,
+      "mid_run": false,
+      "item": "754751",
+      "covered_frac": 0.393487,
+      "depletion_h": 95.321493,
+      "lead_h": null,
+      "safe_from_h": null,
+      "binding": null,
+      "action": "move",
+      "lead_from": "block_start",
+      "items": [
+       {
+        "item": "754751",
+        "unit": "EA",
+        "need": 41435.0,
+        "opening_at_start": 22045.34774,
+        "minH": -32512.637738,
+        "minP": -32512.637738,
+        "minR": -32512.637738,
+        "verdict": "SHORT",
+        "backed": false,
+        "covered_frac": 0.393487,
+        "depletion_h": 95.321493,
+        "covered_frac_planned": 0.393487,
+        "depletion_planned_h": 95.321493,
+        "binding": null,
+        "lead_h": null,
+        "safe_from_h": null,
+        "dependent_frac": 0.784666,
+        "minor": false,
+        "mid_run": false
+       }
+      ],
+      "untracked": [],
+      "co_consumers": {
+       "754751": [
+        "cs_87c620df4a@0.02",
+        "cs_87c620df4a@125.73"
+       ]
+      },
+      "text": "⛔ 754751: on hand covers 39% (runs out h95.3) · no inbound counted"
+     },
+     "verdict_at_safe": null
+    }
+   }
+  },
+  {
+   "name": "K_lead_from_depletion",
+   "rules": {
+    "min_days_after_delivery": 4,
+    "lead_measured_from": "depletion",
+    "receipt_ready_hour": 16,
+    "raw_qc_offset_h": 72,
+    "appt_ready_offset_h": 2,
+    "po_ignore_after_h": 168,
+    "landed_match_frac": 0.95,
+    "dependent_frac_floor": 0.05,
+    "hard_block": false,
+    "use_board_qty_kg": true,
+    "raw_areas": [
+     "RB1",
+     "AMB",
+     "RC1"
+    ],
+    "offsite_areas": [
+     "SL3"
+    ]
+   },
+   "inputs": {
+    "blocks": [
+     {
+      "key": "cs_87c620df4a@0.02",
+      "block_id": "cs_87c620df4a",
+      "sku": "280351",
+      "line_name": "P10",
+      "start_h": 0.017,
+      "end_h": 119.733,
+      "cases": 29283.0,
+      "locked": true,
+      "running": true,
+      "cases_left": null
+     },
+     {
+      "key": "cs_44c4bde023@71.85",
+      "block_id": "cs_44c4bde023",
+      "sku": "280351",
+      "line_name": "P19",
+      "start_h": 71.85,
+      "end_h": 131.5,
+      "cases": 41435.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     },
+     {
+      "key": "cs_87c620df4a@125.73",
+      "block_id": "cs_87c620df4a",
+      "sku": "280351",
+      "line_name": "P10",
+      "start_h": 125.733,
+      "end_h": 188.112,
+      "cases": 15258.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     }
+    ],
+    "sku_needs": {
+     "280351": {
+      "kg_per_case": 2.16,
+      "items": [
+       {
+        "item": "754751",
+        "per_case": 1.0,
+        "unit": "EA",
+        "alts": []
+       }
+      ]
+     }
+    },
+    "opening": {
+     "754751": 36000.0
+    },
+    "tracked": [
+     "754751"
+    ],
+    "in_house": [
+     "BT001",
+     "BT002"
+    ],
+    "receipts": {
+     "754751": [
+      {
+       "ready_h": 40.0,
+       "qty": 67200.0,
+       "po8": "30043543",
+       "tier": "erp",
+       "receipt_date": "2026-09-02",
+       "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+      }
+     ]
+    },
+    "snapshot_h": {
+     "754751": 14.8
+    },
+    "feed_state": "ok",
+    "receipts_window_end_h": 800.0
+   },
+   "expected": {
+    "cs_87c620df4a@0.02": {
+     "key": "cs_87c620df4a@0.02",
+     "verdict": "DEPENDENT",
+     "backed": false,
+     "minor": false,
+     "mid_run": true,
+     "item": "754751",
+     "covered_frac": 0.767361,
+     "depletion_h": 95.321493,
+     "lead_h": 55.321493,
+     "safe_from_h": 136.0,
+     "binding": {
+      "po8": "30043543",
+      "qty": 67200.0,
+      "ready_h": 40.0,
+      "receipt_date": "2026-09-02",
+      "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+     },
+     "action": "chase_po",
+     "lead_from": "depletion",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 25667.020607,
+       "opening_at_start": 36000.0,
+       "minH": -22928.246173,
+       "minP": 29835.981824,
+       "minR": -22928.246173,
+       "verdict": "DEPENDENT",
+       "backed": false,
+       "covered_frac": 0.767361,
+       "depletion_h": 95.321493,
+       "covered_frac_planned": 1.0,
+       "depletion_planned_h": null,
+       "binding": {
+        "po8": "30043543",
+        "qty": 67200.0,
+        "ready_h": 40.0,
+        "receipt_date": "2026-09-02",
+        "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+       },
+       "lead_h": 55.321493,
+       "safe_from_h": 136.0,
+       "dependent_frac": 0.893296,
+       "minor": false,
+       "mid_run": true
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {
+      "754751": [
+       "cs_44c4bde023@71.85"
+      ]
+     },
+     "text": "🚚 754751: on hand covers 77% (runs out h95.3) · PO 30043543 lands h40.0 — 2.3 d before it runs out (mid-run) (min 4 d) · safe from h136.0"
+    },
+    "cs_44c4bde023@71.85": {
+     "key": "cs_44c4bde023@71.85",
+     "verdict": "DEPENDENT",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 0.393487,
+     "depletion_h": 95.321493,
+     "lead_h": 55.321493,
+     "safe_from_h": 136.0,
+     "binding": {
+      "po8": "30043543",
+      "qty": 67200.0,
+      "ready_h": 40.0,
+      "receipt_date": "2026-09-02",
+      "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+     },
+     "action": "move",
+     "lead_from": "depletion",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 41435.0,
+       "opening_at_start": 22045.34774,
+       "minH": -32512.637738,
+       "minP": 34687.362262,
+       "minR": -32512.637738,
+       "verdict": "DEPENDENT",
+       "backed": false,
+       "covered_frac": 0.393487,
+       "depletion_h": 95.321493,
+       "covered_frac_planned": 1.0,
+       "depletion_planned_h": null,
+       "binding": {
+        "po8": "30043543",
+        "qty": 67200.0,
+        "ready_h": 40.0,
+        "receipt_date": "2026-09-02",
+        "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+       },
+       "lead_h": 55.321493,
+       "safe_from_h": 136.0,
+       "dependent_frac": 0.784666,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {
+      "754751": [
+       "cs_87c620df4a@0.02",
+       "cs_87c620df4a@125.73"
+      ]
+     },
+     "text": "🚚 754751: on hand covers 39% (runs out h95.3) · PO 30043543 lands h40.0 — 2.3 d before it runs out (min 4 d) · safe from h136.0"
+    },
+    "cs_87c620df4a@125.73": {
+     "key": "cs_87c620df4a@125.73",
+     "verdict": "DEPENDENT",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": "754751",
+     "covered_frac": 0.0,
+     "depletion_h": 125.733,
+     "lead_h": 85.733,
+     "safe_from_h": 136.0,
+     "binding": {
+      "po8": "30043543",
+      "qty": 67200.0,
+      "ready_h": 40.0,
+      "receipt_date": "2026-09-02",
+      "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+     },
+     "action": "move",
+     "lead_from": "depletion",
+     "items": [
+      {
+       "item": "754751",
+       "unit": "EA",
+       "need": 15258.0,
+       "opening_at_start": -27096.058411,
+       "minH": -46360.020607,
+       "minP": 20839.979393,
+       "minR": -46360.020607,
+       "verdict": "DEPENDENT",
+       "backed": false,
+       "covered_frac": 0.0,
+       "depletion_h": 125.733,
+       "covered_frac_planned": 1.0,
+       "depletion_planned_h": null,
+       "binding": {
+        "po8": "30043543",
+        "qty": 67200.0,
+        "ready_h": 40.0,
+        "receipt_date": "2026-09-02",
+        "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · ERP date"
+       },
+       "lead_h": 85.733,
+       "safe_from_h": 136.0,
+       "dependent_frac": 1.0,
+       "minor": false,
+       "mid_run": false
+      }
+     ],
+     "untracked": [],
+     "co_consumers": {
+      "754751": [
+       "cs_44c4bde023@71.85"
+      ]
+     },
+     "text": "🚚 754751: on hand covers 0% (runs out h125.7) · PO 30043543 lands h40.0 — 3.6 d before it runs out (min 4 d) · safe from h136.0"
+    }
+   },
+   "expected_draws": {
+    "754751": [
+     {
+      "key": "cs_87c620df4a@0.02",
+      "a": 14.8,
+      "e": 119.733,
+      "qty": 25667.020607
+     },
+     {
+      "key": "cs_44c4bde023@71.85",
+      "a": 71.85,
+      "e": 131.5,
+      "qty": 41435.0
+     },
+     {
+      "key": "cs_87c620df4a@125.73",
+      "a": 125.733,
+      "e": 188.112,
+      "qty": 15258.0
+     }
+    ]
+   },
+   "earliest_clear_start": null
+  },
+  {
+   "name": "L_unknown_and_untracked",
+   "rules": {
+    "min_days_after_delivery": 4,
+    "lead_measured_from": "block_start",
+    "receipt_ready_hour": 16,
+    "raw_qc_offset_h": 72,
+    "appt_ready_offset_h": 2,
+    "po_ignore_after_h": 168,
+    "landed_match_frac": 0.95,
+    "dependent_frac_floor": 0.05,
+    "hard_block": false,
+    "use_board_qty_kg": true,
+    "raw_areas": [
+     "RB1",
+     "AMB",
+     "RC1"
+    ],
+    "offsite_areas": [
+     "SL3"
+    ]
+   },
+   "inputs": {
+    "blocks": [
+     {
+      "key": "unk@10.00",
+      "block_id": "unk",
+      "sku": "999999",
+      "line_name": "P19",
+      "start_h": 10.0,
+      "end_h": 20.0,
+      "cases": 100.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     },
+     {
+      "key": "nocases@10.00",
+      "block_id": "nocases",
+      "sku": "280351",
+      "line_name": "P19",
+      "start_h": 10.0,
+      "end_h": 20.0,
+      "cases": null,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     },
+     {
+      "key": "ink@10.00",
+      "block_id": "ink",
+      "sku": "280800",
+      "line_name": "P19",
+      "start_h": 10.0,
+      "end_h": 20.0,
+      "cases": 100.0,
+      "locked": false,
+      "running": false,
+      "cases_left": null
+     }
+    ],
+    "sku_needs": {
+     "280351": {
+      "kg_per_case": 2.16,
+      "items": [
+       {
+        "item": "754751",
+        "per_case": 1.0,
+        "unit": "EA",
+        "alts": []
+       }
+      ]
+     },
+     "280800": {
+      "kg_per_case": 2.16,
+      "items": [
+       {
+        "item": "758001",
+        "per_case": 0.01,
+        "unit": "KG",
+        "alts": []
+       }
+      ]
+     }
+    },
+    "opening": {
+     "754751": 36000.0
+    },
+    "tracked": [
+     "754751"
+    ],
+    "in_house": [
+     "BT001",
+     "BT002"
+    ],
+    "receipts": {},
+    "snapshot_h": {
+     "754751": 14.8
+    },
+    "feed_state": "ok",
+    "receipts_window_end_h": 800.0
+   },
+   "expected": {
+    "unk@10.00": {
+     "key": "unk@10.00",
+     "verdict": "NO_DATA",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": null,
+     "covered_frac": null,
+     "depletion_h": null,
+     "lead_h": null,
+     "safe_from_h": null,
+     "binding": null,
+     "action": "none",
+     "lead_from": "block_start",
+     "items": [],
+     "untracked": [],
+     "co_consumers": {},
+     "text": "? supply: no recipe or quantity data"
+    },
+    "nocases@10.00": {
+     "key": "nocases@10.00",
+     "verdict": "NO_DATA",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": null,
+     "covered_frac": null,
+     "depletion_h": null,
+     "lead_h": null,
+     "safe_from_h": null,
+     "binding": null,
+     "action": "none",
+     "lead_from": "block_start",
+     "items": [],
+     "untracked": [],
+     "co_consumers": {},
+     "text": "? supply: no recipe or quantity data"
+    },
+    "ink@10.00": {
+     "key": "ink@10.00",
+     "verdict": "OK",
+     "backed": false,
+     "minor": false,
+     "mid_run": false,
+     "item": null,
+     "covered_frac": null,
+     "depletion_h": null,
+     "lead_h": null,
+     "safe_from_h": null,
+     "binding": null,
+     "action": "none",
+     "lead_from": "block_start",
+     "items": [],
+     "untracked": [
+      "758001"
+     ],
+     "co_consumers": {},
+     "text": "✅ supply: no tracked components to check"
+    }
+   },
+   "expected_draws": {
+    "754751": [],
+    "758001": [
+     {
+      "key": "ink@10.00",
+      "a": 10.0,
+      "e": 20.0,
+      "qty": 1.0
+     }
+    ]
+   },
+   "earliest_clear_start": null
+  }
+ ]
+}

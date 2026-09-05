@@ -1,0 +1,392 @@
+<title>Supply Timeline Plan</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --bg: #F6F7F4;
+    --surface: #FFFFFF;
+    --surface-2: #EDF0EC;
+    --ink: #1B2622;
+    --ink-2: #4A5852;
+    --ink-3: #7B8882;
+    --rule: #D5DBD6;
+    --accent: #1F5F6B;
+    --accent-ink: #FFFFFF;
+    --accent-soft: #DCEAEC;
+    --ok: #2F7A55;   --ok-soft: #DDEFE4;
+    --warn: #B86A12; --warn-soft: #F8E7CF;
+    --crit: #B03F2E; --crit-soft: #F6DAD5;
+    --muted: #6B7A74; --muted-soft: #E4E8E5;
+    --code-bg: #EEF1EE;
+    --shadow: 0 1px 2px rgba(27,38,34,.06), 0 8px 24px -16px rgba(27,38,34,.18);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141A1B; --surface: #1B2224; --surface-2: #222B2D;
+      --ink: #E6ECE9; --ink-2: #B6C2BD; --ink-3: #86938E; --rule: #2F3A3C;
+      --accent: #7EB9C3; --accent-ink: #0F1E22; --accent-soft: #1E3236;
+      --ok: #7CC299; --ok-soft: #1E3328;
+      --warn: #E4A056; --warn-soft: #3A2A16;
+      --crit: #E8836F; --crit-soft: #3C2220;
+      --muted: #97A5A0; --muted-soft: #2A3335;
+      --code-bg: #10161780;
+      --shadow: none;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141A1B; --surface: #1B2224; --surface-2: #222B2D;
+    --ink: #E6ECE9; --ink-2: #B6C2BD; --ink-3: #86938E; --rule: #2F3A3C;
+    --accent: #7EB9C3; --accent-ink: #0F1E22; --accent-soft: #1E3236;
+    --ok: #7CC299; --ok-soft: #1E3328;
+    --warn: #E4A056; --warn-soft: #3A2A16;
+    --crit: #E8836F; --crit-soft: #3C2220;
+    --muted: #97A5A0; --muted-soft: #2A3335;
+    --code-bg: #10161780;
+    --shadow: none;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+    font-size: 15.5px; line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .frame { max-width: 1120px; margin: 0 auto; padding: 40px 24px 96px; }
+  .shell { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 48px; align-items: start; }
+  @media (max-width: 860px) { .shell { grid-template-columns: minmax(0,1fr); } .toc { display: none; } }
+
+  .toc { position: sticky; top: 24px; font-size: 13px; }
+  .toc .eyebrow { margin-bottom: 10px; }
+  .toc ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .toc a { color: var(--ink-2); text-decoration: none; display: flex; gap: 10px; }
+  .toc a:hover { color: var(--accent); }
+  .toc a .n { font-family: "IBM Plex Mono", monospace; color: var(--ink-3); min-width: 1.4em; font-size: 12px; }
+
+  header.doc { margin-bottom: 40px; padding-bottom: 28px; border-bottom: 1px solid var(--rule); }
+  .eyebrow { font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+  h1 { font-family: "IBM Plex Serif", Georgia, serif; font-weight: 600; font-size: clamp(30px, 4vw, 42px); line-height: 1.12; margin: 8px 0 12px; text-wrap: balance; letter-spacing: -.01em; }
+  .lede { font-size: 17.5px; color: var(--ink-2); max-width: 66ch; margin: 0 0 18px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: var(--ink-3); }
+  .meta b { color: var(--ink-2); font-weight: 500; }
+
+  main { min-width: 0; }
+  section { margin: 0 0 56px; }
+  h2 { font-family: "IBM Plex Serif", Georgia, serif; font-weight: 600; font-size: 25px; line-height: 1.2; margin: 0 0 6px; text-wrap: balance; display: flex; gap: 14px; align-items: baseline; }
+  h2 .n { font-family: "IBM Plex Mono", monospace; font-size: 13px; color: var(--accent); font-weight: 500; }
+  h3 { font-size: 16.5px; font-weight: 600; margin: 28px 0 8px; }
+  .kicker { color: var(--ink-2); margin: 0 0 18px; max-width: 68ch; }
+  p, li { max-width: 68ch; }
+  ul, ol { padding-left: 1.25em; }
+  li { margin: 4px 0; }
+  li + li { margin-top: 6px; }
+  strong { font-weight: 600; }
+  code, .mono { font-family: "IBM Plex Mono", ui-monospace, Consolas, monospace; font-size: .92em; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; }
+  pre { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 16px; overflow-x: auto; font-size: 13px; line-height: 1.5; margin: 12px 0; }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  .callout { border-left: 3px solid var(--accent); background: var(--surface); padding: 12px 16px; margin: 16px 0; border-radius: 0 6px 6px 0; box-shadow: var(--shadow); max-width: 74ch; }
+  .callout.warn { border-left-color: var(--warn); }
+  .callout .eyebrow { margin-bottom: 4px; }
+  .callout p { margin: 4px 0; }
+
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin: 18px 0 8px; }
+  .fact { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 16px; box-shadow: var(--shadow); }
+  .fact .num { font-family: "IBM Plex Mono", monospace; font-size: 26px; font-weight: 500; line-height: 1.1; font-variant-numeric: tabular-nums; }
+  .fact .lbl { font-size: 13px; color: var(--ink-2); margin-top: 6px; line-height: 1.4; }
+  .fact.warn .num { color: var(--warn); }
+  .fact.crit .num { color: var(--crit); }
+  .fact.ok .num { color: var(--ok); }
+  .fact.acc .num { color: var(--accent); }
+
+  .tablewrap { overflow-x: auto; margin: 14px 0 6px; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); box-shadow: var(--shadow); }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--rule); }
+  th { font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; background: var(--surface-2); white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; white-space: nowrap; }
+  td .sub { display: block; color: var(--ink-3); font-size: 12px; }
+
+  .pill { display: inline-block; font-size: 11.5px; font-weight: 600; letter-spacing: .03em; padding: 2px 8px; border-radius: 999px; white-space: nowrap; line-height: 1.5; }
+  .pill.ok { background: var(--ok-soft); color: var(--ok); }
+  .pill.warn { background: var(--warn-soft); color: var(--warn); }
+  .pill.crit { background: var(--crit-soft); color: var(--crit); }
+  .pill.muted { background: var(--muted-soft); color: var(--muted); }
+  .pill.acc { background: var(--accent-soft); color: var(--accent); }
+
+  .verdicts { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin: 16px 0; }
+  .verdict { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 16px; box-shadow: var(--shadow); border-top: 3px solid var(--rule); }
+  .verdict.ok { border-top-color: var(--ok); }
+  .verdict.warn { border-top-color: var(--warn); }
+  .verdict.crit { border-top-color: var(--crit); }
+  .verdict.muted { border-top-color: var(--muted); }
+  .verdict h4 { margin: 0 0 6px; font-size: 14px; letter-spacing: .04em; text-transform: uppercase; }
+  .verdict.ok h4 { color: var(--ok); } .verdict.warn h4 { color: var(--warn); } .verdict.crit h4 { color: var(--crit); } .verdict.muted h4 { color: var(--muted); }
+  .verdict p { margin: 0; font-size: 13.5px; color: var(--ink-2); }
+  .verdict .sev { margin-top: 8px; font-size: 12px; color: var(--ink-3); }
+
+  .mock { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 16px; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; line-height: 1.55; white-space: pre; overflow-x: auto; margin: 12px 0; box-shadow: var(--shadow); }
+  .mock .w { color: var(--warn); font-weight: 500; } .mock .o { color: var(--ok); } .mock .d { color: var(--ink-3); }
+
+  .decisions { list-style: none; padding: 0; margin: 14px 0 0; display: flex; flex-direction: column; gap: 10px; counter-reset: dec; }
+  .decisions li { max-width: none; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 12px 16px 12px 52px; position: relative; box-shadow: var(--shadow); }
+  .decisions li::before { counter-increment: dec; content: counter(dec); position: absolute; left: 14px; top: 11px; font-family: "IBM Plex Mono", monospace; font-size: 13px; color: var(--accent); font-weight: 500; background: var(--accent-soft); width: 26px; height: 26px; border-radius: 999px; display: grid; place-items: center; }
+  .decisions .q { font-weight: 600; display: block; margin-bottom: 3px; }
+  .decisions .rec { font-size: 13.5px; color: var(--ink-2); }
+  .decisions .rec b { color: var(--accent); font-weight: 600; }
+
+  .phases { display: grid; grid-template-columns: 1fr; gap: 10px; margin-top: 14px; }
+  .phase { display: grid; grid-template-columns: 64px minmax(0,1fr) 88px; gap: 16px; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 16px; box-shadow: var(--shadow); align-items: start; }
+  .phase .tag { font-family: "IBM Plex Mono", monospace; font-size: 13px; color: var(--accent); font-weight: 500; }
+  .phase .name { font-weight: 600; margin: 0 0 4px; }
+  .phase .gets { font-size: 13.5px; color: var(--ink-2); margin: 0 0 4px; }
+  .phase .what { font-size: 13px; color: var(--ink-3); margin: 0; max-width: none; }
+  .phase .eff { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--ink-3); text-align: right; white-space: nowrap; }
+  .phase.out { border-style: dashed; }
+  @media (max-width: 600px) { .phase { grid-template-columns: 56px minmax(0,1fr); } .phase .eff { grid-column: 2; text-align: left; } }
+
+  .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px 28px; }
+  .two ul { margin-top: 6px; }
+  footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--rule); font-size: 12.5px; color: var(--ink-3); }
+</style>
+
+<div class="frame">
+<header class="doc">
+  <div class="eyebrow">Flowstate · Plant Calendar · draft for discussion · 1 Sep 2026</div>
+  <h1>Open-PO receipts and a time-phased stock check on the Gantt</h1>
+  <p class="lede">How Carsten sees, at the moment he places a block, whether the run depends on a truck that hasn't arrived yet, and how far to push it right to be safe. Nothing here is built. Section 7 lists the calls only you can make.</p>
+  <div class="meta">
+    <span><b>Source</b> NPA Open POs 8.24.xlsx (sample from IT)</span>
+    <span><b>Rule under test</b> at least 4 days between a delivery and the production that needs it</span>
+    <span><b>Design doc</b> <span class="mono">.hermes/plans/2026-09-01-po-stock-gantt-plan.md</span></span>
+  </div>
+</header>
+
+<div class="shell">
+<nav class="toc" aria-label="Sections">
+  <div class="eyebrow">Contents</div>
+  <ol>
+    <li><a href="#s1"><span class="n">1</span>Why the current check can't say it</a></li>
+    <li><a href="#s2"><span class="n">2</span>What the PO report gives us</a></li>
+    <li><a href="#s3"><span class="n">3</span>The risk model</a></li>
+    <li><a href="#s4"><span class="n">4</span>Where Carsten sees it</a></li>
+    <li><a href="#s5"><span class="n">5</span>Architecture</a></li>
+    <li><a href="#s6"><span class="n">6</span>Phased plan</a></li>
+    <li><a href="#s7"><span class="n">7</span>Decisions for you</a></li>
+    <li><a href="#s8"><span class="n">8</span>What the flag won't know</a></li>
+    <li><a href="#s9"><span class="n">9</span>How we prove it</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<section id="s1">
+  <h2><span class="n">1</span>Why the current check can't say "40% of the run"</h2>
+  <p class="kicker">Today's stock check is a snapshot with no clock. It explodes each block's recipe and compares that block's need against the <em>whole</em> on-hand pile, on its own. Two blocks drawing the same sleeve both see the full pile. Two demand weeks see the same number. There is no order of consumption, no depletion hour, and no notion of anything arriving.</p>
+  <div class="facts">
+    <div class="fact acc"><div class="num">130 / 133</div><div class="lbl">items whose "available" figure is identical on every block that uses them: no netting across blocks</div></div>
+    <div class="fact warn"><div class="num">7 of 40</div><div class="lbl">blocks on today's board that run a component dry mid-run once consumption is netted in time order (on-hand only)</div></div>
+    <div class="fact crit"><div class="num">4</div><div class="lbl">of those 7 currently read <span class="pill ok">OK</span> in the flat report (280324 P21 and P18, 280591 P22, 280564 P18)</div></div>
+    <div class="fact"><div class="num">0</div><div class="lbl">places in the code that know a purchase order, a quantity on order, or a receipt date</div></div>
+  </div>
+  <p>So the request needs two additions rather than a tweak. First, a <strong>timeline per component</strong>: opening stock, minus each block's draw spread across its run, plus receipts stepping in on their dates. Second, an <strong>inbound feed</strong>: the PO report. Everything Carsten sees on the board falls out of that one curve.</p>
+  <div class="callout">
+    <div class="eyebrow">Day-one effect</div>
+    <p>Netting alone changes verdicts before any PO data exists. On today's board the second 280591 piece on P22 exhausts film 752706 at 84% of its run, and the long 280324 run on P21 exhausts strawberry puree 750131 at 31%. Both are green today. Expect a few surprises the first morning, and a popover that names the other block drawing the same item.</p>
+  </div>
+</section>
+
+<section id="s2">
+  <h2><span class="n">2</span>What the PO report gives us</h2>
+  <p class="kicker">The sample joins to the plant's data more cleanly than expected. The columns we use: <code>Order number</code>, <code>Ordered item</code>, <code>Qty ordered at the origin</code>, its unit, <code>Receipt date</code>, <code>Initial Receipt Date</code>, <code>Arrival area</code>, <code>Supplier</code>, and <code>Receipt number</code> (blank means not yet received).</p>
+  <div class="facts">
+    <div class="fact ok"><div class="num">54 / 57</div><div class="lbl">item codes are plain BOM keys with the same unit (Kg, EA, M2, L, FT). Two strawberry items resolve through the semi-finished recipes; 899999 is tooling.</div></div>
+    <div class="fact ok"><div class="num">±1 day</div><div class="lbl">how close the ERP receipt date is to the dock date for packaging suppliers (GPI, IPN, CHEP). Imported fruit had already re-promised 9 to 37 days.</div></div>
+    <div class="fact acc"><div class="num">91%</div><div class="lbl">of lines that had physically landed did so within 4 days of the ERP date. Your buffer covers the observed tail.</div></div>
+    <div class="fact warn"><div class="num">5 days</div><div class="lbl">how far ahead the sample looks. A 3-week board plus a 4-day buffer needs at least 5 weeks.</div></div>
+  </div>
+  <h3>Two joins, one authoritative</h3>
+  <ul>
+    <li><strong>Item to recipe</strong>: the PO item code is the BOM item code. No suffix games, no unit conversion.</li>
+    <li><strong>PO to dock appointment</strong>: the Shipping/Receiving sheet stores the last 8 digits of the ERP order number. That pairs a dock time-of-day with the ERP date, but only for packaging carriers, and only 8 to 11 days ahead. The ERP date is authoritative; the appointment confirms and adds a clock time. It never gates a verdict, with one exception: SL3 lines are an offsite warehouse and only count once a transfer appointment exists.</li>
+  </ul>
+  <h3>Traps the sample exposed</h3>
+  <ul>
+    <li><strong>Vintage mismatch.</strong> The 8/24 extract against the 9/1 stock export: 43 of 79 lines had already landed and were on hand. Adding PO quantity to on-hand would double count. Rule: a line counts only if its receipt date is on or after the stock export day, and packaging lines are suppressed as "landed" when matching lots with a decoded batch date already sit in stock.</li>
+    <li><strong>Overdue lines.</strong> Ten lines were past their date and unreceipted. Three landed late, three had landed early without paperwork, three never appeared. Overdue means unknown, never "arriving today".</li>
+    <li><strong>Untracked consumables.</strong> Ink additive, CHEP pallets and stretch film are on every recipe and on the PO, but have no stock rows. They stay out of the verdict unless you decide otherwise.</li>
+  </ul>
+  <div class="callout">
+    <div class="eyebrow">Ask IT for</div>
+    <p>A fixed filename. An explicit as-of timestamp in the file. A daily run in the same job as the stock export. A receipt window of at least 5 weeks. Columns for quantity received and quantity remaining, so partial receipts drop out cleanly. Standing blanket POs included (the weekly CAPS orders never appear in the extract). A legend for the arrival areas RB1, RP1, AMB, SL3, RC1. Confirmation of when the ERP backflushes consumption: at declaration or at MO close.</p>
+  </div>
+</section>
+
+<section id="s3">
+  <h2><span class="n">3</span>The risk model</h2>
+  <p class="kicker">One balance curve per component along the board's hour axis. Opening stock is the toggle-honouring on-hand from the VIF export. Every production block draws its recipe need uniformly across its run, clipped at the export moment for running MOs. Receipts step the curve up on their ready hour. From that curve, three questions are asked for each block.</p>
+  <ul>
+    <li><strong>Hard</strong>: does on-hand alone last through the run?</li>
+    <li><strong>Reliable</strong>: counting only receipts that land at least 4 days before this block starts, does it last?</li>
+    <li><strong>Planned</strong>: counting every receipt in the window, does it last?</li>
+  </ul>
+  <div class="verdicts">
+    <div class="verdict ok"><h4>OK</h4><p>On-hand covers the run, or every receipt it needs lands 4 or more days before start. The second case shows a grey truck: "backed".</p><div class="sev">No warning</div></div>
+    <div class="verdict warn"><h4>Delivery-dependent</h4><p>The run completes only thanks to a receipt landing inside the buffer, or mid-run. This is your shipping-constraint flag.</p><div class="sev">Orange chip, banner on drop, Reconcile warning</div></div>
+    <div class="verdict crit"><h4>Short</h4><p>Even with every receipt counted, the line stops at a depletion hour. The chip shows the covered share.</p><div class="sev">Red chip; blocking in Reconcile on a fresh feed</div></div>
+    <div class="verdict muted"><h4>No data</h4><p>The shortfall falls beyond the PO window, or the feed is missing or older than a week. Grey question mark.</p><div class="sev">Never alarms, never comforts</div></div>
+  </div>
+  <h3>How the 4-day rule reads in the awkward cases</h3>
+  <ul>
+    <li><strong>Buffer measured to block start</strong>, your sentence. The depletion moment is shown too, so Carsten sees both "lands 1.3 days before start" and "runs out Friday 23:20".</li>
+    <li><strong>Partial dependency.</strong> The buffer applies only to receipts the curve actually needs. If on-hand covers the whole run, tomorrow's truck is irrelevant. If the dependent share is under 5%, it is information, not a warning.</li>
+    <li><strong>Stacked deliveries.</strong> Each needed receipt has its own lead; the tightest one is reported, and "safe from" is that receipt's ready hour plus 4 days.</li>
+    <li><strong>Shared crossings.</strong> When a running MO and a planner block both draw the item across the depletion hour, both are flagged. The locked one gets the action "chase PO"; the movable one gets "move to safe from".</li>
+    <li><strong>Warn-only by default.</strong> No drop, resize, place or edit is refused. A hard block exists as a config switch and, if ever on, fires only for zero on-hand and zero inbound on a fresh feed.</li>
+  </ul>
+  <h3>Worked example: 280351 and sleeve 754751</h3>
+  <p>Real board, hypothetical stock so the rule has something to bite on: on-hand 36,000 EA instead of the real 436,800, and one open PO of 67,200 EA landing Wednesday 9/2 at 16:00 (hour 40).</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Block</th><th>Window</th><th class="num">Cases</th><th class="num">On hand at start</th><th>Hard covers</th><th>Lead to start</th><th>Verdict, 4-day buffer</th><th>Verdict, no buffer</th></tr></thead>
+    <tbody>
+      <tr><td>P10 running MO<span class="sub">locked</span></td><td>0 to 119.7 h</td><td class="num">29,283</td><td class="num">36,000</td><td>runs dry at 95.3 h, Fri 23:20</td><td>n/a, truck lands after start</td><td><span class="pill warn">Delivery-dependent</span> mid-run · chase PO</td><td><span class="pill warn">Delivery-dependent</span> mid-run</td></tr>
+      <tr><td>P19 queued MO</td><td>71.9 to 131.5 h<span class="sub">Thu 23:51 start</span></td><td class="num">41,435</td><td class="num">22,046</td><td><strong>39%</strong>, to 95.3 h</td><td><strong>1.3 d</strong></td><td><span class="pill warn">Delivery-dependent</span> safe from Sun 9/6 16:00</td><td><span class="pill ok">OK</span> backed</td></tr>
+      <tr><td>P10 tail piece</td><td>125.7 to 188.1 h</td><td class="num">15,258</td><td class="num">0</td><td>0%, exhausted by the two above</td><td>3.6 d</td><td><span class="pill warn">Delivery-dependent</span></td><td><span class="pill ok">OK</span> backed</td></tr>
+    </tbody>
+  </table></div>
+  <p>Planned end-of-board balance is 36,000 − 25,667 − 41,435 − 15,258 + 67,200 = +20,840, so nothing is Short. Slide the PO to Saturday 16:00, past the depletion hour, and both the running P10 MO and P19 turn <span class="pill crit">Short</span> (P19 covered 39%). Move P19 to start at hour 136 or later and it reads OK, backed. Delete the PO line, as in the real sample whose window ends 8/29, and P19 reads "runs out at 39%, no inbound data past 8/29".</p>
+</section>
+
+<section id="s4">
+  <h2><span class="n">4</span>Where Carsten sees it</h2>
+  <p class="kicker">Every surface on the board is computed in the browser from a small table shipped with the page, so the badge is live while dragging. Server-side verdicts exist for the saved board only, feeding Reconcile and Home, and are re-run on "Refresh checks" so the two agree. Read-only mounts of the Gantt show nothing.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Surface</th><th>What it shows</th><th>When</th></tr></thead>
+    <tbody>
+      <tr><td>Block face</td><td>Chip: <span class="pill warn">🚚 1.3d</span> · <span class="pill crit">⛔ 39%</span> · <span class="pill muted">🚚</span> backed · <span class="pill muted">?</span> no data. Body solid to the depletion hour, hatched after, tick where the binding truck lands.</td><td>Live, every edit</td></tr>
+      <tr><td>Drag ghost</td><td>One orange row while dragging: item, coverage share, depletion time, which PO lands when, lead versus the 4-day minimum, safe-from date.</td><td>Live, per frame, dragged SKU only</td></tr>
+      <tr><td>After drop</td><td>The same sentence in the orange banner the board already uses for sub-setup placement. Never a rejection unless hard-block is on.</td><td>Live</td></tr>
+      <tr><td>Block popover</td><td>Supply section, mock below.</td><td>Live</td></tr>
+      <tr><td>Holding card</td><td>"🚚 from Sun 9/6 16:00", "⛔ no clear start", or "? no data"; notes when the safe start falls after the order's due window. Judged alone against the placed board.</td><td>Live</td></tr>
+      <tr><td>SKU picker rows</td><td>The same pill plus a safe-from date per candidate row; rows are never disabled.</td><td>Live</td></tr>
+      <tr><td>Time axis</td><td>One truck glyph per day with a tooltip: PO, item, quantity, source.</td><td>From payload</td></tr>
+      <tr><td>Reconcile and Home</td><td>One finding per affected block (warning for dependent, blocking for short on a fresh feed) plus one data finding for the feed itself. The link opens the calendar with that block highlighted.</td><td>Saved board, on refresh</td></tr>
+      <tr><td>Stock Check</td><td>New Inbound tab listing every PO line with its fate: used, excluded, landed, overdue, unjoinable. A Supply column on the schedule tab.</td><td>Saved report</td></tr>
+    </tbody>
+  </table></div>
+  <div class="mock">Supply · stock as of Tue 9/1 14:46 · POs as of Tue 9/1 06:10 (window to Fri 10/2)
+<b>754751 SLEEVE 1X24X90</b>        need 41,435 EA
+   on hand at start 22,046 → covers 39%, runs out Fri 9/4 23:20
+   PO 30043543  +67,200 EA  Wed 9/2 16:00 (ERP date, GPI)   lead 1.3 d  &lt; 4 d
+   <span class="w">▶ DELIVERY-DEPENDENT · safe from Sun 9/6 16:00</span>
+752420 FILM        need 22,748 M2 · covers 100%                        <span class="o">OK</span>
+730021 APPLE CONC  need 9,613 kg · covers 100%                         <span class="o">OK</span>
+<span class="d">… 18 more OK · untracked (never gate): 758001 ink, 758006 pallets, 758029 film</span>
+<span class="d">Also drawing 754751 in this window: 280351 P10 (running MO 30235, locked)</span>
+[Acknowledge for this session]</div>
+</section>
+
+<section id="s5">
+  <h2><span class="n">5</span>Architecture</h2>
+  <p class="kicker">The rule lives in one pure Python module and one line-for-line TypeScript port, with a parity test between them. The existing flat statuses, the DNS trim and the solver are untouched; the report gains additive keys.</p>
+  <div class="two">
+    <div>
+      <h3>New</h3>
+      <ul>
+        <li><code>code/stockcheck/po_import.py</code>: the xlsx reader, best-effort, errors collected.</li>
+        <li><code>code/stockcheck/timeline.py</code>: gate receipts, build timelines, evaluate a block or the board, earliest clear start, verdict text.</li>
+        <li><code>helpers/calendar_io.build_stock_payload</code>: the table the Gantt receives.</li>
+        <li><code>frontend/src/utils/stockRisk.ts</code>: the port.</li>
+        <li>Tests for import, timeline goldens, and Python-to-TypeScript parity.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Changed</h3>
+      <ul>
+        <li>VIF import and the report cache learn a seventh file, so a new PO drop invalidates the shared report. Three file lists must name it.</li>
+        <li>Report gains <code>inbound</code>, per-SKU unit recipes, and a <code>supply</code> block per schedule row. Memoising unit recipes also cuts the report from about 7 s to 3 s.</li>
+        <li>Reconcile engine, data health, Settings, Stock Check, the calendar page and the Gantt wrapper each grow one hook.</li>
+        <li>Bridge scripts gain glob support until IT commits to a fixed filename.</li>
+        <li>Separate enabler commit: split MO pieces share one block id, and three edit paths in the board state patch every piece at once. Verdicts key on id plus start, and that bug gets fixed first.</li>
+      </ul>
+    </div>
+  </div>
+  <h3>Config, all in <code>flowstate.toml [stock]</code></h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Knob</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">min_days_after_delivery</td><td class="num">4</td><td>The buffer.</td></tr>
+      <tr><td class="mono">lead_measured_from</td><td class="mono">block_start</td><td>Or <span class="mono">depletion</span>. Both numbers always shown.</td></tr>
+      <tr><td class="mono">receipt_ready_hour</td><td class="num">16</td><td>A packaging receipt is usable from 16:00 on its date.</td></tr>
+      <tr><td class="mono">raw_qc_offset_h</td><td class="num">72</td><td>Raw areas RB1, AMB, RC1 pass QC first. Needs plant confirmation.</td></tr>
+      <tr><td class="mono">po_ignore_after_h</td><td class="num">168</td><td>A feed older than a week neither rescues nor alarms.</td></tr>
+      <tr><td class="mono">dependent_frac_floor</td><td class="num">0.05</td><td>Below this dependent share the flag is informational.</td></tr>
+      <tr><td class="mono">hard_block</td><td class="mono">false</td><td>Warn-only.</td></tr>
+    </tbody>
+  </table></div>
+  <p>Payload cost is about 100 KB on a page that already ships several megabytes. Client re-evaluation of the whole board is under a millisecond; a drag frame evaluates one SKU. The stock report never runs from the calendar page.</p>
+</section>
+
+<section id="s6">
+  <h2><span class="n">6</span>Phased plan</h2>
+  <p class="kicker">Each slice ships and tests on its own. The rule reaches Reconcile and Home before the Gantt bundle changes, so the first value arrives without a frontend rebuild.</p>
+  <div class="phases">
+    <div class="phase"><div class="tag">0</div><div><p class="name">See the feed</p><p class="gets">Proof that IT's file parses and joins, and a concrete list of asks back to them.</p><p class="what">PO importer with tests, bridge and health registration, Settings path, an Inbound tab on Stock Check with every line's fate, and a check of whether stock reflects a running MO's consumption.</p></div><div class="eff">~1 day</div></div>
+    <div class="phase"><div class="tag">1</div><div><p class="name">Rule in the report and Reconcile</p><p class="gets">Any saved board inside the 4-day window is flagged on Home and Reconcile before the Gantt knows anything.</p><p class="what">Timeline module with goldens, memoised recipes, additive report keys, supply findings, a Supply column on Stock Check.</p></div><div class="eff">~2 days</div></div>
+    <div class="phase"><div class="tag">2a</div><div><p class="name">Placement moments</p><p class="gets">The 39%, truck and 1.3-day story while dragging and after dropping.</p><p class="what">Split-piece fix first. Payload builder, TypeScript port with parity test, drag row, commit banners, block chip and hatch, popover section, week pill, Refresh re-evaluate, bundle rebuilt.</p></div><div class="eff">~2 days</div></div>
+    <div class="phase"><div class="tag">2b</div><div><p class="name">Before placement</p><p class="gets">The earliest safe date before choosing where a card goes.</p><p class="what">Holding card badges, picker row pills, one truck per day on the axis, Reconcile-to-block focus link.</p></div><div class="eff">~1 day</div></div>
+    <div class="phase out"><div class="tag">3</div><div><p class="name">Policy, outside this request</p><p class="gets">The solver stops planning inside the window and stops over-trimming later weeks.</p><p class="what">Receipts lift the DNS trim per order; an earliest-start constraint per order for the fill and the overnight batch. Same sign-off class as the August trim policy.</p></div><div class="eff">1 to 2 days</div></div>
+  </div>
+  <p style="margin-top:14px">Later ideas, not planned: durable acknowledgements, best-before expiry as a depletion event, richer axis markers, trimming the changeover-pair payload.</p>
+</section>
+
+<section id="s7">
+  <h2><span class="n">7</span>Decisions for you</h2>
+  <p class="kicker">Each comes with the default the plan assumes. Say "defaults" and slice 0 can start; change any one and the plan absorbs it.</p>
+  <ol class="decisions">
+    <li><span class="q">Measure the 4 days to block start, or to the moment stock would run out?</span><span class="rec"><b>Block start</b>, your wording. Both numbers are always shown.</span></li>
+    <li><span class="q">One buffer for everything, or longer for imported fruit?</span><span class="rec"><b>4 days for all</b> to begin. Fruit suppliers slipped 9 to 37 days in the sample, so revisit after a month of feeds.</span></li>
+    <li><span class="q">Apply the rule to packaging and raw materials alike?</span><span class="rec"><b>Yes.</b> Per-area readiness handles the difference.</span></li>
+    <li><span class="q">Overdue open lines: never counted, or treated as arriving today?</span><span class="rec"><b>Never counted, always listed.</b></span></li>
+    <li><span class="q">When is a receipt usable? And do SL3 lines wait for a transfer appointment?</span><span class="rec"><b>Packaging 16:00 on the date, raw plus 72 hours for QC, SL3 only from a transfer appointment.</b> Confirm QC release times with the plant.</span></li>
+    <li><span class="q">Which stock statuses count as on hand?</span><span class="rec"><b>Available only</b>, as today. QC, quarantine and trailer tiers stay opt-in toggles.</span></li>
+    <li><span class="q">Ever refuse a placement?</span><span class="rec"><b>No.</b> Warn only. The switch exists for later.</span></li>
+    <li><span class="q">Reconcile severity?</span><span class="rec"><b>Dependent warns, Short blocks on a fresh feed, No-data never.</b></span></li>
+    <li><span class="q">Show grey "backed" trucks on blocks that are fine thanks to a delivery?</span><span class="rec"><b>Yes, informational.</b> Revisit after a week.</span></li>
+    <li><span class="q">Let receipts lift the solver's demand trim and add an earliest-start constraint?</span><span class="rec"><b>After slices 0 to 2 have run a week.</b> Separate sign-off.</span></li>
+    <li><span class="q">Ink, CHEP pallets, stretch film: keep them out of the verdict, or ask IT to export their stock?</span><span class="rec"><b>Keep them never-gating</b> for now.</span></li>
+    <li><span class="q">Commit a trimmed real PO sample as a test fixture, or synthetic only?</span><span class="rec"><b>Synthetic only.</b> Supplier names stay out of git.</span></li>
+    <li><span class="q">Deliver the file through the bridge under a fixed name, or add an upload box?</span><span class="rec"><b>Bridge, fixed name.</b> Upload box only if IT emails the file instead.</span></li>
+  </ol>
+</section>
+
+<section id="s8">
+  <h2><span class="n">8</span>What the flag won't know, and how it says so</h2>
+  <ul>
+    <li><strong>The dangerous direction is false comfort.</strong> A future-dated line that already landed counts twice. The landed rule catches packaging lots by batch date; aseptic purees and IQF fruit are only marked unverifiable. IT's as-of stamp and quantity-remaining column are the real fix.</li>
+    <li>Consumption within a run is assumed uniform. A block that only needs an item late in the run cannot be expressed yet.</li>
+    <li>A truck on the yard that isn't receipted reads as not arrived. Conservative, and captioned.</li>
+    <li>Partial and split receipts: received lines drop out entirely until IT adds quantity remaining.</li>
+    <li>Holding cards are judged alone. Five cards of one SKU each read "safe from Wednesday" although together they exhaust the item. The card says so.</li>
+    <li>The stock export moment is the laptop pull time, up to 35 minutes late. Running-MO clipping is off by that much times the rate. Small, and shown in the caption.</li>
+    <li>Until slice 3, two kilogram conventions coexist: the flat status uses rate times hours, the supply verdict uses the block's own kilograms. The popover says which.</li>
+    <li>The sample's window ends 8/29, so on today's data most shortfalls read No data, not Short. That is correct behaviour, and the reason slice 0 comes first.</li>
+  </ul>
+</section>
+
+<section id="s9">
+  <h2><span class="n">9</span>How we prove it</h2>
+  <ul>
+    <li><strong>Slice 0</strong>: synthetic xlsx covering multi-line POs, the sentinel row, five columns named U, received versus open, tooling codes, garbage rows; a landed-suppression test with synthetic batch codes; health and cache-signature tests; the bridge picks the newest match. In the browser: the Inbound tab lists lines with reasons.</li>
+    <li><strong>Slice 1</strong>: goldens pinned to the worked table above, including the crossing cases, mid-run receipts on a running MO, exhausted windows, stacked receipts, and concurrent draws on one curve; Reconcile finding keys stable across the daily anchor roll; existing engine goldens unchanged.</li>
+    <li><strong>Slice 2</strong>: Python-to-TypeScript parity on a shared fixture; the split-piece fix; read-only mounts stay clean. Then a headed walkthrough with Carsten on a synthetic future-dated PO file: drag the P19 block, see the orange row, drop, read the banner, click, read the popover, move it to Sunday 16:00 and watch it turn grey.</li>
+  </ul>
+</section>
+
+<footer>Draft prepared 1 Sep 2026 from the live board, the 9/1 VIF export and the 8/24 PO sample. Full design text with file-level detail lives in the repository under <span class="mono">.hermes/plans</span>.</footer>
+</main>
+</div>
+</div>

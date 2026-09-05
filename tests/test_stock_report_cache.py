@@ -77,6 +77,42 @@ def test_signature_tracks_every_input(dd):
     assert 0.0 in src.current_signature(dd, vif, tog)
 
 
+def test_signature_tracks_supply_inputs(dd, tmp_path, monkeypatch):
+    """The supply timeline reads the open-PO file, the dock sheet and the
+    toml (rules + anchor) on top of the VIF/board/demand/rates inputs — each
+    must move the signature, and so must the configured override path."""
+    import helpers.config as hc
+    import helpers.paths as hp
+    toml = tmp_path / "flowstate.toml"
+    toml.write_text("[stock]\n", encoding="utf-8")
+    monkeypatch.setattr(hp, "toml_path", lambda: toml)
+    monkeypatch.setattr(hc, "load_toml", lambda path=None: {})
+    vif = str(dd / "vif")
+    tog = {"M01|Ava": True}
+    ref = dd / "reference"
+    xlsm = ref / "Shipping Receiving Schedule NPA - 2024.xlsm"
+    for f in (ref / "open_pos.xlsx", ref / "open_pos.csv", xlsm):
+        before = src.current_signature(dd, vif, tog)
+        f.write_bytes(b"x")                           # appearing moves it
+        assert src.current_signature(dd, vif, tog) != before, f
+        before = src.current_signature(dd, vif, tog)
+        _touch(f)                                     # and so does an mtime
+        assert src.current_signature(dd, vif, tog) != before, f
+    before = src.current_signature(dd, vif, tog)
+    _touch(toml)
+    assert src.current_signature(dd, vif, tog) != before
+    # [datasources] po_report_path: the override file joins the signature
+    custom = tmp_path / "NPA Open POs -9.01.xlsx"
+    custom.write_bytes(b"y")
+    before = src.current_signature(dd, vif, tog)
+    monkeypatch.setattr(hc, "load_toml",
+                        lambda path=None: {"datasources": {"po_report_path": str(custom)}})
+    with_override = src.current_signature(dd, vif, tog)
+    assert with_override != before
+    _touch(custom)
+    assert src.current_signature(dd, vif, tog) != with_override
+
+
 def test_first_call_computes_persists_then_serves_from_disk(dd, monkeypatch):
     calls: list[str] = []
     import stockcheck.api as api
@@ -169,3 +205,14 @@ def test_integration_real_dev_vif(dd):
     c2 = src.get_report(dd, auto=False)
     assert c2.source == "cache" and not c2.stale
     assert c2.report["source_files"] == c.report["source_files"]
+
+
+def test_signature_is_spelling_independent(dd, monkeypatch):
+    """The app hands an absolute data_dir, scripts a relative one — the same
+    inputs must sign identically or a script-computed report reads stale on
+    the calendar seconds later (2026-09-01)."""
+    monkeypatch.chdir(dd.parent)
+    vif, toggles = str(dd / "vif"), {"M01|Ava": True}
+    absolute = src.current_signature(dd.resolve(), vif, toggles)
+    relative = src.current_signature(Path("data"), str(Path("data") / "vif"), toggles)
+    assert absolute == relative

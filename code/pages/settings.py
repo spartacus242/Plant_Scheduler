@@ -18,7 +18,8 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from helpers.config import datasources_config, load_toml  # noqa: E402
-from helpers.paths import toml_path  # noqa: E402
+from helpers.paths import data_dir, toml_path  # noqa: E402
+from helpers.reconcile_engine import open_po_path  # noqa: E402
 
 st.header("Settings — Data Sources")
 st.caption(
@@ -41,6 +42,11 @@ demand_summary = st.text_input(
     help="The planner's Week/Product/kg_tons file. When set and the file "
          "exists, the Data page's demand import uses it as the source "
          "instead of requiring a manual upload.")
+po_report = st.text_input(
+    "Open PO report (IT's 'NPA Open POs' xlsx or csv)",
+    value=ds["po_report_path"],
+    help="Inbound receipts for the supply timeline. Leave blank to use the "
+         "bridge copy data/reference/open_pos.xlsx (or open_pos.csv).")
 
 st.divider()
 st.subheader("Live SQL (optional)")
@@ -78,6 +84,7 @@ if st.button("Save data sources", type="primary"):
         "manprg_files": manprg,
         "cip_info_csv": cip,
         "demand_summary_csv": demand_summary,
+        "po_report_path": po_report,
         "sql_enabled": sql_enabled,
         "sql_dsn": sql_dsn,
     })
@@ -102,6 +109,16 @@ for name, val in checks.items():
     paths = [p.strip() for p in val.split(";") if p.strip()]
     ok = all(Path(p).exists() for p in paths)
     rows.append((name, val[:50], "OK" if ok else "NOT FOUND"))
+# The PO report has no dev fixture: blank means the bridge copy, so show the
+# path the resolver actually lands on (typed value, like the rows above).
+_po = open_po_path(data_dir(), {"datasources": {"po_report_path": po_report}})
+if _po is None:
+    rows.append(("Open PO report", "—",
+                 "NOT FOUND (bridge file open_pos.xlsx not landed)"))
+else:
+    rows.append(("Open PO report", str(_po)[-50:],
+                 ("OK" if _po.exists() else "NOT FOUND")
+                 + ("" if po_report else " (bridge copy)")))
 st.dataframe({"Source": [r[0] for r in rows],
               "Path": [r[1] for r in rows],
               "Status": [r[2] for r in rows]},

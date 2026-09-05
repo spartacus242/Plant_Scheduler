@@ -17,6 +17,8 @@ import re
 from datetime import date, datetime
 from pathlib import Path
 
+from .po_import import po8
+
 DAY_OFFSETS = (0, 9, 18)  # 0-indexed column of each day's 'Dest'
 _RECEIVING = "RECEIVING"
 _ERR_MARKERS = {"#REF!", "#VALUE!", "#N/A", "#NAME?"}
@@ -40,6 +42,11 @@ def _norm_time(v) -> str:
     if v is None:
         return ""
     if isinstance(v, datetime):
+        # A date-only Plan APT cell arrives as midnight. '00:00' would read as
+        # a real slot (ready 02:00 after the appt offset); blank sends the
+        # line to the ERP ready-hour rule instead. Real times are kept.
+        if v.hour == 0 and v.minute == 0:
+            return ""
         return v.strftime("%H:%M")
     s = str(v).strip().upper().replace(".", "")
     m = re.match(r"^(\d{1,2})\s*(AM|PM)$", s)
@@ -55,7 +62,7 @@ def _norm_time(v) -> str:
 def parse_receiving_schedule(path: str | Path, week_tab: str | None = None,
                              ) -> tuple[list[dict], list[dict]]:
     """Return (appointments, errors). Each appointment: {week_tab, date,
-    time, po, category, carrier, row}."""
+    time, po, po8, category, carrier, row}."""
     import openpyxl
     import warnings
     warnings.filterwarnings("ignore")
@@ -102,6 +109,8 @@ def parse_receiving_schedule(path: str | Path, week_tab: str | None = None,
                              if current_dates[off] else None),
                     "time": _norm_time(apt),
                     "po": po_s,
+                    # join key to PO lines; a multi-PO cell keeps its first
+                    "po8": po8(po_s),
                     "category": re.sub(r"\s+", " ", str(cat).strip()) if cat else "",
                     "carrier": str(carrier).strip() if carrier else "",
                     "row": r_idx,

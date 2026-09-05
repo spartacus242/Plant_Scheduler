@@ -2,9 +2,12 @@
 #
 # Two views:
 #   Schedule view — will anything on the current board fail for components?
+#                   (flat on-hand status + the time-phased Supply verdict)
 #   Demand view   — which demand SKUs can't reach >=90% of target?
+# Plus the Inbound tab: every open-PO line and the fate the timeline engine
+# gave it (contract .hermes/plans/2026-09-01-po-stock-contracts.md §7).
 # Data: VIF CSV exports (ediact 3/4, jestkexp/2, azapart, rmpkitems) +
-#       weekly Shipping/Receiving xlsm (appointment feed).
+#       weekly Shipping/Receiving xlsm (appointment feed) + open-PO report.
 
 from __future__ import annotations
 
@@ -84,6 +87,12 @@ try:
 except Exception as exc:  # engine not merged yet -> render shell w/ demo
     ENGINE_OK = False
     ENGINE_ERR = str(exc)
+# The time-phased engine only re-stamps the supply sentence with real dates;
+# without it the report's own text (h-frame stamps) still renders.
+try:
+    from stockcheck import timeline as tl
+except Exception:  # noqa: BLE001
+    tl = None
 
 STATUS_CHIP = {
     "OK": ":green[OK]",
@@ -96,6 +105,89 @@ STATUS_CHIP = {
 }
 # plain labels for dataframe cells (st.dataframe does not render markdown)
 STATUS_TEXT = {k: v.split("[")[1].rstrip("]") for k, v in STATUS_CHIP.items()}
+
+# Time-phased supply verdicts (contract §3.5) ride on each schedule_view row
+# as "supply". A saved report from before the PO feed has none: every helper
+# below returns its quiet default so the page renders exactly as it used to.
+SUPPLY_CHIP = {
+    "SHORT": ":red[SHORT]",
+    "DEPENDENT": ":orange[DEPENDENT]",
+    "NO_DATA": ":gray[NO DATA]",
+    "OK": ":green[OK]",
+}
+
+
+def _supply(b: dict) -> dict | None:
+    s = b.get("supply")
+    return s if isinstance(s, dict) and s.get("verdict") else None
+
+
+def _supply_flagged(b: dict) -> bool:
+    # SHORT, or DEPENDENT above the minor floor — the verdicts that pull a
+    # block into the risk list even when the flat on-hand check says OK
+    s = _supply(b)
+    if s is None:
+        return False
+    v = s.get("verdict")
+    return v == "SHORT" or (v == "DEPENDENT" and not s.get("minor"))
+
+
+def _supply_chip(s: dict) -> str:
+    v = s.get("verdict")
+    if v == "OK" and s.get("backed"):
+        return ":gray[OK · backed by PO]"
+    if v == "DEPENDENT" and s.get("minor"):
+        return ":gray[DEPENDENT · minor]"
+    return SUPPLY_CHIP.get(v, f":gray[{v}]")
+
+
+def _supply_text(s: dict) -> str:
+    # verdict_text re-stamps the hours with the real anchor; the report's own
+    # text carries 'h95.3' stamps and is only the fallback
+    if tl is not None:
+        try:
+            return tl.verdict_text(s, _ANCHOR)
+        except Exception:  # noqa: BLE001 — one odd row must not kill the tab
+            pass
+    return str(s.get("text") or "")
+
+
+# Inbound table order: counted lines first, then the fates a planner can act
+# on, then housekeeping; unknown fates sort after, alphabetically.
+_FATE_ORDER = ["used", "landed_unverifiable", "overdue", "offsite_no_transfer",
+               "unjoinable", "unit_mismatch", "bad_qty", "bad_date", "landed",
+               "received"]
+# Per state: WHY. The consequence ("nothing is counted, gaps read NO DATA")
+# is said once, in the state line next to the 'Would count' metric.
+_FEED_STATE_HELP = {
+    "ok": "feed current — receipts dated on/after the stock snapshot are "
+          "counted.",
+    "missing": "no open-PO report was found. Drop the ERP open-PO export at "
+               "data/reference/open_pos.xlsx (the live bridge delivers it) "
+               "or point [datasources] po_report_path at it on Settings.",
+    "stale": "the latest receipt date in the file is already in the past, so "
+             "the extract no longer looks ahead; a fresh export is needed.",
+    "empty": "the report parsed but holds no PO lines.",
+}
+# (report key, title, one-line fix hint) for the Data quality tab
+_QUALITY_HINTS = [
+    ("unjoinable_items", "Unjoinable PO items",
+     "Fix: the PO's item code matches no BOM item — neither exactly nor as "
+     "a single '-X' suffixed variant — so its receipts are not counted. Check "
+     "the code on the PO line against the BOM/item exports (ediact 3.csv, "
+     "rmpkitems.csv); if the plant uses a suffixed code, fix the item master, "
+     "not the PO."),
+    ("unit_mismatch", "Unit mismatch (PO vs BOM)",
+     "Fix: the PO orders the item in a different unit than the recipe "
+     "consumes (e.g. KG vs EA) and no conversion is applied, so the receipt "
+     "is dropped. Correct the unit on the PO line or the item's BOM unit."),
+    ("landed_unverifiable", "Landed check unavailable",
+     "Info: these receipts ARE counted. No stock lot of the item carries a "
+     "decodable batch (N + year + day-of-year + seq), so the engine cannot "
+     "tell whether the truck already landed in the on-hand pile — verify "
+     "against the stock report; if it did land, expect a double count until "
+     "the PO closes."),
+]
 
 # ---------------------------------------------------------------- header
 left, mid, right = st.columns([3, 2, 2])
@@ -214,7 +306,13 @@ sv = rep["schedule_view"]
 dv = rep["demand_view"]
 if week_index is not None:
     dv = [d for d in dv if d.get("week_index") == week_index]
-n_blocks_risk = sum(1 for b in sv if b["status"] in ("AT_RISK", "TIGHT"))
+# a block counts once whether the flat check, the supply verdict or both
+# flag it
+has_supply = any(_supply(b) is not None for b in sv)
+n_flat_risk = sum(1 for b in sv if b["status"] in ("AT_RISK", "TIGHT"))
+n_supply_risk = sum(1 for b in sv if _supply_flagged(b))
+n_blocks_risk = sum(1 for b in sv
+                    if b["status"] in ("AT_RISK", "TIGHT") or _supply_flagged(b))
 n_dns = sum(1 for d in dv if d["status"] == "DO_NOT_SCHEDULE")
 n_dem_risk = sum(1 for d in dv if d["status"] in ("AT_RISK",))
 m1, m2, m3, m4 = st.columns(4)
@@ -222,11 +320,22 @@ m1.metric("Schedule blocks at risk", n_blocks_risk, delta=f"of {len(sv)}")
 m2.metric("Demand SKUs DO_NOT_SCHEDULE", n_dns, delta=f"of {len(dv)}")
 m3.metric("Demand SKUs at risk", n_dem_risk)
 m4.metric("Receiving appointments", len(appts))
+if has_supply:
+    st.caption(f"Blocks at risk = flat status AT RISK/TIGHT ({n_flat_risk}) "
+               f"or time-phased supply SHORT/DEPENDENT ({n_supply_risk}, "
+               "minor shares excluded); a block flagged by both counts once.")
+else:
+    st.caption("Blocks at risk = flat status AT RISK/TIGHT. This saved report "
+               "predates the PO feed, so it carries no time-phased supply "
+               "verdicts — press **Refresh from VIF** to add them.")
+_feed_state = ((rep.get("inbound") or {}).get("state")
+               or (rep.get("supply_meta") or {}).get("feed_state") or "")
 
 # ---------------------------------------------------------------- tabs
-tab_sched, tab_demand, tab_drill, tab_item, tab_recv, tab_dq = st.tabs(
+(tab_sched, tab_demand, tab_drill, tab_item, tab_recv, tab_inb,
+ tab_dq) = st.tabs(
     ["Schedule view", "Demand view", "SKU drill-down", "Item view",
-     "Receiving", "Data quality"])
+     "Receiving", "Inbound", "Data quality"])
 
 
 def _item_line(i: dict) -> str:
@@ -240,18 +349,41 @@ def _item_line(i: dict) -> str:
 
 with tab_sched:
     st.subheader("Will the current board run?")
-    risky = [b for b in sv if b["status"] in ("AT_RISK", "TIGHT", "NOT_TRACKED")]
+    # flat AT_RISK/TIGHT/NOT_TRACKED, plus blocks the time-phased verdict
+    # flags (SHORT, non-minor DEPENDENT) even when on-hand looks fine today
+    risky = [b for b in sv
+             if b["status"] in ("AT_RISK", "TIGHT", "NOT_TRACKED")
+             or _supply_flagged(b)]
     ok = len(sv) - len(risky)
-    st.caption(f"{ok} of {len(sv)} production blocks fully covered.")
+    cap = f"{ok} of {len(sv)} production blocks fully covered."
+    if has_supply:
+        _verdicts = [(_supply(b) or {}).get("verdict") for b in sv]
+        n_short = sum(1 for v in _verdicts if v == "SHORT")
+        n_dep = sum(1 for b in sv if _supply_flagged(b)
+                    and (_supply(b) or {}).get("verdict") == "DEPENDENT")
+        n_nodata = sum(1 for v in _verdicts if v == "NO_DATA")
+        cap += (f" Supply: {n_short} short · {n_dep} dependent · "
+                f"{n_nodata} no data"
+                + (f" (PO feed {_feed_state})." if _feed_state else "."))
+    st.caption(cap)
     for b in sorted(risky, key=lambda b: (b["start_h"])):
+        s = _supply(b)
+        label = STATUS_CHIP.get(b['status'], b['status'])
+        if s is not None:
+            label += f" · supply {_supply_chip(s)}"
         with st.expander(
-                f"{STATUS_CHIP.get(b['status'], b['status'])} **{b['sku']}** "
+                f"{label} **{b['sku']}** "
                 f"{b['line_name']} · {hour_to_stamp(b['start_h'], _ANCHOR)} → "
                 f"{hour_to_stamp(b['end_h'], _ANCHOR)} · {b['cases']:.0f} cases"):
+            if s is not None:
+                st.markdown(f"**Supply** {_supply_chip(s)} — {_supply_text(s)}")
             bad = [i for i in b["items"]
                    if i["status"] in ("AT_RISK", "TIGHT", "NOT_TRACKED")]
             bad.sort(key=lambda i: (i["ratio"] is None,
                                     i["ratio"] if i["ratio"] is not None else 0))
+            if not bad and s is not None:
+                st.caption("Flat on-hand check OK — listed for the supply "
+                           "verdict only.")
             for i in bad[:8]:
                 st.markdown(_item_line(i))
 
@@ -344,6 +476,107 @@ with tab_recv:
     if appt_errors:
         st.caption(f"{len(appt_errors)} rows skipped (decayed cells).")
 
+with tab_inb:
+    st.subheader("Inbound purchase orders (open-PO report)")
+    inb = rep.get("inbound")
+    if not isinstance(inb, dict):
+        st.info("This saved report predates the PO feed — press **Refresh "
+                "from VIF** to recompute with inbound receipts.")
+    else:
+        lines = [ln for ln in (inb.get("lines") or []) if isinstance(ln, dict)]
+        counts = {k: int(v) for k, v in (inb.get("join") or {}).items()
+                  if isinstance(v, (int, float))}
+        if not counts and lines:  # older shape: no join summary, count fates
+            for ln in lines:
+                f = str(ln.get("fate") or "")
+                counts[f] = counts.get(f, 0) + 1
+        # landed_unverifiable lines ARE counted (contract §3.6)
+        n_used = counts.get("used", 0) + counts.get("landed_unverifiable", 0)
+        _named = {"used", "landed_unverifiable", "overdue", "landed",
+                  "received", "unjoinable"}
+        n_other = sum(v for k, v in counts.items() if k not in _named)
+        state = str(inb.get("state") or "unknown")
+        # Off a fresh feed the gate still grades lines but the engine counts
+        # none: 'Counted' beside "NOT counted" read as a contradiction
+        counting = state == "ok"
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1.metric("Counted" if counting else "Would count", n_used,
+                  help=("PO lines that became receipts on the timeline"
+                        if counting else
+                        f"PO lines that pass the gate — NOT counted while the "
+                        f"feed is {state}; they count once a current export "
+                        "lands"))
+        c2.metric("Overdue", counts.get("overdue", 0),
+                  help="receipt date before the stock snapshot — never counted")
+        c3.metric("Landed", counts.get("landed", 0),
+                  help="a stock lot with a matching batch date already holds "
+                       "it")
+        c4.metric("Received", counts.get("received", 0),
+                  help="ERP receipt number present")
+        c5.metric("Unjoinable", counts.get("unjoinable", 0),
+                  help="item code not in the BOM universe")
+        c6.metric("Other", n_other,
+                  help="unit mismatch, off-site without a transfer "
+                       "appointment, bad qty / date")
+        n_rows = inb.get("n_rows")
+        st.markdown(
+            f"**Source:** `{inb.get('source_path') or '—'}` · file "
+            f"{inb.get('source_mtime') or '—'} · as of "
+            f"{inb.get('as_of') or '—'} · latest receipt date "
+            f"{inb.get('max_receipt_date') or '—'} · "
+            f"{n_rows if n_rows is not None else len(lines)} rows")
+        why = _FEED_STATE_HELP.get(state, "unrecognised feed state.")
+        if counting:
+            st.caption(f"Feed state **OK** — {why}")
+        else:
+            st.warning(
+                f"Feed state **{state.upper()}** — no inbound receipt is "
+                f"counted and every on-hand gap reads NO DATA: {why}"
+                + (f" The {n_used} line(s) under 'Would count' pass the gate "
+                   "and will count once the feed is current." if n_used else ""))
+        aj = inb.get("appt_join")
+        if isinstance(aj, dict):
+            st.caption(f"Dock appointments joined to a PO: "
+                       f"{aj.get('matched', 0)} of {aj.get('total', 0)}.")
+        if lines:
+            _rank = {f: i for i, f in enumerate(_FATE_ORDER)}
+
+            def _line_key(ln: dict):
+                f = str(ln.get("fate") or "")
+                return (_rank.get(f, len(_rank)), f,
+                        str(ln.get("receipt_date") or "9999-12-31"))
+
+            rows = []
+            for ln in sorted(lines, key=_line_key):
+                rh = ln.get("ready_h")
+                rows.append({
+                    "po8": ln.get("po8") or "",
+                    "item": ln.get("item") or "",
+                    "designation": ln.get("designation") or "",
+                    "qty": ln.get("qty"),
+                    "unit": ln.get("unit") or "",
+                    "receipt_date": ln.get("receipt_date") or "",
+                    "slip_days": ln.get("slip_days"),
+                    "arrival_area": ln.get("arrival_area") or "",
+                    "supplier": ln.get("supplier") or "",
+                    "fate": ln.get("fate") or "",
+                    "reason": ln.get("reason") or "",
+                    "ready": (hour_to_stamp(rh, _ANCHOR)
+                              if isinstance(rh, (int, float)) else ""),
+                    "tier": ln.get("tier") or "",
+                })
+            df_inb = pd.DataFrame(rows)
+            # a None slip turns the column float ("6.0"/"NaN"): keep it whole
+            df_inb["slip_days"] = pd.to_numeric(
+                df_inb["slip_days"], errors="coerce").astype("Int64")
+            st.dataframe(df_inb, use_container_width=True, hide_index=True)
+        else:
+            st.caption("No PO lines in this report.")
+        errs = [str(e) for e in (inb.get("errors") or [])]
+        if errs:
+            st.caption(f"{len(errs)} import problem(s): "
+                       + "; ".join(errs[:5]) + (" …" if len(errs) > 5 else ""))
+
 with tab_dq:
     st.subheader("Data quality")
     st.markdown(f"**NO_BOM SKUs ({len(rep['no_bom_skus'])})** in the current "
@@ -390,3 +623,28 @@ with tab_dq:
                      use_container_width=True, hide_index=True)
     else:
         st.caption("none")
+
+    # ---- PO join quality (report "quality", contract §4)
+    st.markdown("---")
+    st.markdown("**Inbound PO join quality**")
+    q = rep.get("quality")
+    if not isinstance(q, dict):
+        st.info("Supply quality lists are not in this saved report — press "
+                "**Refresh from VIF** to recompute with the PO feed.")
+    else:
+        for qkey, title, hint in _QUALITY_HINTS:
+            vals = q.get(qkey) or []
+            vals = list(vals) if isinstance(vals, (list, tuple)) else [vals]
+            st.markdown(f"**{title} ({len(vals)})**")
+            st.caption(hint)
+            if not vals:
+                st.code("none")
+            elif all(isinstance(v, str) for v in vals):
+                st.code(", ".join(vals))
+            else:
+                # st.table: st.dataframe never mounts inside an initially-
+                # collapsed expander (helpers/st_compat)
+                with st.expander(f"{len(vals)} rows", expanded=False):
+                    st.table(pd.DataFrame(
+                        [v if isinstance(v, dict) else {"value": str(v)}
+                         for v in vals]))

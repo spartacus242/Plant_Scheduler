@@ -37,8 +37,93 @@ def _texts(at: AppTest) -> str:
     return "\n".join(parts)
 
 
-def _seed_saved_report(dd: Path, monkeypatch) -> None:
-    """A data dir whose stockcheck cache already holds a (fake) report."""
+# the pre-PO-feed report shape: no anchor / inbound / quality / supply keys
+_OLD_REPORT = {"schedule_view": [], "demand_view": [], "item_reverse": {},
+               "no_bom_skus": [], "unk": [], "source_files": {},
+               "import_errors": []}
+
+
+def _supply_report() -> dict:
+    """A saved report carrying the Supply Timeline keys (contract §4): one
+    flat AT_RISK block that is also SHORT, one flat-OK block that is
+    DEPENDENT (must join the risk list), one minor DEPENDENT (must not) and
+    one old-shape row without "supply" at all."""
+    def item(status, ratio):
+        return {"item": "754751", "designation": "SLV 24x90", "need": 1200.0,
+                "unit": "EA", "available_total": 470.0,
+                "available_primary": 470.0, "ratio": ratio, "status": status,
+                "alternates": []}
+
+    short = {"key": "b1@0.00", "verdict": "SHORT", "backed": False,
+             "minor": False, "mid_run": False, "item": "754751",
+             "covered_frac": 0.39, "depletion_h": 40.0, "lead_h": None,
+             "safe_from_h": None, "binding": None, "action": "move",
+             "lead_from": "block_start", "items": [], "untracked": [],
+             "co_consumers": {}, "text": "⛔ 754751: on hand covers 39% "
+             "(runs out h40.0) · no inbound counted"}
+    dep = {**short, "key": "b2@100.00", "verdict": "DEPENDENT",
+           "covered_frac": 0.6, "depletion_h": 160.0, "lead_h": 30.0,
+           "safe_from_h": 166.0,
+           "binding": {"po8": "30043537", "qty": 67200.0, "ready_h": 70.0,
+                       "receipt_date": "2026-09-02", "label": "PO 30043537"},
+           "text": "🚚 754751: on hand covers 60%"}
+    minor = {**dep, "key": "b3@200.00", "minor": True}
+
+    def block(bid, start, status, ratio, supply):
+        b = {"block_id": bid, "sku": "280351", "line_id": "L1",
+             "line_name": "Line 1", "start_h": start, "end_h": start + 48.0,
+             "qty_kg": 1000.0, "cases": 100.0, "status": status,
+             "items": [item(status, ratio)], "unk": [], "cycles": []}
+        if supply is not None:
+            b["key"] = f"{bid}@{start:.2f}"
+            b["supply"] = supply
+        return b
+
+    line = {"po": "2 02 1ACDE 30043537", "po8": "30043537", "item": "754751",
+            "designation": "SLV 24x90", "qty": 67200.0, "unit": "EA",
+            "receipt_date": "2026-09-02", "initial_receipt_date": "2026-08-27",
+            "slip_days": 6, "arrival_area": "RP1", "supplier": "GPI",
+            "supplier_id": "48", "received": False, "order_date": "2026-07-24",
+            "row": 12, "fate": "used", "reason": "", "ready_h": 70.0,
+            "tier": "erp", "item_key": "754751"}
+    lines = [
+        line,
+        {**line, "po8": "30043500", "receipt_date": "2026-08-20",
+         "slip_days": None, "fate": "overdue", "ready_h": None, "tier": None,
+         "reason": "receipt date before the stock snapshot"},
+        {**line, "po8": "30043501", "item": "999", "fate": "unjoinable",
+         "ready_h": None, "tier": None, "reason": "item 999 not in BOM",
+         "item_key": None},
+    ]
+    inbound = {"state": "ok", "source_path": "x/open_pos.xlsx",
+               "source_mtime": "2026-09-01 06:10:00", "as_of": "2026-09-01",
+               "max_receipt_date": "2026-09-20", "n_rows": 3,
+               "errors": ["row 9: bad qty"], "lines": lines,
+               "receipts": {"754751": [{"ready_h": 70.0, "qty": 67200.0,
+                                        "po8": "30043537", "tier": "erp",
+                                        "receipt_date": "2026-09-02",
+                                        "label": "PO 30043537"}]},
+               "join": {"used": 1, "received": 0, "overdue": 1, "landed": 0,
+                        "unjoinable": 1, "unit_mismatch": 0,
+                        "offsite_no_transfer": 0},
+               "appt_join": {"matched": 1, "total": 2}}
+    quality = {"unjoinable_items": ["999"],
+               "unit_mismatch": [{"item": "754751", "po_unit": "KG",
+                                  "bom_unit": "EA"}],
+               "landed_unverifiable": []}
+    return {**_OLD_REPORT,
+            "schedule_view": [block("b1", 0.0, "AT_RISK", 0.39, short),
+                              block("b2", 100.0, "OK", 2.0, dep),
+                              block("b3", 200.0, "OK", 2.0, minor),
+                              block("b4", 300.0, "OK", 2.0, None)],
+            "anchor": "2026-09-01", "inbound": inbound, "quality": quality,
+            "supply_meta": {"feed_state": "ok"}}
+
+
+def _seed_saved_report(dd: Path, monkeypatch, report: dict | None = None
+                       ) -> None:
+    """A data dir whose stockcheck cache already holds a (fake) report —
+    the old shape by default, or the given one."""
     (dd / "stockcheck").mkdir(parents=True, exist_ok=True)
     (dd / "reference").mkdir(exist_ok=True)
     vif = dd / "vif"
@@ -57,11 +142,8 @@ def _seed_saved_report(dd: Path, monkeypatch) -> None:
     (dd / "stockcheck" / "settings.json").write_text(
         json.dumps({"vif_folder": str(vif)}), encoding="utf-8")
     import stockcheck.api as api
-    monkeypatch.setattr(
-        api, "stock_check_report",
-        lambda *a, **k: {"schedule_view": [], "demand_view": [],
-                         "item_reverse": {}, "no_bom_skus": [], "unk": [],
-                         "source_files": {}, "import_errors": []})
+    fake = report if report is not None else _OLD_REPORT
+    monkeypatch.setattr(api, "stock_check_report", lambda *a, **k: fake)
     assert src.refresh_report(dd).source == "computed"
 
     def _never(*a, **k):  # pages must serve the SAVED report, not recompute
@@ -91,6 +173,58 @@ def test_stock_check_serves_the_saved_report(tmp_path, monkeypatch):
     assert "Refresh from VIF" not in text or True  # button lives in widgets
 
 
+def test_stock_check_degrades_on_a_pre_po_feed_report(tmp_path, monkeypatch):
+    """An old cache (no inbound / quality / supply keys): every tab renders
+    with an info line instead of crashing."""
+    _seed_saved_report(tmp_path, monkeypatch)
+    at = _boot("pages/stock_check.py", tmp_path)
+    assert not at.exception
+    infos = "\n".join(str(getattr(el, "value", "")) for el in at.info)
+    assert "predates the PO feed" in infos          # Inbound tab
+    assert "Supply quality lists are not" in infos  # Data quality tab
+    assert "carries no time-phased supply" in _texts(at)
+
+
+def test_stock_check_renders_supply_inbound_and_quality(tmp_path,
+                                                        monkeypatch):
+    _seed_saved_report(tmp_path, monkeypatch, _supply_report())
+    at = _boot("pages/stock_check.py", tmp_path)
+    assert not at.exception
+    text = _texts(at)
+    # blocks at risk: b1 (flat AT_RISK + SHORT) and b2 (flat OK, DEPENDENT);
+    # b3 is minor and b4 has no supply -> 2, and the caption says why
+    m = {el.label: el.value for el in at.metric}
+    assert m["Schedule blocks at risk"] == "2"
+    assert "or time-phased supply SHORT/DEPENDENT (2" in text
+    # schedule tab: the Supply line is re-stamped with real dates, not h-frame
+    assert "**Supply** :red[SHORT]" in text
+    assert "**Supply** :orange[DEPENDENT]" in text
+    assert "PO 30043537 lands" in text
+    assert "h70.0" not in text
+    assert "listed for the supply verdict only" in text
+    assert "Supply: 1 short · 1 dependent · 0 no data (PO feed ok)" in text
+    # Inbound tab: join metrics, source line, fates table, errors
+    assert m["Counted"] == "1" and m["Overdue"] == "1"
+    assert m["Unjoinable"] == "1" and m["Other"] == "0"
+    assert "x/open_pos.xlsx" in text and "2026-09-20" in text
+    assert "Feed state **OK**" in text
+    assert "1 import problem(s): row 9: bad qty" in text
+    tables = [df for df in (el.value for el in at.dataframe)
+              if "fate" in getattr(df, "columns", [])]
+    assert len(tables) == 1
+    df = tables[0]
+    assert list(df.columns) == ["po8", "item", "designation", "qty", "unit",
+                                "receipt_date", "slip_days", "arrival_area",
+                                "supplier", "fate", "reason", "ready", "tier"]
+    assert list(df["fate"]) == ["used", "overdue", "unjoinable"]
+    assert df["ready"].iloc[0] and not df["ready"].iloc[1]  # None -> blank
+    # Data quality tab: the three quality lists with fix hints
+    assert "Unjoinable PO items (1)" in text
+    assert "Unit mismatch (PO vs BOM) (1)" in text
+    assert "Landed check unavailable (0)" in text
+    assert "no conversion is applied" in text
+
+
 def test_reconcile_serves_the_saved_report_and_flags_stale(tmp_path,
                                                           monkeypatch):
     _seed_saved_report(tmp_path, monkeypatch)
@@ -115,3 +249,21 @@ def test_home_reads_the_saved_report_for_its_counts(tmp_path, monkeypatch):
     at = _boot("pages/home.py", tmp_path)
     assert not at.exception
     assert "Reconcile" in _texts(at)
+
+
+def test_stock_check_stale_feed_says_nothing_is_counted(tmp_path, monkeypatch):
+    """Off a fresh feed the Inbound tab must not show 'Counted 1' beside
+    'receipts are NOT counted': the first metric reads 'Would count' and the
+    state line says why nothing counts."""
+    rep = _supply_report()
+    rep["inbound"] = {**rep["inbound"], "state": "stale"}
+    rep["supply_meta"] = {"feed_state": "stale"}
+    _seed_saved_report(tmp_path, monkeypatch, rep)
+    at = _boot("pages/stock_check.py", tmp_path)
+    assert not at.exception
+    m = {el.label: el.value for el in at.metric}
+    assert m["Would count"] == "1" and "Counted" not in m
+    text = _texts(at)
+    assert "Feed state **STALE** — no inbound receipt is counted" in text
+    assert "no longer looks ahead" in text
+    assert "1 line(s) under 'Would count'" in text

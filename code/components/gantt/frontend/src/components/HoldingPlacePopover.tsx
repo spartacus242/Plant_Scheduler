@@ -5,11 +5,13 @@
 // oversized card places what fits — the remainder stays in holding (the
 // Place pathway reuses the resize-to-fit split).
 
-import React from "react";
+import React, { useMemo } from "react";
 import { displayOrderId, hourToStamp } from "../utils/layout";
 import type { PlacementPlan } from "../utils/skuPicker";
-import type { ScheduleBlock } from "../types";
-import { Chips } from "./SkuPickerPopover";
+import type { ScheduleBlock, StockArgs } from "../types";
+import type { Timelines } from "../utils/stockRisk";
+import type { SafeStartPill, StampFn } from "../utils/supplyGlue";
+import { Chips, SafeStartTag, planPill } from "./SkuPickerPopover";
 
 export interface HoldingPlaceRow {
   lineName: string;
@@ -25,6 +27,13 @@ interface Props {
   y: number;
   rows: HoldingPlaceRow[];
   anchor: Date;
+  /** Supply timeline (§9): a "Supply" column with the before-placement
+   * pill per line (the piece that would land, judged alone); stock null =
+   * no column. dueEndH = the card's order due_end_hour ("after due window"). */
+  stock?: StockArgs | null;
+  supplyTimelines?: Timelines | null;
+  supplyStamp?: StampFn | null;
+  dueEndH?: number | null;
   onPlace: (row: HoldingPlaceRow) => void;
   onClose: () => void;
 }
@@ -41,11 +50,19 @@ const TD: React.CSSProperties = {
 
 export const HoldingPlacePopover: React.FC<Props> = ({
   block, x, y, rows, anchor, onPlace, onClose,
-}) => (
+  stock = null, supplyTimelines = null, supplyStamp = null, dueEndH = null,
+}) => {
+  const showSupply = stock !== null;
+  const pills = useMemo<(SafeStartPill | null)[]>(
+    () => rows.map((r) =>
+      planPill(block.sku, r.plan, r.lineName, stock, supplyTimelines, supplyStamp, dueEndH)),
+    [rows, block.sku, stock, supplyTimelines, supplyStamp, dueEndH],
+  );
+  return (
   <div
     style={{
       position: "fixed",
-      left: Math.min(x, Math.max(40, window.innerWidth - 640)),
+      left: Math.min(x, Math.max(40, window.innerWidth - (showSupply ? 760 : 640))),
       top: Math.min(y, Math.max(40, window.innerHeight - 320)),
       background: "#fff",
       border: "1px solid #b0bec5",
@@ -53,7 +70,7 @@ export const HoldingPlacePopover: React.FC<Props> = ({
       boxShadow: "0 8px 28px rgba(0,0,0,0.22)",
       zIndex: 1200,
       padding: "10px 12px",
-      minWidth: 460,
+      minWidth: showSupply ? 560 : 460,
       fontSize: 12.5,
     }}
     onClick={(e) => e.stopPropagation()}
@@ -84,10 +101,11 @@ export const HoldingPlacePopover: React.FC<Props> = ({
               <th style={TH}>← changeover</th>
               <th style={TH}>changeover →</th>
               <th style={TH}>Placement</th>
+              {showSupply && <th style={TH}>Supply</th>}
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
+            {rows.map((r, i) => (
               <tr key={r.lineName}>
                 <td style={TD}>
                   <button
@@ -116,6 +134,7 @@ export const HoldingPlacePopover: React.FC<Props> = ({
                    `${r.plan.durationH.toFixed(1)}h · ` +
                    `${Math.round(r.plan.qtyKg).toLocaleString()} kg`}
                 </td>
+                {showSupply && <td style={TD}><SafeStartTag pill={pills[i]} /></td>}
               </tr>
             ))}
           </tbody>
@@ -123,4 +142,5 @@ export const HoldingPlacePopover: React.FC<Props> = ({
       </div>
     )}
   </div>
-);
+  );
+};

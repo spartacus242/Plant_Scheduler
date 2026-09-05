@@ -1,10 +1,20 @@
 // GanttBlock.tsx — Single draggable/resizable block (SVG rect).
+//
+// Callbacks hand back the BLOCK OBJECT, never a bare id: split MO pieces
+// share one id (calendar_blocks.csv `;split`), so the dnd-kit draggable id,
+// the resize target, the popover and the menu all key on the piece
+// (blockIdentity.blockKey = id|start_hour). Supply chip / hatch / tick
+// (contract 2026-09-01 §9) render only when a `supply` verdict is passed —
+// the parent passes none without a stock payload or once acknowledged.
 
 import React, { useCallback } from "react";
 import { useDraggable } from "@dnd-kit/core";
 import type { ScheduleBlock } from "../types";
 import { hourToX, LINE_HEIGHT, hourToStamp } from "../utils/layout";
 import { skuColor, skuTextColor, blockLabel } from "../utils/colors";
+import { blockKey } from "../utils/blockIdentity";
+import type { Supply } from "../utils/stockRisk";
+import { chipFor, humanText, stampFor } from "../utils/supplyGlue";
 
 interface Props {
   block: ScheduleBlock;
@@ -26,21 +36,40 @@ interface Props {
   slotHeight?: number;
   /** "A" / "B" when the block occupies a single side of a double line. */
   side?: string | null;
-  onResizeStart: (blockId: string, edge: "left" | "right", startH: number, endH: number, clientX: number, hourWidth: number) => void;
-  onContextMenu: (e: React.MouseEvent, blockId: string) => void;
-  onClick: (blockId: string) => void;
+  /** Supply verdict for THIS piece (null: no payload, plain OK is still a
+   * Supply, acknowledged keys come through as null). */
+  supply?: Supply | null;
+  onResizeStart: (block: ScheduleBlock, edge: "left" | "right", startH: number, endH: number, clientX: number, hourWidth: number) => void;
+  onContextMenu: (e: React.MouseEvent, block: ScheduleBlock) => void;
+  onClick: (block: ScheduleBlock) => void;
   /** Committed MO / pinned / locked-window: click opens the popup, but the
    * block cannot be picked up at all (cursor shows not-allowed). */
   immovable?: boolean;
 }
 
+/** Rough pixel width of chip text at 11px: emoji ~13px, glyphs ~6.2px. */
+function chipTextWidth(text: string): number {
+  let w = 0;
+  for (const ch of text) w += ch.codePointAt(0)! > 0x2000 ? 13 : 6.2;
+  return w;
+}
+
+const CHIP_STYLE = {
+  warn: { bg: "#ef6c00", fg: "#fff", stroke: "none" },
+  crit: { bg: "#c62828", fg: "#fff", stroke: "none" },
+  muted: { bg: "rgba(255,255,255,0.8)", fg: "#455a64", stroke: "#90a4ae" },
+} as const;
+
 export const GanttBlock: React.FC<Props> = ({
   block, lineIndex, viewStart, hourWidth, anchor, isResizing, previewStart, previewEnd,
-  isHighlighted, isDimmed = false, slotY = 0, slotHeight, side = null, onResizeStart, onContextMenu, onClick,
-  immovable = false,
+  isHighlighted, isDimmed = false, slotY = 0, slotHeight, side = null, supply = null,
+  onResizeStart, onContextMenu, onClick, immovable = false,
 }) => {
+  const key = blockKey(block);
   const { attributes, listeners, setNodeRef: setDragRef, transform, isDragging } = useDraggable({
-    id: block.id,
+    // The piece, not the shared id: two pieces registered under one id
+    // would collide in dnd-kit's registry.
+    id: key,
     data: { block },
     disabled: immovable,
   });
@@ -64,7 +93,7 @@ export const GanttBlock: React.FC<Props> = ({
     (e: React.PointerEvent) => {
       e.stopPropagation();
       e.preventDefault();
-      onResizeStart(block.id, "left", block.start_hour, block.end_hour, e.clientX, hourWidth);
+      onResizeStart(block, "left", block.start_hour, block.end_hour, e.clientX, hourWidth);
     },
     [block, hourWidth, onResizeStart],
   );
@@ -73,7 +102,7 @@ export const GanttBlock: React.FC<Props> = ({
     (e: React.PointerEvent) => {
       e.stopPropagation();
       e.preventDefault();
-      onResizeStart(block.id, "right", block.start_hour, block.end_hour, e.clientX, hourWidth);
+      onResizeStart(block, "right", block.start_hour, block.end_hour, e.clientX, hourWidth);
     },
     [block, hourWidth, onResizeStart],
   );
@@ -84,14 +113,14 @@ export const GanttBlock: React.FC<Props> = ({
       // Never bubble to the chart background — that would ALSO open the
       // blank-space SKU picker on top of the block menu.
       e.stopPropagation();
-      onContextMenu(e, block.id);
+      onContextMenu(e, block);
     },
-    [block.id, onContextMenu],
+    [block, onContextMenu],
   );
 
   const handleClick = useCallback(
-    (e: React.MouseEvent) => { e.stopPropagation(); onClick(block.id); },
-    [block.id, onClick],
+    (e: React.MouseEvent) => { e.stopPropagation(); onClick(block); },
+    [block, onClick],
   );
 
   const dragX = isDragging && transform ? transform.x : 0;
@@ -112,8 +141,15 @@ export const GanttBlock: React.FC<Props> = ({
     + (isCommittedMo ? `MO ${baseLabel0}` : baseLabel0);
   const hoursTxt = (Number.isFinite(block.run_hours) ? block.run_hours : 0).toFixed(1);
 
+  // Supply chip right of the label (§9); it takes its width out of the
+  // label's budget and is dropped on blocks too narrow to hold it.
+  const chip = block.block_type === "sku" ? chipFor(supply) : null;
+  const chipW = chip ? Math.ceil(chipTextWidth(chip.text)) + 10 : 0;
+  const showChip = chip !== null && w >= chipW + 28;
+  const supplyLine = supply && block.block_type === "sku" ? humanText(supply, stampFor(anchor)) : "";
+
   // Estimate available characters from pixel width (~6.5px per char at 11px font)
-  const charBudget = Math.floor((w - 12) / 6.5);
+  const charBudget = Math.floor((w - 12 - (showChip ? chipW + 4 : 0)) / 6.5);
   let label: string;
   if (block.block_type === "cip" || block.block_type === "line_down" || block.block_type === "maintenance" || block.block_type === "contractor") {
     label = charBudget <= 0 ? "" : (baseLabel.length <= charBudget ? baseLabel : baseLabel.slice(0, Math.max(charBudget - 1, 1)) + "…");
@@ -143,17 +179,31 @@ export const GanttBlock: React.FC<Props> = ({
       ? `Completion: ${block.completion_pct.toFixed(1)}%${typeof block.cases_left === "number" ? ` · ${block.cases_left.toLocaleString()} cases left` : ""}`
       : "",
     isPinned ? "Pinned for the solver — unpin in the block popup to move it" : "",
+    supplyLine,
   ].filter(Boolean).join("\n");
 
   // Pinned: a firm dark outline so fixed blocks read distinct from free ones.
   const strokeColor = isDragging ? "#333" : isPinned ? "#37474f" : "none";
   const strokeW = isDragging ? 2 : isPinned ? 1.8 : 0;
 
+  // SHORT: body solid up to the hour the component runs out, hatched after.
+  // DEPENDENT: a tick where the binding truck lands when that is mid-run
+  // (a truck landing before the start has nothing to mark on the body).
+  const hatchFrom = supply && supply.verdict === "SHORT" && supply.depletion_h != null
+    && supply.depletion_h < endH
+    ? Math.max(startH, supply.depletion_h) : null;
+  const tickAt = supply && supply.verdict === "DEPENDENT" && supply.binding
+    && supply.binding.ready_h > startH && supply.binding.ready_h < endH
+    ? supply.binding.ready_h : null;
+  const hatchId = `sup-hatch-${key.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+
   return (
     <g
       ref={setNodeRef}
       {...listeners}
       {...attributes}
+      data-block-id={block.id}
+      data-block-key={key}
       transform={`translate(${dragX}, ${dragY})`}
       style={{
         cursor: immovable ? "not-allowed" : isDragging ? "grabbing" : "grab",
@@ -210,6 +260,32 @@ export const GanttBlock: React.FC<Props> = ({
           </>
         );
       })()}
+      {hatchFrom !== null && (() => {
+        const hx = hourToX(hatchFrom, viewStart, hourWidth);
+        const hw = Math.max(0, x + Math.max(w, 2) - hx);
+        if (hw <= 0) return null;
+        return (
+          <>
+            <defs>
+              <pattern id={hatchId} patternUnits="userSpaceOnUse" width={6} height={6} patternTransform="rotate(45)">
+                <rect width={6} height={6} fill="rgba(183,28,28,0.16)" />
+                <line x1={0} y1={0} x2={0} y2={6} stroke="#b71c1c" strokeWidth={2} opacity={0.75} />
+              </pattern>
+            </defs>
+            <rect x={hx} y={y} width={hw} height={h} rx={hw < w ? 0 : 4} fill={`url(#${hatchId})`} pointerEvents="none" />
+            <line x1={hx} y1={y} x2={hx} y2={y + h} stroke="#b71c1c" strokeWidth={1.5} pointerEvents="none" />
+          </>
+        );
+      })()}
+      {tickAt !== null && (() => {
+        const tx = hourToX(tickAt, viewStart, hourWidth);
+        return (
+          <g pointerEvents="none">
+            <line x1={tx} y1={y - 2} x2={tx} y2={y + h + 2} stroke="#ef6c00" strokeWidth={2} />
+            <circle cx={tx} cy={y - 1} r={2.5} fill="#ef6c00" />
+          </g>
+        );
+      })()}
       {w > 20 && label && (
         <text
           x={x + 6}
@@ -225,6 +301,23 @@ export const GanttBlock: React.FC<Props> = ({
           {label}
         </text>
       )}
+      {showChip && chip && (() => {
+        const st = CHIP_STYLE[chip.tone];
+        const ch = Math.max(12, Math.min(18, h - 6));
+        const cx = x + Math.max(w, 2) - chipW - 4;
+        const cy = y + (h - ch) / 2;
+        return (
+          <g pointerEvents="none" data-testid="supply-chip" data-tone={chip.tone}>
+            <rect x={cx} y={cy} width={chipW} height={ch} rx={ch / 2} fill={st.bg}
+                  stroke={st.stroke} strokeWidth={st.stroke === "none" ? 0 : 1} />
+            <text x={cx + chipW / 2} y={cy + ch / 2 + 1} textAnchor="middle" dominantBaseline="middle"
+                  fontSize={h < LINE_HEIGHT / 2 ? 8 : 10} fontWeight={700} fill={st.fg}
+                  style={{ userSelect: "none" }}>
+              {chip.text}
+            </text>
+          </g>
+        );
+      })()}
       {/* Resize handles: adaptive width — generous on wide blocks (easier to
           grab than a fixed 8px sliver), but never more than a third of a
           narrow block so its body stays draggable. */}
