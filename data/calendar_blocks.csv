@@ -1,96 +1,140 @@
 block_id,block_type,line_id,line_name,start_h,end_h,label,order_id,sku,sku_description,qty_kg,locked,attrs
-cs_36999dd60a,production,0,P09,0.4,34.175,280451,30142,280451,2X20X90 PINPAS-STB-PER-MAN CAN · ends Wed 10:10 re-forecast from actual rate (manprg said Wed 08:27 — running 9% slow),23000.4,True,current_state:running;pct=45.1;started=2026-09-01T00:24;reforecast=ends Wed 10:10 re-forecast from actual rate (manprg said Wed 08:27 — running 9% slow)
-cs_126939e66f,production,0,P09,34.175,58.165,280493,30144,280493,2X20X90 VP APL-FRTY4 GGS,18000.0,False,current_state:queued;pct=0.0
-cs_90e36938df,production,0,P09,74.367,97.0,280581,30145,280581,6X10X90 FV VP APECSWP-ASTBZUC,19485.76,False,current_state:queued;pct=0.0;split
-cs_e793751284,cip,0,P09,97.0,103.0,CIP,,,,0.0,True,current_state:cip_scheduled
-cs_90e36938df,production,0,P09,103.0,121.017,280581,30145,280581,6X10X90 FV VP APECSWP-ASTBZUC,15511.64,False,current_state:queued;pct=0.0;split
-cs_5e385ad250,production,0,P09,121.017,139.677,280264,30146,280264,6X12X90 WALMRT F&V PEC-BER-STB,13996.8,False,current_state:queued;pct=0.0
-cs_363e00acf7,cip,0,P09,217.0,223.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_c0949f2ce0,cip,0,P09,337.0,343.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_8eaa13de0c,cip,0,P09,457.0,463.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_87c620df4a,production,1,P10,0.017,119.733,280351,30235,280351,1X24X90 KIRK ORG STBSPN-MANPEC · ends Tue 20:06 re-forecast from actual rate (manprg said Sun 10:38 — running 33% slow),63251.07,True,current_state:running;pct=8.3;started=2026-09-01T00:01;reforecast=ends Tue 20:06 re-forecast from actual rate (manprg said Sun 10:38 — running 33% slow);split
-cs_3ee0902728,cip,1,P10,119.733,125.733,CIP,,,anti-static needs worked on during CIP. WO#569452,0.0,True,current_state:cip_scheduled
-cs_87c620df4a,production,1,P10,125.733,188.112,280351,30235,280351,1X24X90 KIRK ORG STBSPN-MANPEC · ends Tue 20:06 re-forecast from actual rate (manprg said Sun 10:38 — running 33% slow),32957.49,True,current_state:running;pct=8.3;started=2026-09-01T00:01;reforecast=ends Tue 20:06 re-forecast from actual rate (manprg said Sun 10:38 — running 33% slow);split
-cs_1ace50e17f,cip,1,P10,263.733,269.733,CIP (projected),,,anti-static needs worked on during CIP. WO#569452,0.0,False,current_state:cip_projected
-cs_10456d5ae1,cip,1,P10,407.733,413.733,CIP (projected),,,anti-static needs worked on during CIP. WO#569452,0.0,False,current_state:cip_projected
-cs_892501973b,cip,2,P11,144.0,150.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_b3cac83a6b,cip,2,P11,288.0,294.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_decf8a450f,cip,2,P11,432.0,438.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_15dab01b7c,cip,3,P12,120.0,126.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_ec20959c73,cip,3,P12,240.0,246.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_fd800dc7b7,cip,3,P12,360.0,366.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_ca9e9a03d1,cip,3,P12,480.0,486.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_61b1b37cd3,cip,4,P13,144.0,150.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_7cfdc85fbe,cip,4,P13,288.0,294.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_a3fdc5878c,cip,4,P13,432.0,438.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_46f6f2faf9,production,5,P14,0.033,24.675,280478,30236,280478,2X22X90 APL GGS CAN · ends Wed 00:40 re-forecast from actual rate (manprg said Tue 23:28 — running 13% slow),16022.16,True,current_state:running;pct=63.3;started=2026-09-01T00:02;reforecast=ends Wed 00:40 re-forecast from actual rate (manprg said Tue 23:28 — running 13% slow)
-cs_5e65ce473d,production,5,P14,24.675,39.365,280345,30237,280345,6X4X90 APL APL GGS,11018.16,False,current_state:queued;pct=0.0
-cs_02b25bd50c,production,5,P14,39.365,51.365,280347,30150,280347,6X4X90 APL STB GGS,9000.72,False,current_state:queued;pct=0.0
-cs_3036771a8d,production,5,P14,51.365,73.225,280601,30151,280601,6X4X90 FV APERCAR GGS,16400.88,False,current_state:queued;pct=0.0
-cs_ec6e982794,production,5,P14,73.225,85.225,120451,30155,120451,12X4X90 ORG ASTB GGS,8998.56,False,current_state:queued;pct=0.0
-cs_916ca733b2,production,5,P14,85.225,97.0,120450,30154,120450,12X4X90 ORG APL GGS,8998.56,False,current_state:queued;pct=0.0;split
-cs_21d6c8132e,cip,5,P14,97.0,103.0,CIP,,,,0.0,True,current_state:cip_scheduled
-cs_442adf82c5,production,5,P14,103.0,114.025,120532,30152,120532,12X4X90 ASTB GGS CAN,12601.44,False,current_state:queued;pct=0.0
-cs_91cf4de603,production,5,P14,114.025,127.355,280090,30153,280090,12X4X90 ABLB GGS CAN,10000.8,False,current_state:queued;pct=0.0
-cs_679772575e,cip,5,P14,217.0,223.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_4f8f71e5eb,cip,5,P14,337.0,343.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_ff657caf0f,cip,5,P14,457.0,463.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_66d5b01824,production,6,P15,0.017,61.0,280617,30238,280617,1X18X100 SLY VP BLURSB-STBLEM · ends Fri 15:26 re-forecast from actual rate (manprg said Thu 18:12 — running 30% slow),34659.41,True,current_state:running;pct=17.9;started=2026-09-01T00:01;reforecast=ends Fri 15:26 re-forecast from actual rate (manprg said Thu 18:12 — running 30% slow);split
-cs_eac189402b,cip,6,P15,61.0,67.0,CIP,,,,0.0,True,current_state:cip_scheduled
-cs_66d5b01824,production,6,P15,67.0,87.446,280617,30238,280617,1X18X100 SLY VP BLURSB-STBLEM · ends Fri 15:26 re-forecast from actual rate (manprg said Thu 18:12 — running 30% slow),11620.39,True,current_state:running;pct=17.9;started=2026-09-01T00:01;reforecast=ends Fri 15:26 re-forecast from actual rate (manprg said Thu 18:12 — running 30% slow);split
-cs_675d3e6e98,production,6,P15,87.446,118.316,280611,30248,280611,9X4X100 SLY BLURSB GGS,23198.4,False,current_state:queued;pct=0.0
-cs_d2d0796b0f,cip,6,P15,205.0,211.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_dacaa681fc,cip,6,P15,349.0,355.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_9f3fb9e238,cip,6,P15,493.0,499.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_3a90ec6945,production,7,P16,0.067,22.675,120437,30239,120437,6X12X90 ASTB GGS,16271.28,True,current_state:running;pct=68.8;started=2026-09-01T00:04
-cs_8edf467c47,production,7,P16,22.675,46.675,251200,30158,251200,6X12X90 VP APL-STB GGS CAN,18001.44,False,current_state:queued;pct=0.0
-cs_38b1147e08,production,7,P16,46.675,49.0,280425,30159,280425,6X12X90 ORG FV ABERCAR-APECSWP,2325.19,False,current_state:queued;pct=0.0;split
-cs_1d06357dea,cip,7,P16,49.0,55.0,CIP,,,Maintenance will have 5 hours for PM's at Volpak during this CIP. Plan to hand the filler over by 11am. No Caustic before PM's. We will CIP post maintenance work. NK,0.0,True,current_state:cip_scheduled
-cs_38b1147e08,production,7,P16,55.0,70.675,280425,30159,280425,6X12X90 ORG FV ABERCAR-APECSWP,15676.25,False,current_state:queued;pct=0.0;split
-cs_941c2a2bec,production,7,P16,70.675,118.665,280264,30160,280264,6X12X90 WALMRT F&V PEC-BER-STB,36002.88,False,current_state:queued;pct=0.0
-cs_502584ac79,cip,7,P16,193.0,199.0,CIP (projected),,,Maintenance will have 5 hours for PM's at Volpak during this CIP. Plan to hand the filler over by 11am. No Caustic before PM's. We will CIP post maintenance work. NK,0.0,False,current_state:cip_projected
-cs_7dbf9c4d5a,cip,7,P16,337.0,343.0,CIP (projected),,,Maintenance will have 5 hours for PM's at Volpak during this CIP. Plan to hand the filler over by 11am. No Caustic before PM's. We will CIP post maintenance work. NK,0.0,False,current_state:cip_projected
-cs_84b8544bcc,cip,7,P16,481.0,487.0,CIP (projected),,,Maintenance will have 5 hours for PM's at Volpak during this CIP. Plan to hand the filler over by 11am. No Caustic before PM's. We will CIP post maintenance work. NK,0.0,False,current_state:cip_projected
-cs_d7d7854996,production,8,P17,9.6,28.87,570261,30240,570261,1X28X90 ORG VP AP-ST-CI-BA CAN,28909.44,True,current_state:running;pct=88.6;started=2026-09-01T09:36
-cs_5a7f37128c,production,8,P17,28.87,107.52,280686,30163,280686,1X24X90 MEMBERS MARK ORG APL,118000.8,False,current_state:queued;pct=0.0
-cs_0ba52dd8bf,cip,8,P17,115.917,121.917,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_2107508980,cip,8,P17,235.917,241.917,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_5be75b9d1a,cip,8,P17,355.917,361.917,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_3caf019edf,cip,8,P17,475.917,481.917,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_59ffbf90f3,production,9,P18,7.733,7.933,280564,30241,280564,1X24X90 WALMART VP APL-CIN-STB · ends Wed 06:24 re-forecast from actual rate (manprg said Wed 08:51 — running 11% fast),452.0,True,current_state:running;pct=34.8;started=2026-09-01T07:44;reforecast=ends Wed 06:24 re-forecast from actual rate (manprg said Wed 08:51 — running 11% fast);split
-cs_0418065d03,cip,9,P18,7.933,13.933,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_59ffbf90f3,production,9,P18,13.933,30.408,280564,30241,280564,1X24X90 WALMART VP APL-CIN-STB · ends Wed 06:24 re-forecast from actual rate (manprg said Wed 08:51 — running 11% fast),37233.52,True,current_state:running;pct=34.8;started=2026-09-01T07:44;reforecast=ends Wed 06:24 re-forecast from actual rate (manprg said Wed 08:51 — running 11% fast);split
-cs_0ef3c6fc56,production,9,P18,30.408,85.058,280323,30190,280323,1X32X90 APL GGS,81999.36,False,current_state:queued;pct=0.0
-cs_0e882b1db2,production,9,P18,85.058,111.718,280324,30191,280324,1X32X90 VP APL-CIN-STB-GM5 GGS,40000.32,False,current_state:queued;pct=0.0
-cs_5b795b8953,cip,9,P18,127.933,133.933,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_e15066f181,cip,9,P18,247.933,253.933,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_be7d47f945,cip,9,P18,367.933,373.933,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_404cf756f9,cip,9,P18,487.933,493.933,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_2699ed6831,production,10,P19,0.017,23.448,280256,30242,280256,1X24X90 KIRKLAND ORG UNSWT APL · ends Tue 23:26 re-forecast from actual rate (manprg said Wed 03:58 — running 19% fast),41947.2,True,current_state:running;pct=66.6;started=2026-09-01T00:01;reforecast=ends Tue 23:26 re-forecast from actual rate (manprg said Wed 03:58 — running 19% fast)
-cs_f9e4062d72,cip,10,P19,59.0,65.0,CIP,,,,0.0,True,current_state:cip_scheduled
-cs_44c4bde023,production,10,P19,71.85,131.5,280351,30168,280351,1X24X90 KIRK ORG STBSPN-MANPEC,89499.6,False,current_state:queued;pct=0.0
-cs_20724bf06d,cip,10,P19,179.0,185.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_a47f801ae3,cip,10,P19,299.0,305.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_f36b2b08f5,cip,10,P19,419.0,425.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_ab70e08e2a,production,11,P20,0.05,28.044,280583,30173,280583,4X16X90 APL GGS · ends Wed 04:02 re-forecast from actual rate (manprg said Wed 02:09 — running 15% slow),35614.08,True,current_state:running;pct=55.6;started=2026-09-01T00:03;reforecast=ends Wed 04:02 re-forecast from actual rate (manprg said Wed 02:09 — running 15% slow)
-cs_fc10361ded,production,11,P20,96.0,107.0,280584,30174,280584,4X16X90 FV VP BER-PEC-PER DINO,21812.68,False,current_state:queued;pct=0.0;split
-cs_ef3fbcfb1f,cip,11,P20,107.0,113.0,CIP,,,,0.0,True,current_state:cip_scheduled
-cs_fc10361ded,production,11,P20,113.0,120.66,280584,30174,280584,4X16X90 FV VP BER-PEC-PER DINO,15189.56,False,current_state:queued;pct=0.0;split
-cs_f1113b936b,cip,11,P20,227.0,233.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_1d3b2addd7,cip,11,P20,347.0,353.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_45576f4f5a,cip,11,P20,467.0,473.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_f5bdc7914b,production,12,P21,0.0,11.0,280324,30176,280324,1X32X90 VP APL-CIN-STB-GM5 GGS · ends Thu 09:41 re-forecast from actual rate (manprg said Mon 07:43 — running 35% slow),11298.83,True,current_state:running;pct=7.0;started=2026-08-31T23:53;clamped_to_anchor;reforecast=ends Thu 09:41 re-forecast from actual rate (manprg said Mon 07:43 — running 35% slow);split
-cs_2f3b399b01,cip,12,P21,11.0,17.0,CIP,,,,0.0,True,current_state:cip_scheduled
-cs_f5bdc7914b,production,12,P21,17.0,131.0,280324,30176,280324,1X32X90 VP APL-CIN-STB-GM5 GGS · ends Thu 09:41 re-forecast from actual rate (manprg said Mon 07:43 — running 35% slow),117096.91,True,current_state:running;pct=7.0;started=2026-08-31T23:53;clamped_to_anchor;reforecast=ends Thu 09:41 re-forecast from actual rate (manprg said Mon 07:43 — running 35% slow);split
-cs_dcda716390,cip,12,P21,131.0,137.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_f5bdc7914b,production,12,P21,137.0,225.694,280324,30176,280324,1X32X90 VP APL-CIN-STB-GM5 GGS · ends Thu 09:41 re-forecast from actual rate (manprg said Mon 07:43 — running 35% slow),91103.46,True,current_state:running;pct=7.0;started=2026-08-31T23:53;clamped_to_anchor;reforecast=ends Thu 09:41 re-forecast from actual rate (manprg said Mon 07:43 — running 35% slow);split
-cs_588105b1e8,cip,12,P21,251.0,257.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_66d93b23c1,cip,12,P21,371.0,377.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_78bdbf8935,cip,12,P21,491.0,497.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_c2ef62e3d0,production,13,P22,0.017,35.0,280591,30178,280591,1X24X90 VP APL-BAN-STB GGS · ends Fri 02:24 re-forecast from actual rate (manprg said Thu 23:27 — running 5% slow),54218.89,True,current_state:running;pct=21.0;started=2026-09-01T00:01;reforecast=ends Fri 02:24 re-forecast from actual rate (manprg said Thu 23:27 — running 5% slow);split
-cs_d33d3a8438,cip,13,P22,35.0,41.0,CIP,,,,0.0,True,current_state:cip_scheduled
-cs_c2ef62e3d0,production,13,P22,41.0,74.41,280591,30178,280591,1X24X90 VP APL-BAN-STB GGS · ends Fri 02:24 re-forecast from actual rate (manprg said Thu 23:27 — running 5% slow),51780.95,True,current_state:running;pct=21.0;started=2026-09-01T00:01;reforecast=ends Fri 02:24 re-forecast from actual rate (manprg said Thu 23:27 — running 5% slow);split
-cs_e54f5b1632,production,13,P22,100.0,120.0,280592,30179,280592,1X24X90 VP APL-CIN GGS,30000.24,False,current_state:queued;pct=0.0
-cs_36d1a3f66c,cip,13,P22,155.0,161.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_fa6d60d123,cip,13,P22,275.0,281.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_d11fe5ca57,cip,13,P22,395.0,401.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_62b86b0cfd,production,0,P09,0.0,19.995,280581,30145,280581,6X10X90 FV VP APECSWP-ASTBZUC · ends Fri 19:59 re-forecast from actual rate (manprg said Fri 20:43 — at 96% of planned rate (1.0x longer)),8170.2,True,current_state:running;pct=76.7;started=2026-09-02T19:23;fct_kg=34997;made_kg=26827;clamped_to_anchor;reforecast=ends Fri 19:59 re-forecast from actual rate (manprg said Fri 20:43 — at 96% of planned rate (1.0x longer))
+cs_275a900bf1,cip,0,P09,23.0,29.0,CIP,,,,0.0,True,current_state:cip_scheduled;source=manprg;mo=30196
+cs_58499b8154,production,0,P09,30.0,48.66,280264,30146,280264,6X12X90 WALMRT F&V PEC-BER-STB,13996.8,False,current_state:queued;pct=0.0
+cs_faff28df4a,production,0,P09,72.017,108.347,280264,30250,280264,6X12X90 WALMRT F&V PEC-BER-STB,27254.88,False,current_state:queued;pct=0.0
+cs_46deea7801,production,0,P09,108.347,135.677,570468,30251,570468,2X22X90 VP APL-BAN GGS CAN,20500.92,False,current_state:queued;pct=0.0
+cs_e0cec954c8,production,0,P09,135.677,145.0,280580,30252,280580,6X10X90 FV VP ABERCAR-APERCAR,6993.52,False,current_state:queued;pct=0.0;split;pushed=6
+cs_363e00acf7,cip,0,P09,145.0,151.0,CIP,,,,0.0,True,current_state:cip_scheduled;source=manprg;mo=30302
+cs_e0cec954c8,production,0,P09,151.0,183.667,280580,30252,280580,6X10X90 FV VP ABERCAR-APERCAR,24504.68,False,current_state:queued;pct=0.0;split;pushed=6
+cs_dc3d0fde3e,production,0,P09,183.667,235.657,280572,30253,280572,6X10X90 ACIN GGS,38998.8,False,current_state:queued;pct=0.0;split;pushed=6
+cs_c0949f2ce0,cip,0,P09,265.0,271.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_8eaa13de0c,cip,0,P09,385.0,391.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_4e932212ca,production,1,P10,0.0,31.0,280351,30235,280351,1X24X90 KIRK ORG STBSPN-MANPEC · ends Thu 09-10 00:43 re-forecast from actual rate (manprg said Mon 09-07 16:37 — at 58% of planned rate (1.7x longer)),12943.57,True,current_state:running;pct=37.2;started=2026-09-01T00:04;fct_kg=96209;made_kg=35783;clamped_to_anchor;reforecast=ends Thu 09-10 00:43 re-forecast from actual rate (manprg said Mon 09-07 16:37 — at 58% of planned rate (1.7x longer));split;pushed=6
+cs_fed8ff7696,cip,1,P10,31.0,37.0,CIP,,,anti-static needs worked on during CIP. WO#569452,0.0,True,current_state:cip_scheduled;source=manprg;mo=30198
+cs_4e932212ca,production,1,P10,37.0,150.721,280351,30235,280351,1X24X90 KIRK ORG STBSPN-MANPEC · ends Thu 09-10 00:43 re-forecast from actual rate (manprg said Mon 09-07 16:37 — at 58% of planned rate (1.7x longer)),47482.43,True,current_state:running;pct=37.2;started=2026-09-01T00:04;fct_kg=96209;made_kg=35783;clamped_to_anchor;reforecast=ends Thu 09-10 00:43 re-forecast from actual rate (manprg said Mon 09-07 16:37 — at 58% of planned rate (1.7x longer));split;pushed=6
+cs_f3931e9e70,trial,1,P10,150.721,152.721,TRIAL,30318,TRIALS,TRIALS,,False,current_state:queued;pct=0.0;split;pushed=6
+cs_197556e7e4,production,1,P10,152.721,191.0,280351,30254,280351,1X24X90 KIRK ORG STBSPN-MANPEC,29359.65,False,current_state:queued;pct=0.0;split;pushed=12
+cs_d2dbd460de,cip,1,P10,191.0,197.0,CIP,,,anti-static needs worked on during CIP. WO#569452,0.0,True,current_state:cip_scheduled;source=manprg;mo=30303
+cs_197556e7e4,production,1,P10,197.0,299.531,280351,30254,280351,1X24X90 KIRK ORG STBSPN-MANPEC,78640.35,False,current_state:queued;pct=0.0;split;pushed=12
+cs_efd4ea17fd,cip,1,P10,335.0,341.0,CIP (projected),,,anti-static needs worked on during CIP. WO#569452,0.0,False,current_state:cip_projected
+cs_73fa12e8fc,cip,1,P10,479.0,485.0,CIP (projected),,,anti-static needs worked on during CIP. WO#569452,0.0,False,current_state:cip_projected
+cs_a070b6280a,cip,2,P11,48.0,54.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_04f268b0a3,cip,2,P11,192.0,198.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_a118ce5511,cip,2,P11,336.0,342.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_282da161ce,cip,2,P11,480.0,486.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_2b6e1d8911,cip,3,P12,55.0,61.0,CIP,,,,0.0,True,current_state:cip_scheduled;source=manprg;mo=30304
+cs_4bcd4741ee,production,3,P12,72.017,105.017,280426,30255,280426,6x4x110 GUTZY ORG STRAWKWIKALE,24800.16,False,current_state:queued;pct=0.0
+cs_bc9fc7fc96,production,3,P12,105.017,136.257,280436,30256,280436,6x4x110 GUTZY ORG BANABLBPOM,23480.16,False,current_state:queued;pct=0.0
+cs_6c8579b763,production,3,P12,136.257,170.857,280397,30257,280397,6X8X110 GUTZY ORGPRO BANBLUACA,25998.72,False,current_state:queued;pct=0.0
+cs_6cde81998a,production,3,P12,171.633,175.0,280539,30258,280539,6X8X110 GUTZY ORGPRO MANPINGVA,2529.72,False,current_state:queued;pct=0.0;split;pushed=6
+cs_439f886638,cip,3,P12,175.0,181.0,CIP,,,,0.0,True,current_state:cip_scheduled;source=manprg;mo=30305
+cs_6cde81998a,production,3,P12,181.0,198.793,280539,30258,280539,6X8X110 GUTZY ORGPRO MANPINGVA,13368.36,False,current_state:queued;pct=0.0;split;pushed=6
+cs_4c8de2b1b0,production,3,P12,198.793,213.033,280379,30259,280379,6x8x110 GUTZY ORG BANABLBPOM,10702.56,False,current_state:queued;pct=0.0;split;pushed=6
+cs_44350c4eae,cip,3,P12,295.0,301.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_6209589db5,cip,3,P12,415.0,421.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_2c35777f4f,trial,4,P13,48.017,52.017,TRIAL,30319,TRIALS,TRIALS,,False,current_state:queued;pct=0.0
+cs_c350dddf6c,cip,4,P13,55.0,61.0,CIP,,,,0.0,True,current_state:cip_scheduled;source=manprg;mo=30306
+cs_9616c5532d,production,4,P13,72.017,199.0,280256,30260,280256,1X24X90 KIRKLAND ORG UNSWT APL,95258.78,False,current_state:queued;pct=0.0;split;pushed=6
+cs_b4f7c2a82b,cip,4,P13,199.0,205.0,CIP,,,,0.0,True,current_state:cip_scheduled;source=manprg;mo=30307
+cs_9616c5532d,production,4,P13,205.0,216.387,280256,30260,280256,1X24X90 KIRKLAND ORG UNSWT APL,8542.18,False,current_state:queued;pct=0.0;split;pushed=6
+cs_a29e68a5e2,cip,4,P13,343.0,349.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_9309207ae6,cip,4,P13,487.0,493.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_6ed404fd90,production,5,P14,0.0,12.24,280601,30151,280601,6X4X90 FV APERCAR GGS,1885.68,True,current_state:running;pct=88.5;started=2026-09-03T04:59;fct_kg=16401;made_kg=14515;clamped_to_anchor
+cs_caa1306b13,production,5,P14,12.24,23.0,120532,30152,120532,12X4X90 ASTB GGS CAN,8070.92,False,current_state:queued;pct=0.0;split;pushed=6
+cs_21e55490a8,cip,5,P14,23.0,29.0,CIP,,,,0.0,True,current_state:cip_scheduled;source=manprg;mo=30200
+cs_caa1306b13,production,5,P14,29.0,35.04,120532,30152,120532,12X4X90 ASTB GGS CAN,4530.52,False,current_state:queued;pct=0.0;split;pushed=6
+cs_cce75a9154,production,5,P14,35.04,47.04,120450,30154,120450,12X4X90 ORG APL GGS,8998.56,False,current_state:queued;pct=0.0;split;pushed=6
+cs_f0490cb0e7,production,5,P14,47.04,59.04,120451,30155,120451,12X4X90 ORG ASTB GGS,8998.56,False,current_state:queued;pct=0.0;split;pushed=6
+cs_248db39783,production,5,P14,59.04,72.37,280090,30153,280090,12X4X90 ABLB GGS CAN,10000.8,False,current_state:queued;pct=0.0;split;pushed=6
+cs_0b606dc3a9,cip,5,P14,143.0,149.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_123a7b8bd2,cip,5,P14,263.0,269.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_a9152ae289,cip,5,P14,383.0,389.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_f0fc9f72dd,cip,5,P14,503.0,504.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_65dd943d31,production,6,P15,0.0,22.658,280617,30238,280617,1X18X100 SLY VP BLURSB-STBLEM · ends Fri 22:39 re-forecast from actual rate (manprg said Fri 19:02 — at 66% of planned rate (1.5x longer)),6913.8,True,current_state:running;pct=85.1;started=2026-09-01T00:52;fct_kg=46280;made_kg=39366;clamped_to_anchor;reforecast=ends Fri 22:39 re-forecast from actual rate (manprg said Fri 19:02 — at 66% of planned rate (1.5x longer))
+cs_207fa97162,production,6,P15,22.658,35.0,280611,30248,280611,9X4X100 SLY BLURSB GGS,9274.85,False,current_state:queued;pct=0.0;split;pushed=6
+cs_14e2d494f9,cip,6,P15,35.0,41.0,CIP,,,,0.0,True,current_state:cip_scheduled;source=manprg;mo=30202
+cs_207fa97162,production,6,P15,41.0,59.528,280611,30248,280611,9X4X100 SLY BLURSB GGS,13923.55,False,current_state:queued;pct=0.0;split;pushed=6
+cs_5c38f55e19,cip,6,P15,179.0,185.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_4a39ed6e3c,cip,6,P15,323.0,329.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_74f8b6a98f,cip,6,P15,467.0,473.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_5b4c2fc7b5,production,7,P16,0.0,10.671,280425,30159,280425,6X12X90 ORG FV ABERCAR-APECSWP · ends Fri 10:40 re-forecast from actual rate (manprg said Fri 11:10 — at 66% of planned rate (1.5x longer)),997.92,True,current_state:running;pct=94.5;started=2026-09-02T22:09;fct_kg=18001;made_kg=17004;clamped_to_anchor;reforecast=ends Fri 10:40 re-forecast from actual rate (manprg said Fri 11:10 — at 66% of planned rate (1.5x longer))
+cs_d90c869d05,production,7,P16,10.671,58.661,280264,30160,280264,6X12X90 WALMRT F&V PEC-BER-STB,36002.88,False,current_state:queued;pct=0.0
+cs_30cc773246,trial,7,P16,58.661,106.661,TRIAL,30261,TRIALS,TRIALS,,False,current_state:queued;pct=0.0
+cs_fa9a124614,production,7,P16,106.661,121.0,280566,30262,280566,6X12X90 WMT FV PERZU-MAPU-STSQ,10755.11,False,current_state:queued;pct=0.0;split;pushed=6
+cs_502584ac79,cip,7,P16,121.0,127.0,CIP,,,"Maintenance will have 5 hours for PM's at Volpak during this CIP. Plan to hand the filler over by 11am. No Caustic before PM's. We will CIP post maintenance work. NK
+V3407 WO#578388",0.0,True,current_state:cip_scheduled;source=manprg;mo=30308
+cs_fa9a124614,production,7,P16,127.0,144.661,280566,30262,280566,6X12X90 WMT FV PERZU-MAPU-STSQ,13246.81,False,current_state:queued;pct=0.0;split;pushed=6
+cs_199d66d32a,production,7,P16,144.661,184.651,280563,30263,280563,1X24X90 WMT FV PEC-BER-STB-PER,30000.24,False,current_state:queued;pct=0.0;split;pushed=6
+cs_7e12e42125,production,7,P16,184.651,199.981,570560,30264,570560,1X48X90 APL FS CAN,11499.84,False,current_state:queued;pct=0.0;split;pushed=6
+cs_053019ac0b,production,7,P16,199.981,226.501,280348,30265,280348,1X48X90 VP APL-CIN GGS,19897.92,False,current_state:queued;pct=0.0;split;pushed=6
+cs_7dbf9c4d5a,cip,7,P16,265.0,271.0,CIP (projected),,,"Maintenance will have 5 hours for PM's at Volpak during this CIP. Plan to hand the filler over by 11am. No Caustic before PM's. We will CIP post maintenance work. NK
+V3407 WO#578388",0.0,False,current_state:cip_projected
+cs_84b8544bcc,cip,7,P16,409.0,415.0,CIP (projected),,,"Maintenance will have 5 hours for PM's at Volpak during this CIP. Plan to hand the filler over by 11am. No Caustic before PM's. We will CIP post maintenance work. NK
+V3407 WO#578388",0.0,False,current_state:cip_projected
+cs_e26276f1c7,production,8,P17,0.0,32.75,280686,30163,280686,1X24X90 MEMBERS MARK ORG APL · ends Sat 08:44 re-forecast from actual rate (manprg said Sat 06:20 — at 85% of planned rate (1.2x longer)),30754.08,True,current_state:running;pct=73.9;started=2026-09-01T12:16;fct_kg=118001;made_kg=87247;clamped_to_anchor;reforecast=ends Sat 08:44 re-forecast from actual rate (manprg said Sat 06:20 — at 85% of planned rate (1.2x longer))
+cs_985766cfe4,cip,8,P17,43.0,51.0,CIP,,,,0.0,True,current_state:cip_scheduled;source=manprg;mo=30205
+cs_6c74daa458,trial,8,P17,51.0,53.0,TRIAL,30270,TRIALS,TRIALS,,False,current_state:queued;pct=0.0;split;pushed=2.983
+cs_0f9fa27322,production,8,P17,72.017,113.827,570261,30266,570261,1X28X90 ORG VP AP-ST-CI-BA CAN,62732.88,False,current_state:queued;pct=0.0
+cs_7514f6d351,production,8,P17,113.827,155.637,570261,30267,570261,1X28X90 ORG VP AP-ST-CI-BA CAN,62732.88,False,current_state:queued;pct=0.0
+cs_dfef469026,production,8,P17,155.637,163.0,570261,30268,570261,1X28X90 ORG VP AP-ST-CI-BA CAN,11047.65,False,current_state:queued;pct=0.0;split;pushed=8
+cs_5023a34e87,cip,8,P17,163.0,171.0,CIP,,,,0.0,True,current_state:cip_scheduled;source=manprg;mo=30309
+cs_dfef469026,production,8,P17,171.0,205.447,570261,30268,570261,1X28X90 ORG VP AP-ST-CI-BA CAN,51685.23,False,current_state:queued;pct=0.0;split;pushed=8
+cs_aa6411c757,production,8,P17,205.447,218.777,280480,30269,280480,1X28X90 ORG VP APL-CIN-PEC-STB,20001.24,False,current_state:queued;pct=0.0;split;pushed=8
+cs_0c11c2afcb,cip,8,P17,283.0,289.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_fe0dc56267,cip,8,P17,403.0,409.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_b47602c3cf,production,9,P18,0.0,27.669,280323,30190,280323,1X32X90 APL GGS · ends Sat 03:40 re-forecast from actual rate (manprg said Sat 01:36 — at 83% of planned rate (1.2x longer)),23644.8,True,current_state:running;pct=71.2;started=2026-09-02T09:42;fct_kg=81999;made_kg=58355;clamped_to_anchor;reforecast=ends Sat 03:40 re-forecast from actual rate (manprg said Sat 01:36 — at 83% of planned rate (1.2x longer))
+cs_c1103cabf2,production,9,P18,27.669,47.0,280324,30191,280324,1X32X90 VP APL-CIN-STB-GM5 GGS,29003.98,False,current_state:queued;pct=0.0;split;pushed=8
+cs_1db02d75df,cip,9,P18,47.0,55.0,CIP,,,,0.0,True,current_state:cip_scheduled;source=manprg;mo=30207
+cs_c1103cabf2,production,9,P18,55.0,62.329,280324,30191,280324,1X32X90 VP APL-CIN-STB-GM5 GGS,10996.34,False,current_state:queued;pct=0.0;split;pushed=8
+cs_4a5f3a53a0,cip,9,P18,67.0,75.0,CIP,,,,0.0,True,current_state:cip_scheduled;source=manprg;mo=30310
+cs_5a927c71af,production,9,P18,91.133,115.463,280453,30272,280453,2X20X90 VP APL-GRA-BER CAN,36500.4,False,current_state:queued;pct=0.0
+cs_42be889499,production,9,P18,115.463,139.793,280453,30273,280453,2X20X90 VP APL-GRA-BER CAN,36500.4,False,current_state:queued;pct=0.0
+cs_58412a9aeb,production,9,P18,139.793,174.453,280421,30274,280421,2X20X90 VP APL-STB-BAN-PEC CAN,51998.4,False,current_state:queued;pct=0.0
+cs_a650644169,production,9,P18,176.417,187.0,280452,30275,280452,2X20X90 VP MANGVA-PEC-BLB CAN,15880.12,False,current_state:queued;pct=0.0;split;pushed=8
+cs_56bf21dae6,cip,9,P18,187.0,195.0,CIP,,,,0.0,True,current_state:cip_scheduled;source=manprg;mo=30311
+cs_a650644169,production,9,P18,195.0,210.407,280452,30275,280452,2X20X90 VP MANGVA-PEC-BLB CAN,23118.68,False,current_state:queued;pct=0.0;split;pushed=8
+cs_a46395e4df,production,9,P18,210.407,229.537,280104,30271,280104,2X20X90 VP APL-CIN GGS,28699.2,False,current_state:queued;pct=0.0;split;pushed=8
+cs_b24f57e689,cip,9,P18,307.0,313.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_d1bf5d1083,cip,9,P18,427.0,433.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_932894d8b1,production,10,P19,0.0,19.811,280351,30168,280351,1X24X90 KIRK ORG STBSPN-MANPEC · ends Fri 19:48 re-forecast from actual rate (manprg said Fri 18:56 — at 82% of planned rate (1.2x longer)),13657.68,True,current_state:running;pct=84.7;started=2026-09-01T18:39;fct_kg=89500;made_kg=75842;clamped_to_anchor;reforecast=ends Fri 19:48 re-forecast from actual rate (manprg said Fri 18:56 — at 82% of planned rate (1.2x longer))
+cs_94d25cc1f9,trial,10,P19,48.017,50.017,TRIAL,30320,TRIALS,TRIALS,,False,current_state:queued;pct=0.0
+cs_8fa61dfc8e,production,10,P19,72.017,116.0,280351,30276,280351,1X24X90 KIRK ORG STBSPN-MANPEC,65991.3,False,current_state:queued;pct=0.0;split;pushed=8
+cs_90bbcdf7cc,cip,10,P19,116.0,124.0,CIP,,,Annual CIP validation. Run caustic and then swabs will be taken prior to sanitizer.,0.0,True,current_state:cip_scheduled;source=manprg;mo=30312
+cs_8fa61dfc8e,production,10,P19,124.0,210.717,280351,30276,280351,1X24X90 KIRK ORG STBSPN-MANPEC,130108.62,False,current_state:queued;pct=0.0;split;pushed=8
+cs_a7c59ba8d3,production,10,P19,210.717,236.0,280256,30277,280256,1X24X90 KIRKLAND ORG UNSWT APL,37928.05,False,current_state:queued;pct=0.0;split;pushed=14
+cs_a0935e50bf,cip,10,P19,236.0,242.0,CIP (projected),,,Annual CIP validation. Run caustic and then swabs will be taken prior to sanitizer.,0.0,False,current_state:cip_projected
+cs_a7c59ba8d3,production,10,P19,242.0,250.047,280256,30277,280256,1X24X90 KIRKLAND ORG UNSWT APL,12071.63,False,current_state:queued;pct=0.0;split;pushed=14
+cs_57bc6e3d13,cip,10,P19,356.0,362.0,CIP (projected),,,Annual CIP validation. Run caustic and then swabs will be taken prior to sanitizer.,0.0,False,current_state:cip_projected
+cs_aaa1d57e73,cip,10,P19,476.0,482.0,CIP (projected),,,Annual CIP validation. Run caustic and then swabs will be taken prior to sanitizer.,0.0,False,current_state:cip_projected
+cs_7c97cc2d54,production,11,P20,0.0,56.301,280344,30249,280344,2X20X90 FV VP BER-PEC-PER DINO · ends Sun 08:18 re-forecast from actual rate (manprg said Sun 05:21 — at 91% of planned rate (1.1x longer)),65278.8,True,current_state:running;pct=45.6;started=2026-09-02T16:42;fct_kg=119999;made_kg=54720;clamped_to_anchor;reforecast=ends Sun 08:18 re-forecast from actual rate (manprg said Sun 05:21 — at 91% of planned rate (1.1x longer))
+cs_3847047ac1,trial,11,P20,56.301,80.301,TRIAL,30278,TRIALS,TRIALS,,False,current_state:queued;pct=0.0
+cs_d8423648e1,production,11,P20,80.301,103.361,280169,30279,280169,6X12X90 FV VP APECSWP-ASTBZUC,34603.2,False,current_state:queued;pct=0.0
+cs_e0a111ec4f,production,11,P20,103.361,130.161,120436,30280,120436,6X12X90 APL GGS,40201.92,False,current_state:queued;pct=0.0
+cs_691a40e343,production,11,P20,130.161,150.161,120437,30282,120437,6X12X90 ASTB GGS,30002.4,False,current_state:queued;pct=0.0
+cs_f1113b936b,cip,11,P20,155.0,163.0,CIP,,,,0.0,True,current_state:cip_scheduled;source=manprg;mo=30313
+cs_50d5f54255,production,11,P20,178.567,235.287,120448,30281,120448,6X12X90 ACIN GGS,85101.84,False,current_state:queued;pct=0.0
+cs_1d3b2addd7,cip,11,P20,275.0,281.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_45576f4f5a,cip,11,P20,395.0,401.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_c3340333f5,production,12,P21,0.0,66.0,280324,30176,280324,1X32X90 VP APL-CIN-STB-GM5 GGS · ends Mon 15:26 re-forecast from actual rate (manprg said Mon 10:05 — at 92% of planned rate (1.1x longer)),81815.0,True,current_state:running;pct=50.6;started=2026-08-31T23:53;fct_kg=219499;made_kg=111102;clamped_to_anchor;reforecast=ends Mon 15:26 re-forecast from actual rate (manprg said Mon 10:05 — at 92% of planned rate (1.1x longer));split;pushed=8
+cs_2a29c482ac,cip,12,P21,66.0,74.0,CIP,,,,0.0,True,current_state:cip_scheduled;source=manprg;mo=30314
+cs_c3340333f5,production,12,P21,74.0,95.444,280324,30176,280324,1X32X90 VP APL-CIN-STB-GM5 GGS · ends Mon 15:26 re-forecast from actual rate (manprg said Mon 10:05 — at 92% of planned rate (1.1x longer)),26582.44,True,current_state:running;pct=50.6;started=2026-08-31T23:53;fct_kg=219499;made_kg=111102;clamped_to_anchor;reforecast=ends Mon 15:26 re-forecast from actual rate (manprg said Mon 10:05 — at 92% of planned rate (1.1x longer));split;pushed=8
+cs_e29613e9dc,production,12,P21,95.444,120.304,280324,30283,280324,1X32X90 VP APL-CIN-STB-GM5 GGS,37298.88,False,current_state:queued;pct=0.0;split;pushed=8
+cs_f04b0efd1e,production,12,P21,120.304,175.024,280323,30284,280323,1X32X90 APL GGS,82100.16,False,current_state:queued;pct=0.0;split;pushed=8
+cs_fa70bd43da,production,12,P21,175.024,186.0,280480,30285,280480,1X28X90 ORG VP APL-CIN-PEC-STB,16468.55,False,current_state:queued;pct=0.0;split;pushed=16
+cs_3ee5442273,cip,12,P21,186.0,194.0,CIP,,,,0.0,True,current_state:cip_scheduled;source=manprg;mo=30315
+cs_fa70bd43da,production,12,P21,194.0,266.334,280480,30285,280480,1X28X90 ORG VP APL-CIN-PEC-STB,108531.01,False,current_state:queued;pct=0.0;split;pushed=16
+cs_e3a749a454,cip,12,P21,306.0,312.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_b066da4701,cip,12,P21,426.0,432.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_ffcbb9975b,production,13,P22,0.0,46.819,280592,30179,280592,1X24X90 VP APL-CIN GGS · ends Sat 22:49 re-forecast from actual rate (manprg said Fri 23:48 — at 37% of planned rate (2.7x longer)),20947.68,True,current_state:running;pct=30.2;started=2026-09-03T16:09;fct_kg=30000;made_kg=9053;clamped_to_anchor;reforecast=ends Sat 22:49 re-forecast from actual rate (manprg said Fri 23:48 — at 37% of planned rate (2.7x longer))
+cs_af5c5d821a,production,13,P22,72.017,83.0,280592,30286,280592,1X24X90 VP APL-CIN GGS,16477.05,False,current_state:queued;pct=0.0;split;pushed=8
+cs_36d1a3f66c,cip,13,P22,83.0,91.0,CIP,,,,0.0,True,current_state:cip_scheduled;source=manprg;mo=30316
+cs_af5c5d821a,production,13,P22,91.0,105.347,280592,30286,280592,1X24X90 VP APL-CIN GGS,21523.83,False,current_state:queued;pct=0.0;split;pushed=8
+cs_c809c43b4c,production,13,P22,105.347,125.347,280590,30287,280590,1X24X90 APL GGS,30000.24,False,current_state:queued;pct=0.0;split;pushed=8
+cs_50d8ef821e,production,13,P22,144.117,182.637,280212,30288,280212,1X24X90 ORG VP APL-CIN-BAN-STB,57799.44,False,current_state:queued;pct=0.0
+cs_7d4c40ac0c,production,13,P22,182.637,202.767,280559,30289,280559,1X24X90 FV VP ASTBZUC-APERCAR,30198.96,False,current_state:queued;pct=0.0
+cs_472be2c4ac,production,13,P22,202.767,203.0,280490,30290,280490,1X28X90 FV VP ASTBZUC-APERCAR,349.57,False,current_state:queued;pct=0.0;split;pushed=8
+cs_fa6d60d123,cip,13,P22,203.0,211.0,CIP,,,,0.0,True,current_state:cip_scheduled;source=manprg;mo=30317
+cs_472be2c4ac,production,13,P22,211.0,262.237,280490,30290,280490,1X28X90 FV VP ASTBZUC-APERCAR,76870.79,False,current_state:queued;pct=0.0;split;pushed=8
+cs_d11fe5ca57,cip,13,P22,323.0,329.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_45a700568a,cip,13,P22,443.0,449.0,CIP (projected),,,,0.0,False,current_state:cip_projected
