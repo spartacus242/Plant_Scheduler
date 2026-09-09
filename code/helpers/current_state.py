@@ -691,9 +691,9 @@ def build_current_state(
     state.now, state.as_of, state.as_of_source = n, obs, obs_src
 
     if caps is None and caps_path and Path(caps_path).exists():
-        from helpers.capability_check import load_capabilities
+        from helpers.effective_rates import load_effective_capabilities
         try:
-            caps = load_capabilities(caps_path)
+            caps = load_effective_capabilities(caps_path)
         except Exception as exc:  # noqa: BLE001 — degrade to fallback, loudly
             state.warnings.append(
                 f"capabilities_rates unreadable ({exc}) — running-MO ends "

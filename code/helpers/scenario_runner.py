@@ -534,6 +534,14 @@ def _prepare_work_dir(data_dir: Path, work: Path) -> None:
             stage_solver_downtimes(
                 src, work / dst_name,
                 _pa(_lt(root_toml) if root_toml.exists() else None))
+        elif src_name == "capabilities_rates.csv":
+            # Measured-rate overlay (historical run log, 2026-09-08): the
+            # solver, the independent validator and the greedy seed all read
+            # THIS staged copy, so they agree by construction. The live
+            # reference file is never rewritten (bridge-synced with the plant).
+            from helpers.effective_rates import load_effective_capabilities
+            load_effective_capabilities(src, dd=data_dir).to_csv(
+                work / dst_name, index=False)
         else:
             shutil.copy2(src, work / dst_name)
 
@@ -1424,19 +1432,29 @@ def _greedy_seed(work: Path) -> list[str]:
               or (float(sched.get("horizon_weeks", 3) or 3) * 168.0))
     min_run = int(sched.get("min_run_hours", 4))
 
-    # flat line rates (F runs with use_sku_rates off)
+    # Rates exactly as the solver's loader resolves them: per-pair
+    # calc_rate_kgph from the STAGED capabilities table when use_sku_rates
+    # is on (measured overlay, 2026-09-08), else the flat line_rates.csv.
+    # A seed priced on a different dialect than the model would violate the
+    # model's own durations and be discarded as a hint.
+    use_sku = bool(sched.get("use_sku_rates", False))
     rates: dict[tuple[str, str], float] = {}
-    lr = _pd.read_csv(work / "line_rates.csv")
-    # bridge exports name this column inconsistently (Line vs line_name)
-    lr_name_col = next(c for c in ("line_name", "Line", "line") if c in lr.columns)
-    flat = {str(r[lr_name_col]).upper(): float(r.get("rate_kgph") or r.get("calc_rate_kgph") or 0)
-            for _, r in lr.iterrows()}
+    flat: dict[str, float] = {}
+    if not use_sku:
+        lr = _pd.read_csv(work / "line_rates.csv")
+        # bridge exports name this column inconsistently (Line vs line_name)
+        lr_name_col = next(c for c in ("line_name", "Line", "line") if c in lr.columns)
+        flat = {str(r[lr_name_col]).upper(): float(r.get("rate_kgph") or r.get("calc_rate_kgph") or 0)
+                for _, r in lr.iterrows()}
     caps = _pd.read_csv(work / "capabilities_rates.csv", dtype={"sku": str})
+    _rate_col = "calc_rate_kgph" if "calc_rate_kgph" in caps.columns else "rate_kgph"
     for _, r in caps.iterrows():
-        if int(r.get("capable", 0) or 0) == 1:
-            ln = str(r["line_name"]).upper()
-            if flat.get(ln, 0) > 0:
-                rates[(ln, str(r["sku"]))] = flat[ln]
+        if int(r.get("capable", 0) or 0) != 1:
+            continue
+        ln = str(r["line_name"]).upper()
+        rate = float(r.get(_rate_col) or 0) if use_sku else flat.get(ln, 0.0)
+        if rate > 0:
+            rates[(ln, str(r["sku"]))] = rate
 
     from solver.changeover_cache import load_changeover_setup_nested
     # Copy: the loader memoises and returns its cached dict — never mutate.

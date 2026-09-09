@@ -472,9 +472,8 @@ with st.expander(f"📅 Preview {_cname(right_slug)} on a calendar (read-only)",
     _caps_prev: dict = {}
     _caps_path = reference_dir(dd) / "capabilities_rates.csv"
     if _caps_path.exists():
-        _cdf = pd.read_csv(_caps_path)
-        if "calc_rate_kgph" not in _cdf.columns and "rate_kgph" in _cdf.columns:
-            _cdf = _cdf.rename(columns={"rate_kgph": "calc_rate_kgph"})
+        from helpers.effective_rates import load_effective_capabilities
+        _cdf = load_effective_capabilities(_caps_path, dd=dd)
         for _, _r in _cdf.iterrows():
             if int(_r.get("capable", 0) or 0) == 1:
                 _caps_prev.setdefault(str(_r["line_name"]), {})[str(_r["sku"])] =                     float(_r.get("calc_rate_kgph") or 0)

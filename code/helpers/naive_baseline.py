@@ -136,8 +136,10 @@ def build_naive_calendar(
 
     demand = _read_csv(ref / "demand_plan.csv")
     caps = _read_csv(ref / "capabilities_rates.csv")
-    if "calc_rate_kgph" not in caps.columns and "rate_kgph" in caps.columns:
-        caps = caps.rename(columns={"rate_kgph": "calc_rate_kgph"})
+    if not caps.empty:
+        # measured-rate overlay, same table every other consumer prices with
+        from helpers.effective_rates import load_effective_capabilities
+        caps = load_effective_capabilities(ref / "capabilities_rates.csv")
     sku_info = _read_csv(ref / "sku_info.csv")
 
     if demand.empty:

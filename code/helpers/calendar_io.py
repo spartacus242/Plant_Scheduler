@@ -782,9 +782,8 @@ def build_line_capable_skus(
     (capable == 1) — candidate list for the blank-space SKU picker."""
     if not caps_csv.exists() or not demand_skus:
         return {}
-    df = pd.read_csv(caps_csv, dtype={"sku": str})
-    if "calc_rate_kgph" not in df.columns and "rate_kgph" in df.columns:
-        df = df.rename(columns={"rate_kgph": "calc_rate_kgph"})
+    from helpers.effective_rates import load_effective_capabilities
+    df = load_effective_capabilities(caps_csv)
     df["capable"] = pd.to_numeric(df.get("capable", 0), errors="coerce").fillna(0)
     df["calc_rate_kgph"] = pd.to_numeric(
         df.get("calc_rate_kgph", 0), errors="coerce").fillna(0)

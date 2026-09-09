@@ -529,7 +529,10 @@ def _rate_mode_semantics(dd: Path, cfg: dict) -> list[HealthStatus]:
     if use_sku:
         out.append(HealthStatus(
             key="rate_mode", name="Solver rate mode", state=OK,
-            detail="use_sku_rates = true: solver and UI both use per-SKU calc_rate_kgph.",
+            detail=("use_sku_rates = true: solver and UI both use per-SKU "
+                    "calc_rate_kgph, with measured kg/h from "
+                    "reference/historical/rates_by_line_sku.csv overlaid where "
+                    "the run log has enough evidence (helpers.effective_rates)."),
             source="semantic",
         ))
     elif has_flat_file:

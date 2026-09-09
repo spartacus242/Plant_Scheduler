@@ -106,9 +106,8 @@ from helpers.paths import reference_dir as _ref_dir
 caps: dict = {}
 _caps_p = _ref_dir(dd) / "capabilities_rates.csv"
 if _caps_p.exists():
-    _cap_df = _pd.read_csv(_caps_p)
-    if "calc_rate_kgph" not in _cap_df.columns and "rate_kgph" in _cap_df.columns:
-        _cap_df = _cap_df.rename(columns={"rate_kgph": "calc_rate_kgph"})
+    from helpers.effective_rates import load_effective_capabilities
+    _cap_df = load_effective_capabilities(_caps_p, dd=dd)
     for _, r in _cap_df.iterrows():
         if int(r.get("capable", 0) or 0) != 1:
             continue

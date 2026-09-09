@@ -146,7 +146,6 @@ def average_rate_per_sku(capabilities: pd.DataFrame) -> dict[str, float]:
 
 
 def load_capabilities(path: str | Path) -> pd.DataFrame:
-    df = pd.read_csv(path, dtype={"sku": str})
-    if "calc_rate_kgph" not in df.columns and "rate_kgph" in df.columns:
-        df = df.rename(columns={"rate_kgph": "calc_rate_kgph"})
-    return df
+    """Capabilities with the measured-rate overlay (helpers.effective_rates)."""
+    from helpers.effective_rates import load_effective_capabilities
+    return load_effective_capabilities(path)

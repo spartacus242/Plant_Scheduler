@@ -386,9 +386,8 @@ for _l in lines:
 caps: dict = {}
 caps_path = reference_dir(dd) / "capabilities_rates.csv"
 if caps_path.exists():
-    cdf = pd.read_csv(caps_path)
-    if "calc_rate_kgph" not in cdf.columns and "rate_kgph" in cdf.columns:
-        cdf = cdf.rename(columns={"rate_kgph": "calc_rate_kgph"})
+    from helpers.effective_rates import load_effective_capabilities
+    cdf = load_effective_capabilities(caps_path, dd=dd)
     for _, r in cdf.iterrows():
         if int(r.get("capable", 0) or 0) != 1:
             continue

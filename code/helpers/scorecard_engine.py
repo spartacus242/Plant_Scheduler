@@ -921,11 +921,10 @@ def _load_sku_avg_rates(ref: Path) -> dict[str, float]:
     try:
         if not path.exists():
             return mapping
-        df = pd.read_csv(path)
+        from helpers.effective_rates import load_effective_capabilities
+        df = load_effective_capabilities(path)
         if "line_name" not in df.columns:
             return mapping
-        if "calc_rate_kgph" not in df.columns and "rate_kgph" in df.columns:
-            df = df.rename(columns={"rate_kgph": "calc_rate_kgph"})
         sums: dict[str, list[float]] = {}
         all_lines: set[str] = set()
         for _, r in df.iterrows():
@@ -1739,11 +1738,11 @@ def _load_caps(ref: Path) -> dict[str, dict[str, float]]:
     if not caps_p.exists():
         return caps
     try:
-        cdf = pd.read_csv(caps_p, dtype={"sku": str})
+        from helpers.effective_rates import load_effective_capabilities
+        cdf = load_effective_capabilities(caps_p)
     except Exception:  # noqa: BLE001
         return caps
-    rate_col = ("calc_rate_kgph" if "calc_rate_kgph" in cdf.columns
-                else "rate_kgph" if "rate_kgph" in cdf.columns else None)
+    rate_col = "calc_rate_kgph" if "calc_rate_kgph" in cdf.columns else None
     if not rate_col or "line_name" not in cdf.columns or "sku" not in cdf.columns:
         return caps
     for rec in cdf.to_dict("records"):
