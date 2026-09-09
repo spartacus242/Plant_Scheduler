@@ -1,0 +1,71 @@
+# Rules for scripts/ingest_historical_run_log.py.
+# Edit here and re-run the script; the script carries no thresholds of its own.
+
+[columns]
+# Source header aliases (first match wins). Lets the plant export use either
+# its raw names or Excel pivot names without touching the script.
+mo_start_date  = ["mo_start_date"]
+line           = ["line", "LINE"]
+mo             = ["mo", "MO"]
+sku            = ["sku", "PRODUCT CODE", "product_code"]
+oee            = ["oee", "Sum of OEE"]
+hrs            = ["mo_scheduled_hrs", "Max of mo_scheduled_hrs"]
+pouches        = ["pouches_produced"]        # optional
+pouch_weight_g = ["pouch_weight_g"]          # optional
+kg_per_hr      = ["kg_per_hr"]               # optional, source's own kg/h (audit only)
+
+[lines]
+double = ["P17", "P18", "P19", "P20", "P21", "P22"]   # Bossar A/B lines
+
+[nominal_rate_kgph]
+# The plant's OEE in this log is measured kg/h divided by a nominal rate that
+# depends on pouch weight (derived from the data itself: 12,480 pouches/h at
+# 90 g, 11,280 pouches/h at 110-120 g, 10,800 at 100 g). Double (Bossar)
+# lines run both sides, so their nominal is the single value x multiplier.
+# Keys are pouch weight in grams; `default` is used when the weight is missing.
+double_multiplier = 2.0
+[nominal_rate_kgph.single_by_pouch_g]
+default = 1123.2
+90  = 1123.2
+100 = 1080.0
+110 = 1240.8
+120 = 1353.6
+
+[thresholds]
+oee_low                 = 0.20   # oee below this is flagged for review
+hrs_long                = 168    # scheduled hours above one week are flagged
+overlap_tolerance_days  = 1.0    # hrs/24 may exceed the gap to the next MO by this much (start time-of-day is unknown)
+mo_seq_window           = 9      # rolling window (rows) for the MO-number sequence check
+mo_seq_deviation        = 5000   # MO number this far from its neighbours is a typo candidate
+rate_mismatch_kgph      = 1.0    # |pouches*g/1000/hrs - source kg_per_hr| above this is flagged
+oee_rate_mismatch_ratio = 0.01   # |oee - measured_rate/nominal| / oee above this is flagged
+
+[derive]
+# scripts/derive_historical_tables.py — builds the tables the optimizer reads.
+recent_years        = 2          # "recent_*" columns cover runs starting within this many years of the last run in the log
+min_runs_for_rate   = 3          # line x sku pairs with fewer usable runs are kept but marked low_evidence
+rate_low_pct        = 0.20       # conservative rate percentile (per-run measured kg/h, hour-weighted)
+rate_high_pct       = 0.80
+campaign_low_pct    = 0.20       # campaign-length percentiles (hours per run)
+campaign_high_pct   = 0.80
+min_run_hrs         = 1.0        # runs shorter than this are ignored for rate and campaign statistics (trials, stubs)
+transition_max_gap_days = 7      # consecutive runs on a line further apart than this are not counted as a transition
+
+[effective_rates]
+# code/helpers/effective_rates.py — how measured rates replace the plant's
+# calc_rate_kgph for every consumer (solver staging, scorecard, calendar,
+# fill, stock check). Set enabled = false to fall back to the plant's table.
+enabled              = true
+table                = "rates_by_line_sku.csv"
+primary_rate_column  = "recent_rate_kgph"   # hour-weighted kg/h over the recent window
+primary_runs_column  = "recent_n_runs"
+primary_min_runs     = 3                    # fewer recent runs -> try the fallback
+fallback_rate_column = "rate_kgph"          # all-time hour-weighted kg/h
+fallback_runs_column = "n_runs"
+fallback_min_runs    = 3                    # fewer runs all-time -> keep the plant's calc rate
+side_divisor         = 2.0                  # measured rates are per line group; an A/B side row gets rate / side_divisor
+
+[usability]
+# Any of these review flags makes usable_default false. The run itself is
+# still in the file; downstream readers may widen or narrow this list.
+unusable_flags = ["date_unparsed", "oee_not_numeric", "oee_gt_1", "hrs_zero", "pouches_zero"]
