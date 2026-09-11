@@ -3,6 +3,7 @@
 
 import React from "react";
 import { hourToX, isoWeekAtHour, mondayBoundaries, LINE_LABEL_WIDTH, HEADER_HEIGHT } from "../utils/layout";
+import { BTN_SMALL, CHART, T } from "../utils/theme";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -60,8 +61,8 @@ export const TimeAxisSvg: React.FC<SvgProps> = ({
       {/* Header background */}
       {showHeader && (
         <>
-          <rect x={0} y={0} width={svgWidth} height={HEADER_HEIGHT} fill="#fafafa" />
-          <line x1={LINE_LABEL_WIDTH} y1={HEADER_HEIGHT} x2={svgWidth} y2={HEADER_HEIGHT} stroke="#ccc" />
+          <rect x={0} y={0} width={svgWidth} height={HEADER_HEIGHT} fill={CHART.headerBand} />
+          <line x1={LINE_LABEL_WIDTH} y1={HEADER_HEIGHT} x2={svgWidth} y2={HEADER_HEIGHT} stroke={CHART.headerRule} />
         </>
       )}
 
@@ -73,13 +74,13 @@ export const TimeAxisSvg: React.FC<SvgProps> = ({
         if (i % 2 !== 1) return null;
         const x = hourToX(t.hour, viewStart, hourWidth);
         const colW = hourToX(t.hour + 24, viewStart, hourWidth) - x;
-        return <rect key={`band_${t.hour}`} x={x} y={0} width={colW} height={HEADER_HEIGHT} fill="#eef0f5" />;
+        return <rect key={`band_${t.hour}`} x={x} y={0} width={colW} height={HEADER_HEIGHT} fill={CHART.headerDayBand} />;
       })}
 
       {/* Gridlines */}
       {showBody && dayTicks.map((t) => {
         const x = hourToX(t.hour, viewStart, hourWidth);
-        return <line key={`day_${t.hour}`} x1={x} y1={HEADER_HEIGHT} x2={x} y2={svgHeight} stroke="#d0d0d0" strokeWidth={1} />;
+        return <line key={`day_${t.hour}`} x1={x} y1={HEADER_HEIGHT} x2={x} y2={svgHeight} stroke={CHART.dayLine} strokeWidth={1} />;
       })}
       {weekTicks.map((t) => {
         const wx0 = hourToX(t.hour, viewStart, hourWidth);
@@ -87,11 +88,11 @@ export const TimeAxisSvg: React.FC<SvgProps> = ({
           <g key={`wk_${t.hour}`}>
             {showBody && (
               <line x1={wx0} y1={HEADER_HEIGHT} x2={wx0} y2={svgHeight}
-                    stroke="#90a4ae" strokeWidth={1.5} strokeDasharray="8 4" />
+                    stroke={CHART.weekLine} strokeWidth={1.5} strokeDasharray="8 4" />
             )}
             {showHeader && (
               <line x1={wx0} y1={0} x2={wx0} y2={HEADER_HEIGHT}
-                    stroke="#90a4ae" strokeWidth={1.5} strokeDasharray="8 4" />
+                    stroke={CHART.weekLine} strokeWidth={1.5} strokeDasharray="8 4" />
             )}
           </g>
         );
@@ -107,10 +108,10 @@ export const TimeAxisSvg: React.FC<SvgProps> = ({
             y1={HEADER_HEIGHT}
             x2={x}
             y2={svgHeight}
-            stroke={s.isAm ? "#d4a020" : "#6a8dbf"}
+            stroke={s.isAm ? CHART.shiftAm : CHART.shiftPm}
             strokeDasharray="4,4"
             strokeWidth={1}
-            opacity={0.5}
+            opacity={0.45}
           />
         );
       })}
@@ -122,7 +123,7 @@ export const TimeAxisSvg: React.FC<SvgProps> = ({
         return (
           <text key={`wklbl_${t.hour}`}
                 x={Math.max(wx0, hourToX(viewStart, viewStart, hourWidth)) + 6}
-                y={11} fontSize={11} fontWeight={700} fill="#455a64">
+                y={11} fontSize={11} fontWeight={700} fill={T.ink2}>
             {t.label}
           </text>
         );
@@ -139,7 +140,7 @@ export const TimeAxisSvg: React.FC<SvgProps> = ({
             dominantBaseline="middle"
             fontSize={dayPixels >= 55 ? 11 : 9}
             fontWeight={600}
-            fill="#333"
+            fill={T.ink}
           >
             {t.label}
           </text>
@@ -155,21 +156,20 @@ export const ZoomControls: React.FC<{
   onZoomOut: () => void;
   onResetZoom: () => void;
 }> = ({ onZoomIn, onZoomOut, onResetZoom }) => (
-  <div style={{ display: "flex", gap: 4, padding: "4px 0", alignItems: "center" }}>
+  <div style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
     <button onClick={onZoomIn} style={btnStyle} title="Zoom in">+</button>
     <button onClick={onZoomOut} style={btnStyle} title="Zoom out">−</button>
-    <button onClick={onResetZoom} style={{ ...btnStyle, fontSize: 11 }} title="Fit 2 weeks">Fit</button>
+    <button onClick={onResetZoom} style={{ ...btnStyle, width: "auto", fontSize: 11 }} title="Fit the whole horizon">Fit</button>
   </div>
 );
 
 const btnStyle: React.CSSProperties = {
+  ...BTN_SMALL,
   width: 28,
   height: 24,
-  border: "1px solid #ccc",
-  borderRadius: 4,
-  background: "#fff",
-  cursor: "pointer",
+  padding: 0,
   fontSize: 14,
   fontWeight: 700,
   lineHeight: "22px",
+  color: T.ink2,
 };

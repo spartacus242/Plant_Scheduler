@@ -17,6 +17,8 @@ import {
 } from "../utils/layout";
 import type { ResizeState } from "../hooks/useBlockResize";
 import type { InsertPlan } from "../utils/dragPreview";
+import { CHART, T } from "../utils/theme";
+import { TYPE_COLORS } from "../utils/colors";
 
 interface Props {
   schedule: ScheduleBlock[];
@@ -82,13 +84,13 @@ const LineRow: React.FC<{
 
   let fill: string;
   if (isDragTarget) {
-    fill = isCapable === false ? "#e57373" : "#66bb6a";
+    fill = isCapable === false ? CHART.rowTargetBad : CHART.rowTargetOk;
   } else if (isCapable === true) {
-    fill = "#a5d6a7";
+    fill = CHART.rowCapable;
   } else if (isCapable === false) {
-    fill = "#ef9a9a";
+    fill = CHART.rowIncapable;
   } else {
-    fill = index % 2 === 0 ? "#fff" : "#fafafa";
+    fill = index % 2 === 0 ? CHART.rowEven : CHART.rowOdd;
   }
 
   return (
@@ -101,11 +103,11 @@ const LineRow: React.FC<{
           y1={y + half}
           x2={svgWidth}
           y2={y + half}
-          stroke="#c7ccd4"
+          stroke={CHART.dayLine}
           strokeDasharray="3 3"
         />
       )}
-      <line x1={0} y1={y + LINE_HEIGHT} x2={svgWidth} y2={y + LINE_HEIGHT} stroke="#eee" />
+      <line x1={0} y1={y + LINE_HEIGHT} x2={svgWidth} y2={y + LINE_HEIGHT} stroke={CHART.dayLine} />
     </g>
   );
 };
@@ -115,27 +117,27 @@ const LineRow: React.FC<{
  * translate in GanttChart. */
 const LineLabelsOverlay: React.FC<{ rows: GanttRow[]; svgHeight: number }> = ({ rows, svgHeight }) => (
   <>
-    <rect x={0} y={HEADER_HEIGHT} width={LINE_LABEL_WIDTH} height={svgHeight - HEADER_HEIGHT} fill="#fff" opacity={0.94} />
-    <line x1={LINE_LABEL_WIDTH} y1={HEADER_HEIGHT} x2={LINE_LABEL_WIDTH} y2={svgHeight} stroke="#e0e0e5" />
+    <rect x={0} y={HEADER_HEIGHT} width={LINE_LABEL_WIDTH} height={svgHeight - HEADER_HEIGHT} fill={CHART.labelStrip} opacity={0.96} />
+    <line x1={LINE_LABEL_WIDTH} y1={HEADER_HEIGHT} x2={LINE_LABEL_WIDTH} y2={svgHeight} stroke={T.rule} />
     {rows.map((row, i) => {
       const y = HEADER_HEIGHT + i * LINE_HEIGHT;
       const half = LINE_HEIGHT / 2;
       return (
         <g key={row.name}>
-          <text x={4} y={y + LINE_HEIGHT / 2} dominantBaseline="middle" fontSize={11} fontWeight={600} fill="#333">
+          <text x={6} y={y + LINE_HEIGHT / 2} dominantBaseline="middle" fontSize={11.5} fontWeight={700} fill={T.ink}>
             {row.name}
           </text>
           {row.isDouble && (
             <>
-              <text x={LINE_LABEL_WIDTH - 12} y={y + half / 2} textAnchor="end" dominantBaseline="middle" fontSize={8} fill="#777">
+              <text x={LINE_LABEL_WIDTH - 12} y={y + half / 2} textAnchor="end" dominantBaseline="middle" fontSize={8} fill={T.ink3}>
                 A
               </text>
-              <text x={LINE_LABEL_WIDTH - 12} y={y + half + half / 2} textAnchor="end" dominantBaseline="middle" fontSize={8} fill="#777">
+              <text x={LINE_LABEL_WIDTH - 12} y={y + half + half / 2} textAnchor="end" dominantBaseline="middle" fontSize={8} fill={T.ink3}>
                 B
               </text>
             </>
           )}
-          <line x1={0} y1={y + LINE_HEIGHT} x2={LINE_LABEL_WIDTH} y2={y + LINE_HEIGHT} stroke="#eee" />
+          <line x1={0} y1={y + LINE_HEIGHT} x2={LINE_LABEL_WIDTH} y2={y + LINE_HEIGHT} stroke={CHART.dayLine} />
         </g>
       );
     })}
@@ -251,14 +253,25 @@ export const GanttChart: React.FC<Props> = ({
 
       {/* Single SVG containing time axis + rows + blocks */}
       <style>{`
-        .gantt-scroll { scrollbar-width: auto; scrollbar-color: #90a4ae #eceff1; }
+        .gantt-scroll { scrollbar-width: auto; scrollbar-color: #A9B4BF #E8ECF0; }
         .gantt-scroll::-webkit-scrollbar { height: 12px; width: 12px; }
-        .gantt-scroll::-webkit-scrollbar-track { background: #eceff1; border-radius: 6px; }
-        .gantt-scroll::-webkit-scrollbar-thumb { background: #90a4ae; border-radius: 6px; border: 2px solid #eceff1; }
-        .gantt-scroll::-webkit-scrollbar-thumb:hover { background: #607d8b; }
+        .gantt-scroll::-webkit-scrollbar-track { background: #E8ECF0; border-radius: 6px; }
+        .gantt-scroll::-webkit-scrollbar-thumb { background: #A9B4BF; border-radius: 6px; border: 2px solid #E8ECF0; }
+        .gantt-scroll::-webkit-scrollbar-thumb:hover { background: #7A8592; }
       `}</style>
-      <div ref={scrollRef} onScroll={handleScroll} className="gantt-scroll" style={{ overflowX: "auto", overflowY: "auto", maxHeight: 640, width: "100%", border: "1px solid #e0e0e5", borderRadius: 8 }}>
+      <div ref={scrollRef} onScroll={handleScroll} className="gantt-scroll" style={{ overflowX: "auto", overflowY: "auto", maxHeight: 640, width: "100%", border: `1px solid ${T.rule}`, borderRadius: 10, background: T.surface }}>
         <svg ref={svgRef as React.RefObject<SVGSVGElement>} width={svgWidth} height={svgHeight} style={{ display: "block" }} onContextMenu={handleSvgContextMenu}>
+          {/* Hatch fills: downtime / maintenance / contractor windows are
+              CONSTRAINTS, drawn as diagonal hatching so they never read as a
+              production run. */}
+          <defs>
+            {(["line_down", "maintenance", "contractor"] as const).map((k) => (
+              <pattern key={k} id={`fs-hatch-${k}`} patternUnits="userSpaceOnUse" width={8} height={8} patternTransform="rotate(45)">
+                <rect width={8} height={8} fill="#FFFFFF" />
+                <line x1={0} y1={0} x2={0} y2={8} stroke={TYPE_COLORS[k]} strokeWidth={3} opacity={0.7} />
+              </pattern>
+            ))}
+          </defs>
           {/* Time axis body layer: gridlines that scroll with the rows */}
           <TimeAxisSvg
             viewStart={viewStart}
@@ -293,8 +306,8 @@ export const GanttChart: React.FC<Props> = ({
                 y={HEADER_HEIGHT}
                 width={Math.max(0, (Math.min(lockedThroughH, viewEnd) - viewStart) * hourWidth)}
                 height={rows.length * LINE_HEIGHT}
-                fill="#607d8b"
-                opacity={0.07}
+                fill={CHART.lockShade}
+                opacity={0.09}
                 pointerEvents="none"
               />
               {lockedThroughH <= viewEnd && (
@@ -304,7 +317,7 @@ export const GanttChart: React.FC<Props> = ({
                     y1={HEADER_HEIGHT - 6}
                     x2={LINE_LABEL_WIDTH + (lockedThroughH - viewStart) * hourWidth}
                     y2={HEADER_HEIGHT + rows.length * LINE_HEIGHT}
-                    stroke="#546e7a"
+                    stroke={CHART.lockLine}
                     strokeWidth={2}
                     strokeDasharray="6 3"
                   />
@@ -314,7 +327,7 @@ export const GanttChart: React.FC<Props> = ({
                     textAnchor="end"
                     fontSize={10}
                     fontWeight={700}
-                    fill="#546e7a"
+                    fill={CHART.lockLine}
                   >
                     🔒 locked
                   </text>
@@ -339,10 +352,10 @@ export const GanttChart: React.FC<Props> = ({
               <g pointerEvents="none">
                 <rect
                   x={gx} y={y + slot.y + 2} width={Math.max(gw, 2)} height={(slot.height ?? LINE_HEIGHT) - 8}
-                  rx={4} fill="none" stroke="#1976d2" strokeWidth={2} strokeDasharray="5 3" opacity={0.8}
+                  rx={4} fill="none" stroke={CHART.insert} strokeWidth={2} strokeDasharray="5 3" opacity={0.8}
                 />
-                <line x1={ix} y1={y} x2={ix} y2={y + LINE_HEIGHT} stroke="#1976d2" strokeWidth={2} />
-                <text x={ix + 3} y={y + 10} fontSize={9} fontWeight={700} fill="#1976d2">
+                <line x1={ix} y1={y} x2={ix} y2={y + LINE_HEIGHT} stroke={CHART.insert} strokeWidth={2} />
+                <text x={ix + 3} y={y + 10} fontSize={9} fontWeight={700} fill={CHART.insert}>
                   insert - {insertPreview.shiftedCount} block(s) slide {insertPreview.deltaH.toFixed(1)}h
                 </text>
               </g>
@@ -409,9 +422,9 @@ export const GanttChart: React.FC<Props> = ({
                   width={gw}
                   height={Math.max(6, rowH - pad * 2)}
                   rx={4}
-                  fill={dropGhost.valid ? dropGhost.fill : "#e53935"}
+                  fill={dropGhost.valid ? dropGhost.fill : T.bad}
                   fillOpacity={dropGhost.valid ? 0.35 : 0.2}
-                  stroke={dropGhost.valid ? "#333" : "#b71c1c"}
+                  stroke={dropGhost.valid ? T.ink : T.bad}
                   strokeWidth={1.5}
                   strokeDasharray="5 3"
                 />

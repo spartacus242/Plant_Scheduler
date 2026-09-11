@@ -11,6 +11,7 @@
 import React, { useState } from "react";
 import { hourToStamp } from "../utils/layout";
 import type { PlacementPlan } from "../utils/skuPicker";
+import { BTN_BASE, POPOVER, T } from "../utils/theme";
 
 export interface PickerRowData {
   sku: string;
@@ -41,12 +42,13 @@ interface Props {
 }
 
 const TH: React.CSSProperties = {
-  textAlign: "left", padding: "3px 8px", color: "#78909c",
+  textAlign: "left", padding: "3px 8px", color: T.ink3,
   fontSize: 10.5, fontWeight: 700, position: "sticky", top: 0,
-  background: "#fff", borderBottom: "1px solid #e0e0e5", whiteSpace: "nowrap",
+  textTransform: "uppercase", letterSpacing: 0.4,
+  background: T.surface, borderBottom: `1px solid ${T.rule}`, whiteSpace: "nowrap",
 };
 const TD: React.CSSProperties = {
-  padding: "4px 8px", fontSize: 12, borderBottom: "1px solid #f2f2f5",
+  padding: "4px 8px", fontSize: 12, borderBottom: `1px solid ${T.surface2}`,
   whiteSpace: "nowrap", verticalAlign: "top",
 };
 
@@ -61,7 +63,7 @@ export const Chips: React.FC<{
     const label = neighbourType
       ? (arrow === "in" ? `after ${neighbourType.toUpperCase()}` : neighbourType.toUpperCase())
       : (arrow === "in" ? "line start" : "open");
-    return <span style={{ color: "#bbb" }}>{label}</span>;
+    return <span style={{ color: T.ink3 }}>{label}</span>;
   }
   return (
     <span>
@@ -72,21 +74,21 @@ export const Chips: React.FC<{
           title="no changeover data for this pair"
           style={{
             display: "inline-block", padding: "0 6px", marginRight: 3,
-            borderRadius: 3, background: "#eceff1", color: "#607d8b",
+            borderRadius: 3, background: T.neutralSoft, color: T.neutral,
             fontSize: 10.5, fontWeight: 700, lineHeight: "16px",
           }}
         >
           ?
         </span>
       ) : flags.length === 0 ? (
-        <span style={{ color: "#2e7d32", fontWeight: 600 }}>clean</span>
+        <span style={{ color: T.ok, fontWeight: 600 }}>clean</span>
       ) : (
         flags.map((f) => (
           <span
             key={f}
             style={{
               display: "inline-block", padding: "0 5px", marginRight: 3,
-              borderRadius: 3, background: "#fff3e0", color: "#e65100",
+              borderRadius: 3, background: T.warnSoft, color: T.warn,
               fontSize: 10.5, fontWeight: 700, lineHeight: "16px",
             }}
           >
@@ -94,7 +96,7 @@ export const Chips: React.FC<{
           </span>
         ))
       )}
-      {setupH > 0 && <span style={{ color: "#888", fontSize: 11 }}> +{setupH}h</span>}
+      {setupH > 0 && <span style={{ color: T.ink3, fontSize: 11 }}> +{setupH}h</span>}
     </span>
   );
 };
@@ -111,9 +113,7 @@ export const SkuPickerPopover: React.FC<Props> = ({
   return (
     <div
       style={{
-        position: "fixed", left, top, zIndex: 1000,
-        background: "#fff", border: "1px solid #ccc", borderRadius: 8,
-        boxShadow: "0 4px 16px rgba(0,0,0,0.18)", padding: "10px 12px",
+        ...POPOVER, left, top, padding: "10px 12px",
         maxWidth: 690,
       }}
       onClick={(e) => e.stopPropagation()}
@@ -127,28 +127,27 @@ export const SkuPickerPopover: React.FC<Props> = ({
           {onAddCip && (
             <button
               title="Insert a clean at this gap; later projected CIPs on the line re-forecast from it"
-              style={{ fontSize: 11.5, padding: "3px 10px", borderRadius: 4, fontWeight: 700,
-                       border: "1px solid #1565c0", background: "#e3f2fd", cursor: "pointer" }}
+              style={{ ...BTN_BASE, fontSize: 11.5, padding: "3px 10px", fontWeight: 700,
+                       border: "1px solid #BBD3F0", background: T.infoSoft, color: T.info }}
               onClick={() => { const e = onAddCip(); setErr(e); if (!e) onClose(); }}
             >
               🧼 CIP here
             </button>
           )}
-          <span style={{ cursor: "pointer", fontWeight: 700, color: "#888" }} onClick={onClose}>
+          <span style={{ cursor: "pointer", fontWeight: 700, color: T.ink3 }} onClick={onClose}>
             ×
           </span>
         </span>
       </div>
       {onAddTrial && (
         <div style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 11.5, margin: "4px 0 2px" }}>
-          <span style={{ color: "#607d8b", fontWeight: 600 }}>Trial run:</span>
+          <span style={{ color: T.ink2, fontWeight: 600 }}>Trial run:</span>
           <input value={trialSku} onChange={(e) => setTrialSku(e.target.value)} placeholder="SKU"
-                 style={{ width: 90, fontSize: 11.5, padding: "2px 4px", border: "1px solid #ccc", borderRadius: 4 }} />
+                 style={{ width: 90, fontSize: 11.5, padding: "2px 4px", border: `1px solid ${T.rule}`, borderRadius: 4 }} />
           <input value={trialH} onChange={(e) => setTrialH(e.target.value)} placeholder="h"
-                 style={{ width: 44, fontSize: 11.5, padding: "2px 4px", border: "1px solid #ccc", borderRadius: 4 }} />
+                 style={{ width: 44, fontSize: 11.5, padding: "2px 4px", border: `1px solid ${T.rule}`, borderRadius: 4 }} />
           <button
-            style={{ fontSize: 11.5, padding: "2px 8px", borderRadius: 4, fontWeight: 700,
-                     border: "1px solid #7b1fa2", background: "#f3e5f5", cursor: "pointer" }}
+            style={{ ...BTN_BASE, fontSize: 11.5, padding: "2px 8px", fontWeight: 700 }}
             onClick={() => {
               const h = Number(trialH);
               const e = !trialSku.trim() ? "enter a SKU" : !(h > 0) ? "hours must be > 0" : onAddTrial(trialSku.trim(), h);
@@ -160,13 +159,13 @@ export const SkuPickerPopover: React.FC<Props> = ({
           </button>
         </div>
       )}
-      {err && <div style={{ fontSize: 11.5, color: "#b71c1c", margin: "2px 0" }}>{err}</div>}
-      <div style={{ fontSize: 11, color: "#888", margin: "2px 0 6px" }}>
+      {err && <div style={{ fontSize: 11.5, color: T.bad, fontWeight: 600, margin: "2px 0" }}>{err}</div>}
+      <div style={{ fontSize: 11, color: T.ink3, margin: "2px 0 6px" }}>
         Snaps left against the previous block with the changeover setup
         respected. Demand-plan SKUs this line can run, most open demand first.
       </div>
       {rows.length === 0 ? (
-        <div style={{ fontSize: 12, color: "#888", padding: "8px 0" }}>
+        <div style={{ fontSize: 12, color: T.ink3, padding: "8px 0" }}>
           No SKU with remaining demand can run on {lineName}.
         </div>
       ) : (
@@ -197,9 +196,9 @@ export const SkuPickerPopover: React.FC<Props> = ({
                         style={{
                           fontSize: 11.5, padding: "3px 10px", borderRadius: 4,
                           fontWeight: 700,
-                          border: blocked ? "1px solid #ccc" : "1px solid #0a8",
-                          background: blocked ? "#f5f5f5" : "#00c896",
-                          color: blocked ? "#999" : "#fff",
+                          border: blocked ? `1px solid ${T.rule}` : `1px solid ${T.accent}`,
+                          background: blocked ? T.surface2 : T.accent,
+                          color: blocked ? T.ink3 : "#fff",
                           cursor: blocked ? "not-allowed" : "pointer",
                         }}
                         onClick={() => onPlace(r)}
@@ -210,7 +209,7 @@ export const SkuPickerPopover: React.FC<Props> = ({
                     <td style={TD}>
                       <span style={{ fontWeight: 700 }}>{r.sku}</span>
                       {r.desc && (
-                        <div style={{ fontSize: 10.5, color: "#888", maxWidth: 170,
+                        <div style={{ fontSize: 10.5, color: T.ink3, maxWidth: 170,
                                       overflow: "hidden", textOverflow: "ellipsis" }}>
                           {r.desc}
                         </div>
@@ -227,7 +226,7 @@ export const SkuPickerPopover: React.FC<Props> = ({
                       <Chips flags={r.outFlags} setupH={r.plan.setupAfterH} against={r.plan.nextSku}
                              neighbourType={r.plan.nextSku ? null : r.plan.nextType} arrow="out" />
                     </td>
-                    <td style={{ ...TD, fontSize: 11, color: blocked ? "#b71c1c" : "#455a64" }}>
+                    <td style={{ ...TD, fontSize: 11, color: blocked ? T.bad : T.ink2 }}>
                       {blocked
                         ? r.plan.reason
                         : `${hourToStamp(r.plan.startHour, anchor)} · ` +

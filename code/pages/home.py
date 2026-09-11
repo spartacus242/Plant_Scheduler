@@ -23,10 +23,12 @@ from helpers import data_health as dh
 from helpers import overnight_results as onr
 from helpers.config import load_toml
 from helpers.paths import data_dir
+from helpers.theme import chip, page_header, section_label
 from helpers.week_lock import read_lock
 
-st.header("Flowstate — Command Center")
-st.caption("Operational truth → digital twin → optimizer. Walk the loop top to bottom.")
+page_header("Command Center",
+            subtitle="Where you are in today's loop — Connect → Reconcile → Plan → "
+                     "Compare & Promote → Track. The Plant Calendar is the working screen.")
 
 dd = data_dir()
 cfg = load_toml()
@@ -77,8 +79,8 @@ else:
 # ---------------------------------------------------------------------------
 # The daily loop — one row per step, live status
 # ---------------------------------------------------------------------------
-_CHIP = {"ok": ":green[● OK]", "warn": ":orange[▲ ATTENTION]",
-         "bad": ":red[✕ BLOCKED]", "off": ":gray[· NOT SET]"}
+_CHIP = {"ok": chip("OK", "ok", icon="●"), "warn": chip("ATTENTION", "warn", icon="▲"),
+         "bad": chip("BLOCKED", "bad", icon="✕"), "off": chip("NOT SET", "neutral", icon="·")}
 
 
 def _worst(states: list[str]) -> str:
@@ -161,15 +163,16 @@ _STEPS = [
     ("5 · Track", "pages/scorecard.py", _step_track),
 ]
 
-st.subheader("Today")
+section_label("Today")
 for title, page, fn in _STEPS:
     state, detail = fn()
-    c1, c2, c3, c4 = st.columns([2, 2, 6, 1.5])
-    c1.markdown(f"**{title}**")
-    c2.markdown(_CHIP[state])
-    c3.caption(detail)
-    with c4:
-        st.page_link(page, label="Open", icon=":material/arrow_forward:")
+    with st.container(border=True):
+        c1, c2, c3, c4 = st.columns([2, 1.6, 6, 1.4], vertical_alignment="center")
+        c1.markdown(f"**{title}**")
+        c2.markdown(_CHIP[state], unsafe_allow_html=True)
+        c3.caption(detail)
+        with c4:
+            st.page_link(page, label="Open", icon=":material/arrow_forward:")
 
 # Overnight optimizer — not a numbered step (the batch runs while nobody is
 # here), but the same row grammar so the morning scan stays one pass:
@@ -182,13 +185,14 @@ _ov_chip = {onr.OK: "ok", onr.STALE: "warn"}.get(_ov.state, "off")
 _ov_interrupted = _ov.night is not None and _ov.night.interrupted
 if _ov_interrupted:
     _ov_chip = "warn"
-c1, c2, c3, c4 = st.columns([2, 2, 6, 1.5])
-c1.markdown("**☾ Overnight optimizer**")
-c2.markdown(_CHIP[_ov_chip])
-c3.caption(_ov.detail)
-with c4:
-    st.page_link("pages/generate.py", label="Review",
-                 icon=":material/arrow_forward:")
+with st.container(border=True):
+    c1, c2, c3, c4 = st.columns([2, 1.6, 6, 1.4], vertical_alignment="center")
+    c1.markdown("**☾ Overnight optimizer**")
+    c2.markdown(_CHIP[_ov_chip], unsafe_allow_html=True)
+    c3.caption(_ov.detail)
+    with c4:
+        st.page_link("pages/generate.py", label="Review",
+                     icon=":material/arrow_forward:")
 if _ov_interrupted:
     st.warning(f"{onr.night_text(_ov.night)} — from the repo root: "
                f"`{onr.resume_command(_ov.night.generation)}`")
@@ -201,7 +205,7 @@ if _brief:
 # What you need to do next
 # ---------------------------------------------------------------------------
 actions = dh.next_actions(health, limit=5)
-st.subheader("What you need to do next")
+section_label("What you need to do next")
 if actions:
     for i, a in enumerate(actions, 1):
         st.markdown(f"{i}. {a}")

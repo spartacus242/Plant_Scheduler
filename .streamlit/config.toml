@@ -1,6 +1,34 @@
 [theme]
-primaryColor = "#00f2c3"
-backgroundColor = "#1e1e2f"
-secondaryBackgroundColor = "#27293d"
-textColor = "#ffffff"
-font = "sans serif"
+# Flowstate light workbench — tokens mirrored in code/helpers/theme.py and
+# code/components/gantt/frontend/src/utils/theme.ts. Keep the three in step.
+base = "light"
+primaryColor = "#0F6E6E"
+backgroundColor = "#F3F5F7"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#1E2530"
+linkColor = "#0F6E6E"
+codeBackgroundColor = "#E8ECF0"
+borderColor = "#D3D9DF"
+dataframeBorderColor = "#D3D9DF"
+dataframeHeaderBackgroundColor = "#E8ECF0"
+showWidgetBorder = true
+showSidebarBorder = true
+baseRadius = "8px"
+buttonRadius = "7px"
+# System UI stack: Segoe UI on the plant PCs, no web-font download needed.
+font = "'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif"
+headingFont = "'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif"
+codeFont = "Consolas, 'SFMono-Regular', Menlo, 'Liberation Mono', monospace"
+headingFontWeights = [700, 700, 700, 600]
+# Status palette (reserved: ok / warn / bad / info) — used by st.success etc.
+greenColor = "#2E7D4F"
+orangeColor = "#B9640F"
+yellowColor = "#B58A1C"
+redColor = "#B3322E"
+blueColor = "#2F6DB5"
+grayColor = "#6B7A8C"
+
+[theme.sidebar]
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F3F5F7"
+textColor = "#1E2530"

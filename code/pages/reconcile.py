@@ -21,13 +21,13 @@ from helpers import reconcile_engine as rec
 from helpers.config import load_toml
 from helpers.paths import data_dir
 from helpers.st_compat import deferred_dataframe
+from helpers.theme import chip, page_header, render_chips, section_label
 
-st.header("Reconcile")
-st.caption(
-    "Everything that needs attention **before** you plan: stock that won't "
-    "cover a run, demand with nothing scheduled, cleaning coming due, "
-    "capability conflicts, physical impossibilities. Fix or acknowledge, "
-    "then move to the Plant Calendar."
+page_header(
+    "Reconcile",
+    subtitle="Everything that needs attention before you plan: stock that won't cover a "
+             "run, demand with nothing scheduled, cleaning coming due, capability "
+             "conflicts, physical impossibilities. Fix or acknowledge, then go plan.",
 )
 
 dd = data_dir()
@@ -136,14 +136,16 @@ if not findings:
     st.success("Nothing needs attention — the plan is clean. Go plan.")
     st.stop()
 
-_SEV_LABEL = {rec.BLOCKING: "🟥 Blocking", rec.WARN: "🟨 Needs attention",
-              rec.INFO: "ℹ️ Informational"}
+_SEV_LABEL = {rec.BLOCKING: ("Blocking", "bad"), rec.WARN: ("Needs attention", "warn"),
+              rec.INFO: ("Informational", "info")}
 
 for sev in (rec.BLOCKING, rec.WARN, rec.INFO):
     group = [f for f in findings if f.severity == sev]
     if not group:
         continue
-    st.subheader(_SEV_LABEL[sev])
+    _lbl, _kind = _SEV_LABEL[sev]
+    section_label(_lbl)
+    render_chips([chip(f"{len(group)} {_lbl.lower()}", _kind)])
     for f in group:
         box = st.error if sev == rec.BLOCKING else (
             st.warning if sev == rec.WARN else st.info)
