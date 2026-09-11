@@ -27,6 +27,7 @@ def gantt_calendar(
     demand_targets: List[Dict[str, Any]],
     lines: List[Dict[str, Any]],
     holding_area: Optional[List[Dict[str, Any]]] = None,
+    holding_dismissed: Optional[List[str]] = None,
     config: Optional[Dict[str, Any]] = None,
     side_downtime: Optional[Dict[str, List[List[float]]]] = None,
     sku_formats: Optional[Dict[str, str]] = None,
@@ -59,7 +60,7 @@ def gantt_calendar(
     `focus_block` is a block id to scroll to and highlight on mount
     (Reconcile finding -> ?focus=<block_id>).
 
-    Returns None until interaction, then schedule / cipWindows / holdingArea / lastAction.
+    Returns None until interaction, then schedule / cipWindows / holdingArea / holdingDismissed / lastAction.
     """
     return _component_func(
         schedule=schedule,
@@ -69,6 +70,7 @@ def gantt_calendar(
         demandTargets=demand_targets,
         lines=lines,
         holdingArea=holding_area or [],
+        holdingDismissed=holding_dismissed or [],
         sideDowntime=side_downtime or {},
         skuFormats=sku_formats or {},
         kpis=kpis,

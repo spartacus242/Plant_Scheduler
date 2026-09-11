@@ -139,7 +139,7 @@ def save_calendar(df: pd.DataFrame, path: Path, *,
     # Server-side twin of the Gantt's push guard (fix FE-1 / writeback-8;
     # INTEGRATE applying the FE->W handoff): a block_id shared by rows with a
     # DIFFERENT (order_id, sku, block_type) is two unrelated blocks under one
-    # name — set_float_link would pin both. Split pieces of ONE MO share an
+    # name — an id-keyed pin would hit both. Split pieces of ONE MO share an
     # id legitimately and pass. Refused before any write or backup unless
     # allow_duplicate_ids.
     dup = duplicate_block_ids(out)
@@ -221,14 +221,14 @@ def reconcile_block_identity(
 
     Fix writeback-4 (audit 2026-09-03): import_solver_schedule minted a fresh
     uuid and locked=False for every row, so promoting a version cleared every
-    planner lock, changed every block_id (dangling 'after:<id>' float links)
+    planner lock, changed every block_id
     and made version-to-version diffing by id meaningless — even for work the
     solver left exactly where it was. A new row MATCHES a board row when they
     share order_id (non-empty) and line and their starts agree within
     `tol_h`; CIP rows (no order) match by type + line + start. Each board row
     is used at most once (nearest start wins), so split pieces of one MO
     resolve piece-by-piece. A match carries over block_id, locked and the
-    planner tokens (pinned, after:*) from the board; everything else keeps
+    planner token (pinned) from the board; everything else keeps
     its fresh id (genuinely new work). `board_shift_h` is added to the board's
     hours before comparing (the board may live in another frame).
     Returns (calendar copy, {"matched": n, "new": n}).
@@ -309,7 +309,7 @@ def reconcile_block_identity(
         ids[i] = str(br.get("block_id") or ids[i])
         locked[i] = bool(locked[i]) or bool(br.get("locked", False))
         keep = [t for t in str(br.get("attrs") or "").split(";")
-                if t == "pinned" or t.startswith(FLOAT_PREFIX)]
+                if t == "pinned"]
         cur = [t for t in str(attrs[i] or "").split(";") if t]
         attrs[i] = ";".join(cur + [t for t in keep if t not in cur])
         stats["matched"] += 1
@@ -590,134 +590,10 @@ def _block_row(b: dict, btype: str) -> dict:
     }
 
 
-# ── Floating blocks (2026-08-28) ────────────────────────────────────────────
-# attrs token "after:<anchor_block_id>:<gap_h>": this block's start is tied
-# to another block's end (use case: a SKU that must start when a running MO
-# finishes — the MO's end re-forecasts from actual cases, and the floating
-# block follows by the same amount). The gap is captured at LINK time so
-# deliberate changeover/CIP spacing rides along. Linking also sets the
-# 'pinned' token: a floating block is a planner commitment, and every
-# pinned pathway (solver committed windows, demand credit, pins_match
-# guard, read-only gating) then applies unchanged. Board never moves
-# silently — apply_float_links runs behind the Calendar page's drift chip.
-
-FLOAT_PREFIX = "after:"
-
-
-def float_link_of(attrs) -> tuple[str, float] | None:
-    """(anchor_block_id, gap_h) from an attrs string, or None."""
-    for t in str(attrs or "").split(";"):
-        if t.startswith(FLOAT_PREFIX):
-            parts = t.split(":")
-            if len(parts) >= 2 and parts[1]:
-                try:
-                    gap = float(parts[2]) if len(parts) > 2 and parts[2] else 0.0
-                except ValueError:
-                    gap = 0.0
-                return parts[1], gap
-    return None
-
-
-def _with_tokens(attrs, drop_prefixes=(), add=()) -> str:
-    tokens = [t for t in str(attrs or "").split(";")
-              if t and not any(t.startswith(p) for p in drop_prefixes)]
-    for t in add:
-        if t not in tokens:
-            tokens.append(t)
-    return ";".join(tokens)
-
-
-def set_float_link(calendar: pd.DataFrame, block_id: str,
-                   anchor_id: str) -> pd.DataFrame:
-    """Link block_id's start to anchor_id's end, gap = current spacing.
-    Also pins the block (a float is a planner commitment). Returns a copy;
-    raises ValueError on unknown ids, self-link, or a non-production block."""
-    cal = calendar.copy()
-    ids = cal["block_id"].astype(str)
-    if block_id == anchor_id:
-        raise ValueError("a block cannot float after itself")
-    for bid in (block_id, anchor_id):
-        if not (ids == bid).any():
-            raise ValueError(f"unknown block: {bid}")
-    b = cal.loc[ids == block_id].iloc[0]
-    a = cal.loc[ids == anchor_id].iloc[0]
-    if str(b.get("block_type")) != "production":
-        raise ValueError("only production blocks can float")
-    if "current_state:" in str(b.get("attrs") or ""):
-        raise ValueError("a committed MO block cannot float")
-    gap = round(float(b["start_h"]) - float(a["end_h"]), 2)
-    tok = f"{FLOAT_PREFIX}{anchor_id}:{gap}"
-    cal.loc[ids == block_id, "attrs"] = _with_tokens(
-        b.get("attrs"), drop_prefixes=(FLOAT_PREFIX,), add=(tok, "pinned"))
-    return cal
-
-
-def clear_float_link(calendar: pd.DataFrame, block_id: str) -> pd.DataFrame:
-    """Remove the float link. The 'pinned' token is left as-is — unpinning
-    is the planner's separate, explicit choice (popup toggle)."""
-    cal = calendar.copy()
-    ids = cal["block_id"].astype(str)
-    m = ids == block_id
-    if m.any():
-        cal.loc[m, "attrs"] = _with_tokens(
-            cal.loc[m, "attrs"].iloc[0], drop_prefixes=(FLOAT_PREFIX,))
-    return cal
-
-
-def apply_float_links(calendar: pd.DataFrame,
-                      tol: float = 1e-6) -> tuple[pd.DataFrame, list[str]]:
-    """Recompute every floating block's position: start = anchor end + gap,
-    duration preserved. Chains resolve by fixpoint iteration (bounded), so
-    B-after-A and C-after-B both settle. Missing anchors and cycles degrade
-    to notes, never exceptions. Returns (calendar copy, human notes)."""
-    cal = calendar.copy()
-    notes: list[str] = []
-    if cal.empty or "attrs" not in cal.columns:
-        return cal, notes
-    links: dict[str, tuple[str, float]] = {}
-    for _, r in cal.iterrows():
-        ln = float_link_of(r.get("attrs"))
-        if ln is not None:
-            links[str(r["block_id"])] = ln
-    if not links:
-        return cal, notes
-    ids = cal["block_id"].astype(str)
-    known = set(ids)
-    for bid, (anchor, _gap) in list(links.items()):
-        if anchor not in known:
-            notes.append(f"float link on {bid} points at a missing block "
-                         f"({anchor}) — left where it is")
-            links.pop(bid)
-    before = {str(r["block_id"]): float(r["start_h"])
-              for _, r in cal.iterrows() if str(r["block_id"]) in links}
-    moved_any = True
-    passes = 0
-    while moved_any and passes <= len(links) + 1:
-        moved_any = False
-        passes += 1
-        for bid, (anchor, gap) in links.items():
-            a = cal.loc[ids == anchor].iloc[0]
-            m = ids == bid
-            b = cal.loc[m].iloc[0]
-            target = float(a["end_h"]) + gap
-            delta = target - float(b["start_h"])
-            if abs(delta) > tol:
-                cal.loc[m, "start_h"] = float(b["start_h"]) + delta
-                cal.loc[m, "end_h"] = float(b["end_h"]) + delta
-                moved_any = True
-    for bid in links:
-        m = ids == bid
-        b = cal.loc[m].iloc[0]
-        net = float(b["start_h"]) - before[bid]
-        if abs(net) > tol:
-            anchor, _ = links[bid]
-            a = cal.loc[ids == anchor].iloc[0]
-            notes.append(
-                f"{b.get('label') or b.get('sku') or bid} moved {net:+.2f}h "
-                f"to follow {a.get('label') or a.get('sku') or anchor}")
-    if moved_any:
-        notes.append("float links did not settle (cycle?) — check the links")
-    return cal, notes
+# Float links (attrs "after:<anchor_block_id>:<gap_h>", 2026-08-28) were
+# removed on 2026-09-11 — never used on the live board, and the planner
+# could not tell what the option did. Legacy tokens are inert and are
+# dropped by carry_board_identity on the next promote.
 
 
 # Changeover-flag bitmask bit order (bit i = column i) — mirrored in the

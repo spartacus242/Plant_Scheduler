@@ -51,7 +51,7 @@ interface Props {
 
 export const GanttSandbox: React.FC<Props> = ({ args }) => {
   const [data, actions] = useScheduleState(args);
-  const { schedule, cipWindows, holdingArea, lastAction } = data;
+  const { schedule, cipWindows, holdingArea, holdingDismissed, lastAction } = data;
 
   const horizon = args.config.horizon_hours || 336;
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1625,7 +1625,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   const [dirty, setDirty] = useState(false);
   const adoptingHolding = useRef(false);
   useEffect(() => {
-    const key = JSON.stringify({ schedule, cipWindows, holdingArea, lastAction });
+    const key = JSON.stringify({ schedule, cipWindows, holdingArea, holdingDismissed, lastAction });
     if (lastPushed.current === "") {
       lastPushed.current = key; // initial mount is not an edit
       return;
@@ -1638,7 +1638,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       return;
     }
     if (key !== lastPushed.current) setDirty(true);
-  }, [schedule, cipWindows, holdingArea, lastAction]);
+  }, [schedule, cipWindows, holdingArea, holdingDismissed, lastAction]);
 
   // After a Refresh push, Python rebuilds the holding area (cards clear when
   // the placed kg covers an order) and re-renders the component with the new
@@ -1655,16 +1655,16 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   //      just-pushed holding is not clobbered by the old one;
   //   3. Python's rerun arrives with the rebuilt H2: differs from last
   //      seen and not dirty -> adopt.
-  const lastSeenServerHolding = useRef(JSON.stringify(args.holdingArea ?? []));
+  const lastSeenServerHolding = useRef(JSON.stringify({ h: args.holdingArea ?? [], d: args.holdingDismissed ?? [] }));
   useEffect(() => {
-    const incoming = JSON.stringify(args.holdingArea ?? []);
+    const incoming = JSON.stringify({ h: args.holdingArea ?? [], d: args.holdingDismissed ?? [] });
     const changed = incoming !== lastSeenServerHolding.current;
     lastSeenServerHolding.current = incoming;
     if (!changed) return;
     if (dirty) return; // retry once the edits are pushed
     adoptingHolding.current = true;
-    actions.setHoldingFromServer(args.holdingArea ?? []);
-  }, [args.holdingArea, dirty, actions]);
+    actions.setHoldingFromServer(args.holdingArea ?? [], args.holdingDismissed ?? []);
+  }, [args.holdingArea, args.holdingDismissed, dirty, actions]);
   // ONE push path. A Save carries a saveRequest — Python writes the board it
   // just received (disk, or a named version) and never a stale one. A
   // separate Streamlit Save button could only see the LAST pushed state, so
@@ -1673,7 +1673,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   const pushState = useCallback(
     (saveRequest: { kind: "disk" | "version"; nonce: number } | null = null) => {
       // Save guard (fix FE / audit writeback-8): never hand Python a board
-      // where one block_id names two different runs — set_float_link / pin /
+      // where one block_id names two different runs — pin /
       // delete key on block_id and would hit both. Split pieces of one MO
       // may share an id; two unrelated blocks may not. Guards every push,
       // so a Save can never write such a board either.
@@ -1683,11 +1683,11 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
                + `${dupes.length > 5 ? ` (+${dupes.length - 5} more)` : ""} — split or re-add the affected blocks before pushing`);
         return;
       }
-      lastPushed.current = JSON.stringify({ schedule, cipWindows, holdingArea, lastAction });
+      lastPushed.current = JSON.stringify({ schedule, cipWindows, holdingArea, holdingDismissed, lastAction });
       setDirty(false);
-      setComponentValue({ schedule, cipWindows, holdingArea, lastAction, saveRequest });
+      setComponentValue({ schedule, cipWindows, holdingArea, holdingDismissed, lastAction, saveRequest });
     },
-    [schedule, cipWindows, holdingArea, lastAction, reject],
+    [schedule, cipWindows, holdingArea, holdingDismissed, lastAction, reject],
   );
   const pushRefresh = useCallback(() => pushState(null), [pushState]);
   // The nonce is wall-clock time: Python remembers the last nonce it acted
@@ -1939,6 +1939,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
             nowH={holdingNowH}
             demandTargets={args.demandTargets}
             supplyStamp={supplyStamp}
+            onCardRemove={(block) => actions.dismissFromHolding(block)}
             onCardContextMenu={(block, cx, cy, shiftKey) => {
               // Same convention as calendar blocks (2026-09-01): plain
               // right-click toggles the SKU highlight, Shift+right-click
@@ -1993,7 +1994,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         <div style={{ ...TILE_LABEL, fontSize: 11.5, marginBottom: 4 }}>
           Demand adherence (live)
           <span style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0, color: T.ink3 }}>
-            {" "}· click a row to highlight that SKU on the board · &ldquo;+&rdquo; adds the missing tonnage to holding
+            {" "}· click a row to highlight that SKU on the board · &ldquo;+&rdquo; adds the missing tonnage to holding (a card&rsquo;s &times; removes it again)
           </span>
         </div>
         <AdherenceTable

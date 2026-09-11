@@ -149,6 +149,11 @@ export interface SandboxArgs {
   demandTargets: DemandTarget[];
   lines: LineInfo[];
   holdingArea: ScheduleBlock[];
+  /** Demand orders the planner removed from holding with a card's "×"
+   * (session-scoped; Python keeps the list and hands it back on every
+   * mount): the auto-derivation skips them until the adherence table's
+   * "+" brings the card back. */
+  holdingDismissed?: string[];
   /** line/side name -> [startHour, endHour) windows where it is down. */
   sideDowntime?: Record<string, number[][]>;
   /** sku -> pack format string (e.g. "6X12X90") from sku_info. */
@@ -179,6 +184,8 @@ export interface SandboxState {
   schedule: ScheduleBlock[];
   cipWindows: ScheduleBlock[];
   holdingArea: ScheduleBlock[];
+  /** Order ids dismissed from holding (see SandboxArgs.holdingDismissed). */
+  holdingDismissed: string[];
   lastAction: string;
 }
 

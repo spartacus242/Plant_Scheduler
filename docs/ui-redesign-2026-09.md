@@ -87,7 +87,7 @@ since were silently not saved.
    state, versions used, finished blocks hidden, last save time.
 2. **Attention strip** — only what must be handled before planning, each
    with its own button on the same row: live feeds missing or stale, the
-   weekly *Roll calendar to today*, MO drift & float sync.
+   weekly *Roll calendar to today*, MO drift.
 3. **Control row** — version name · hide finished blocks · reload from disk.
 4. **The board**, with its own toolbar: `✓ checked` / `● unsaved edits`
    chip, overlap chip, **⟳ Refresh checks**, **Save as version**, **💾 Save**
@@ -95,7 +95,7 @@ since were silently not saved.
    with its own scroll) and the live demand-adherence table follow.
 5. **Lock & export strip** — lock through / unlock / Excel export.
 6. **Tabs** for everything that used to sit above the board: *Live score*
-   (Δ vs the saved board + the full scorecard), *Plant state & float links*
+   (Δ vs the saved board + the full scorecard), *Plant state*
    (rebuild from manprg + cip_info, link management), *Downtime* (the only
    editor of downtimes.csv), *Now running*.
 
@@ -202,3 +202,23 @@ findings; it only gained the header, severity chips and the theme.
 Edit the three mirrors in §1 (config.toml → theme.py → theme.ts), run
 `npm run build` in the frontend folder, restart Streamlit. Nothing else
 references a color.
+
+---
+
+## 7. Follow-ups from the 2026-09-11 trial (merged with the audit fix round)
+
+- **Holding card "×"** — hovering or clicking a holding card shows a small ×
+  in its corner; it removes the card. Because holding is *derived* (demand −
+  board − made) on every board edit and on every "Refresh checks", a plain
+  delete would pop straight back, so the order is remembered as *dismissed*
+  (`holdingDismissed` in the component state, `cal_holding_dismissed` in the
+  page session): no card of any kind is derived for it until the adherence
+  table's "+" brings it back. Dismissals live as long as the holding itself
+  (until *Reload from disk*); they are never written to disk. Ctrl+Z undoes
+  a removal.
+- **Float links removed** — the "Plant state & float links" tab is now
+  "Plant state"; the link/unlink controls, the "float sync" half of the MO
+  drift button and the `after:<id>:<gap>` helpers are gone (never used on the
+  live board; the planner could not tell what the option did). "Apply MO
+  drift" still moves running/queued MO blocks to their live manprg
+  starts/ends — nothing else moves with them.

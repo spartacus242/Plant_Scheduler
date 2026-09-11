@@ -64,6 +64,11 @@ export interface ScheduleStateActions {
     placedH: number, fullDurOnLine: number,
   ) => void;
   addToHolding: (orderId: string, sku: string, runHours: number, qtyKg?: number) => void;
+  /** The card's "×" (planner request 2026-09-11): drop the card and remember
+   * its order as dismissed, so neither the live auto-derivation nor the
+   * server rebuild brings it straight back. One undo step. addToHolding
+   * (the adherence table's "+") un-dismisses the order. */
+  dismissFromHolding: (target: BlockRef) => void;
   /** Blank-space SKU picker: place a NEW production run as contiguous
    * per-order segments (ONE undo step). Order ids must be real demand orders
    * so the kg credits adherence and the next holding rebuild. */
@@ -92,7 +97,7 @@ export interface ScheduleStateActions {
   /** Adopt the SERVER-derived holding area (rebuilt after every Refresh
    * push). Not a user edit: no undo entry — the caller keeps the dirty
    * flag honest. */
-  setHoldingFromServer: (blocks: ScheduleBlock[]) => void;
+  setHoldingFromServer: (blocks: ScheduleBlock[], dismissed?: string[]) => void;
   /** Replace the AUTO (hold_*) cards with a freshly derived set; planner-
    * parked cards keep their place. No undo step: derived state, not an
    * edit. Returns prev unchanged when nothing differs (render-loop guard). */
@@ -107,6 +112,7 @@ export interface ScheduleStateData {
   schedule: ScheduleBlock[];
   cipWindows: ScheduleBlock[];
   holdingArea: ScheduleBlock[];
+  holdingDismissed: string[];
   lastAction: string;
 }
 
@@ -114,6 +120,7 @@ interface Snapshot {
   schedule: ScheduleBlock[];
   cipWindows: ScheduleBlock[];
   holdingArea: ScheduleBlock[];
+  holdingDismissed: string[];
 }
 
 export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, ScheduleStateActions] {
@@ -125,6 +132,9 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
   );
   const [holdingArea, setHoldingArea] = useState<ScheduleBlock[]>(() =>
     (args?.holdingArea ?? []).map(ensureId),
+  );
+  const [holdingDismissed, setHoldingDismissed] = useState<string[]>(() =>
+    (args?.holdingDismissed ?? []).map(String),
   );
   const [lastAction, setLastAction] = useState("");
 
@@ -143,7 +153,8 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
     schedule: [...schedule],
     cipWindows: [...cipWindows],
     holdingArea: [...holdingArea],
-  }), [schedule, cipWindows, holdingArea]);
+    holdingDismissed: [...holdingDismissed],
+  }), [schedule, cipWindows, holdingArea, holdingDismissed]);
 
   const pushUndo = useCallback(() => {
     undoStack.current.push(snapshot());
@@ -158,6 +169,7 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
     setSchedule(snap.schedule);
     setCipWindows(snap.cipWindows);
     setHoldingArea(snap.holdingArea);
+    setHoldingDismissed(snap.holdingDismissed);
     setLastAction("Undo");
   }, [snapshot]);
 
@@ -168,6 +180,7 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
     setSchedule(snap.schedule);
     setCipWindows(snap.cipWindows);
     setHoldingArea(snap.holdingArea);
+    setHoldingDismissed(snap.holdingDismissed);
     setLastAction("Redo");
   }, [snapshot]);
 
@@ -357,8 +370,20 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
       qty_kg: qtyKg ?? 0,
     };
     setHoldingArea((prev) => [...prev, b]);
+    // "+" is the way back for a dismissed order (the card's "×").
+    setHoldingDismissed((prev) => (prev.includes(orderId) ? prev.filter((o) => o !== orderId) : prev));
     setLastAction(`Added ${orderId} to holding (${runHours.toFixed(1)}h)`);
   }, [pushUndo]);
+
+  const dismissFromHolding = useCallback((target: BlockRef) => {
+    const found = findBlock(holdingArea, target);
+    if (!found) return;
+    pushUndo();
+    setHoldingArea((prev) => removeOne(prev, found));
+    const oid = String(found.order_id ?? "").trim();
+    if (oid) setHoldingDismissed((prev) => (prev.includes(oid) ? prev : [...prev, oid]));
+    setLastAction(`Removed ${found.order_id} from holding`);
+  }, [pushUndo, holdingArea]);
 
   const addProduction = useCallback((
     lineName: string, lineId: number, sku: string, skuDescription: string,
@@ -466,23 +491,27 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
   }, []);
 
   const replaceAutoHolding = useCallback((cards: ScheduleBlock[]) => {
+    // A dismissed order (card "×") gets no auto card until "+" un-dismisses it.
+    const skip = new Set(holdingDismissed);
+    const kept = skip.size ? cards.filter((c) => !skip.has(String(c.order_id ?? ""))) : cards;
     setHoldingArea((prev) => {
       const isAuto = (b: ScheduleBlock) => String(b.id).startsWith("hold_");
       const cur = prev.filter(isAuto);
-      if (sameAutoCards(cur, cards)) return prev;
-      return [...prev.filter((b) => !isAuto(b)), ...cards];
+      if (sameAutoCards(cur, kept)) return prev;
+      return [...prev.filter((b) => !isAuto(b)), ...kept];
     });
-  }, []);
+  }, [holdingDismissed]);
 
-  const setHoldingFromServer = useCallback((blocks: ScheduleBlock[]) => {
+  const setHoldingFromServer = useCallback((blocks: ScheduleBlock[], dismissed?: string[]) => {
     setHoldingArea(blocks.map(ensureId));
+    if (dismissed) setHoldingDismissed(dismissed.map(String));
   }, []);
 
-  const data: ScheduleStateData = { schedule, cipWindows, holdingArea, lastAction };
+  const data: ScheduleStateData = { schedule, cipWindows, holdingArea, holdingDismissed, lastAction };
   const actions: ScheduleStateActions = {
     updateBlock, insertShift, moveBlock, resizeBlock, splitBlock,
     removeToHolding, restoreFromHolding, restorePartialFromHolding,
-    addToHolding, addProduction, addCipReforecast,
+    addToHolding, dismissFromHolding, addProduction, addCipReforecast,
     addCip, addTrial, reportAction, setHoldingFromServer, replaceAutoHolding,
     undo, redo,
     canUndo: undoStack.current.length > 0,

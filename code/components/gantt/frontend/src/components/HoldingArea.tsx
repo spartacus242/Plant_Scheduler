@@ -25,6 +25,10 @@ interface Props {
   /** SKU currently highlighted on the chart: matching cards get the same
    * gold ring, the rest dim — one highlight, both surfaces. */
   highlightSku?: string | null;
+  /** The card's "×" (planner request 2026-09-11): remove the card from
+   * holding. The sandbox records the order as dismissed so it does not
+   * re-derive; the adherence table's "+" brings it back. */
+  onCardRemove?: (block: ScheduleBlock) => void;
   /** Supply timeline (contract 2026-09-01 §9): with a payload every
    * production card carries a before-placement pill — the earliest clear
    * start for the card's kg at its mean rate, judged alone against the
@@ -46,7 +50,8 @@ const HoldingCard: React.FC<{
   onCardContextMenu?: (block: ScheduleBlock, x: number, y: number, shiftKey: boolean) => void;
   highlightSku?: string | null;
   pill?: SafeStartPill | null;
-}> = ({ block, anchor, skuFormats, onCardContextMenu, highlightSku, pill = null }) => {
+  onCardRemove?: (block: ScheduleBlock) => void;
+}> = ({ block, anchor, skuFormats, onCardContextMenu, highlightSku, pill = null, onCardRemove }) => {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     // The piece key, not the id: two parked pieces of one split MO share
     // an id and would collide in dnd-kit's registry. The drop resolves the
@@ -63,12 +68,19 @@ const HoldingCard: React.FC<{
   const fillPct = Math.max(2, Math.min(100, (block.run_hours / FILL_CEILING_H) * 100));
   const isHighlighted = Boolean(highlightSku) && block.sku === highlightSku;
   const isDimmed = Boolean(highlightSku) && block.sku !== highlightSku;
+  // The "×" shows on hover, and stays after a click/tap on the card (touch
+  // screens have no hover). A 5 px drag threshold on the sensor means a
+  // plain click never starts a drag.
+  const [showRemove, setShowRemove] = useState(false);
 
   return (
     <div
       ref={setNodeRef}
       {...listeners}
       {...attributes}
+      onMouseEnter={() => setShowRemove(true)}
+      onMouseLeave={() => setShowRemove(false)}
+      onClick={() => setShowRemove(true)}
       onContextMenu={(e) => {
         // Right-click: plain toggles the SKU highlight, Shift opens the
         // placement menu — the sandbox decides (user requests 2026-09-01).
@@ -122,6 +134,29 @@ const HoldingCard: React.FC<{
           <SafeStartTag pill={pill} />
         </div>
       )}
+      {onCardRemove && (
+        <button
+          type="button"
+          aria-label={`Remove ${block.order_id} from holding`}
+          title="Remove from holding — the order stays in the demand table; its “+” brings the card back"
+          // Stop dnd-kit's PointerSensor (bound on the card) from seeing the
+          // press, and the card's own click/context handlers from firing.
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
+          onClick={(e) => { e.stopPropagation(); onCardRemove(block); }}
+          style={{
+            position: "absolute", top: 2, right: 2, width: 16, height: 16,
+            borderRadius: 8, border: `1px solid ${T.ink2}`, background: T.surface,
+            color: T.ink, fontSize: 12, lineHeight: "13px", fontWeight: 700,
+            padding: 0, cursor: "pointer", zIndex: 2, textAlign: "center",
+            opacity: showRemove ? 1 : 0, pointerEvents: showRemove ? "auto" : "none",
+            transition: "opacity 0.1s",
+          }}
+        >
+          ×
+        </button>
+      )}
     </div>
   );
 };
@@ -138,7 +173,7 @@ function weekIndexOf(orderId: string): number | null {
 }
 
 export const HoldingArea: React.FC<Props> = ({
-  blocks, anchor, skuFormats, onCardContextMenu, highlightSku,
+  blocks, anchor, skuFormats, onCardContextMenu, highlightSku, onCardRemove,
   stock = null, supplyTimelines = null, caps, lockedThroughH = null, demandTargets, supplyStamp = null,
   nowH = null,
 }) => {
@@ -206,7 +241,7 @@ export const HoldingArea: React.FC<Props> = ({
         onClick={() => setExpanded(!expanded)}
       >
         <strong style={{ fontSize: 12.5, color: T.ink2, letterSpacing: 0.3 }}>
-          HOLDING AREA <span style={{ fontWeight: 500, color: T.ink3 }}>· {blocks.length} card{blocks.length === 1 ? "" : "s"} — demand not yet on the board; drag a card onto a line, or drop a block here to take it off</span>
+          HOLDING AREA <span style={{ fontWeight: 500, color: T.ink3 }}>· {blocks.length} card{blocks.length === 1 ? "" : "s"} — demand not yet on the board; drag a card onto a line, drop a block here to take it off, × on a card removes it (the table's + brings it back)</span>
         </strong>
         <span style={{ fontSize: 11, color: T.ink3 }}>{expanded ? "▲ collapse" : "▼ expand"}</span>
       </div>
@@ -227,7 +262,7 @@ export const HoldingArea: React.FC<Props> = ({
               {byWeek.get(wk)!.sort(qtyDesc).map((b) => (
                 <HoldingCard key={blockKey(b)} block={b} anchor={anchor} skuFormats={skuFormats}
                              onCardContextMenu={onCardContextMenu} highlightSku={highlightSku}
-                             pill={pills?.get(blockKey(b)) ?? null} />
+                             onCardRemove={onCardRemove} pill={pills?.get(blockKey(b)) ?? null} />
               ))}
             </div>
           ))}
@@ -240,7 +275,7 @@ export const HoldingArea: React.FC<Props> = ({
               {loose.sort(qtyDesc).map((b) => (
                 <HoldingCard key={blockKey(b)} block={b} anchor={anchor} skuFormats={skuFormats}
                              onCardContextMenu={onCardContextMenu} highlightSku={highlightSku}
-                             pill={pills?.get(blockKey(b)) ?? null} />
+                             onCardRemove={onCardRemove} pill={pills?.get(blockKey(b)) ?? null} />
               ))}
             </div>
           )}

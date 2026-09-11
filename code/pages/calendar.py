@@ -10,7 +10,7 @@
 #      never miss what is on screen (the old separate Streamlit button only
 #      saw the last "Refresh checks" push)
 #   5. Lock & Export strip
-#   6. tabs: live score · plant state & float links · downtime & view ·
+#   6. tabs: live score · plant state · downtime & view ·
 #      now running — everything that used to sit ABOVE the board.
 
 from __future__ import annotations
@@ -206,22 +206,18 @@ except Exception as _exc:  # noqa: BLE001
     _cs = None
     _cs_err = f"Could not read the live feeds: {_exc}"
 
-# --- Floating blocks: MO drift chip + link management (2026-08-28) --------
-# A block with an "after:<anchor>:<gap>" attrs token follows its anchor's
-# end. Running-MO ends re-forecast from actual cases (manprg); the board
-# NEVER moves silently (master-file invariant) — the attention row previews
-# the drift and one click applies + saves.
-from helpers.calendar_io import (apply_float_links, clear_float_link,
-                                 float_link_of, set_float_link)
-
+# --- MO drift: running/queued MO blocks vs the live manprg -----------------
+# Running-MO ends re-forecast from actual cases (manprg); the board NEVER
+# moves silently (master-file invariant) — the attention row previews the
+# drift and one click applies + saves. Float links (a block tied to another
+# block's end, 2026-08-28) were removed 2026-09-11: never used on the live
+# board and the planner could not tell what they did. Legacy "after:" attrs
+# tokens are inert.
 _cal_now = load_calendar(cal_path)
-_float_n = int(sum(1 for _, _r in _cal_now.iterrows()
-                   if float_link_of(_r.get("attrs"))))
 if _cs is not None and not _cal_now.empty:
     # Fresh MO starts/ends from the live rebuild, matched by (line, MO).
     _fresh: dict = {}
-    for _b in _cs.blocks.to_dict("records") if hasattr(_cs.blocks, "to_dict") \
-            else _cs.blocks:
+    for _b in _cs.blocks.to_dict("records") if hasattr(_cs.blocks, "to_dict")             else _cs.blocks:
         _tok = str(_b.get("attrs") or "")
         if "current_state:running" in _tok or "current_state:queued" in _tok:
             _fresh[(str(_b.get("line_name", "")).upper(),
@@ -241,23 +237,16 @@ if _cs is not None and not _cal_now.empty:
             _drift.loc[_i, "start_h"] = _ns
             _drift.loc[_i, "end_h"] = _ne
             _n_drift += 1
-    _synced, _float_notes = apply_float_links(_drift)
-    if _n_drift or _float_notes:
-        _msg = []
-        if _n_drift:
-            _msg.append(f"{_n_drift} MO block(s) drifted vs live manprg")
-        _msg.extend(_float_notes[:4])
-
-        def _apply_drift_sync(_synced=_synced) -> None:
+    if _n_drift:
+        def _apply_drift_sync(_synced=_drift) -> None:
             _backup_calendar(cal_path, dd)
             save_calendar(_synced, cal_path)
             st.session_state["cal_reset_gen"] += 1
-            st.toast("Board synced to live MO ends; floating blocks followed.", icon=":material/link:")
+            st.toast("Board synced to live MO starts/ends.", icon=":material/sync:")
             st.rerun()
 
-        _attention.append(("warn", "⛓ " + " · ".join(_msg),
-                           "Apply MO drift & float sync", "float_sync_apply",
-                           _apply_drift_sync))
+        _attention.append(("warn", f"⛓ {_n_drift} MO block(s) drifted vs live manprg",
+                           "Apply MO drift", "mo_drift_apply", _apply_drift_sync))
 
 # --- Lock, versions, hidden past — the header chips -----------------------
 _lock_dt = read_lock(dd)
@@ -337,6 +326,7 @@ with _cc3:
                  help="Drop unsaved board edits and reload calendar_blocks.csv."):
         st.session_state["cal_reset_gen"] += 1
         st.session_state.pop("cal_holding", None)
+        st.session_state.pop("cal_holding_dismissed", None)
         st.session_state.pop("cal_baseline_score", None)
         st.rerun()
 if _hide_past_widget != _hide_past:
@@ -651,6 +641,19 @@ if st.session_state.get("cal_holding_stamp") != _board_stamp:
 # forever, review 2026-09-01). Planner-parked blocks (non-fresh ids) keep
 # their place untouched.
 _fresh_cards = st.session_state.get("cal_holding_from_solve", [])
+# Dismissed orders (a card's "×" on the board, adopted from the component
+# on every rerun that carries a value): no card of any kind until the
+# adherence table's "+" brings it back. Filtered HERE, not only inside the
+# rebuild above, so a Save (clears holding, no rebuild) cannot resurrect one.
+_dismissed = {str(x) for x in (st.session_state.get("cal_holding_dismissed") or [])}
+_dismissed_n = sum(1 for b in _fresh_cards
+                   if str(b.get("order_id", "")) in _dismissed)
+if _dismissed:
+    _fresh_cards = [b for b in _fresh_cards
+                    if str(b.get("order_id", "")) not in _dismissed]
+    st.session_state["cal_holding"] = [
+        b for b in st.session_state.get("cal_holding", [])
+        if str(b.get("order_id", "")) not in _dismissed]
 _fresh_ids = {b.get("id") for b in _fresh_cards}
 st.session_state["cal_holding"] = (
     [b for b in st.session_state.get("cal_holding", [])
@@ -681,7 +684,7 @@ for _b in st.session_state["cal_holding"]:
     if _b.get("block_type") == "production":
         _b["block_type"] = "sku"
 _aged_out = _before - len(st.session_state["cal_holding"])
-_auto_held = len(st.session_state.get("cal_holding_from_solve", []))
+_auto_held = len(_fresh_cards)
 
 # sku -> pack format (e.g. "6X12X90") for the holding-area card text, plus
 # sku -> designation for the blank-space SKU picker rows (demand SKUs only —
@@ -755,6 +758,7 @@ state = gantt_calendar(
     demand_targets=demand_targets,
     lines=lines,
     holding_area=st.session_state.get("cal_holding", []),
+    holding_dismissed=st.session_state.get("cal_holding_dismissed", []),
     side_downtime=side_downtime,
     sku_formats=_fmt_map,
     kpis=server_kpis,
@@ -791,6 +795,19 @@ holding = st.session_state.get("cal_holding", [])
 if state and state.get("schedule") is not None:
     working = gantt_payload_to_calendar(state.get("schedule") or [], state.get("cipWindows") or [])
     holding = state.get("holdingArea") or []
+    # Unlike the holding snapshot (adopted only on a real push, below), the
+    # dismissed-order list is taken from every component value: it is
+    # planner intent, not derived state — re-reading the same list on a
+    # plain rerun changes nothing, and only the "+" button removes an order
+    # from it. A CHANGED list reruns once so the holding merge above (which
+    # ran before the component returned) filters the new dismissals and
+    # the chip under the board reports them on this very push.
+    _dis = state.get("holdingDismissed")
+    if isinstance(_dis, list):
+        _dis_list = [str(x) for x in _dis]
+        if _dis_list != [str(x) for x in (st.session_state.get("cal_holding_dismissed") or [])]:
+            st.session_state["cal_holding_dismissed"] = _dis_list
+            st.rerun()
 
 # Supply caption: the pushed board re-graded server-side with the same
 # engine + payload as the client chips (<50 ms), so both show one number.
@@ -968,6 +985,10 @@ if n_holding:
     _under.append(chip(f"{n_holding} in holding — not written on Save", "warn", icon="▤"))
 if _auto_held:
     _under.append(chip(f"{_auto_held} under-target demand order(s) auto-placed in holding", "info"))
+if _dismissed_n:
+    _under.append(chip(
+        f"{_dismissed_n} demand order(s) removed from holding by you — "
+        "“+” in the adherence table brings a card back", "neutral", icon="×"))
 if _aged_out:
     _under.append(chip(f"{_aged_out} past-week card(s) removed from holding", "neutral"))
 if _one_sided:
@@ -1031,7 +1052,7 @@ with _lc4:
 # ── Tabs: everything that used to sit above the board ────────────────────
 _tab_score, _tab_plant, _tab_dt, _tab_run = st.tabs([
     "📊 Live score",
-    "🏭 Plant state & float links",
+    "🏭 Plant state",
     "🌅 Downtime",
     f"▶ Now running ({len([r for r in _now_running if 0 < r['pct'] < 100])})",
 ])
@@ -1093,56 +1114,6 @@ with _tab_plant:
             st.toast(f"Calendar rebuilt from plant state ({_c['blocks']} blocks).", icon=":material/factory:")
             st.rerun()
 
-    st.divider()
-    section_label(f"Float links ({_float_n} active)")
-    st.caption(
-        "Tie a block's START to another block's END: when a running MO's "
-        "end re-forecasts from actual cases, its follower moves by the same "
-        "amount (gap at link time is preserved; linking also pins the "
-        "block). The attention row above the board previews drift — the "
-        "board only moves when you apply.")
-    _prod = _cal_now[(_cal_now["block_type"] == "production")
-                     & ~_cal_now["attrs"].astype(str).str.contains(
-                         "current_state:", regex=False)]
-    if _prod.empty:
-        st.caption("No linkable production blocks on the board.")
-    else:
-        def _blabel(r) -> str:
-            return (f"{r['line_name']} · {r.get('label') or r.get('sku')} "
-                    f"@ {float(r['start_h']):.1f}h")
-        _by_id = {str(r["block_id"]): r for _, r in _cal_now.iterrows()}
-        _opts = {_blabel(r): str(r["block_id"]) for _, r in _prod.iterrows()}
-        _sel = st.selectbox("Block", list(_opts), key="float_pick")
-        _bid = _opts[_sel]
-        _cur = float_link_of(_by_id[_bid].get("attrs"))
-        if _cur:
-            _a = _by_id.get(_cur[0])
-            st.caption(f"Currently follows: "
-                       f"{_blabel(_a) if _a is not None else _cur[0]} "
-                       f"(gap {_cur[1]:+.2f}h)")
-            if st.button("Unlink", key="float_unlink"):
-                save_calendar(clear_float_link(_cal_now, _bid), cal_path)
-                st.rerun()
-        else:
-            _row = _by_id[_bid]
-            _prev = _cal_now[
-                (_cal_now["line_id"].astype(str) == str(_row["line_id"]))
-                & (_cal_now["block_type"] == "production")
-                & (_cal_now["end_h"].astype(float)
-                   <= float(_row["start_h"]) + 1e-6)
-                & (_cal_now["block_id"].astype(str) != _bid)]
-            if _prev.empty:
-                st.caption("No preceding production block on this line.")
-            else:
-                _fl_anchor = _prev.sort_values("end_h").iloc[-1]
-                st.caption(f"Will follow: {_blabel(_fl_anchor)}")
-                if st.button("Link to preceding block", key="float_link"):
-                    try:
-                        save_calendar(set_float_link(
-                            _cal_now, _bid, str(_fl_anchor["block_id"])), cal_path)
-                        st.rerun()
-                    except ValueError as _exc:
-                        st.error(str(_exc))
 
 with _tab_dt:
     # Scheduled downtime per side — set before scheduling production; the
