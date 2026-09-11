@@ -231,3 +231,11 @@ references a color.
   Description row). The CIP popup no longer offers Fill left / both / right:
   a clean has no tonnage to scale, so it keeps Start, Duration and the Snap
   buttons only.
+- **Moved projected cleans stick for the solver** — dragging, resizing,
+  snapping or editing a dashed "CIP (projected)" turns it into a planner
+  clean (`planner:cip`, solid outline, label "CIP") and re-forecasts the
+  line's later projected cleans from the new position with the same rules
+  as "Add CIP". Before, a moved projected clean kept its plant tag and the
+  solver staging silently put it back at previous clean + MaxHoursBetweenCIP.
+  Cleans you did not touch stay plant-projected. Ctrl+Z undoes the move,
+  the retag and the re-forecast together.

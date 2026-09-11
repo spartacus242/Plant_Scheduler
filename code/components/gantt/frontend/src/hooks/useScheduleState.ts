@@ -145,6 +145,62 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
   );
   const stamp = useCallback((h: number) => hourToStamp(h, anchor), [anchor]);
 
+  // Moving or resizing a PROJECTED clean (dashed "CIP (projected)", attrs
+  // current_state:cip_projected / planner:cip_projected) turns it into a
+  // planner clean (planner request 2026-09-11). The solver staging only
+  // holds board cleans that carry a planner: token — a dragged projected
+  // clean kept its tag and was silently re-derived from cip_info at its
+  // theoretical time on the next solve. The retag and the re-forecast of
+  // the line's LATER projected cleans from the new position use the same
+  // rules as "Add CIP" (utils/cipReforecast), so board and staged layer
+  // agree. The clean keeps its own id (board identity, undo, Python
+  // carry-over); the caller already pushed the undo snapshot.
+  const settleProjectedCip = useCallback((
+    target: BlockRef, winsAfter: ScheduleBlock[], schedAfter: ScheduleBlock[],
+  ): { schedule: ScheduleBlock[]; windows: ScheduleBlock[]; note: string } | null => {
+    const before = findBlock(cipWindows, target);
+    if (!before || before.block_type !== "cip" || !(before.attrs ?? "").includes("cip_projected")) return null;
+    const idx = winsAfter.findIndex((b) => b.id === before.id && b.block_type === "cip");
+    if (idx < 0) return null;
+    const after = winsAfter[idx];
+    if (after.line_name === before.line_name
+        && Math.abs(after.start_hour - before.start_hour) < 1e-6
+        && Math.abs(after.end_hour - before.end_hour) < 1e-6) return null; // not actually moved
+    const cfg = args?.config;
+    const perLine = cfg?.cip_interval_h?.[after.line_name];
+    const intervalH = perLine && perLine > 0 ? perLine : (cfg?.cip_interval_default_h || 120);
+    const horizonH = cfg?.horizon_hours || 336;
+    const lockedH = cfg?.locked_through_h ?? null;
+    // Mirrors the sandbox's isBlockLocked: a later slot that would split or
+    // push a committed, pinned or lock-window block is skipped.
+    const immovable = (b: ScheduleBlock): boolean =>
+      Boolean(b.locked) || Boolean(b.pinned)
+      || ((b.attrs ?? "").includes("current_state:")
+          && !(b.block_type === "cip" && (b.attrs ?? "").includes("cip_projected")))
+      || (lockedH != null && b.start_hour < lockedH - 1e-9);
+    const rest = winsAfter.filter((_, i) => i !== idx);
+    const taken = idsOf(schedAfter, winsAfter, holdingArea);
+    const mintId = (): string => { const nid = mintBlockId("blk", taken); taken.add(nid); return nid; };
+    const res = reforecastCips({
+      lineName: after.line_name, lineId: after.line_id,
+      startHour: after.start_hour, duration: after.end_hour - after.start_hour,
+      intervalH, horizonH, schedule: schedAfter, windows: rest, immovable, mintId,
+    });
+    const planner: ScheduleBlock = {
+      ...after, order_id: after.order_id || "CIP", sku: after.sku || "CIP",
+      label: "CIP", attrs: "planner:cip",
+    };
+    const fresh = res.added[0];
+    const later = res.added.length - 1;
+    return {
+      schedule: res.schedule,
+      windows: res.windows.map((b) => (b === fresh ? planner : b)),
+      note: `CIP on ${after.line_name} moved to ${stamp(after.start_hour)} — now a planner clean held for the solver; `
+        + `${later} later clean(s) re-forecast`
+        + (res.skipped > 0 ? ` (${res.skipped} slot(s) skipped: committed block in the way)` : ""),
+    };
+  }, [args?.config, cipWindows, holdingArea, stamp]);
+
   // Undo/redo stacks
   const undoStack = useRef<Snapshot[]>([]);
   const redoStack = useRef<Snapshot[]>([]);
@@ -189,9 +245,16 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
   // both pieces of a split MO.
   const updateBlock = useCallback((target: BlockRef, patch: Partial<ScheduleBlock>) => {
     pushUndo();
+    const settled = settleProjectedCip(target, patchOne(cipWindows, target, patch), schedule);
+    if (settled) {
+      setSchedule(settled.schedule);
+      setCipWindows(settled.windows);
+      setLastAction(settled.note);
+      return;
+    }
     setSchedule((prev) => patchOne(prev, target, patch));
     setCipWindows((prev) => patchOne(prev, target, patch));
-  }, [pushUndo]);
+  }, [pushUndo, settleProjectedCip, cipWindows, schedule]);
 
   const insertShift = useCallback((
     target: BlockRef, lineName: string, lineId: number, newStart: number, dur: number,
@@ -213,12 +276,19 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
         return b;
       });
     };
+    const settled = settleProjectedCip(target, apply(cipWindows), apply(schedule));
+    if (settled) {
+      setSchedule(settled.schedule);
+      setCipWindows(settled.windows);
+      setLastAction(`${settled.note} (${shiftIds.length} block(s) slid ${deltaH.toFixed(1)}h right)`);
+      return;
+    }
     setSchedule(apply);
     setCipWindows(apply);
     setLastAction(
       `Inserted at ${stamp(newStart)} - ${shiftIds.length} block(s) slid ${deltaH.toFixed(1)}h right`,
     );
-  }, [pushUndo, stamp]);
+  }, [pushUndo, stamp, settleProjectedCip, cipWindows, schedule]);
 
   const moveBlock = useCallback((target: BlockRef, newLine: string, newLineId: number, newStart: number, newDuration: number) => {
     pushUndo();
@@ -226,10 +296,17 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
       line_name: newLine, line_id: newLineId,
       start_hour: newStart, end_hour: newStart + newDuration, run_hours: newDuration,
     };
+    const settled = settleProjectedCip(target, patchOne(cipWindows, target, moved), schedule);
+    if (settled) {
+      setSchedule(settled.schedule);
+      setCipWindows(settled.windows);
+      setLastAction(settled.note);
+      return;
+    }
     setSchedule((prev) => patchOne(prev, target, moved));
     setCipWindows((prev) => patchOne(prev, target, moved));
     setLastAction(`Moved ${refId(target)} to ${newLine} at ${stamp(newStart)}`);
-  }, [pushUndo, stamp]);
+  }, [pushUndo, stamp, settleProjectedCip, cipWindows, schedule]);
 
   const resizeBlock = useCallback((target: BlockRef, newStart: number, newEnd: number) => {
     pushUndo();
@@ -245,13 +322,21 @@ export function useScheduleState(args: SandboxArgs | null): [ScheduleStateData, 
       if (!b.qty_kg || oldDur <= 0) return b.qty_kg;
       return Math.round(((b.qty_kg * dur) / oldDur) * 10) / 10;
     };
+    const settled = settleProjectedCip(target, patchOne(cipWindows, target,
+      { start_hour: newStart, end_hour: newEnd, run_hours: dur }, { edges }), schedule);
+    if (settled) {
+      setSchedule(settled.schedule);
+      setCipWindows(settled.windows);
+      setLastAction(settled.note);
+      return;
+    }
     setSchedule((prev) => patchOne(prev, target,
       (b) => ({ ...b, start_hour: newStart, end_hour: newEnd, run_hours: dur, qty_kg: scaledKg(b) }),
       { edges }));
     setCipWindows((prev) => patchOne(prev, target,
       { start_hour: newStart, end_hour: newEnd, run_hours: dur }, { edges }));
     setLastAction(`Resized ${refId(target)} to ${stamp(newStart)} - ${stamp(newEnd)} (${dur}h)`);
-  }, [pushUndo, stamp]);
+  }, [pushUndo, stamp, settleProjectedCip, cipWindows, schedule]);
 
   const splitBlock = useCallback((target: BlockRef, splitHour: number) => {
     pushUndo();

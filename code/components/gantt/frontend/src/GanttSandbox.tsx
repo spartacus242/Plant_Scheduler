@@ -49,6 +49,11 @@ interface Props {
   args: SandboxArgs;
 }
 
+// Popup Apply / Snap on a projected clean: useScheduleState retags it as a
+// planner clean and re-forecasts the line (planner request 2026-09-11);
+// the report line says so, since reportAction overwrites the hook's note.
+const PROJECTED_CIP_NOTE = " — projected clean is now a planner CIP held for the solver; the line's later cleans re-forecast";
+
 export const GanttSandbox: React.FC<Props> = ({ args }) => {
   const [data, actions] = useScheduleState(args);
   const { schedule, cipWindows, holdingArea, holdingDismissed, lastAction } = data;
@@ -1256,10 +1261,12 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         return gate;
       }
       setErrorMsg(null);
+      const wasProjectedCip = block.block_type === "cip" && (block.attrs ?? "").includes("cip_projected");
       actions.updateBlock(block, patch);
       actions.reportAction(
         `Edited ${block.order_id || block.sku}: ${hourToStamp(newStart, anchor)} for ${edit.durationH}h` +
-          (edit.qtyKg ? `, ${edit.qtyKg.toLocaleString()} kg` : ""),
+          (edit.qtyKg ? `, ${edit.qtyKg.toLocaleString()} kg` : "") +
+          (wasProjectedCip ? PROJECTED_CIP_NOTE : ""),
       );
       setWarnMsg(setupWarning(block, block.line_name, newStart, newEnd));
       queueSupplyCheck(block, [{ lineName: block.line_name, start: newStart, end: newEnd }]);
@@ -1336,6 +1343,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       if (gate) return gate;
       setErrorMsg(null);
       clearSupplyBanner();
+      const wasProjectedCip = block.block_type === "cip" && (block.attrs ?? "").includes("cip_projected");
       actions.updateBlock(block, {
         start_hour: newStart,
         end_hour: newEnd,
@@ -1343,7 +1351,8 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       });
       actions.reportAction(
         `Snapped ${block.order_id || block.sku} ${dir} against ${against.sku || against.label}` +
-          (setup > 0 ? ` (setup ${setup}h respected)` : " (no setup needed)"),
+          (setup > 0 ? ` (setup ${setup}h respected)` : " (no setup needed)") +
+          (wasProjectedCip ? PROJECTED_CIP_NOTE : ""),
       );
       queueSupplyCheck(block, [{ lineName: block.line_name, start: newStart, end: newEnd }]);
       return null;
