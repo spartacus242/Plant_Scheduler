@@ -87,7 +87,7 @@ since were silently not saved.
    state, versions used, finished blocks hidden, last save time.
 2. **Attention strip** — only what must be handled before planning, each
    with its own button on the same row: live feeds missing or stale, the
-   weekly *Roll calendar to today*, MO drift.
+   weekly *Roll calendar to today*.
 3. **Control row** — version name · hide finished blocks · reload from disk.
 4. **The board**, with its own toolbar: `✓ checked` / `● unsaved edits`
    chip, overlap chip, **⟳ Refresh checks**, **Save as version**, **💾 Save**
@@ -219,6 +219,10 @@ references a color.
 - **Float links removed** — the "Plant state & float links" tab is now
   "Plant state"; the link/unlink controls, the "float sync" half of the MO
   drift button and the `after:<id>:<gap>` helpers are gone (never used on the
-  live board; the planner could not tell what the option did). "Apply MO
-  drift" still moves running/queued MO blocks to their live manprg
-  starts/ends — nothing else moves with them.
+  live board; the planner could not tell what the option did).
+- **MO drift removed** — the attention-row chip "n MO block(s) drifted vs
+  live manprg" and its "Apply MO drift" button are gone too (planner
+  request, same day): moving MO blocks to their live times while their
+  neighbours stayed put created overlaps. The board now changes only when
+  the planner edits it or rebuilds it from the plant state (Plant state
+  tab).

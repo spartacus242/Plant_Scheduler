@@ -3,7 +3,7 @@
 # Layout (streamlined 2026-09-11 — the board is the page):
 #   1. header + status chips (live data, lock, versions, hidden past, saved)
 #   2. ONE attention strip: only what must be handled before planning
-#      (live feeds missing/stale, weekly roll, MO drift), each with its button
+#      (live feeds missing/stale, weekly roll), each with its button
 #   3. one control row (version name · hide finished · reload)
 #   4. the Gantt — its own toolbar carries Refresh / Save / Save as version;
 #      Save pushes the live edits together with the request, so a save can
@@ -185,7 +185,7 @@ if _horizon.mode == "today" and _horizon.stale:
 # is actually doing: manprg (running MO locked to its estimated end, queued
 # MOs placed in order, completed MOs dropped) + cip_info (scheduled CIP
 # drawn, further CIPs spaced at the line's MaxHoursBetweenCIP). Used by the
-# MO-drift check here and by the "Rebuild" tool in the tabs below.
+# "Rebuild" tool in the Plant state tab below.
 from datetime import timedelta as _td
 
 from helpers.config import datasources_config as _ds_cfg
@@ -206,47 +206,10 @@ except Exception as _exc:  # noqa: BLE001
     _cs = None
     _cs_err = f"Could not read the live feeds: {_exc}"
 
-# --- MO drift: running/queued MO blocks vs the live manprg -----------------
-# Running-MO ends re-forecast from actual cases (manprg); the board NEVER
-# moves silently (master-file invariant) — the attention row previews the
-# drift and one click applies + saves. Float links (a block tied to another
-# block's end, 2026-08-28) were removed 2026-09-11: never used on the live
-# board and the planner could not tell what they did. Legacy "after:" attrs
-# tokens are inert.
-_cal_now = load_calendar(cal_path)
-if _cs is not None and not _cal_now.empty:
-    # Fresh MO starts/ends from the live rebuild, matched by (line, MO).
-    _fresh: dict = {}
-    for _b in _cs.blocks.to_dict("records") if hasattr(_cs.blocks, "to_dict")             else _cs.blocks:
-        _tok = str(_b.get("attrs") or "")
-        if "current_state:running" in _tok or "current_state:queued" in _tok:
-            _fresh[(str(_b.get("line_name", "")).upper(),
-                    str(_b.get("order_id", "")))] = (
-                float(_b["start_h"]), float(_b["end_h"]))
-    _drift = _cal_now.copy()
-    _n_drift = 0
-    for _i, _r in _drift.iterrows():
-        _tok = str(_r.get("attrs") or "")
-        if not ("current_state:running" in _tok or "current_state:queued" in _tok):
-            continue
-        _key = (str(_r.get("line_name", "")).upper(), str(_r.get("order_id", "")))
-        if _key not in _fresh:
-            continue
-        _ns, _ne = _fresh[_key]
-        if abs(_ne - float(_r["end_h"])) > 0.05 or abs(_ns - float(_r["start_h"])) > 0.05:
-            _drift.loc[_i, "start_h"] = _ns
-            _drift.loc[_i, "end_h"] = _ne
-            _n_drift += 1
-    if _n_drift:
-        def _apply_drift_sync(_synced=_drift) -> None:
-            _backup_calendar(cal_path, dd)
-            save_calendar(_synced, cal_path)
-            st.session_state["cal_reset_gen"] += 1
-            st.toast("Board synced to live MO starts/ends.", icon=":material/sync:")
-            st.rerun()
-
-        _attention.append(("warn", f"⛓ {_n_drift} MO block(s) drifted vs live manprg",
-                           "Apply MO drift", "mo_drift_apply", _apply_drift_sync))
+# (MO drift — running/queued MO blocks moved to their live manprg times by
+# one click — and float links were both removed on 2026-09-11 at the
+# planner's request: the board only changes when the planner edits it or
+# rebuilds it from the plant state in the tab below.)
 
 # --- Lock, versions, hidden past — the header chips -----------------------
 _lock_dt = read_lock(dd)
