@@ -239,3 +239,9 @@ references a color.
   solver staging silently put it back at previous clean + MaxHoursBetweenCIP.
   Cleans you did not touch stay plant-projected. Ctrl+Z undoes the move,
   the retag and the re-forecast together.
+- **No more 1-hour clean stubs at the horizon edge** — a projected (or
+  manprg-scheduled) clean that straddles the end of the 21-day window keeps
+  its full length instead of being clipped to the edge; the board's own
+  re-forecast does the same. The clip had stored e.g. a 503–504 h stub that
+  the weekly roll then carried two days inside the next window as a fake
+  1-hour clean (seen on P10, Sep 29). The one stored stub was repaired.

@@ -775,7 +775,10 @@ def calendar_sanity(
         ids = list(df.loc[neg, "block_id"].astype(str).head(5))
         errors.append(f"{int(neg.sum())} block(s) starting before hour 0: {ids}")
     if horizon_h is not None:
-        past = e > float(horizon_h) + 1e-6
+        # A clean that straddles the horizon end is projected at full length
+        # on purpose (2026-09-11, no more 1 h stubs) — only production/trial
+        # overhang is worth a warning.
+        past = (e > float(horizon_h) + 1e-6) & (df["block_type"].astype(str) != "cip")
         if past.any():
             warnings.append(
                 f"{int(past.sum())} block(s) end past the {horizon_h:g} h horizon")

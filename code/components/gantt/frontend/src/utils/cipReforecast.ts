@@ -155,7 +155,10 @@ export function reforecastCips(o: ReforecastOpts): ReforecastResult {
       t += intervalH; // a clean already sits here: the grid marches on
       continue;
     }
-    const slotEnd = Math.min(horizonH, t + duration);
+    // Full duration even when the slot straddles the horizon end (2026-09-11):
+    // a clipped stub would roll forward with the calendar as a fake short
+    // clean; the chart cuts the overhang at the edge.
+    const slotEnd = t + duration;
     const next = insertCleanAt(schedule, lineName, t, slotEnd - t, immovable, o.mintId);
     if (next === null) {
       skipped += 1;

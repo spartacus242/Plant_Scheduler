@@ -12,7 +12,7 @@ cs_b0b387967e,production,1,P10,77.0,180.353,280351,30254,280351,1X24X90 KIRK ORG
 cs_29ba686345,trial,1,P10,180.353,182.353,TRIAL,30318,TRIALS,TRIALS,,False,current_state:queued;pct=0.0;split;pushed=6
 cs_efd4ea17fd,cip,1,P10,215.0,221.0,CIP (projected),,,,0.0,False,current_state:cip_projected
 cs_73fa12e8fc,cip,1,P10,359.0,365.0,CIP (projected),,,,0.0,False,current_state:cip_projected
-cs_61a5f07f07,cip,1,P10,503.0,504.0,CIP (projected),,,,0.0,False,current_state:cip_projected
+cs_61a5f07f07,cip,1,P10,503.0,509.0,CIP (projected),,,,0.0,False,current_state:cip_projected
 cs_b3cac83a6b,cip,2,P11,96.0,102.0,CIP (projected),,,,0.0,False,current_state:cip_projected
 cs_decf8a450f,cip,2,P11,240.0,246.0,CIP (projected),,,,0.0,False,current_state:cip_projected
 cs_3a7bacd4f7,cip,2,P11,384.0,390.0,CIP (projected),,,,0.0,False,current_state:cip_projected

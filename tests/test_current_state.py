@@ -423,19 +423,22 @@ def test_projected_cips_stay_inside_the_horizon():
         assert when < hz.end
 
 
-def test_projected_cip_straddling_the_horizon_end_is_clipped():
+def test_projected_cip_straddling_the_horizon_end_keeps_its_full_length():
     # previous at h21, interval 120 -> projections at 141/261/381/501; the
-    # last one would end at h507 on a 504h horizon (walkthrough finding
-    # 2026-08-17: cip_projected blocks with end_h=509 > horizon 504).
+    # last one ends at h507 on a 504h horizon. It is KEPT at full length
+    # (2026-09-11): the 2026-08-17 clip to 504 stored a 1 h stub that the
+    # weekly roll then carried inside the next window as a fake short
+    # clean. A clean STARTING at or after the end is still dropped.
     cips = CipInfoResult(by_line={"P09": CipInfo(
         line="P09", previous_cip=pd.Timestamp(ANCHOR) + timedelta(hours=21),
         max_hours_between=120, scheduled_cip=None, notes="")})
     st = _state([], cips=cips, cfg={"cip": {"duration_h": 6}})
     cip = st.blocks[st.blocks["block_type"] == "cip"]
-    assert (cip["end_h"] <= 504.0).all(), "no CIP may outrun the horizon"
+    assert (cip["start_h"] < 504.0).all(), "no CIP may start at/after the horizon end"
+    assert ((cip["end_h"] - cip["start_h"]).round(3) == 6.0).all(), "every clean keeps its full 6 h"
     straddler = cip[cip["start_h"] == 501.0]
-    assert len(straddler) == 1, "the straddling CIP must be kept, clipped"
-    assert float(straddler.iloc[0]["end_h"]) == 504.0
+    assert len(straddler) == 1, "the straddling CIP must be kept"
+    assert float(straddler.iloc[0]["end_h"]) == 507.0
 
 
 # --------------------------------------------------------------- plumbing

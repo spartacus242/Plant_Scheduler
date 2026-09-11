@@ -881,7 +881,11 @@ def build_current_state(
             end = when + timedelta(hours=row_dur)
             if when >= hz.end or end <= hz.anchor:
                 continue   # history, or beyond the window
-            end = min(end, hz.end)
+            # A clean straddling the horizon end keeps its full length
+            # (planner request 2026-09-11): clipping stored a 1 h stub that
+            # the weekly roll then carried inside the window as a fake short
+            # clean. The board cuts the overhang at the edge; the solver clips
+            # committed windows at H itself.
             blocks.append({
                 "block_id": _bid("cip", line, when),
                 "block_type": "cip",
@@ -912,13 +916,15 @@ def build_current_state(
                 now=n, carry_h=carry_by_line.get(line),
                 carry_anchor=getattr(hz, "config_anchor", None) or hz.anchor,
                 fallback_phase=fallback_phase, warnings=state.warnings):
-            # Clip to the horizon: a CIP starting at/after the end is not
-            # drawable, and one straddling the end must not emit end_h >
-            # hz.end_h (walkthrough finding 2026-08-17: two cip_projected
-            # blocks ended at h509 on a 504h horizon).
+            # A CIP starting at/after the end is not drawable and is dropped;
+            # one straddling the end keeps its FULL duration (2026-09-11). The
+            # 2026-08-17 walkthrough fix clipped it to hz.end, but the stored
+            # stub (e.g. 503-504 h) then rolled forward with the calendar as a
+            # fake 1 h clean two days inside the next window. The board draws
+            # the overhang cut at the edge; the solver clips windows at H.
             if when >= hz.end:
                 continue
-            end = min(when + timedelta(hours=dur), hz.end)
+            end = when + timedelta(hours=dur)
             blocks.append({
                 "block_id": _bid("cip", line, when),
                 "block_type": "cip",
