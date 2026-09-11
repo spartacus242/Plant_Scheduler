@@ -418,7 +418,7 @@ def test_ca5_manprg_cip_row_is_drawn_at_its_own_duration_and_phases_the_grid():
     # manprg CIP row: start now+10 h = hour 22, Hours 8 -> CIP [22, 30].
     # cip_info: PreviousCIP now-100 h, ScheduledCIP now+30 h (hour 42, differs
     # by 20 h -> warned, NOT drawn), interval 120. Grid from the last known
-    # clean (22): 142, 262, 382, 502 (clipped to 504).
+    # clean (22): 142, 262, 382, 502 (full 6 h past the 504 h edge, 2026-09-11).
     cips = CipInfoResult(by_line={"P09": CipInfo(
         line="P09", previous_cip=pd.Timestamp(NOW) - timedelta(hours=100),
         max_hours_between=120,
@@ -430,7 +430,7 @@ def test_ca5_manprg_cip_row_is_drawn_at_its_own_duration_and_phases_the_grid():
     cip = st.blocks[st.blocks["block_type"] == "cip"].sort_values("start_h")
     spans = [(c.start_h, c.end_h) for c in cip.itertuples()]
     assert spans[0] == (22.0, 30.0), "the plant's 8 h clean, not a 6 h projection"
-    assert spans[1:] == [(142.0, 148.0), (262.0, 268.0), (382.0, 388.0), (502.0, 504.0)]
+    assert spans[1:] == [(142.0, 148.0), (262.0, 268.0), (382.0, 388.0), (502.0, 508.0)]
     first = cip.iloc[0]
     assert bool(first["locked"]) is True and first["label"] == "CIP"
     assert "source=manprg" in first["attrs"] and "mo=CIP1" in first["attrs"]
