@@ -245,3 +245,9 @@ references a color.
   re-forecast does the same. The clip had stored e.g. a 503–504 h stub that
   the weekly roll then carried two days inside the next window as a fake
   1-hour clean (seen on P10, Sep 29). The one stored stub was repaired.
+- **Tonnage on production blocks and holding cards** — a run reads
+  "MO 280351 (34.2t)" and a card "280344-W37: 20x2x90, 87.5t" instead of
+  hours: the hours depend on the line's rate, the kg need does not, and kg
+  adds up against the week cards. Hours stay in the hover tooltip (which
+  also gains the kg) and in the popup. A block with no known kg still shows
+  hours. CIP and trial labels are unchanged.

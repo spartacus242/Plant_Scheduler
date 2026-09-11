@@ -146,6 +146,13 @@ export const GanttBlock: React.FC<Props> = ({
   const baseLabel = (isPinned ? "📌 " : "")
     + (isCommittedMo ? `MO ${baseLabel0}` : baseLabel0);
   const hoursTxt = (Number.isFinite(block.run_hours) ? block.run_hours : 0).toFixed(1);
+  // Production reads TONNAGE, not hours (planner request 2026-09-11): the
+  // hours depend on the line's rate, the kg need does not — and kg adds up
+  // against the week cards. Hours stay in the tooltip and the popup. A block
+  // with no known kg falls back to hours rather than showing 0.0t.
+  const kgNum = Number(block.qty_kg);
+  const hasKg = Number.isFinite(kgNum) && kgNum > 0;
+  const sizeTxt = hasKg ? `${(kgNum / 1000).toFixed(1)}t` : `${hoursTxt}h`;
 
   // Supply chip right of the label (§9); it takes its width out of the
   // label's budget and is dropped on blocks too narrow to hold it.
@@ -172,8 +179,8 @@ export const GanttBlock: React.FC<Props> = ({
   } else if (charBudget <= 0) {
     label = "";
   } else {
-    const withHours = `${baseLabel} (${hoursTxt}h)`;
-    const withDesc = desc ? `${baseLabel} ${desc} (${hoursTxt}h)` : withHours;
+    const withHours = `${baseLabel} (${sizeTxt})`;
+    const withDesc = desc ? `${baseLabel} ${desc} (${sizeTxt})` : withHours;
     if (withDesc.length <= charBudget) {
       label = withDesc;
     } else if (withHours.length <= charBudget) {
@@ -191,6 +198,7 @@ export const GanttBlock: React.FC<Props> = ({
     desc,
     side ? `${block.line_name} (side ${side} only - half rate)` : `${block.line_name}`,
     `${hourToStamp(startH, anchor)} -> ${hourToStamp(endH, anchor)} (${(endH - startH).toFixed(1)}h)`,
+    hasKg && block.block_type === "sku" ? `${Math.round(kgNum).toLocaleString()} kg (${(kgNum / 1000).toFixed(1)} t)` : "",
     typeof block.completion_pct === "number"
       ? `Completion: ${block.completion_pct.toFixed(1)}%${typeof block.cases_left === "number" ? ` · ${block.cases_left.toLocaleString()} cases left` : ""}`
       : "",

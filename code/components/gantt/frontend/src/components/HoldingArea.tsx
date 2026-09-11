@@ -1,7 +1,8 @@
 // HoldingArea.tsx — Collapsible panel with draggable holding-area cards,
 // grouped into one vertical column per ISO week (planner request
 // 2026-08-14): W34 orders stack under a W34 header, biggest tonnage first,
-// card text "SKU-W34: 6X12X90, 37.8h" (format from sku_info).
+// card text "SKU-W34: 6X12X90, 37.8t" (format from sku_info; tonnage, not
+// hours — hours depend on the line the card lands on, 2026-09-11).
 
 import React, { useMemo, useState } from "react";
 import { useDroppable, useDraggable } from "@dnd-kit/core";
@@ -127,7 +128,10 @@ const HoldingCard: React.FC<{
       >
         {block.block_type === "cip"
           ? `CIP, ${block.run_hours.toFixed(1)}h`
-          : `${displayOrderId(block.order_id, anchor)}: ${fmt}, ${block.run_hours.toFixed(1)}h`}
+          : `${displayOrderId(block.order_id, anchor)}: ${fmt}, ${
+              Number.isFinite(Number(block.qty_kg)) && Number(block.qty_kg) > 0
+                ? `${(Number(block.qty_kg) / 1000).toFixed(1)}t`
+                : `${block.run_hours.toFixed(1)}h`}`}
       </div>
       {pill && (
         <div style={{ position: "relative", padding: "0 10px 4px", lineHeight: "16px" }}>
