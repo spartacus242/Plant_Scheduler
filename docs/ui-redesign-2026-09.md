@@ -251,3 +251,7 @@ references a color.
   adds up against the week cards. Hours stay in the hover tooltip (which
   also gains the kg) and in the popup. A block with no known kg still shows
   hours. CIP and trial labels are unchanged.
+- **No "Deploy" button** — `.streamlit/config.toml` sets `client.toolbarMode
+  = "viewer"`: the top-right toolbar keeps only the app menu (Settings,
+  Print, About); Deploy and the developer items are hidden. Takes effect on
+  the next app start.

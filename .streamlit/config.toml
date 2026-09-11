@@ -32,3 +32,9 @@ grayColor = "#6B7A8C"
 backgroundColor = "#FFFFFF"
 secondaryBackgroundColor = "#F3F5F7"
 textColor = "#1E2530"
+
+[client]
+# Plant-floor app: hide the "Deploy" button and the developer menu items in
+# the top-right toolbar (planner request 2026-09-11). "viewer" keeps
+# Settings / Print / About; the app is never deployed to Community Cloud.
+toolbarMode = "viewer"
