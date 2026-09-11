@@ -1,7 +1,7 @@
 # Flowstate configuration — operational truth → twin → optimizer
 
 [scheduler]
-planning_start_date = "2026-09-04 00:00:00"
+planning_start_date = "2026-09-09 00:00:00"
 # Rolling horizon (handoff WW32 #1). "today" = the Plant Calendar opens on the
 # current day and offers to re-base stored blocks onto it; "fixed" keeps the
 # legacy behaviour of always opening on planning_start_date.
