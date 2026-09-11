@@ -154,8 +154,18 @@ export const GanttBlock: React.FC<Props> = ({
   const showChip = chip !== null && w >= chipW + 28;
   const supplyLine = supply && block.block_type === "sku" ? humanText(supply, stampFor(anchor)) : "";
 
+  // "i" badge (planner request 2026-09-11): a CIP that carries a cip_info
+  // comment shows a small i at its right end. The comment itself is in the
+  // hover tooltip (desc, above) and in the block popup's Description row.
+  const infoBadge = block.block_type === "cip" && desc.trim().length > 0;
+  // Cleans are short (6 h ≈ 13 px at "fit 3 weeks"): the badge shows from
+  // 11 px, shrinks to the block, and takes precedence over the label, which
+  // is dropped when both no longer fit (charBudget below).
+  const badgeW = infoBadge ? 16 : 0;
+  const showBadge = infoBadge && w >= 11;
+
   // Estimate available characters from pixel width (~6.5px per char at 11px font)
-  const charBudget = Math.floor((w - 12 - (showChip ? chipW + 4 : 0)) / 6.5);
+  const charBudget = Math.floor((w - 12 - (showChip ? chipW + 4 : 0) - (showBadge ? badgeW : 0)) / 6.5);
   let label: string;
   if (block.block_type === "cip" || block.block_type === "line_down" || block.block_type === "maintenance" || block.block_type === "contractor") {
     label = charBudget <= 0 ? "" : (baseLabel.length <= charBudget ? baseLabel : baseLabel.slice(0, Math.max(charBudget - 1, 1)) + "…");
@@ -321,6 +331,22 @@ export const GanttBlock: React.FC<Props> = ({
                   fontSize={h < LINE_HEIGHT / 2 ? 8 : 10} fontWeight={700} fill={st.fg}
                   style={{ userSelect: "none" }}>
               {chip.text}
+            </text>
+          </g>
+        );
+      })()}
+      {showBadge && (() => {
+        const bw = Math.max(w, 2);
+        const r = Math.max(4, Math.min(7, (h - 6) / 2, (bw - 3) / 2));
+        const bx = bw < 2 * r + 10 ? x + bw / 2 : x + bw - r - 4;
+        const by = y + h / 2;
+        return (
+          <g pointerEvents="none" data-testid="cip-info">
+            <circle cx={bx} cy={by} r={r} fill="#FFFFFF" stroke={T.ink2} strokeWidth={1} />
+            <text x={bx} y={by + 0.5} textAnchor="middle" dominantBaseline="middle"
+                  fontSize={r * 1.6} fontWeight={700} fontStyle="italic" fontFamily="Georgia, 'Times New Roman', serif"
+                  fill={T.ink} style={{ userSelect: "none" }}>
+              i
             </text>
           </g>
         );

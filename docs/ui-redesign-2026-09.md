@@ -226,3 +226,8 @@ references a color.
   neighbours stayed put created overlaps. The board now changes only when
   the planner edits it or rebuilds it from the plant state (Plant state
   tab).
+- **CIP blocks** — a CIP that carries a cip_info comment shows a small "i"
+  at its right end (the comment is in the hover tooltip and in the popup's
+  Description row). The CIP popup no longer offers Fill left / both / right:
+  a clean has no tonnage to scale, so it keeps Start, Duration and the Snap
+  buttons only.

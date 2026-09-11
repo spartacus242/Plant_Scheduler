@@ -574,7 +574,10 @@ export const BlockPopover: React.FC<Props> = ({
           </div>
         </div>
       )}
-      {editable && onFill && (
+      {/* Fill grows a PRODUCTION run into the empty space beside it; a CIP or
+          downtime window has no tonnage to scale, so it keeps only Start /
+          Duration and the Snap buttons (planner request 2026-09-11). */}
+      {editable && onFill && !isWindow && (
         <div style={{ marginTop: 8 }}>
           <div style={{ display: "flex", gap: 8 }}>
             {(["left", "both", "right"] as const).map((d) => (
