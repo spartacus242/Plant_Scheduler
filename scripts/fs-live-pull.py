@@ -20,12 +20,21 @@ import time
 from pathlib import Path
 
 CONF = Path(__file__).resolve().parent / "fs-live-data.conf.json"
+# Per-machine overrides (git-ignored): clone_dir_personal / data_reference_dir
+# on a planner's PC, written by scripts/install_flowstate.ps1 -LiveData. The
+# tracked conf keeps the shared keys (repo, branch, file list).
+LOCAL_CONF = CONF.with_name("fs-live-data.local.json")
 GIT_BIN = shutil.which("git") or r"C:\Program Files\Git\bin\git.exe"
 
 
 def load_conf():
     with open(CONF, encoding="utf-8") as f:
-        return json.load(f)
+        conf = json.load(f)
+    if LOCAL_CONF.is_file():
+        # utf-8-sig: PowerShell 5.1 writes a BOM with -Encoding utf8
+        with open(LOCAL_CONF, encoding="utf-8-sig") as f:
+            conf.update(json.load(f))
+    return conf
 
 # Glob entries in conf["files"]: "<glob> -> <dest name>". IT's open-PO export
 # carries a date in its name ("NPA Open POs -8.24.xlsx"), so a fixed conf

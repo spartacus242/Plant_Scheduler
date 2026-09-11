@@ -37,6 +37,18 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install_desktop_shortcut.ps1
 
 Double-click **Flowstate** on your Desktop. The shortcut runs `scripts\open_flowstate.vbs`, which silently launches `scripts\open_flowstate.bat` — no console window. The launcher starts Streamlit from this clone if needed, then opens the browser.
 
+## Install on a planner's PC (Windows, from `main`)
+
+Prerequisites: Git for Windows and Python 3.12 (python.org, tick "Add python.exe to PATH"). No Node - the Gantt bundle is committed.
+
+```powershell
+git clone --branch main https://github.com/spartacus242/Plant_Scheduler.git "$env:USERPROFILE\Flowstate\Plant_Scheduler"
+cd "$env:USERPROFILE\Flowstate\Plant_Scheduler"
+powershell -ExecutionPolicy Bypass -File .\scripts\install_flowstate.ps1 -LiveData
+```
+
+The script creates `.venv`, installs `requirements.txt`, puts the **Flowstate** shortcut on the Desktop and, with `-LiveData`, sets up the live-data pull bridge for this PC (per-machine paths in `scripts\fs-live-data.local.json`, a first pull, and a Task Scheduler entry every 30 min). The first pull opens a GitHub sign-in for the private `flowstate-live-data` repo. Re-run the same command later to update to the latest `main`.
+
 When editing frontend Gantt source, rebuild:
 
 ```powershell

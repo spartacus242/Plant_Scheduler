@@ -91,6 +91,7 @@ data/versions/
 data/promoted.json
 data/reference/manprg.asof.json
 scripts/fs-live-pull.log
+scripts/fs-live-data.local.json
 code/solver/solver_error.txt
 
 # Rate-dialect A/B harness output + work dirs (scripts/ab_rate_dialects.py)
