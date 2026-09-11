@@ -31,6 +31,7 @@ import {
   sortedItems, type StampFn,
 } from "../utils/supplyGlue";
 import { blockKey } from "../utils/blockIdentity";
+import { BTN_BASE, BTN_PRIMARY, POPOVER, T } from "../utils/theme";
 
 export interface BlockEdit {
   startHour: number;
@@ -81,14 +82,16 @@ interface Props {
   onOpenSupplyDetail?: (block: ScheduleBlock) => void;
 }
 
-const LABEL: React.CSSProperties = { color: "#888", paddingRight: 12 };
+const LABEL: React.CSSProperties = { color: T.ink3, paddingRight: 12 };
 const INPUT: React.CSSProperties = {
   width: 178,
   fontSize: 12,
-  padding: "2px 4px",
-  border: "1px solid #ccc",
-  borderRadius: 4,
+  padding: "3px 6px",
+  border: `1px solid ${T.rule}`,
+  borderRadius: 5,
   boxSizing: "border-box",
+  color: T.ink,
+  fontFamily: "inherit",
 };
 
 // datetime-local <-> board hours on the NAIVE wall clock (layout.ts
@@ -268,15 +271,10 @@ export const BlockPopover: React.FC<Props> = ({
   return (
     <div
       style={{
-        position: "fixed",
+        ...POPOVER,
         left: x,
         top: y,
-        background: "#fff",
-        border: "1px solid #ccc",
-        borderRadius: 8,
         padding: "10px 14px",
-        boxShadow: "0 4px 16px rgba(0,0,0,0.15)",
-        zIndex: 1000,
         minWidth: 272,
         maxWidth: 520,
         maxHeight: "80vh",
@@ -301,7 +299,7 @@ export const BlockPopover: React.FC<Props> = ({
               🗑
             </span>
           )}
-          <span style={{ cursor: "pointer", fontWeight: 700, color: "#888" }} onClick={onClose}>
+          <span style={{ cursor: "pointer", fontWeight: 700, color: T.ink3 }} onClick={onClose}>
             ×
           </span>
         </span>
@@ -416,9 +414,9 @@ export const BlockPopover: React.FC<Props> = ({
           style={{
             marginTop: 8,
             padding: "6px 8px",
-            background: "#fdecea",
-            color: "#b71c1c",
-            border: "1px solid #f5c6cb",
+            background: T.badSoft,
+            color: T.bad,
+            border: "1px solid #EFBDBB",
             borderRadius: 4,
             fontSize: 12,
             maxWidth: 260,
@@ -533,8 +531,9 @@ export const BlockPopover: React.FC<Props> = ({
               fontSize: 12,
               padding: "4px 10px",
               borderRadius: 4,
-              border: block.pinned ? "1px solid #8d6e00" : "1px solid #37474f",
-              background: block.pinned ? "#fff8e1" : "#eceff1",
+              border: block.pinned ? "1px solid #F1CFA9" : `1px solid ${T.ink2}`,
+              background: block.pinned ? T.warnSoft : T.surface2,
+              color: block.pinned ? T.warn : T.ink,
               cursor: "pointer",
               fontWeight: 600,
             }}
@@ -542,7 +541,7 @@ export const BlockPopover: React.FC<Props> = ({
           >
             {block.pinned ? "Unpin — let it move" : "📌 Fix for solver"}
           </button>
-          <div style={{ fontSize: 11, color: "#888", marginTop: 4, maxWidth: 260 }}>
+          <div style={{ fontSize: 11, color: T.ink3, marginTop: 4, maxWidth: 260 }}>
             {block.pinned
               ? "Pinned: immovable like an MO. The solver treats it as committed line-time and its kg counts toward the demand plan."
               : "Pin when this SKU must run exactly here — the solver fills the rest of the demand around it."}
@@ -556,8 +555,8 @@ export const BlockPopover: React.FC<Props> = ({
               <button
                 key={d}
                 title={`Insert a clean flush ${d === "before" ? "BEFORE" : "AFTER"} this block; later projected CIPs on the line re-forecast from it`}
-                style={{ fontSize: 12, padding: "4px 10px", borderRadius: 4,
-                         border: "1px solid #1565c0", background: "#e3f2fd",
+                style={{ fontSize: 12, padding: "4px 10px", borderRadius: 5,
+                         border: "1px solid #BBD3F0", background: T.infoSoft, color: T.info,
                          cursor: "pointer", fontWeight: 600 }}
                 onClick={() => {
                   const err = onAddCip(block, d);
@@ -569,7 +568,7 @@ export const BlockPopover: React.FC<Props> = ({
               </button>
             ))}
           </div>
-          <div style={{ fontSize: 11, color: "#888", marginTop: 4, maxWidth: 260 }}>
+          <div style={{ fontSize: 11, color: T.ink3, marginTop: 4, maxWidth: 260 }}>
             Adds a clean next to this block and re-forecasts the line's later
             projected CIPs from it; blocks slide right if the gap is short.
           </div>
@@ -586,8 +585,8 @@ export const BlockPopover: React.FC<Props> = ({
                     ? "Grow this block into the empty space on BOTH sides (setup hours respected)"
                     : `Grow this block ${d} into the empty space (setup hours respected)`
                 }
-                style={{ fontSize: 12, padding: "4px 10px", borderRadius: 4,
-                         border: "1px solid #2e7d32", background: "#e8f5e9",
+                style={{ fontSize: 12, padding: "4px 10px", borderRadius: 5,
+                         border: "1px solid #BFE0CC", background: T.okSoft, color: T.ok,
                          cursor: "pointer", fontWeight: 600 }}
                 onClick={() => {
                   const err = onFill(block, d);
@@ -599,7 +598,7 @@ export const BlockPopover: React.FC<Props> = ({
               </button>
             ))}
           </div>
-          <div style={{ fontSize: 11, color: "#888", marginTop: 4, maxWidth: 280 }}>
+          <div style={{ fontSize: 11, color: T.ink3, marginTop: 4, maxWidth: 280 }}>
             Fills to the neighbouring block minus the required changeover
             setup; tonnage scales with the new duration.
           </div>
@@ -607,7 +606,7 @@ export const BlockPopover: React.FC<Props> = ({
       )}
       {demandLeft && demandLeft.length > 0 && (
         <div style={{ marginTop: 8 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: "#555" }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.ink2 }}>
             Demand plan — {block.sku} still needs:
           </div>
           <table style={{ fontSize: 11, marginTop: 2, borderCollapse: "collapse" }}>
@@ -618,17 +617,17 @@ export const BlockPopover: React.FC<Props> = ({
                 const over = sched - r.total_kg;
                 return (
                 <tr key={r.week}>
-                  <td style={{ paddingRight: 10, color: "#888" }}>{r.week}</td>
+                  <td style={{ paddingRight: 10, color: T.ink3 }}>{r.week}</td>
                   <td style={{ textAlign: "right", paddingRight: 6,
                                fontWeight: 600,
-                               color: r.left_kg > 0 ? "#b71c1c" : "#2e7d32" }}>
+                               color: r.left_kg > 0 ? T.bad : T.ok }}>
                     {r.left_kg > 0
                       ? `${r.left_kg.toLocaleString()} kg left · ${pct}%`
                       : over > 0
                         ? `+${Math.round(over).toLocaleString()} kg over · ${pct}%`
                         : "covered · 100%"}
                   </td>
-                  <td style={{ color: "#aaa" }}>of {r.total_kg.toLocaleString()}</td>
+                  <td style={{ color: T.ink3 }}>of {r.total_kg.toLocaleString()}</td>
                 </tr>
                 );
               })}
@@ -640,7 +639,7 @@ export const BlockPopover: React.FC<Props> = ({
         <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
           <button
             title="Place flush against the previous block on this line, leaving exactly the setup time between the two SKUs"
-            style={{ fontSize: 12, padding: "4px 10px", borderRadius: 4, border: "1px solid #78909c", background: "#eceff1", cursor: "pointer" }}
+            style={{ ...BTN_BASE, fontSize: 12, padding: "4px 10px" }}
             onClick={() => {
               const err = onSnap(block, "left");
               if (err) setApplyError(err); else { setApplyError(null); onClose(); }
@@ -650,7 +649,7 @@ export const BlockPopover: React.FC<Props> = ({
           </button>
           <button
             title="Place flush against the next block on this line, leaving exactly the setup time between the two SKUs"
-            style={{ fontSize: 12, padding: "4px 10px", borderRadius: 4, border: "1px solid #78909c", background: "#eceff1", cursor: "pointer" }}
+            style={{ ...BTN_BASE, fontSize: 12, padding: "4px 10px" }}
             onClick={() => {
               const err = onSnap(block, "right");
               if (err) setApplyError(err); else { setApplyError(null); onClose(); }
@@ -663,13 +662,13 @@ export const BlockPopover: React.FC<Props> = ({
       {editable && (
         <div style={{ display: "flex", gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
           <button
-            style={{ fontSize: 12, padding: "4px 10px", borderRadius: 4, border: "1px solid #ccc", background: "#f5f5f5", cursor: "pointer" }}
+            style={{ ...BTN_BASE, fontSize: 12, padding: "4px 10px" }}
             onClick={() => { setDraft(null); setApplyError(null); }}
           >
             Reset
           </button>
           <button
-            style={{ fontSize: 12, padding: "4px 12px", borderRadius: 4, border: "1px solid #0a8", background: "#00c896", color: "#fff", fontWeight: 600, cursor: "pointer" }}
+            style={{ ...BTN_PRIMARY, fontSize: 12, padding: "4px 12px" }}
             onClick={apply}
           >
             Apply

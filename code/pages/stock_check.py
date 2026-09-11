@@ -1,9 +1,13 @@
 # code/pages/stock_check.py — Stock Check: component availability monitor.
 #
-# Two views:
-#   Schedule view — will anything on the current board fail for components?
-#                   (flat on-hand status + the time-phased Supply verdict)
-#   Demand view   — which demand SKUs can't reach >=90% of target?
+# Two questions, one report (helpers/stock_report_cache — shared with Home
+# and Reconcile, ~35s to compute, milliseconds to load):
+#   Board       — will anything on the current board fail for components?
+#                 (flat on-hand status + the time-phased Supply verdict)
+#   Demand plan — which demand SKUs can't reach >=90% of target?
+# plus the report turned round by COMPONENT (helpers/stock_reports): which
+# purchased item is short, against what, blocking which runs — the list the
+# planner chases with purchasing — and the same tables as an Excel workbook.
 # Plus the Inbound tab: every open-PO line and the fate the timeline engine
 # gave it (contract .hermes/plans/2026-09-01-po-stock-contracts.md §7).
 # Data: VIF CSV exports (ediact 3/4, jestkexp/2, azapart, rmpkitems) +
@@ -22,18 +26,21 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
+from helpers import stock_reports as sr  # noqa: E402
 from helpers.config import load_toml  # noqa: E402
 from helpers.paths import data_dir  # noqa: E402
+from helpers.theme import (TOKENS, chip, kind_for, note, page_header,  # noqa: E402
+                           render_chips, section_label, state_chip)
 from helpers.timefmt import hour_to_stamp, planning_anchor  # noqa: E402
 
 # Block hour offsets are anchored to the REAL planning anchor — omitting it
 # fell back to timefmt's 2026-02-15 default and showed February dates.
 _ANCHOR = planning_anchor(load_toml())
 
-st.header("Stock Check")
-st.caption(
-    "Daily component availability against the current schedule and the demand "
-    "plan. Flags blocks that can't run and SKUs that shouldn't be scheduled."
+page_header(
+    "Stock Check",
+    subtitle="Component availability against the current board and the demand plan. "
+             "Flags runs that can't be covered and SKUs that shouldn't be scheduled.",
 )
 
 DATA = Path(data_dir())
@@ -60,6 +67,7 @@ def _default_vif_folder() -> str:
 def _receiving_path() -> Path:
     return REF_RECV if REF_RECV.exists() else DEV_RECV
 
+
 # ---------------------------------------------------------------- settings
 def _load_settings() -> dict:
     try:
@@ -81,9 +89,9 @@ ENGINE_ERR = ""
 try:
     from stockcheck import coverage as cov
     from stockcheck import weeks as wk
-    from stockcheck.api import stock_check_report
+    from stockcheck.api import stock_check_report  # noqa: F401 — engine presence check
     from stockcheck.receiving_import import parse_receiving_schedule
-    from stockcheck.vif_import import import_vif_folder
+    from stockcheck.vif_import import import_vif_folder  # noqa: F401
 except Exception as exc:  # engine not merged yet -> render shell w/ demo
     ENGINE_OK = False
     ENGINE_ERR = str(exc)
@@ -94,17 +102,26 @@ try:
 except Exception:  # noqa: BLE001
     tl = None
 
-STATUS_CHIP = {
-    "OK": ":green[OK]",
-    "TIGHT": ":orange[TIGHT]",
-    "AT_RISK": ":red[AT RISK]",
-    "DO_NOT_SCHEDULE": ":red[DO NOT SCHEDULE]",
-    "NO_BOM": ":gray[NO BOM]",
-    "UNK": ":gray[UNK]",
-    "NOT_TRACKED": ":gray[NOT TRACKED]",
+# Soft cell backgrounds for status columns in the tables (Styler).
+_STATUS_BG = {
+    "OK": TOKENS["ok_soft"], "TIGHT": TOKENS["warn_soft"],
+    "AT RISK": TOKENS["bad_soft"], "DO NOT SCHEDULE": TOKENS["bad_soft"],
+    "NO BOM": TOKENS["neutral_soft"], "UNK": TOKENS["neutral_soft"],
+    "NOT TRACKED": TOKENS["neutral_soft"],
+    # time-phased supply verdicts (the Supply column)
+    "SHORT": TOKENS["bad_soft"], "DEPENDENT": TOKENS["warn_soft"],
+    "DEPENDENT · minor": TOKENS["neutral_soft"], "NO DATA": TOKENS["neutral_soft"],
+    "OK · backed by PO": TOKENS["ok_soft"],
 }
-# plain labels for dataframe cells (st.dataframe does not render markdown)
-STATUS_TEXT = {k: v.split("[")[1].rstrip("]") for k, v in STATUS_CHIP.items()}
+_STATUS_FG = {
+    "OK": TOKENS["ok"], "TIGHT": TOKENS["warn"],
+    "AT RISK": TOKENS["bad"], "DO NOT SCHEDULE": TOKENS["bad"],
+    "NO BOM": TOKENS["neutral"], "UNK": TOKENS["neutral"],
+    "NOT TRACKED": TOKENS["neutral"],
+    "SHORT": TOKENS["bad"], "DEPENDENT": TOKENS["warn"],
+    "DEPENDENT · minor": TOKENS["neutral"], "NO DATA": TOKENS["neutral"],
+    "OK · backed by PO": TOKENS["ok"],
+}
 
 # Time-phased supply verdicts (contract §3.5) ride on each schedule_view row
 # as "supply". A saved report from before the PO feed has none: every helper
@@ -117,19 +134,12 @@ SUPPLY_CHIP = {
 }
 
 
-def _supply(b: dict) -> dict | None:
-    s = b.get("supply")
-    return s if isinstance(s, dict) and s.get("verdict") else None
-
-
-def _supply_flagged(b: dict) -> bool:
-    # SHORT, or DEPENDENT above the minor floor — the verdicts that pull a
-    # block into the risk list even when the flat on-hand check says OK
-    s = _supply(b)
-    if s is None:
-        return False
-    v = s.get("verdict")
-    return v == "SHORT" or (v == "DEPENDENT" and not s.get("minor"))
+# One definition of "flagged by supply" for the page, the board table and
+# the workbook (helpers/stock_reports): SHORT, or DEPENDENT above the minor
+# floor — the verdicts that pull a block into the risk list even when the
+# flat on-hand check says OK.
+_supply = sr.supply_of
+_supply_flagged = sr.supply_flagged
 
 
 def _supply_chip(s: dict) -> str:
@@ -189,68 +199,92 @@ _QUALITY_HINTS = [
      "the PO closes."),
 ]
 
-# ---------------------------------------------------------------- header
-left, mid, right = st.columns([3, 2, 2])
-with left:
+
+
+def _style_status(df: pd.DataFrame, cols: tuple[str, ...] = ("Status", "Supply")):
+    """Color the status-like columns (flat Status, time-phased Supply); falls
+    back to the plain frame when the pandas Styler is unavailable."""
+    present = [c for c in cols if c in df.columns]
+    if df.empty or not present:
+        return df
+    try:
+        return df.style.map(
+            lambda v: (f"background-color: {_STATUS_BG.get(str(v), '')}; "
+                       f"color: {_STATUS_FG.get(str(v), TOKENS['ink'])}; font-weight: 600"),
+            subset=present)
+    except Exception:  # noqa: BLE001 — styling is cosmetic
+        return df
+
+
+def _public(rows: list[dict]) -> pd.DataFrame:
+    return pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_")}
+                         for r in rows])
+
+
+# ---------------------------------------------------------------- controls
+_dem_anchor, _week_opts = (None, [])
+if ENGINE_OK:
+    # Weeks of the CURRENT demand plan (anchor from demand_plan.source.json),
+    # floored at today's ISO week. Hardcoding [0, 1, 2] and labeling without
+    # an anchor rendered timefmt's Feb default as WW07/WW08/WW09.
+    _dem_anchor = wk.demand_anchor(DATA)
+    _week_opts = wk.current_week_options(wk.demand_week_indices(DATA), _dem_anchor)
+
+
+def _wk_label(x: int) -> str:
+    return wk.week_index_label(x, _dem_anchor) if ENGINE_OK else f"W{x}"
+
+
+c_week, c_refresh, c_spacer = st.columns([1.6, 1.4, 4])
+with c_week:
+    week_index = st.selectbox(
+        "Demand week", options=[None] + _week_opts,
+        format_func=lambda x: ("All weeks" if x is None else _wk_label(x)),
+        label_visibility="collapsed")
+with c_refresh:
+    refresh = st.button("⟳ Refresh from VIF", type="primary", use_container_width=True,
+                        help="Recompute the stock report (source files are "
+                             "re-imported only if they changed). The page "
+                             "otherwise renders the saved report instantly.")
+
+with st.expander("Sources & availability — VIF folder, which stock counts", expanded=False):
     vif_folder = st.text_input(
         "VIF export folder",
         value=settings.get("vif_folder", _default_vif_folder()),
         help="Network share on Carsten's machine; data/reference/ when the "
              "GitHub bridge delivers the exports; dev fixtures as last resort.")
-with mid:
-    # Weeks of the CURRENT demand plan (anchor from demand_plan.source.json),
-    # floored at today's ISO week. Hardcoding [0, 1, 2] and labeling without
-    # an anchor rendered timefmt's Feb default as WW07/WW08/WW09.
+    # A folder edit must reach the shared resolver (stock_report_inputs) —
+    # otherwise Home and Reconcile keep reading the old folder and the pages
+    # disagree (walkthrough 2026-08-17).
+    if vif_folder != settings.get("vif_folder", _default_vif_folder()):
+        settings["vif_folder"] = vif_folder
+        _save_settings(settings)
     if ENGINE_OK:
-        _dem_anchor = wk.demand_anchor(DATA)
-        _week_opts = wk.current_week_options(
-            wk.demand_week_indices(DATA), _dem_anchor)
-    else:
-        _dem_anchor, _week_opts = None, []
-    week_index = st.selectbox(
-        "Demand week", options=[None] + _week_opts,
-        format_func=lambda x: ("All weeks" if x is None
-                               else wk.week_index_label(x, _dem_anchor)))
-with right:
-    refresh = st.button("Refresh from VIF", type="primary",
-                        help="Recompute the stock report (source files are "
-                             "re-imported only if they changed). The page "
-                             "otherwise renders the saved report instantly.")
-
-# A folder edit must reach the shared resolver (stock_report_inputs) —
-# otherwise Home and Reconcile keep reading the old folder and the pages
-# disagree (walkthrough 2026-08-17).
-if vif_folder != settings.get("vif_folder", _default_vif_folder()):
-    settings["vif_folder"] = vif_folder
-    _save_settings(settings)
+        st.caption("Which stock counts as available — default: only **Ava**. "
+                   "`Loc` = QC/warehouse-hold — opt in per depot if you know it will "
+                   "release. Changing a toggle saves it and marks the report stale — "
+                   "press **Refresh from VIF** to apply.")
+        toggles = settings.get("toggles", cov.default_toggles())
+        depots = ["M01", "SB1", "SC1", "SF1", "M02", "SFG", "M21"]
+        cols = st.columns(len(depots))
+        new_toggles = dict(toggles)
+        for ci, dep in enumerate(depots):
+            with cols[ci]:
+                st.markdown(f"**{dep}**")
+                for stt in ("Ava", "Loc", "Out"):
+                    key = f"{dep}|{stt}"
+                    new_toggles[key] = st.checkbox(
+                        stt, value=toggles.get(key, stt == "Ava"), key=f"t_{key}")
+        if new_toggles != toggles:
+            settings["toggles"] = new_toggles
+            settings["vif_folder"] = vif_folder
+            _save_settings(settings)
+            st.rerun()
+        toggles = new_toggles
 
 if not ENGINE_OK:
     st.warning(f"Stock-check engine unavailable: {ENGINE_ERR}")
     st.stop()
-
-# ------------------------------------------------------- availability toggles
-with st.expander("Availability — which stock counts?", expanded=False):
-    st.caption("Default: only **Ava** (available). `Loc` = QC/warehouse-hold — "
-               "opt in per depot if you know it will release. Changing a "
-               "toggle saves it and marks the report stale — press "
-               "**Refresh from VIF** to apply.")
-    toggles = settings.get("toggles", cov.default_toggles())
-    depots = ["M01", "SB1", "SC1", "SF1", "M02", "SFG", "M21"]
-    cols = st.columns(len(depots))
-    new_toggles = dict(toggles)
-    for ci, dep in enumerate(depots):
-        with cols[ci]:
-            st.markdown(f"**{dep}**")
-            for stt in ("Ava", "Loc", "Out"):
-                key = f"{dep}|{stt}"
-                new_toggles[key] = st.checkbox(
-                    stt, value=toggles.get(key, stt == "Ava"), key=f"t_{key}")
-    if new_toggles != toggles:
-        settings["toggles"] = new_toggles
-        settings["vif_folder"] = vif_folder
-        _save_settings(settings)
-        st.rerun()
-    toggles = new_toggles
 
 # ---------------------------------------------------------------- report
 # One persisted report shared with Home and Reconcile (~35s to compute,
@@ -258,7 +292,7 @@ with st.expander("Availability — which stock counts?", expanded=False):
 # report renders instantly and only the Refresh button (or a first-ever
 # visit with nothing saved yet) crunches the BOMs. The demand-week filter
 # is applied in-page, so one saved report serves every week choice.
-from helpers.stock_report_cache import load_cached, refresh_report
+from helpers.stock_report_cache import load_cached, refresh_report  # noqa: E402
 
 cached = load_cached(DATA)
 if refresh or cached is None:
@@ -273,22 +307,8 @@ if "error" in rep:
 
 _when = cached.computed_at.replace("T", " ")
 _cost = f" in {cached.elapsed_s:.0f}s" if cached.elapsed_s else ""
-if cached.stale:
-    st.warning(f"Board / demand / VIF inputs changed since this report "
-               f"(computed {_when}{_cost}) — press **Refresh from VIF** to "
-               "recompute. Showing the saved report.")
-else:
-    st.caption(f"Report computed {_when}{_cost} — saved; loads instantly "
-               "until the inputs change.")
-
-# source freshness strip
-src = rep.get("source_files", {})
-with st.container():
-    chips = " · ".join(f"`{n}` {t}" for n, t in sorted(src.items()))
-    st.caption(f"Sources: {chips}")
-if rep.get("import_errors"):
-    st.warning("Some files failed to import: " +
-               "; ".join(rep["import_errors"]))
+src = rep.get("source_files", {}) or {}
+_newest = max(src.values()) if src else ""
 
 # receiving appointments (xlsm parse — cached on the file's mtime)
 @st.cache_data(show_spinner=False)
@@ -301,25 +321,106 @@ appts, appt_errors = (_receiving(str(_recv), _recv.stat().st_mtime)
                       if _recv.exists() else ([], []))
 po_appts = {a["po"]: a for a in appts if a["po"]}
 
-# ---------------------------------------------------------------- metrics
-sv = rep["schedule_view"]
-dv = rep["demand_view"]
-if week_index is not None:
-    dv = [d for d in dv if d.get("week_index") == week_index]
-# a block counts once whether the flat check, the supply verdict or both
-# flag it
+# ---------------------------------------------------------------- status line
+if cached.stale:
+    st.warning(f"Board / demand / VIF inputs changed since this report "
+               f"(computed {_when}{_cost}) — press **Refresh from VIF** to "
+               "recompute. Showing the saved report.")
+else:
+    st.caption(f"Report computed {_when}{_cost} — saved; loads instantly "
+               "until the inputs change.")
+_status_chips = [
+    chip("report stale" if cached.stale else "report current",
+         "warn" if cached.stale else "ok", icon="▲" if cached.stale else "●"),
+    chip(f"{len(src)} VIF files" + (f" · newest {_newest}" if _newest else ""), "neutral"),
+    chip(f"{len(appts)} receiving appointments", "neutral" if appts else "warn"),
+]
+if rep.get("import_errors"):
+    _status_chips.append(chip(f"{len(rep['import_errors'])} import error(s)", "bad"))
+_feed_state = ((rep.get("inbound") or {}).get("state")
+               or (rep.get("supply_meta") or {}).get("feed_state") or "")
+if _feed_state:
+    _status_chips.append(chip(f"PO feed {_feed_state}",
+                              "ok" if _feed_state == "ok" else "warn"))
+render_chips(_status_chips)
+if rep.get("import_errors"):
+    st.warning("Some files failed to import: " + "; ".join(rep["import_errors"]))
+
+# ---------------------------------------------------------------- tables
+_stamp = lambda h: hour_to_stamp(h, _ANCHOR)  # noqa: E731
+sv = rep.get("schedule_view", []) or []
+dv_all = rep.get("demand_view", []) or []
+dv = [d for d in dv_all if week_index is None or d.get("week_index") == week_index]
+board_all = sr.block_rows(rep, _stamp)
+# a block is at risk when the flat on-hand check flags it OR the
+# time-phased supply verdict does (SHORT, non-minor DEPENDENT) — it counts
+# once whichever (or both) flagged it (contract §3.5)
+board_risk = [r for r in board_all
+              if r["_status"] in sr.RISK_STATUSES or r.get("_supply_flagged")]
+demand_tbl = sr.demand_rows(rep, week_index, _wk_label)
+shortages = sr.component_shortages(rep, week_index, stamp=_stamp, week_label=_wk_label)
+
 has_supply = any(_supply(b) is not None for b in sv)
-n_flat_risk = sum(1 for b in sv if b["status"] in ("AT_RISK", "TIGHT"))
+n_flat_risk = sum(1 for b in sv if b.get("status") in ("AT_RISK", "TIGHT"))
 n_supply_risk = sum(1 for b in sv if _supply_flagged(b))
 n_blocks_risk = sum(1 for b in sv
-                    if b["status"] in ("AT_RISK", "TIGHT") or _supply_flagged(b))
-n_dns = sum(1 for d in dv if d["status"] == "DO_NOT_SCHEDULE")
-n_dem_risk = sum(1 for d in dv if d["status"] in ("AT_RISK",))
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Schedule blocks at risk", n_blocks_risk, delta=f"of {len(sv)}")
-m2.metric("Demand SKUs DO_NOT_SCHEDULE", n_dns, delta=f"of {len(dv)}")
+                    if b.get("status") in ("AT_RISK", "TIGHT") or _supply_flagged(b))
+n_dns = sum(1 for d in dv if d.get("status") == "DO_NOT_SCHEDULE")
+n_dem_risk = sum(1 for d in dv if d.get("status") in ("AT_RISK",))
+if has_supply:
+    _verdicts = [(_supply(b) or {}).get("verdict") for b in sv]
+    n_short = sum(1 for v in _verdicts if v == "SHORT")
+    n_dep = sum(1 for b in sv if _supply_flagged(b)
+                and (_supply(b) or {}).get("verdict") == "DEPENDENT")
+    n_nodata = sum(1 for v in _verdicts if v == "NO_DATA")
+else:
+    n_short = n_dep = n_nodata = 0
+
+# Excel workbook — the same tables the page shows. Cached per report +
+# week filter so a rerun never rebuilds a workbook it already has.
+_xl_key = (cached.computed_at, week_index, len(appts))
+if st.session_state.get("sc_xl_key") != _xl_key:
+    _summary = [
+        ("Report computed", _when),
+        ("Demand week filter", "All weeks" if week_index is None else _wk_label(week_index)),
+        ("Blocks at risk (flat AT RISK/TIGHT or supply SHORT/DEPENDENT)",
+         f"{n_blocks_risk} of {len(sv)}"),
+        ("Demand SKUs do not schedule", f"{n_dns} of {len(dv)}"),
+        ("Demand SKUs at risk", n_dem_risk),
+        ("Components short", len(shortages)),
+        ("Receiving appointments", len(appts)),
+        ("VIF sources", "; ".join(f"{k} {v}" for k, v in sorted(src.items()))),
+    ]
+    if has_supply:
+        _summary.insert(3, ("Supply (time-phased)",
+                            f"{n_short} short · {n_dep} dependent · {n_nodata} no data"
+                            + (f" · PO feed {_feed_state}" if _feed_state else "")))
+    st.session_state["sc_xl_bytes"] = sr.excel_report(
+        summary=_summary,
+        board=board_all, demand=demand_tbl, shortages=shortages,
+        appointments=appts, no_bom=list(rep.get("no_bom_skus", []) or []),
+        unk=list(rep.get("unk", []) or []))
+    st.session_state["sc_xl_key"] = _xl_key
+
+m1, m2, m3, m4, m5 = st.columns([1, 1, 1, 1, 1.3])
+# label + plain value pinned by tests/test_pages_smoke.py; the "of N" and
+# the definition ride in the help and the caption below
+m1.metric("Schedule blocks at risk", n_blocks_risk,
+          help=f"Of {len(sv)} production blocks on the board: components AT RISK / "
+               "TIGHT on hand, or a time-phased supply verdict of SHORT / DEPENDENT.")
+m2.metric("Do not schedule", f"{n_dns} / {len(dv)}",
+          help="Demand SKUs (selected week) that cannot reach 90% of target with the stock on hand.")
 m3.metric("Demand SKUs at risk", n_dem_risk)
-m4.metric("Receiving appointments", len(appts))
+m4.metric("Components short", len(shortages),
+          help="Purchased items short somewhere — see Shortages by component.")
+with m5:
+    st.download_button(
+        "⬇ Export stock report (Excel)",
+        data=st.session_state["sc_xl_bytes"],
+        file_name=f"stock_check_{cached.computed_at.replace(':', '').replace('-', '')[:15]}.xlsx",
+        use_container_width=True,
+        help="Summary · Board · Demand plan · Component shortages · Receiving · Data quality",
+    )
 if has_supply:
     st.caption(f"Blocks at risk = flat status AT RISK/TIGHT ({n_flat_risk}) "
                f"or time-phased supply SHORT/DEPENDENT ({n_supply_risk}, "
@@ -328,92 +429,95 @@ else:
     st.caption("Blocks at risk = flat status AT RISK/TIGHT. This saved report "
                "predates the PO feed, so it carries no time-phased supply "
                "verdicts — press **Refresh from VIF** to add them.")
-_feed_state = ((rep.get("inbound") or {}).get("state")
-               or (rep.get("supply_meta") or {}).get("feed_state") or "")
 
 # ---------------------------------------------------------------- tabs
-(tab_sched, tab_demand, tab_drill, tab_item, tab_recv, tab_inb,
+(tab_board, tab_demand, tab_short, tab_drill, tab_item, tab_recv, tab_inb,
  tab_dq) = st.tabs(
-    ["Schedule view", "Demand view", "SKU drill-down", "Item view",
-     "Receiving", "Inbound", "Data quality"])
+    ["Board", "Demand plan", "Shortages by component", "SKU drill-down",
+     "Component → SKUs", "Receiving", "Inbound", "Data quality"])
 
 
 def _item_line(i: dict) -> str:
-    po = ""
-    for a in i.get("alternates", []):
-        pass
-    return (f"{STATUS_CHIP.get(i['status'], i['status'])} **{i['item']}** "
-            f"{i['designation'][:28]} — need {i['need']} {i['unit']}, "
-            f"available {i['available_total']}, ratio {i['ratio']}")
+    return (f"{state_chip(i['status'])} <b>{i['item']}</b> "
+            f"{str(i.get('designation', ''))[:28]} — need {sr.fmt_qty(i.get('need'))} "
+            f"{i.get('unit', '')}, available {sr.fmt_qty(i.get('available_total'))}, "
+            f"coverage {sr.fmt_pct(i.get('ratio'))}")
 
 
-with tab_sched:
-    st.subheader("Will the current board run?")
-    # flat AT_RISK/TIGHT/NOT_TRACKED, plus blocks the time-phased verdict
-    # flags (SHORT, non-minor DEPENDENT) even when on-hand looks fine today
-    risky = [b for b in sv
-             if b["status"] in ("AT_RISK", "TIGHT", "NOT_TRACKED")
-             or _supply_flagged(b)]
-    ok = len(sv) - len(risky)
-    cap = f"{ok} of {len(sv)} production blocks fully covered."
+with tab_board:
+    section_label("Will the current board run?")
+    ok = len(sv) - len(board_risk)
+    cap = (f"{ok} of {len(sv)} production blocks fully covered. "
+           "Worst first; the Constraints column names the items that fall short.")
     if has_supply:
-        _verdicts = [(_supply(b) or {}).get("verdict") for b in sv]
-        n_short = sum(1 for v in _verdicts if v == "SHORT")
-        n_dep = sum(1 for b in sv if _supply_flagged(b)
-                    and (_supply(b) or {}).get("verdict") == "DEPENDENT")
-        n_nodata = sum(1 for v in _verdicts if v == "NO_DATA")
         cap += (f" Supply: {n_short} short · {n_dep} dependent · "
                 f"{n_nodata} no data"
                 + (f" (PO feed {_feed_state})." if _feed_state else "."))
     st.caption(cap)
-    for b in sorted(risky, key=lambda b: (b["start_h"])):
-        s = _supply(b)
-        label = STATUS_CHIP.get(b['status'], b['status'])
-        if s is not None:
-            label += f" · supply {_supply_chip(s)}"
-        with st.expander(
-                f"{label} **{b['sku']}** "
-                f"{b['line_name']} · {hour_to_stamp(b['start_h'], _ANCHOR)} → "
-                f"{hour_to_stamp(b['end_h'], _ANCHOR)} · {b['cases']:.0f} cases"):
-            if s is not None:
-                st.markdown(f"**Supply** {_supply_chip(s)} — {_supply_text(s)}")
-            bad = [i for i in b["items"]
-                   if i["status"] in ("AT_RISK", "TIGHT", "NOT_TRACKED")]
-            bad.sort(key=lambda i: (i["ratio"] is None,
-                                    i["ratio"] if i["ratio"] is not None else 0))
-            if not bad and s is not None:
-                st.caption("Flat on-hand check OK — listed for the supply "
-                           "verdict only.")
-            for i in bad[:8]:
-                st.markdown(_item_line(i))
+    show_all = st.toggle("Show every block (not only the ones at risk)", key="sc_board_all")
+    _rows = board_all if show_all else board_risk
+    if _rows:
+        st.dataframe(_style_status(_public(_rows)), use_container_width=True,
+                     hide_index=True)
+    else:
+        st.success("Every production block on the board is fully covered.")
+    if board_risk:
+        with st.expander("Component detail per block at risk", expanded=False):
+            # flat AT_RISK/TIGHT/NOT_TRACKED, plus blocks the time-phased
+            # verdict flags (SHORT, non-minor DEPENDENT) even when on-hand
+            # looks fine today
+            for b in sorted((b for b in sv
+                             if b.get("status") in sr.RISK_STATUSES or _supply_flagged(b)),
+                            key=lambda b: (b["start_h"])):
+                s = _supply(b)
+                st.markdown(
+                    f"{state_chip(b['status'])} <b>{b['sku']}</b> {b['line_name']} · "
+                    f"{_stamp(b['start_h'])} → {_stamp(b['end_h'])} · "
+                    f"{b['cases']:.0f} cases", unsafe_allow_html=True)
+                if s is not None:
+                    st.markdown(f"**Supply** {_supply_chip(s)} — {_supply_text(s)}")
+                bad = [i for i in b["items"]
+                       if i["status"] in ("AT_RISK", "TIGHT", "NOT_TRACKED")]
+                bad.sort(key=lambda i: (i["ratio"] is None,
+                                        i["ratio"] if i["ratio"] is not None else 0))
+                if not bad and s is not None:
+                    st.caption("Flat on-hand check OK — listed for the supply "
+                               "verdict only.")
+                for i in bad[:8]:
+                    st.markdown("&nbsp;&nbsp;&nbsp;" + _item_line(i), unsafe_allow_html=True)
 
 with tab_demand:
-    st.subheader("Should it be scheduled?")
-    order = {"DO_NOT_SCHEDULE": 0, "AT_RISK": 1, "TIGHT": 2,
-             "NOT_TRACKED": 3, "NO_BOM": 4, "UNK": 5, "OK": 6}
-    rows = sorted(dv, key=lambda d: (order.get(d["status"], 9),
-                                     d["achievable_ratio"] or 999))
-    tbl = []
-    for d in rows:
-        c = d["constraining"][0] if d["constraining"] else {}
-        ratio = d["achievable_ratio"]
-        cov_s = ("—" if ratio is None
-                 else (f"{ratio:.1%}" if ratio >= 0.005 else f"{ratio:.2%}"))
-        tbl.append({
-            "SKU": d["sku"],
-            "Wk": wk.week_index_label(d["week_index"], _dem_anchor),
-            "Target kg": d["target_kg"],
-            "Coverage": cov_s,
-            "Status": STATUS_TEXT.get(d["status"], d["status"]),
-            "Top constraint": (f"{c.get('item', '')} "
-                               f"({c.get('available_total', '')}/"
-                               f"{c.get('need', '')} {c.get('unit', '')})"
-                               if c else ""),
-        })
-    st.dataframe(pd.DataFrame(tbl), use_container_width=True, hide_index=True)
+    section_label("Should it be scheduled?")
+    st.caption("Achievable coverage of each demand SKU's target with the stock on hand. "
+               "DO NOT SCHEDULE = under 90% achievable; worst first.")
+    if demand_tbl:
+        st.dataframe(_style_status(_public(demand_tbl)), use_container_width=True,
+                     hide_index=True)
+    else:
+        st.caption("No demand orders in the selected week.")
+
+with tab_short:
+    section_label("Shortages by component — the purchasing list")
+    note("One row per purchased item that is short somewhere: what is on hand "
+         "against what the board and the demand plan need, how many runs it puts "
+         "at risk and which one starts first. Alternates are pooled into the "
+         "availability already. Export the Excel above to send it on.")
+    if shortages:
+        st.dataframe(_style_status(_public(shortages)), use_container_width=True,
+                     hide_index=True)
+    else:
+        st.success("No component is short for the board or the selected demand week.")
+    if appts:
+        _nxt = sorted((a for a in appts if a.get("date")), key=lambda a: (str(a.get("date")), str(a.get("time"))))[:8]
+        if _nxt:
+            st.caption("Next inbound appointments (the receiving feed carries PO and "
+                       "category only, no item numbers): "
+                       + " · ".join(f"{a.get('date')} {a.get('time')} {a.get('category') or ''}"
+                                    f"{(' PO ' + a['po']) if a.get('po') else ''}".strip()
+                                    for a in _nxt))
 
 with tab_drill:
-    st.subheader("SKU → component tree")
+    section_label("SKU → component tree")
     sku_opts = sorted({b["sku"] for b in sv} | {d["sku"] for d in dv})
     sku = st.selectbox("SKU", sku_opts)
     blocks_for = [b for b in sv if b["sku"] == sku]
@@ -421,7 +525,7 @@ with tab_drill:
     if dem_for:
         d = dem_for[0]
         st.markdown(f"**Demand:** {d['target_kg']} kg · status "
-                    f"{STATUS_CHIP.get(d['status'], d['status'])}")
+                    f"{state_chip(d['status'])}", unsafe_allow_html=True)
     if blocks_for:
         st.markdown(f"**On schedule:** {len(blocks_for)} block(s), "
                     f"{sum(b['cases'] for b in blocks_for):.0f} cases total")
@@ -438,8 +542,8 @@ with tab_drill:
         for i in sorted(seen.values(),
                         key=lambda x: (x["ratio"] is None,
                                        x["ratio"] if x["ratio"] is not None else 0)):
-            with st.expander(f"{STATUS_CHIP.get(i['status'], i['status'])} "
-                             f"**{i['item']}** {i['designation'][:40]}"):
+            with st.expander(f"{sr.status_text(i['status'])} · {i['item']} "
+                             f"{str(i.get('designation', ''))[:40]}"):
                 st.write(f"Need **{i['need']} {i['unit']}** · available "
                          f"**{i['available_total']}** (primary {i['available_primary']})")
                 if i.get("alternates"):
@@ -449,8 +553,8 @@ with tab_drill:
                     st.table(pd.DataFrame(i["alternates"]))
 
 with tab_item:
-    st.subheader("Component → consuming SKUs")
-    items = sorted(rep["item_reverse"].keys())
+    section_label("Component → consuming SKUs")
+    items = sorted(rep.get("item_reverse", {}).keys())
     item = st.selectbox("Component item", items)
     # an empty report (nothing scheduled/demanded) leaves the selectbox on
     # None — there is no row to look up
@@ -460,13 +564,12 @@ with tab_item:
         # on the ISO week number would put next January's W01 before W52.
         cons = cons.sort_values("week_index", kind="stable")
         cons.insert(int(cons.columns.get_loc("week_index")), "Wk",
-                    [wk.week_index_label(w, _dem_anchor)
-                     for w in cons["week_index"]])
+                    [_wk_label(w) for w in cons["week_index"]])
         cons = cons.drop(columns=["week_index"])
     st.dataframe(cons, use_container_width=True, hide_index=True)
 
 with tab_recv:
-    st.subheader("Inbound appointments (Shipping/Receiving schedule)")
+    section_label("Inbound appointments (Shipping/Receiving schedule)")
     if appts:
         st.dataframe(pd.DataFrame(appts), use_container_width=True,
                      hide_index=True)
@@ -477,7 +580,7 @@ with tab_recv:
         st.caption(f"{len(appt_errors)} rows skipped (decayed cells).")
 
 with tab_inb:
-    st.subheader("Inbound purchase orders (open-PO report)")
+    section_label("Inbound purchase orders (open-PO report)")
     inb = rep.get("inbound")
     if not isinstance(inb, dict):
         st.info("This saved report predates the PO feed — press **Refresh "
@@ -578,7 +681,7 @@ with tab_inb:
                        + "; ".join(errs[:5]) + (" …" if len(errs) > 5 else ""))
 
 with tab_dq:
-    st.subheader("Data quality")
+    section_label("Data quality")
     st.markdown(f"**NO_BOM SKUs ({len(rep['no_bom_skus'])})** in the current "
                 "schedule/demand universe — no recipe in ediact 3, cannot be "
                 "checked:")
@@ -592,6 +695,7 @@ with tab_dq:
                "in the BOM exports (ediact 3.csv / ediact 4.csv). Either "
                "remove them from sku_info.csv or add their recipes to the "
                "BOM export.")
+
     @st.cache_data(show_spinner=False)
     def _no_bom_all(vif_folder: str, sources_key: str) -> list[str]:
         # keyed on the report's source mtimes: the full catalog scan reuses
@@ -648,3 +752,5 @@ with tab_dq:
                     st.table(pd.DataFrame(
                         [v if isinstance(v, dict) else {"value": str(v)}
                          for v in vals]))
+    st.markdown("**Source files** (name · export timestamp):")
+    st.code("\n".join(f"{n}  {t}" for n, t in sorted(src.items())) or "none")

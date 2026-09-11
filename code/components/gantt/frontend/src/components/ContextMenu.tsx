@@ -3,6 +3,7 @@
 import React from "react";
 import type { ContextMenuState } from "../hooks/useContextMenu";
 import { hourToStamp } from "../utils/layout";
+import { POPOVER, T } from "../utils/theme";
 
 interface Props {
   menu: ContextMenuState;
@@ -16,10 +17,11 @@ interface Props {
 }
 
 const itemStyle: React.CSSProperties = {
-  padding: "6px 16px",
+  padding: "7px 16px",
   cursor: "pointer",
   fontSize: 13,
-  borderBottom: "1px solid #f0f0f0",
+  borderBottom: `1px solid ${T.surface2}`,
+  color: T.ink,
 };
 
 export const ContextMenu: React.FC<Props> = ({
@@ -40,23 +42,20 @@ export const ContextMenu: React.FC<Props> = ({
       />
       <div
         style={{
-          position: "fixed",
+          ...POPOVER,
           left: menu.x,
           top: menu.y,
-          background: "#fff",
-          border: "1px solid #ccc",
-          borderRadius: 6,
-          boxShadow: "0 4px 12px rgba(0,0,0,0.12)",
-          zIndex: 1000,
-          minWidth: 160,
+          borderRadius: 8,
+          minWidth: 180,
           overflow: "hidden",
+          padding: 0,
         }}
       >
         {canSplit && (
           <div
             style={itemStyle}
             onClick={() => { onSplit(menu.blockId!, midpoint); onClose(); }}
-            onMouseEnter={(e) => { (e.target as HTMLElement).style.background = "#f0f4ff"; }}
+            onMouseEnter={(e) => { (e.target as HTMLElement).style.background = T.accentSoft; }}
             onMouseLeave={(e) => { (e.target as HTMLElement).style.background = "transparent"; }}
           >
             ✂ Split at {hourToStamp(midpoint, anchor)}
@@ -65,7 +64,7 @@ export const ContextMenu: React.FC<Props> = ({
         <div
           style={itemStyle}
           onClick={() => { onRemove(menu.blockId!); onClose(); }}
-          onMouseEnter={(e) => { (e.target as HTMLElement).style.background = "#fff0f0"; }}
+          onMouseEnter={(e) => { (e.target as HTMLElement).style.background = T.badSoft; }}
           onMouseLeave={(e) => { (e.target as HTMLElement).style.background = "transparent"; }}
         >
           🗑 Remove to holding
@@ -73,7 +72,7 @@ export const ContextMenu: React.FC<Props> = ({
         <div
           style={{ ...itemStyle, borderBottom: "none" }}
           onClick={() => { onDetails(menu.blockId!); onClose(); }}
-          onMouseEnter={(e) => { (e.target as HTMLElement).style.background = "#f0f4ff"; }}
+          onMouseEnter={(e) => { (e.target as HTMLElement).style.background = T.accentSoft; }}
           onMouseLeave={(e) => { (e.target as HTMLElement).style.background = "transparent"; }}
         >
           ℹ Details

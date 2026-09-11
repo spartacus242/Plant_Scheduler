@@ -267,3 +267,40 @@ def test_stock_check_stale_feed_says_nothing_is_counted(tmp_path, monkeypatch):
     assert "Feed state **STALE** — no inbound receipt is counted" in text
     assert "no longer looks ahead" in text
     assert "1 line(s) under 'Would count'" in text
+
+
+# ---------------------------------------------------------------------------
+# Plant Calendar — the planner's main screen (default page since 2026-09-11).
+# ---------------------------------------------------------------------------
+
+def _minimal_board(dd: Path) -> None:
+    (dd / "reference").mkdir(parents=True, exist_ok=True)
+    (dd / "lines.csv").write_text("line_id,line_name,active\n0,P09,True\n1,P10,True\n",
+                                  encoding="utf-8")
+    (dd / "calendar_blocks.csv").write_text(
+        "block_id,block_type,line_id,line_name,start_h,end_h,label,"
+        "order_id,sku,sku_description,qty_kg,locked,attrs\n"
+        "b1,production,0,P09,10.0,20.0,280351,280351-W0,280351,desc,5000,False,\n"
+        "c1,cip,1,P10,4.0,10.0,CIP,,CIP,,,False,\n",
+        encoding="utf-8")
+
+
+def test_calendar_boots_on_an_empty_dir(tmp_path):
+    """No calendar file: the page explains and stops — no traceback."""
+    at = _boot("pages/calendar.py", tmp_path)
+    assert not at.exception
+    assert "No calendar yet" in "\n".join(str(w.value) for w in at.warning)
+
+
+def test_calendar_renders_a_minimal_board_without_reference_files(tmp_path):
+    """Every live feed missing: the board still renders, with the attention
+    strip saying what is missing, the control row, and the lock & export
+    strip — the page never dies on absent inputs."""
+    _minimal_board(tmp_path)
+    at = _boot("pages/calendar.py", tmp_path)
+    assert not at.exception
+    labels = [str(b.label) for b in at.button]
+    assert any("Reload from disk" in lb for lb in labels)
+    assert any("Lock through" in lb for lb in labels)
+    assert any(cb.label.startswith("Hide blocks") for cb in at.checkbox)
+    assert "Plant Calendar" in _texts(at)

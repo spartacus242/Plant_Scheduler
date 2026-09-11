@@ -11,10 +11,11 @@ import React, { useCallback } from "react";
 import { useDraggable } from "@dnd-kit/core";
 import type { ScheduleBlock } from "../types";
 import { hourToX, LINE_HEIGHT, hourToStamp } from "../utils/layout";
-import { skuColor, skuTextColor, blockLabel } from "../utils/colors";
+import { blockFill, skuTextColor, blockLabel, isHatchedType } from "../utils/colors";
 import { blockKey } from "../utils/blockIdentity";
 import type { Supply } from "../utils/stockRisk";
 import { chipFor, humanText, stampFor } from "../utils/supplyGlue";
+import { CHART, T } from "../utils/theme";
 
 interface Props {
   block: ScheduleBlock;
@@ -86,8 +87,13 @@ export const GanttBlock: React.FC<Props> = ({
   const y = slotY + pad;
   const h = Math.max(6, rowH - pad * 2);
   // Completed manprg history renders grey and read-only (user 2026-08-14).
-  const bg = block.completed ? "#b0bec5" : skuColor(block.sku, block.block_type);
-  const fg = block.completed ? "#37474f" : skuTextColor(bg);
+  // Downtime / maintenance / contractor windows are hatched constraints
+  // (pattern defs live in GanttChart); projected cleans are outlined and
+  // lighter than scheduled ones so a forecast never reads as plant fact.
+  const hatched = isHatchedType(block.block_type);
+  const isProjectedCip = block.block_type === "cip" && (block.attrs ?? "").includes("cip_projected");
+  const bg = block.completed ? "#B9C2CB" : blockFill(block.sku, block.block_type, block.attrs);
+  const fg = block.completed ? "#4E5A67" : hatched ? T.ink : skuTextColor(bg);
 
   const handleLeftResize = useCallback(
     (e: React.PointerEvent) => {
@@ -183,8 +189,8 @@ export const GanttBlock: React.FC<Props> = ({
   ].filter(Boolean).join("\n");
 
   // Pinned: a firm dark outline so fixed blocks read distinct from free ones.
-  const strokeColor = isDragging ? "#333" : isPinned ? "#37474f" : "none";
-  const strokeW = isDragging ? 2 : isPinned ? 1.8 : 0;
+  const strokeColor = isDragging ? T.ink : isPinned ? T.ink2 : isProjectedCip ? T.ink3 : hatched ? bg : "none";
+  const strokeW = isDragging ? 2 : isPinned ? 1.8 : (isProjectedCip || hatched) ? 1 : 0;
 
   // SHORT: body solid up to the hour the component runs out, hatched after.
   // DEPENDENT: a tick where the binding truck lands when that is mid-run
@@ -226,9 +232,9 @@ export const GanttBlock: React.FC<Props> = ({
           height={h + 4}
           rx={6}
           fill="none"
-          stroke="#FFD700"
-          strokeWidth={2}
-          opacity={0.5}
+          stroke={CHART.highlightRing}
+          strokeWidth={2.5}
+          opacity={0.9}
         />
       )}
       <rect
@@ -237,9 +243,10 @@ export const GanttBlock: React.FC<Props> = ({
         width={Math.max(w, 2)}
         height={h}
         rx={4}
-        fill={bg}
+        fill={hatched ? `url(#fs-hatch-${block.block_type})` : bg}
         stroke={strokeColor}
         strokeWidth={strokeW}
+        strokeDasharray={isProjectedCip ? "4 3" : undefined}
       />
       {/* Live completion fill (manprg): left-to-right progress on production bars */}
       {typeof block.completion_pct === "number" && block.completion_pct > 0 && (() => {

@@ -11,9 +11,9 @@ Flowstate is effectively a **single runtime service**: the Streamlit app (`code/
 - **Phase 2 (Generate Scenarios)** spawns the Google OR-Tools CP-SAT solver as an on-demand subprocess via `code/solver/phase2_scheduler.py` (using the same Python interpreter). The solver reads its inputs from a scratch work dir under `data/_scenario_work/` that is rebuilt from `data/reference/` on every run.
 
 ### Repository layout (current)
-- `code/app.py` — Streamlit entry (8 nav groups, 10 pages).
+- `code/app.py` — Streamlit entry (8 nav groups, 10 pages). Opens on the **Plant Calendar** (the planner's main screen); injects the light theme from `helpers/theme.py`.
 - `code/pages/` — home (Command Center), data, scorecard, stock_check, calendar, compare, generate, lines, settings.
-- `code/helpers/` — config, horizon, calendar_io, scorecard_engine, scenario_runner, current_state, data_health (freshness/health engine), importers (demand summary, manprg, cip), stock-check API, effective_rates (measured kg/h from `data/reference/historical/` overlaid on `capabilities_rates.csv` — every rate consumer reads through `load_effective_capabilities`; policy in `historical_run_log.rules.toml`).
+- `code/helpers/` — config, horizon, calendar_io, scorecard_engine, scenario_runner, current_state, data_health (freshness/health engine), importers (demand summary, manprg, cip), stock-check API, effective_rates (measured kg/h from `data/reference/historical/` overlaid on `capabilities_rates.csv` — every rate consumer reads through `load_effective_capabilities`; policy in `historical_run_log.rules.toml`), `stock_reports` (component shortages + Excel export), `theme` (design tokens, CSS, chips — mirrored in `.streamlit/config.toml` and the Gantt's `utils/theme.ts`; see `docs/ui-redesign-2026-09.md`).
 - `data/reference/historical/` — 8-year plant run log (raw + clean + derived tables). Rebuild with `scripts/ingest_historical_run_log.py` then `scripts/derive_historical_tables.py`.
 - `code/solver/` — the live CP-SAT solver (moved out of `Flowstate-legacy/` 2026-08-10). Flat modules: `phase2_scheduler.py` (CLI), `model_builder.py`, `data_loader.py`, `diagnostics.py`, `validate_schedule.py`, `solver_progress.py`.
 - `code/components/gantt/` — React/TS Gantt (prebuilt `dist/` committed; no Node build needed to run).
@@ -29,7 +29,7 @@ Flowstate is effectively a **single runtime service**: the Streamlit app (`code/
 - Quick open: `./scripts/open_flowstate.sh` (Linux/macOS/Cloud). On Windows, use `scripts/open_flowstate.bat` or `scripts/install_desktop_shortcut.ps1` (see README).
 
 ### Testing / lint
-- There **is** a pytest suite in `tests/` (8 files, 84 tests as of 2026-08-10): horizon, current-state, current-state overlay, AZAP import, live imports, PDF import, stock-check engine, stock-check receiving, and the data-health engine. Run it from the repo root:
+- There **is** a pytest suite in `tests/` (600+ tests as of 2026-09-11; page smoke tests boot the real `code/app.py` through `streamlit.testing.v1.AppTest`). Run it from the repo root:
   ```bash
   python3 -m pytest -q
   ```

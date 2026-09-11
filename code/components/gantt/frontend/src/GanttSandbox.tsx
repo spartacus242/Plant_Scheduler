@@ -42,6 +42,8 @@ import { deriveAutoHolding } from "./utils/holdingDerive";
 import { SkuPickerPopover, type PickerRowData } from "./components/SkuPickerPopover";
 import { DragPreviewBadge } from "./components/DragPreviewBadge";
 import { SupplyPill } from "./components/KpiBar";
+import { Legend } from "./components/Legend";
+import { T, TILE, TILE_LABEL, BTN_BASE, BTN_PRIMARY, FONT_SANS, chipStyle } from "./utils/theme";
 
 interface Props {
   args: SandboxArgs;
@@ -1663,21 +1665,40 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     adoptingHolding.current = true;
     actions.setHoldingFromServer(args.holdingArea ?? []);
   }, [args.holdingArea, dirty, actions]);
-  const pushRefresh = useCallback(() => {
-    // Save guard (fix FE / audit writeback-8): never hand Python a board
-    // where one block_id names two different runs — set_float_link / pin /
-    // delete key on block_id and would hit both. Split pieces of one MO
-    // may share an id; two unrelated blocks may not.
-    const dupes = findIdCollisions([...schedule, ...cipWindows]);
-    if (dupes.length) {
-      reject(`Duplicate block id(s) on the board: ${dupes.slice(0, 5).join(", ")}`
-             + `${dupes.length > 5 ? ` (+${dupes.length - 5} more)` : ""} — split or re-add the affected blocks before pushing`);
-      return;
-    }
-    lastPushed.current = JSON.stringify({ schedule, cipWindows, holdingArea, lastAction });
-    setDirty(false);
-    setComponentValue({ schedule, cipWindows, holdingArea, lastAction });
-  }, [schedule, cipWindows, holdingArea, lastAction, reject]);
+  // ONE push path. A Save carries a saveRequest — Python writes the board it
+  // just received (disk, or a named version) and never a stale one. A
+  // separate Streamlit Save button could only see the LAST pushed state, so
+  // edits made since the last "Refresh checks" silently missed the save —
+  // the #1 trap on the planner's main screen (2026-09-11).
+  const pushState = useCallback(
+    (saveRequest: { kind: "disk" | "version"; nonce: number } | null = null) => {
+      // Save guard (fix FE / audit writeback-8): never hand Python a board
+      // where one block_id names two different runs — set_float_link / pin /
+      // delete key on block_id and would hit both. Split pieces of one MO
+      // may share an id; two unrelated blocks may not. Guards every push,
+      // so a Save can never write such a board either.
+      const dupes = findIdCollisions([...schedule, ...cipWindows]);
+      if (dupes.length) {
+        reject(`Duplicate block id(s) on the board: ${dupes.slice(0, 5).join(", ")}`
+               + `${dupes.length > 5 ? ` (+${dupes.length - 5} more)` : ""} — split or re-add the affected blocks before pushing`);
+        return;
+      }
+      lastPushed.current = JSON.stringify({ schedule, cipWindows, holdingArea, lastAction });
+      setDirty(false);
+      setComponentValue({ schedule, cipWindows, holdingArea, lastAction, saveRequest });
+    },
+    [schedule, cipWindows, holdingArea, lastAction, reject],
+  );
+  const pushRefresh = useCallback(() => pushState(null), [pushState]);
+  // The nonce is wall-clock time: Python remembers the last nonce it acted
+  // on, so a rerun that re-reads the same component value never saves twice,
+  // and a remount (fresh counter) can never collide with an old nonce.
+  const pushSave = useCallback(
+    (kind: "disk" | "version") => pushState({ kind, nonce: Date.now() }),
+    [pushState],
+  );
+  const pushSaveRef = useRef(pushSave);
+  useEffect(() => { pushSaveRef.current = pushSave; });
 
   useEffect(() => {
     const h = containerRef.current?.scrollHeight ?? 800;
@@ -1688,6 +1709,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     const handler = (e: KeyboardEvent) => {
       if (e.ctrlKey && e.key === "z") { e.preventDefault(); actions.undo(); }
       if (e.ctrlKey && e.key === "y") { e.preventDefault(); actions.redo(); }
+      if (e.ctrlKey && (e.key === "s" || e.key === "S")) { e.preventDefault(); pushSaveRef.current("disk"); }
       if (e.key === "Escape") { closeMenu(); setPopover(null); setPicker(null); setHoldMenu(null); setHighlightSku(null); setErrorMsg(null); }
     };
     window.addEventListener("keydown", handler);
@@ -1696,7 +1718,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
 
   const ghostBg = activeDragBlock
     ? skuColor(activeDragBlock.sku, activeDragBlock.block_type)
-    : "#00f2c3";
+    : T.accent;
   const ghostFg = skuTextColor(ghostBg);
 
   // Width of the drag ghost in px: the previewed duration on the hovered line,
@@ -1722,13 +1744,21 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
   return (
     <div
       ref={containerRef}
-      style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}
+      style={{ fontFamily: FONT_SANS, color: T.ink }}
       onClick={() => { closeMenu(); setPopover(null); setPicker(null); setHoldMenu(null); }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <div style={{ flex: 1, display: "flex", alignItems: "baseline", gap: 14, flexWrap: "wrap" }}>
+      {/* Board toolbar: state chips (+ the supply pill) on the left, the
+          three actions on the right. Save always pushes the live board
+          first (see pushState). */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 4 }}>
+        <div style={{ flex: 1, minWidth: 200, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          {dirty ? (
+            <span style={chipStyle("warn")} title="Edits are on the board but not yet checked or saved">● unsaved edits</span>
+          ) : (
+            <span style={chipStyle("neutral")} title="The board matches the last check / save">✓ checked</span>
+          )}
           {kpis.overlaps.length > 0 && (
-            <span style={{ color: "#b71c1c", fontWeight: 700, fontSize: 13 }}>
+            <span style={chipStyle("bad")} title={kpis.overlaps.join("\n")}>
               ⚠ {kpis.overlaps.length} overlap(s): {kpis.overlaps[0]}
             </span>
           )}
@@ -1738,28 +1768,42 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         </div>
         <button
           onClick={pushRefresh}
-          title="Push your edits up: rescore, rebuild holding, rerun all checks"
+          title="Rescore, rebuild holding and rerun every check on the current board (nothing is written to disk)"
           style={{
-            padding: "8px 16px", borderRadius: 8, fontWeight: 700,
-            fontSize: 13, cursor: "pointer",
-            border: dirty ? "2px solid #f57c00" : "1px solid #ccc",
-            background: dirty ? "#fff3e0" : "#fff",
-            color: dirty ? "#e65100" : "#666",
+            ...BTN_BASE,
+            borderColor: dirty ? "#F1CFA9" : T.rule,
+            background: dirty ? T.warnSoft : T.surface,
+            color: dirty ? T.warn : T.ink2,
           }}
         >
-          {dirty ? "⟳ Refresh checks • unsaved edits" : "⟳ Refresh checks"}
+          ⟳ Refresh checks
+        </button>
+        <button
+          onClick={() => pushSave("version")}
+          title="Save the board as a named version (name in the box above the board) — your edits are pushed first"
+          style={BTN_BASE}
+        >
+          Save as version
+        </button>
+        <button
+          onClick={() => pushSave("disk")}
+          title="Save the board to calendar_blocks.csv — your edits are pushed first (Ctrl+S)"
+          style={BTN_PRIMARY}
+        >
+          💾 Save
         </button>
       </div>
 
       {errorMsg && (
         <div
           style={{
-            background: "#fdecea",
-            color: "#b71c1c",
-            border: "1px solid #f5c6cb",
-            borderRadius: 6,
+            background: T.badSoft,
+            color: T.bad,
+            border: "1px solid #EFBDBB",
+            borderRadius: 8,
             padding: "6px 10px",
-            fontSize: 12,
+            fontSize: 12.5,
+            fontWeight: 600,
             marginBottom: 6,
           }}
         >
@@ -1769,14 +1813,17 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       {warnMsg && (
         <div
           style={{
-            background: "#fff8e1",
-            color: "#8d6e00",
-            border: "1px solid #ffe082",
-            borderRadius: 6,
+            background: T.warnSoft,
+            color: T.warn,
+            border: "1px solid #F1CFA9",
+            borderRadius: 8,
             padding: "6px 10px",
-            fontSize: 12,
+            fontSize: 12.5,
+            fontWeight: 600,
             marginBottom: 6,
+            cursor: "pointer",
           }}
+          title="Click to dismiss"
           onClick={() => setWarnMsg(null)}
         >
           {warnMsg}
@@ -1803,40 +1850,36 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
                          ? `${wk}: ${Math.round(ws.board).toLocaleString()} kg on the board + ${Math.round(ws.credit).toLocaleString()} kg covered thanks to production already made (hidden completed MOs), target ${Math.round(ws.target).toLocaleString()} kg`
                          : undefined}
                        style={{
-                    flex: 1, padding: "6px 12px", borderRadius: 8,
-                    background: "#f7f7fa", border: "1px solid #e0e0e5",
-                    display: "flex", alignItems: "baseline", gap: 12,
+                    ...TILE,
+                    flex: 1, padding: "6px 12px",
+                    display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap",
                   }}>
-                    <span style={{ fontWeight: 800, fontSize: 14, color: "#455a64" }}>{wk}</span>
+                    <span style={{ ...TILE_LABEL, fontSize: 12, color: T.ink2 }}>{wk}</span>
                     {ws.boardPct !== null && (
-                      <span style={{ fontWeight: 800, fontSize: 16,
-                                     color: ws.boardPct < 90 ? "#c62828" : "#2e7d32" }}>
-                        {ws.boardPct}%<span style={{ fontSize: 10, fontWeight: 600, color: "#888" }}> on board</span>
+                      <span style={{ fontWeight: 800, fontSize: 16, fontVariantNumeric: "tabular-nums",
+                                     color: ws.boardPct < 90 ? T.bad : T.ok }}>
+                        {ws.boardPct}%<span style={{ fontSize: 10, fontWeight: 600, color: T.ink3 }}> on board</span>
                       </span>
                     )}
                     {ws.madePct !== null && ws.madePct > 0 && (
-                      <span style={{ fontWeight: 700, fontSize: 12, color: "#6a7b8c" }}>
-                        + {ws.madePct}%<span style={{ fontSize: 10, fontWeight: 600, color: "#8a94a0" }}> already made</span>
+                      <span style={{ fontWeight: 700, fontSize: 12, color: T.ink2 }}>
+                        + {ws.madePct}%<span style={{ fontSize: 10, fontWeight: 600, color: T.ink3 }}> already made</span>
                       </span>
                     )}
-                    <span style={{ fontSize: 11.5, color: "#555", fontWeight: 600 }}>
+                    <span style={{ fontSize: 11.5, color: T.ink2, fontWeight: 600 }}>
                       TL {ws.tl} · FFS {ws.ffs} · CP {ws.cp} · TTP {ws.ttp}
                     </span>
                     {ws.cipReq > 0 && (
                       <span
                         title={`${ws.cipReq} transition${ws.cipReq === 1 ? "" : "s"} this week require${ws.cipReq === 1 ? "s" : ""} a CIP between the SKUs but no CIP block sits in the gap — schedule a clean or resequence`}
-                        style={{
-                          fontSize: 11, fontWeight: 800, color: "#fff",
-                          background: "#c62828", borderRadius: 10, padding: "1px 8px",
-                        }}>
+                        style={chipStyle("bad")}>
                         CIP req {ws.cipReq}
                       </span>
                     )}
                     {ws.cipGap && (
                       <button
                         title={`Insert a clean at the first violating transition (${ws.cipGap.lineName} at ${hourToStamp(ws.cipGap.start, anchor)}); later projected CIPs re-forecast from it`}
-                        style={{ fontSize: 11, fontWeight: 800, borderRadius: 10, padding: "1px 8px",
-                                 border: "1px solid #1565c0", background: "#e3f2fd", color: "#0d47a1", cursor: "pointer" }}
+                        style={{ ...chipStyle("accent"), cursor: "pointer", fontFamily: FONT_SANS }}
                         onClick={() => handleWeekCipFix(ws.cipGap!)}
                       >
                         + CIP
@@ -1845,13 +1888,14 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
                   </div>
                 ))}
             </div>
-            <div style={{ fontSize: 11, color: "#8a94a0", margin: "0 0 4px 50px" }}>
-              On board % = kg of calendar blocks vs the week&rsquo;s demand target
-              (per-order credit capped at target); &ldquo;+ already made&rdquo; = extra coverage
-              from completed MOs the board hides — shown separately, never summed
-              into the headline. Computed {weekStats.computedAt} from the current
-              board — live on every edit and refresh, no Save needed. Hover a card
-              for the kg split.
+            <div
+              style={{ fontSize: 11, color: T.ink3, margin: "0 0 4px 50px" }}
+              title={"On board % = kg of calendar blocks vs the week's demand target (per-order credit capped at target). "
+                + "'+ already made' = extra coverage from completed MOs the board hides — shown separately, never summed into the headline. "
+                + "Hover a card for the kg split."}
+            >
+              On-board % of each week&rsquo;s demand target · TL/FFS/CP/TTP = changeovers by machine ·
+              live on every edit, computed {weekStats.computedAt}
             </div>
           </>
         )}
@@ -1883,12 +1927,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
           onResetZoom={resetZoom}
         />
         </ReceiptDaysContext.Provider>
-        {pickerEnabled && (
-          <div style={{ fontSize: 11, color: "#8a94a0", marginTop: 2 }}>
-            Right-click an empty gap on a line to add a demand-plan SKU there
-            (snaps left, changeover setup respected).
-          </div>
-        )}
+        <Legend pickerEnabled={pickerEnabled} hasLock={lockedThroughH != null} />
 
         <div style={{ marginTop: 8 }}>
           <HoldingArea blocks={holdingArea} anchor={anchor} skuFormats={args.skuFormats ?? {}}
@@ -1936,7 +1975,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
                   width: ghostWidth,
                   height: LINE_HEIGHT - 8,
                   lineHeight: `${LINE_HEIGHT - 20}px`,
-                  border: dragPreview && !dragPreview.valid ? "2px solid #b71c1c" : "2px solid #333",
+                  border: dragPreview && !dragPreview.valid ? `2px solid ${T.bad}` : `2px solid ${T.ink}`,
                   filter: dragPreview && !dragPreview.valid ? "saturate(0.4)" : undefined,
                 }}
               >
@@ -1951,9 +1990,12 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
 
 
       <div style={{ marginTop: 8 }}>
-        <strong style={{ fontSize: 13, display: "block", marginBottom: 4 }}>
-          SKU Adherence (live) — click a row to highlight on chart · "+" adds the missing tonnage to holding
-        </strong>
+        <div style={{ ...TILE_LABEL, fontSize: 11.5, marginBottom: 4 }}>
+          Demand adherence (live)
+          <span style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0, color: T.ink3 }}>
+            {" "}· click a row to highlight that SKU on the board · &ldquo;+&rdquo; adds the missing tonnage to holding
+          </span>
+        </div>
         <AdherenceTable
           rows={currentAdherenceRows}
           formatOrder={(id) => displayOrderId(id, anchor)}
@@ -2072,7 +2114,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       })()}
 
       {lastAction && (
-        <div style={{ fontSize: 11, color: lastAction.startsWith("Rejected") ? "#b71c1c" : "#888", marginTop: 4 }}>
+        <div style={{ fontSize: 11, color: lastAction.startsWith("Rejected") ? T.bad : T.ink3, marginTop: 4 }}>
           Last action: {lastAction}
         </div>
       )}

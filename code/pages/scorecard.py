@@ -28,20 +28,17 @@ from helpers.paths import data_dir, reference_dir, seed_dir
 from helpers.scorecard_engine import list_scorecards, save_scorecard, score_calendar
 from helpers.scorecard_ui import render_scorecard, scorecard_table
 from helpers.st_compat import deferred_dataframe
+from helpers.theme import note, page_header
 from helpers.timefmt import with_display_times
 
-st.header("Schedule Scorecard")
-st.caption(
-    "Phase 0 - score the plant's own line schedule consistently every week. "
-    "No optimization. Answer: **How good is this week's schedule?**"
+page_header(
+    "Schedule Scorecard",
+    subtitle="How good is this week's schedule? The plant's own line schedule, scored the "
+             "same way every week — no optimization.",
 )
-st.info(
-    "**AZAP is the demand plan, not a schedule.** AZAP tells the plant which SKUs to make, "
-    "how many kg, and in which week (`data/reference/demand_plan.csv`). It never assigns "
-    "lines, sequence or equipment. The schedule scored on this page is the plant's own "
-    "line schedule (`data/calendar_blocks.csv`), built by the production planner.",
-    icon=":material/info:",
-)
+note("AZAP is the demand plan, not a schedule: it says which SKUs, how many kg and which "
+     "week, never which line. What is scored here is the plant's own line schedule "
+     "(calendar_blocks.csv), built by the production planner.")
 
 dd = data_dir()
 cal_path = dd / "calendar_blocks.csv"

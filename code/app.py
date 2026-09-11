@@ -15,6 +15,8 @@ BASE_DIR = Path(__file__).resolve().parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
+from helpers.theme import inject_css  # noqa: E402
+
 DATA_DIR = BASE_DIR.parent / "data"
 
 st.set_page_config(
@@ -23,30 +25,24 @@ st.set_page_config(
     layout="wide",
 )
 
-# Force TRUE full-width regardless of the browser-stored "wide mode"
-# preference (newer Streamlit lets that override layout="wide", which left
-# the calendar in a centered ~900px column on a full monitor — user report
-# 2026-08-18). The Gantt is the product; it gets the whole screen.
-st.markdown(
-    """<style>
-    .block-container,
-    [data-testid="stMainBlockContainer"],
-    section.main .block-container {
-        max-width: 100% !important;
-        padding-left: 1.25rem !important;
-        padding-right: 1.25rem !important;
-    }
-    </style>""",
-    unsafe_allow_html=True,
-)
+# One stylesheet for every page (helpers/theme.py): the light workbench look,
+# TRUE full width regardless of the browser-stored "wide mode" preference
+# (user report 2026-08-18 — the calendar sat in a centered ~900px column),
+# metric tiles, chips, sidebar. The Gantt is the product; it gets the whole
+# screen.
+inject_css()
 
 # Navigation IS the daily loop (charter §2.2): Connect → Reconcile → Plan →
 # Lock & Export → Track, then weekly roll. The planner walks the sidebar top
 # to bottom every morning; reference/setup pages sit below the loop.
+#
+# The Plant Calendar is the planner's main screen (2026-09-11), so it is the
+# page the app opens on; the Command Center stays one click away at the top
+# of the sidebar and its loop status also rides the calendar's header chips.
 pg = st.navigation(
     {
         "Home": [
-            st.Page("pages/home.py", title="Command Center", icon=":material/home:", default=True),
+            st.Page("pages/home.py", title="Command Center", icon=":material/home:"),
         ],
         "1 · Connect": [
             st.Page("pages/data.py", title="Data Files", icon=":material/table:"),
@@ -56,7 +52,7 @@ pg = st.navigation(
             st.Page("pages/stock_check.py", title="Stock Check", icon=":material/inventory:"),
         ],
         "3 · Plan": [
-            st.Page("pages/calendar.py", title="Plant Calendar", icon=":material/drag_indicator:"),
+            st.Page("pages/calendar.py", title="Plant Calendar", icon=":material/drag_indicator:", default=True),
             st.Page("pages/generate.py", title="Generate Scenarios", icon=":material/auto_awesome:"),
         ],
         # Lock & Export lives ON the Plant Calendar page (planner request

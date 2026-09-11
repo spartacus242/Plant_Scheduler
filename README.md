@@ -70,6 +70,10 @@ git push -u origin HEAD
 
 Then open a PR into `develop` on GitHub.
 
+## Look & feel
+
+The app is a light workbench (see [`docs/ui-redesign-2026-09.md`](docs/ui-redesign-2026-09.md)). It opens on the **Plant Calendar**; the design tokens live in `.streamlit/config.toml`, `code/helpers/theme.py` and the Gantt's `src/utils/theme.ts` — change all three together.
+
 ## Data
 
 - `data/calendar_blocks.csv` — unified plant calendar (production, CIP, maintenance, trial, contractor, line_down)

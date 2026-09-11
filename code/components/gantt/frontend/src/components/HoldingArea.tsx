@@ -13,6 +13,7 @@ import { blockKey } from "../utils/blockIdentity";
 import type { Timelines } from "../utils/stockRisk";
 import { earliestSafeStartFor, safeStartPill, type SafeStartPill, type StampFn } from "../utils/supplyGlue";
 import { SafeStartTag } from "./SkuPickerPopover";
+import { CHART, T } from "../utils/theme";
 
 interface Props {
   blocks: ScheduleBlock[];
@@ -83,13 +84,13 @@ const HoldingCard: React.FC<{
         display: "block",
         width: "100%",
         borderRadius: 6,
-        border: "2px solid #000",
-        background: "#f1f3f5",
+        border: `1.5px solid ${T.ink2}`,
+        background: T.surface2,
         overflow: "hidden",
         cursor: "grab",
         opacity: isDragging ? 0.5 : isDimmed ? 0.3 : 1,
-        // Same gold ring as the chart's highlighted blocks (GanttBlock).
-        boxShadow: isHighlighted ? "0 0 0 3px #FFD700" : undefined,
+        // Same ring as the chart's highlighted blocks (GanttBlock).
+        boxShadow: isHighlighted ? `0 0 0 3px ${CHART.highlightRing}` : undefined,
         boxSizing: "border-box",
       }}
       title={`${block.sku} ${block.sku_description || ""} — ${(block.qty_kg ?? 0).toLocaleString()} kg`}
@@ -108,7 +109,7 @@ const HoldingCard: React.FC<{
           padding: "4px 10px",
           fontSize: 12,
           fontWeight: 600,
-          color: "#000",
+          color: T.ink,
           whiteSpace: "nowrap",
         }}
       >
@@ -193,10 +194,10 @@ export const HoldingArea: React.FC<Props> = ({
     <div
       ref={setNodeRef}
       style={{
-        border: `2px dashed ${isOver ? "#636EFA" : "#ccc"}`,
-        borderRadius: 8,
+        border: `2px dashed ${isOver ? T.accent : T.rule}`,
+        borderRadius: 10,
         padding: 8,
-        background: isOver ? "#f0f4ff" : "#fafafa",
+        background: isOver ? T.accentSoft : T.bg,
         transition: "background 0.15s, border-color 0.15s",
       }}
     >
@@ -204,23 +205,24 @@ export const HoldingArea: React.FC<Props> = ({
         style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", marginBottom: expanded ? 6 : 0 }}
         onClick={() => setExpanded(!expanded)}
       >
-        <strong style={{ fontSize: 13 }}>
-          Holding Area [{blocks.length} items]
+        <strong style={{ fontSize: 12.5, color: T.ink2, letterSpacing: 0.3 }}>
+          HOLDING AREA <span style={{ fontWeight: 500, color: T.ink3 }}>· {blocks.length} card{blocks.length === 1 ? "" : "s"} — demand not yet on the board; drag a card onto a line, or drop a block here to take it off</span>
         </strong>
-        <span style={{ fontSize: 11, color: "#666" }}>{expanded ? "▲ collapse" : "▼ expand"}</span>
+        <span style={{ fontSize: 11, color: T.ink3 }}>{expanded ? "▲ collapse" : "▼ expand"}</span>
       </div>
       {expanded && (
-        <div style={{ display: "flex", gap: 16, alignItems: "flex-start", overflowX: "auto" }}>
+        <div style={{ display: "flex", gap: 16, alignItems: "flex-start", overflowX: "auto",
+                      maxHeight: 300, overflowY: "auto", paddingRight: 4 }}>
           {blocks.length === 0 && (
-            <span style={{ fontSize: 12, color: "#999", fontStyle: "italic" }}>
-              Drag blocks here to remove from schedule
+            <span style={{ fontSize: 12, color: T.ink3, fontStyle: "italic" }}>
+              Every demand order is on the board. Drag blocks here to take them off the schedule.
             </span>
           )}
           {weeks.map((wk) => (
             <div key={wk} style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 170 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "#455a64", borderBottom: "1px solid #cfd8dc", paddingBottom: 2 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: T.ink2, borderBottom: `1px solid ${T.rule}`, paddingBottom: 2 }}>
                 W{isoWeekLabel(wk, anchor)}
-                <span style={{ fontWeight: 400, color: "#90a4ae" }}> · {byWeek.get(wk)!.length}</span>
+                <span style={{ fontWeight: 400, color: T.ink3 }}> · {byWeek.get(wk)!.length}</span>
               </div>
               {byWeek.get(wk)!.sort(qtyDesc).map((b) => (
                 <HoldingCard key={blockKey(b)} block={b} anchor={anchor} skuFormats={skuFormats}
@@ -231,9 +233,9 @@ export const HoldingArea: React.FC<Props> = ({
           ))}
           {loose.length > 0 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 170 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "#455a64", borderBottom: "1px solid #cfd8dc", paddingBottom: 2 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: T.ink2, borderBottom: `1px solid ${T.rule}`, paddingBottom: 2 }}>
                 Unassigned
-                <span style={{ fontWeight: 400, color: "#90a4ae" }}> · {loose.length}</span>
+                <span style={{ fontWeight: 400, color: T.ink3 }}> · {loose.length}</span>
               </div>
               {loose.sort(qtyDesc).map((b) => (
                 <HoldingCard key={blockKey(b)} block={b} anchor={anchor} skuFormats={skuFormats}

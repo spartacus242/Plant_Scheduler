@@ -12,6 +12,7 @@ import type { ScheduleBlock, StockArgs } from "../types";
 import type { Timelines } from "../utils/stockRisk";
 import type { SafeStartPill, StampFn } from "../utils/supplyGlue";
 import { Chips, SafeStartTag, planPill } from "./SkuPickerPopover";
+import { BTN_PRIMARY, POPOVER, T } from "../utils/theme";
 
 export interface HoldingPlaceRow {
   lineName: string;
@@ -39,12 +40,13 @@ interface Props {
 }
 
 const TH: React.CSSProperties = {
-  textAlign: "left", fontSize: 11, color: "#607d8b", fontWeight: 600,
-  padding: "2px 8px 4px 8px", borderBottom: "1px solid #e0e0e0",
+  textAlign: "left", fontSize: 10.5, color: T.ink3, fontWeight: 700,
+  textTransform: "uppercase", letterSpacing: 0.4,
+  padding: "2px 8px 4px 8px", borderBottom: `1px solid ${T.rule}`,
   whiteSpace: "nowrap",
 };
 const TD: React.CSSProperties = {
-  padding: "5px 8px", borderBottom: "1px solid #f0f0f0",
+  padding: "5px 8px", borderBottom: `1px solid ${T.surface2}`,
   whiteSpace: "nowrap", verticalAlign: "middle",
 };
 
@@ -61,13 +63,9 @@ export const HoldingPlacePopover: React.FC<Props> = ({
   return (
   <div
     style={{
-      position: "fixed",
+      ...POPOVER,
       left: Math.min(x, Math.max(40, window.innerWidth - (showSupply ? 760 : 640))),
       top: Math.min(y, Math.max(40, window.innerHeight - 320)),
-      background: "#fff",
-      border: "1px solid #b0bec5",
-      borderRadius: 8,
-      boxShadow: "0 8px 28px rgba(0,0,0,0.22)",
       zIndex: 1200,
       padding: "10px 12px",
       minWidth: showSupply ? 560 : 460,
@@ -81,14 +79,14 @@ export const HoldingPlacePopover: React.FC<Props> = ({
         Place {displayOrderId(block.order_id, anchor)} — {block.run_hours.toFixed(1)}h
         {block.qty_kg ? ` · ${Math.round(block.qty_kg).toLocaleString()} kg` : ""}
       </strong>
-      <span style={{ cursor: "pointer", fontWeight: 700, color: "#888" }} onClick={onClose}>×</span>
+      <span style={{ cursor: "pointer", fontWeight: 700, color: T.ink3 }} onClick={onClose}>×</span>
     </div>
-    <div style={{ fontSize: 11, color: "#78909c", marginBottom: 6 }}>
+    <div style={{ fontSize: 11, color: T.ink3, marginBottom: 6 }}>
       Lines that can run {block.sku}, earliest snap-left gap first. An
       oversized card places what fits; the rest stays in holding.
     </div>
     {rows.length === 0 ? (
-      <div style={{ padding: "8px 2px", color: "#b71c1c" }}>
+      <div style={{ padding: "8px 2px", color: T.bad, fontWeight: 600 }}>
         No line has an open gap for {block.sku} right now.
       </div>
     ) : (
@@ -110,11 +108,7 @@ export const HoldingPlacePopover: React.FC<Props> = ({
                 <td style={TD}>
                   <button
                     title={`Place ${block.sku} on ${r.lineName} snapped left`}
-                    style={{
-                      fontSize: 11.5, padding: "3px 10px", borderRadius: 4,
-                      fontWeight: 700, border: "1px solid #0a8",
-                      background: "#00c896", color: "#fff", cursor: "pointer",
-                    }}
+                    style={{ ...BTN_PRIMARY, fontSize: 11.5, padding: "3px 10px", fontWeight: 700 }}
                     onClick={() => onPlace(r)}
                   >
                     Place
@@ -129,7 +123,7 @@ export const HoldingPlacePopover: React.FC<Props> = ({
                   <Chips flags={r.outFlags} setupH={r.plan.setupAfterH} against={r.plan.nextSku}
                          neighbourType={r.plan.nextSku ? null : r.plan.nextType} arrow="out" />
                 </td>
-                <td style={{ ...TD, fontSize: 11, color: "#455a64" }}>
+                <td style={{ ...TD, fontSize: 11, color: T.ink2 }}>
                   {`${hourToStamp(r.plan.startHour, anchor)} · ` +
                    `${r.plan.durationH.toFixed(1)}h · ` +
                    `${Math.round(r.plan.qtyKg).toLocaleString()} kg`}
