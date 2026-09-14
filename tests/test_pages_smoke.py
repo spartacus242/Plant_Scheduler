@@ -305,6 +305,10 @@ def test_calendar_renders_a_minimal_board_without_reference_files(tmp_path):
     assert not at.exception
     labels = [str(b.label) for b in at.button]
     assert any("Reload from disk" in lb for lb in labels)
+    # the rebuild-from-plant-state shortcut (2026-09-14) is always in the
+    # control row; with no manprg/cip_info it is disabled, never hidden
+    rebuild = [b for b in at.button if "Rebuild from plant state" in str(b.label)]
+    assert len(rebuild) == 1 and rebuild[0].proto.disabled is True
     assert any("Lock through" in lb for lb in labels)
     assert any(cb.label.startswith("Hide blocks") for cb in at.checkbox)
     assert "Plant Calendar" in _texts(at)

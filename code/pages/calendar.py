@@ -4,7 +4,9 @@
 #   1. header + status chips (live data, lock, versions, hidden past, saved)
 #   2. ONE attention strip: only what must be handled before planning
 #      (live feeds missing/stale, weekly roll), each with its button
-#   3. one control row (version name · hide finished · reload)
+#   3. one control row (version name · hide finished · reload from disk ·
+#      rebuild from plant state — the same action as the Plant state tab,
+#      surfaced up here on 2026-09-14 because the tab sits below the fold)
 #   4. the Gantt — its own toolbar carries Refresh / Save / Save as version;
 #      Save pushes the live edits together with the request, so a save can
 #      never miss what is on screen (the old separate Streamlit button only
@@ -205,6 +207,23 @@ try:
 except Exception as _exc:  # noqa: BLE001
     _cs = None
     _cs_err = f"Could not read the live feeds: {_exc}"
+_cs_ready = _cs is not None and len(_cs.blocks) > 0
+
+
+def _rebuild_from_plant_state() -> None:
+    """Back up calendar_blocks.csv to data/_backups/, then replace the whole
+    board with the live plant state (manprg + cip_info). ONE routine behind
+    the control-row button and the Plant state tab (planner request
+    2026-09-14: the tab sits below the fold), so both do exactly the same."""
+    _backup_calendar(cal_path, dd)
+    save_calendar(_cs.blocks, cal_path)
+    st.session_state.pop("cal_baseline_score", None)
+    # Remount the Gantt or it keeps showing the PRE-replace board
+    # (the component holds its own state under a stable key).
+    st.session_state["cal_reset_gen"] += 1
+    st.toast(f"Calendar rebuilt from plant state ({_cs.counts['blocks']} blocks).",
+             icon=":material/factory:")
+    st.rerun()
 
 # (MO drift — running/queued MO blocks moved to their live manprg times by
 # one click — and float links were both removed on 2026-09-11 at the
@@ -260,8 +279,8 @@ for _kind, _text, _btn, _key, _fn in _attention:
             if st.button(_btn, key=_key, use_container_width=True, type="primary"):
                 _fn()  # type: ignore[operator]
 
-# --- Control row: version name · hide finished · reload -------------------
-_cc1, _cc2, _cc4, _cc3 = st.columns([2.2, 2.2, 2.0, 1.2])
+# --- Control row: version name · hide finished · reload · rebuild ----------
+_cc1, _cc2, _cc4, _cc3, _cc5 = st.columns([2.0, 2.0, 1.8, 1.2, 1.6])
 with _cc1:
     save_name = st.text_input(
         "Version name", value="Option 1", key="cal_save_name",
@@ -292,6 +311,20 @@ with _cc3:
         st.session_state.pop("cal_holding_dismissed", None)
         st.session_state.pop("cal_baseline_score", None)
         st.rerun()
+with _cc5:
+    # Same backup-then-replace as the Plant state tab at the bottom of the
+    # page; disabled (not hidden) while the live feeds give no blocks, so
+    # the option is always visible where the planner looks for it.
+    if st.button("↻ Rebuild from plant state", key="cal_from_plant_state_top",
+                 use_container_width=True, disabled=not _cs_ready,
+                 help="Back up calendar_blocks.csv to data/_backups/, then "
+                      "replace the whole board with the live plant state "
+                      "(manprg + cip_info). Same action as the Plant state "
+                      "tab below, which also previews the blocks."
+                      + ("" if _cs_ready else
+                         " Disabled: the live feeds gave no blocks"
+                         + (f" ({_cs_err})" if _cs_err else "") + ".")):
+        _rebuild_from_plant_state()
 if _hide_past_widget != _hide_past:
     # First run of a toggled setting: the value above the widget was stale.
     st.rerun()
@@ -1067,15 +1100,8 @@ with _tab_plant:
         st.caption("Replacing backs up the current calendar to `data/_backups/` first.")
         if st.button("Replace calendar with current plant state",
                      key="cal_from_plant_state", type="primary",
-                     disabled=not len(_cs.blocks)):
-            _backup_calendar(cal_path, dd)
-            save_calendar(_cs.blocks, cal_path)
-            st.session_state.pop("cal_baseline_score", None)
-            # Remount the Gantt or it keeps showing the PRE-replace board
-            # (the component holds its own state under a stable key).
-            st.session_state["cal_reset_gen"] += 1
-            st.toast(f"Calendar rebuilt from plant state ({_c['blocks']} blocks).", icon=":material/factory:")
-            st.rerun()
+                     disabled=not _cs_ready):
+            _rebuild_from_plant_state()
 
 
 with _tab_dt:

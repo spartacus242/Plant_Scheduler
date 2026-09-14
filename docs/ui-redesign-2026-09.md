@@ -88,7 +88,10 @@ since were silently not saved.
 2. **Attention strip** — only what must be handled before planning, each
    with its own button on the same row: live feeds missing or stale, the
    weekly *Roll calendar to today*.
-3. **Control row** — version name · hide finished blocks · reload from disk.
+3. **Control row** — version name · hide finished blocks · reload from disk ·
+   **↻ Rebuild from plant state** (added 2026-09-14: the same backup-then-
+   replace as the *Plant state* tab, which the planner could not find below
+   the fold; disabled, never hidden, while the live feeds give no blocks).
 4. **The board**, with its own toolbar: `✓ checked` / `● unsaved edits`
    chip, overlap chip, **⟳ Refresh checks**, **Save as version**, **💾 Save**
    (also `Ctrl+S`). Week cards, zoom, legend, holding area (now height-capped
