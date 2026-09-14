@@ -205,6 +205,88 @@ def test_new_keys_and_json_safe(dd, vif, tmp_path):
 
 
 # --------------------------------------------------------------------------
+# the ERP's own export (order_npa.csv, 2026-09-14) — same facts, same report
+# --------------------------------------------------------------------------
+
+def _x3_line(po, item, qty, unit, receipt, initial, *, designation="SLV 4x90",
+             area="RP1", remaining=None) -> str:
+    """One pipe-delimited Sage X3 line carrying the facts of _row() above:
+    13-digit fixed-point quantities, DD/MM/YYYY dates, zero-padded codes."""
+    from stockcheck import x3_po_export as x3
+    v = {k: "" for k in x3.KEYS}
+    fx = lambda q: f"{int(round(q * 10000)):013d}"           # noqa: E731
+    dm = lambda d: d.strftime("%d/%m/%Y")                     # noqa: E731
+    v.update(company="M2", site="02", order_type="1ACDE", order_no=po,
+             supplier_code="000048", supplier_name="GRAPHIC PACKAGING",
+             order_date="24/07/2026", line_no="000001", line_seq="000001",
+             line_status="20", item=str(item), item_name=designation,
+             qty_ordered=fx(qty),
+             qty_remaining=fx(qty if remaining is None else remaining),
+             order_unit=unit, stat_unit="KG", receipt_date=dm(receipt),
+             requested_date=dm(initial), receipt_location=area,
+             currency_order="USD")
+    return "|".join(v[k] for k in x3.KEYS)
+
+
+X3_ROWS = [
+    _x3_line("30043600", 754800, 90000, "EA", datetime(2026, 9, 1),
+             datetime(2026, 8, 30)),
+    _x3_line("30043601", 899999, 1, "EA", datetime(2026, 9, 5),
+             datetime(2026, 9, 5), designation="GPI TOOLING"),
+    # already received: nothing left to receive (the ERP's remaining qty)
+    _x3_line("30043602", 756150, 5000, "EA", datetime(2026, 8, 30),
+             datetime(2026, 8, 30), designation="WRAP", remaining=0),
+    _x3_line("30043603", 752700, 5000, "M2", datetime(2026, 8, 28),
+             datetime(2026, 8, 28), designation="FILM"),
+]
+
+
+def _write_x3(path: Path, rows=X3_ROWS) -> Path:
+    from stockcheck import x3_po_export as x3
+    header = "|".join(fr for _, fr, _ in x3.COLUMNS)
+    # CRLF + cp1252: what the bridge's git checkout delivers
+    path.write_bytes(("\r\n".join([header] + rows) + "\r\n").encode("cp1252"))
+    return path
+
+
+def test_erp_export_feed_matches_the_legacy_workbook(dd, vif, tmp_path):
+    """The same four PO facts through order_npa.csv and through the old
+    xlsx give the same receipts, joins, fates and block verdicts — the
+    layout swap is invisible downstream of load_open_pos."""
+    legacy = _report(dd, vif, po_path=_write_pos(tmp_path / "open_pos.xlsx"))
+    erp_path = _write_x3(tmp_path / "order_npa.csv")
+    erp = _report(dd, vif, po_path=erp_path)
+    assert not erp.get("error"), erp
+    inb = erp["inbound"]
+    assert inb["source_path"] == str(erp_path) and inb["n_rows"] == 4
+    assert inb["state"] == "ok" and inb["errors"] == []
+    assert inb["max_receipt_date"] == "2026-09-05"
+    assert inb["receipts"] == legacy["inbound"]["receipts"]
+    assert inb["join"] == legacy["inbound"]["join"]
+    assert [ln["fate"] for ln in inb["lines"]] == \
+        [ln["fate"] for ln in legacy["inbound"]["lines"]]
+    assert erp["schedule_view"] == legacy["schedule_view"]
+    assert erp["supply_meta"] == legacy["supply_meta"]
+    by_po = {ln["po8"]: ln for ln in inb["lines"]}
+    assert by_po["30043602"]["fate"] == "received"
+    assert by_po["30043602"]["reason"] == "nothing left to receive"
+    assert by_po["30043602"]["qty"] == 0.0 and by_po["30043602"]["qty_ordered"] == 5000.0
+    assert by_po["30043600"]["status"] == 20 and by_po["30043600"]["supplier_id"] == "48"
+    assert by_po["30043600"]["po"] == "M2 02 1ACDE 30043600"
+    json.dumps(erp, allow_nan=False)
+
+
+def test_erp_export_resolves_from_the_bridge_name(dd, vif):
+    """With po_path=None the resolver lands on data/reference/order_npa.csv
+    ahead of a legacy workbook beside it."""
+    _write_pos(dd / "reference" / "open_pos.xlsx", rows=[])
+    p = _write_x3(dd / "reference" / "order_npa.csv")
+    rep = _report(dd, vif)
+    assert rep["inbound"]["source_path"] == str(p)
+    assert rep["inbound"]["n_rows"] == 4 and rep["inbound"]["state"] == "ok"
+
+
+# --------------------------------------------------------------------------
 # verdicts with a fresh feed
 # --------------------------------------------------------------------------
 
@@ -438,11 +520,12 @@ def test_receiving_schedule_path_and_supply_inputs(dd, tmp_path, monkeypatch):
     toml = tmp_path / "flowstate.toml"
     monkeypatch.setattr(hp, "toml_path", lambda: toml)
     paths = supply_input_paths(dd, {})
-    assert paths == [dd / "reference" / "open_pos.xlsx",
+    assert paths == [dd / "reference" / "order_npa.csv",
+                     dd / "reference" / "open_pos.xlsx",
                      dd / "reference" / "open_pos.csv", ref, dev, toml]
     custom = tmp_path / "custom.xlsx"
     paths = supply_input_paths(dd, {"datasources": {"po_report_path": str(custom)}})
-    assert custom in paths and paths.index(custom) == 2
+    assert custom in paths and paths.index(custom) == 3
 
 
 # --------------------------------------------------------------------------

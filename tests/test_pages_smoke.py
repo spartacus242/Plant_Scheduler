@@ -213,10 +213,14 @@ def test_stock_check_renders_supply_inbound_and_quality(tmp_path,
               if "fate" in getattr(df, "columns", [])]
     assert len(tables) == 1
     df = tables[0]
+    # 'ordered' / 'status' come from the ERP export (order_npa.csv,
+    # 2026-09-14); the legacy workbook leaves them blank (<NA>)
     assert list(df.columns) == ["po8", "item", "designation", "qty", "unit",
-                                "receipt_date", "slip_days", "arrival_area",
-                                "supplier", "fate", "reason", "ready", "tier"]
+                                "ordered", "status", "receipt_date", "slip_days",
+                                "arrival_area", "supplier", "fate", "reason",
+                                "ready", "tier"]
     assert list(df["fate"]) == ["used", "overdue", "unjoinable"]
+    assert df["status"].isna().all() and df["ordered"].isna().all()
     assert df["ready"].iloc[0] and not df["ready"].iloc[1]  # None -> blank
     # Data quality tab: the three quality lists with fix hints
     assert "Unjoinable PO items (1)" in text

@@ -172,8 +172,8 @@ _FATE_ORDER = ["used", "landed_unverifiable", "overdue", "offsite_no_transfer",
 _FEED_STATE_HELP = {
     "ok": "feed current — receipts dated on/after the stock snapshot are "
           "counted.",
-    "missing": "no open-PO report was found. Drop the ERP open-PO export at "
-               "data/reference/open_pos.xlsx (the live bridge delivers it) "
+    "missing": "no open-PO feed was found. Drop the ERP PO export at "
+               "data/reference/order_npa.csv (the live bridge delivers it) "
                "or point [datasources] po_report_path at it on Settings.",
     "stale": "the latest receipt date in the file is already in the past, so "
              "the extract no longer looks ahead; a fresh export is needed.",
@@ -615,7 +615,8 @@ with tab_inb:
                   help="a stock lot with a matching batch date already holds "
                        "it")
         c4.metric("Received", counts.get("received", 0),
-                  help="ERP receipt number present")
+                  help="nothing left to receive: the ERP shows zero remaining "
+                       "quantity (or, on the legacy workbook, a receipt number)")
         c5.metric("Unjoinable", counts.get("unjoinable", 0),
                   help="item code not in the BOM universe")
         c6.metric("Other", n_other,
@@ -658,6 +659,10 @@ with tab_inb:
                     "designation": ln.get("designation") or "",
                     "qty": ln.get("qty"),
                     "unit": ln.get("unit") or "",
+                    # ERP export only: the original order qty and the raw
+                    # line status (legacy workbook lines leave them blank)
+                    "ordered": ln.get("qty_ordered"),
+                    "status": ln.get("status"),
                     "receipt_date": ln.get("receipt_date") or "",
                     "slip_days": ln.get("slip_days"),
                     "arrival_area": ln.get("arrival_area") or "",
@@ -669,9 +674,10 @@ with tab_inb:
                     "tier": ln.get("tier") or "",
                 })
             df_inb = pd.DataFrame(rows)
-            # a None slip turns the column float ("6.0"/"NaN"): keep it whole
-            df_inb["slip_days"] = pd.to_numeric(
-                df_inb["slip_days"], errors="coerce").astype("Int64")
+            # a None slip/status turns the column float ("6.0"/"NaN"): keep it whole
+            for col in ("slip_days", "status"):
+                df_inb[col] = pd.to_numeric(
+                    df_inb[col], errors="coerce").astype("Int64")
             st.dataframe(df_inb, use_container_width=True, hide_index=True)
         else:
             st.caption("No PO lines in this report.")

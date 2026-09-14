@@ -99,6 +99,11 @@ def test_shipped_conf_carries_the_open_pos_entries():
     conf = json.loads((SCRIPTS / "fs-live-data.conf.json").read_text(encoding="utf-8"))
     assert "open_pos.xlsx" in conf["files"]
     assert "NPA Open POs*.xlsx -> open_pos.xlsx" in conf["files"]
+    # the ERP's own export (2026-09-14) is delivered under its own name, and
+    # is listed ahead of the legacy names it replaces
+    files = conf["files"]
+    assert "order_npa.csv" in files
+    assert files.index("order_npa.csv") < files.index("open_pos.xlsx")
 
 
 def test_helper_copies_are_identical():

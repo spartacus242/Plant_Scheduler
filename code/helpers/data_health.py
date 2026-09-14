@@ -286,13 +286,15 @@ def _live_feed_statuses(dd: Path, cfg: dict) -> list[HealthStatus]:
     if po_p is None or not po_p.is_file():
         out.append(HealthStatus(
             key="open_pos", name="Open PO report (inbound)", state=MISSING,
-            detail=("open_pos.xlsx / open_pos.csv not found in data/reference/."
+            detail=("ERP export order_npa.csv and the legacy "
+                    "open_pos.xlsx / open_pos.csv not found in data/reference/."
                     if po_p is None else
                     f"Configured po_report_path is a directory, not a file: {po_p}"
                     if po_p.is_dir() else
                     f"Configured po_report_path not found: {po_p}"),
-            actions=("Push IT's open-PO extract as open_pos.xlsx via the bridge "
-                     "(fs-live-push) and pull, or set po_report_path in Settings",),
+            actions=("Push the ERP PO export order_npa.csv (or the legacy "
+                     "open_pos.xlsx) via the bridge (fs-live-push) and pull, "
+                     "or set po_report_path in Settings",),
             source="live_feed",
         ))
     else:
@@ -303,7 +305,7 @@ def _live_feed_statuses(dd: Path, cfg: dict) -> list[HealthStatus]:
             detail=(f"{po_p.name} last refreshed {_fmt_age(age)} ago."
                     if age is not None else f"{po_p.name} present (age unknown).")
             + (f" Expected refresh ≤ {cadence.get('open_pos', 26.0):g} h." if stale else ""),
-            actions=("Refresh the open-PO extract push from the work PC (open_pos.xlsx)",)
+            actions=(f"Refresh the PO export push from the work PC ({po_p.name})",)
             if stale else (),
             cadence_h=cadence.get("open_pos"), age_h=age,
             source="live_feed",

@@ -91,7 +91,7 @@ def test_signature_tracks_supply_inputs(dd, tmp_path, monkeypatch):
     tog = {"M01|Ava": True}
     ref = dd / "reference"
     xlsm = ref / "Shipping Receiving Schedule NPA - 2024.xlsm"
-    for f in (ref / "open_pos.xlsx", ref / "open_pos.csv", xlsm):
+    for f in (ref / "order_npa.csv", ref / "open_pos.xlsx", ref / "open_pos.csv", xlsm):
         before = src.current_signature(dd, vif, tog)
         f.write_bytes(b"x")                           # appearing moves it
         assert src.current_signature(dd, vif, tog) != before, f

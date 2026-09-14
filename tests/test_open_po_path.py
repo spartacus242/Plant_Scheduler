@@ -1,8 +1,9 @@
 # tests/test_open_po_path.py — open-PO report resolver (supply timeline §4).
 #
-# Order: [datasources] po_report_path -> data/reference/open_pos.xlsx ->
-# open_pos.csv -> None. Everything runs against a tmp_path data dir; the
-# flowstate.toml read is monkeypatched so the repo's own config never leaks in.
+# Order: [datasources] po_report_path -> data/reference/order_npa.csv (the
+# ERP export, 2026-09-14) -> open_pos.xlsx -> open_pos.csv -> None. Everything
+# runs against a tmp_path data dir; the flowstate.toml read is monkeypatched
+# so the repo's own config never leaks in.
 
 from __future__ import annotations
 
@@ -22,6 +23,16 @@ def _dd(tmp_path: Path) -> Path:
 
 def test_none_when_nothing_present(tmp_path):
     assert open_po_path(_dd(tmp_path), {}) is None
+
+
+def test_erp_export_first(tmp_path):
+    """order_npa.csv (the ERP's own export) beats both legacy names, so a
+    stale open_pos.xlsx left behind by the old bridge entry never wins."""
+    dd = _dd(tmp_path)
+    (dd / "reference" / "order_npa.csv").write_bytes(b"e")
+    (dd / "reference" / "open_pos.xlsx").write_bytes(b"x")
+    (dd / "reference" / "open_pos.csv").write_text("a\n", encoding="utf-8")
+    assert open_po_path(dd, {}) == dd / "reference" / "order_npa.csv"
 
 
 def test_bridge_xlsx_first(tmp_path):

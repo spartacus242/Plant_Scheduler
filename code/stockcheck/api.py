@@ -103,17 +103,19 @@ def receiving_schedule_path(data_dir: str | Path) -> Path | None:
 
 def supply_input_paths(data_dir: str | Path, cfg: dict | None = None) -> list[Path]:
     """Every file the supply section reads besides the VIF exports, the
-    board, the demand plan and the rates file: the two bridge PO names, the
-    configured [datasources] po_report_path override (when set), both dock
-    sheets and flowstate.toml (rules + anchor). The report cache signs
-    their mtimes — resolved HERE so the cache and the report never drift.
-    Absent files are listed too: appearing must move the signature."""
+    board, the demand plan and the rates file: the bridge PO names (the ERP
+    export and the legacy workbook), the configured [datasources]
+    po_report_path override (when set), both dock sheets and flowstate.toml
+    (rules + anchor). The report cache signs their mtimes — resolved HERE so
+    the cache and the report never drift. Absent files are listed too:
+    appearing must move the signature."""
     from helpers import config as hcfg
     from helpers import paths as hpaths
+    from helpers.reconcile_engine import PO_FEED_NAMES
     dd = Path(data_dir)
     ref = dd / "reference"
     cfg = cfg if cfg is not None else hcfg.load_toml()
-    out = [ref / "open_pos.xlsx", ref / "open_pos.csv"]
+    out = [ref / name for name in PO_FEED_NAMES]
     override = str(hcfg.datasources_config(cfg).get("po_report_path", "") or "").strip()
     if override:
         out.append(Path(override))

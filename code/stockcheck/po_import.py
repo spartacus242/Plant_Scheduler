@@ -1,7 +1,14 @@
-# code/stockcheck/po_import.py — open purchase orders from the ERP
-# "NPA Open POs" extract (xlsx from IT, or a csv with the same headers).
+# code/stockcheck/po_import.py — open purchase orders from the ERP.
 #
-# Layout (verified on the 08-24 sample): header row 1, one line per PO item;
+# Two layouts, one PoResult:
+#   * order_npa.csv (since 2026-09-14) — the ERP's own PO-line export: Sage
+#     X3, pipe-delimited, cp1252, 219 columns. Detected by its header and
+#     parsed in full by x3_po_export (nothing dropped); projected onto the
+#     PoLine contract below by x3_po_export.to_po_lines.
+#   * "NPA Open POs" — IT's hand-run workbook (xlsx, or a csv with the same
+#     headers), the legacy feed; the rest of this module.
+#
+# Legacy layout (verified on the 08-24 sample): header row 1, one line per PO item;
 # 'Ordered item' arrives as int; five columns are literally named 'U' — the
 # order unit is the first one after 'Qty ordered at the origin'; 'Receipt
 # number' non-blank marks a received line; the sheet ends with a sentinel
@@ -21,6 +28,8 @@ import warnings
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
+
+from .x3_po_export import looks_like_x3_export
 
 # normalized header -> PoLine key. Names are matched case/space-insensitively.
 _REQUIRED = {"order number": "po", "ordered item": "item",
@@ -53,6 +62,7 @@ class PoResult:
     as_of: str | None = None        # ISO date when the file carries one
     max_receipt_date: str | None = None
     n_rows: int = 0
+    layout: str = ""                # "x3" (order_npa.csv) / "npa_open_pos" (legacy)
 
 
 # ── small value helpers ────────────────────────────────────────────────────
@@ -236,6 +246,9 @@ def load_open_pos(path) -> PoResult:
             "%Y-%m-%d %H:%M:%S", time.localtime(p.stat().st_mtime))
     except OSError:
         pass
+    if p.suffix.lower() in (".csv", ".txt") and looks_like_x3_export(p):
+        return _load_x3(p, res)
+    res.layout = "npa_open_pos"
     try:
         rows = (_read_csv(p) if p.suffix.lower() in (".csv", ".txt")
                 else _read_xlsx(p))
@@ -311,6 +324,23 @@ def load_open_pos(path) -> PoResult:
             "order_date": _iso(cell(cells, "order date")),
             "row": r,
         })
+    res.n_rows = len(res.lines)
+    res.max_receipt_date = max(
+        (ln["receipt_date"] for ln in res.lines if ln["receipt_date"]),
+        default=None)
+    return res
+
+
+def _load_x3(p: Path, res: PoResult) -> PoResult:
+    """The ERP's pipe-delimited Sage X3 line export (order_npa.csv): parsed
+    in full by x3_po_export, projected onto the PoLine contract. The export
+    carries no as-of stamp, so as_of stays None and the gate's file-age rule
+    falls back to the mtime (= the bridge pull, ≤ 30 min after the push)."""
+    from .x3_po_export import read_x3_po_export, to_po_lines
+    res.layout = "x3"
+    ex = read_x3_po_export(p)
+    res.errors.extend(ex.errors)
+    res.lines = to_po_lines(ex)
     res.n_rows = len(res.lines)
     res.max_receipt_date = max(
         (ln["receipt_date"] for ln in res.lines if ln["receipt_date"]),

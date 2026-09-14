@@ -43,10 +43,11 @@ demand_summary = st.text_input(
          "exists, the Data page's demand import uses it as the source "
          "instead of requiring a manual upload.")
 po_report = st.text_input(
-    "Open PO report (IT's 'NPA Open POs' xlsx or csv)",
+    "Open PO feed (ERP export order_npa.csv, or IT's legacy 'NPA Open POs' xlsx/csv)",
     value=ds["po_report_path"],
     help="Inbound receipts for the supply timeline. Leave blank to use the "
-         "bridge copy data/reference/open_pos.xlsx (or open_pos.csv).")
+         "bridge copy data/reference/order_npa.csv (falls back to the legacy "
+         "open_pos.xlsx / open_pos.csv).")
 
 st.divider()
 st.subheader("Live SQL (optional)")
@@ -114,7 +115,7 @@ for name, val in checks.items():
 _po = open_po_path(data_dir(), {"datasources": {"po_report_path": po_report}})
 if _po is None:
     rows.append(("Open PO report", "—",
-                 "NOT FOUND (bridge file open_pos.xlsx not landed)"))
+                 "NOT FOUND (bridge file order_npa.csv not landed)"))
 else:
     rows.append(("Open PO report", str(_po)[-50:],
                  ("OK" if _po.exists() else "NOT FOUND")

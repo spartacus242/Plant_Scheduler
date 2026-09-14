@@ -1075,7 +1075,7 @@ def gate_receipts(lines, *, bom_items, unit_by_item, snapshot_date, today,
             max_date = rd
         code = str(line.get("item") or "").strip()
         if line.get("received"):
-            out.update(fate="received", reason="receipt number present")
+            out.update(fate="received", reason="nothing left to receive")
             continue
         key = resolve_item_key(code, bom) if code else None
         if key is None:

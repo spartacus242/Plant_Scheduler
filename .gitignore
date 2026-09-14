@@ -68,6 +68,7 @@ data/reference/rmpkitems.csv
 data/reference/Shipping Receiving Schedule NPA - 2024.xlsm
 data/reference/open_pos.xlsx
 data/reference/open_pos.csv
+data/reference/order_npa*
 
 # Generated scorecard runs (the app writes these on every run)
 data/scorecards/Week-*.json

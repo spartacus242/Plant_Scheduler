@@ -301,6 +301,27 @@ def test_open_pos_csv_fallback_ok(tmp_path):
     assert "open_pos.csv" in hit.detail
 
 
+def test_open_pos_erp_export_preferred_and_named(tmp_path):
+    """order_npa.csv (the ERP export, 2026-09-14) is the feed when present:
+    a stale legacy workbook beside it must not colour the row, and the
+    stale action names the file actually read."""
+    dd = _empty_data_dir(tmp_path)
+    _min_catalog(dd)
+    _touch(dd / "reference" / "open_pos.xlsx", age_h=200.0)
+    _touch(dd / "reference" / "order_npa.csv", 0.1)
+    hit = next(h for h in dh.assess(dd, _cfg()) if h.key == "open_pos")
+    assert hit.state == OK and "order_npa.csv" in hit.detail
+    _touch(dd / "reference" / "order_npa.csv", age_h=30.0)
+    hit = next(h for h in dh.assess(dd, _cfg()) if h.key == "open_pos")
+    assert hit.state == STALE
+    assert any("order_npa.csv" in a for a in hit.actions)
+    (dd / "reference" / "order_npa.csv").unlink()
+    (dd / "reference" / "open_pos.xlsx").unlink()
+    hit = next(h for h in dh.assess(dd, _cfg()) if h.key == "open_pos")
+    assert hit.state == MISSING and "order_npa.csv" in hit.detail
+    assert any("order_npa.csv" in a for a in hit.actions)
+
+
 def test_open_pos_configured_path_override(tmp_path):
     """[datasources] po_report_path is authoritative: honored when it exists,
     reported MISSING (naming the configured path) when it does not — even

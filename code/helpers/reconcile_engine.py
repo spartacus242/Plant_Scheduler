@@ -856,15 +856,22 @@ def stock_report_inputs(data_dir: Path | str) -> tuple[str, dict]:
     return vif, dict(sc.get("toggles", {}) or {})
 
 
-def open_po_path(data_dir: Path | str, cfg: dict | None = None) -> Path | None:
-    """Open-PO report (IT's "NPA Open POs" extract) for the supply timeline.
+# Bridge delivery names for the open-PO feed, in resolution order: the ERP
+# export first, then the legacy workbook names it replaced.
+PO_FEED_NAMES = ("order_npa.csv", "open_pos.xlsx", "open_pos.csv")
 
-    Order: [datasources] po_report_path -> data/reference/open_pos.xlsx (the
-    bridge's fixed delivery name) -> open_pos.csv -> None. A configured
-    override is authoritative even when the file is absent (cip_info
-    precedent): the consumer then reports "missing at <configured path>"
-    instead of silently reading a different file. None = nothing configured
-    and no bridge copy landed. `cfg` lets health/tests avoid flowstate.toml.
+
+def open_po_path(data_dir: Path | str, cfg: dict | None = None) -> Path | None:
+    """Open-PO feed for the supply timeline.
+
+    Order: [datasources] po_report_path -> data/reference/order_npa.csv (the
+    ERP's own PO-line export, delivered by the bridge since 2026-09-14) ->
+    open_pos.xlsx -> open_pos.csv (IT's legacy "NPA Open POs" workbook) ->
+    None. A configured override is authoritative even when the file is
+    absent (cip_info precedent): the consumer then reports "missing at
+    <configured path>" instead of silently reading a different file. None =
+    nothing configured and no bridge copy landed. `cfg` lets health/tests
+    avoid flowstate.toml.
     """
     from helpers.config import datasources_config, load_toml
     dd = Path(data_dir)
@@ -873,7 +880,7 @@ def open_po_path(data_dir: Path | str, cfg: dict | None = None) -> Path | None:
     if override:
         return Path(override)
     ref = dd / "reference"
-    for name in ("open_pos.xlsx", "open_pos.csv"):
+    for name in PO_FEED_NAMES:
         # is_file: a stray FOLDER by that name is not a report to hand the
         # loader. The override above is returned as-is by contract; its
         # consumers (data_health, the report) say why it is unusable.
