@@ -102,22 +102,46 @@ def stock_findings(report: dict) -> list[Finding]:
         return out
 
     # Demand-side: SKUs whose components can't reach the DNS ratio should
-    # not be planned at all this cycle — one summary finding.
-    dns = [d for d in report.get("demand_view", [])
-           if d.get("status") == "DO_NOT_SCHEDULE"]
-    if dns:
-        worst = sorted(dns, key=lambda d: d.get("achievable_ratio") or 0)[:6]
-        out.append(Finding(
-            key="stock_dns_demand", category=STOCK, severity=WARN,
-            title=(f"{len(dns)} demand SKU(s) lack components — do not "
-                   "schedule them"),
-            detail=", ".join(
-                f"{d['sku']} ({(d.get('achievable_ratio') or 0):.0%} achievable)"
-                for d in worst) + ("…" if len(dns) > 6 else ""),
-            action="Check constraining components on Stock Check → Demand view",
-            page="pages/stock_check.py",
-            context={"skus": [d["sku"] for d in dns]},
-        ))
+    # not be planned at all this cycle — one summary finding. With the
+    # per-order projection (slice 3) the finding names what the solver
+    # policy actually caps: orders the board's draws, week netting and the
+    # inbound POs still leave short; orders a truck lifts are listed apart.
+    dv = report.get("demand_view", []) or []
+    projected = [d for d in dv if isinstance(d.get("projected"), dict)]
+    if projected:
+        capped = [d for d in projected if d["projected"].get("status") == "DNS"]
+        lifted = [d for d in projected if d["projected"].get("status") == "LIFTED"]
+        if capped:
+            worst = sorted(capped, key=lambda d: d["projected"].get("ratio") or 0)[:6]
+            out.append(Finding(
+                key="stock_dns_demand", category=STOCK, severity=WARN,
+                title=(f"{len(capped)} demand order(s) capped by components"
+                       + (f" ({len(lifted)} more lifted by inbound POs)" if lifted else "")),
+                detail=", ".join(
+                    f"{d.get('order_id') or d['sku']} "
+                    f"({(d['projected'].get('ratio') or 0):.0%} of the residual)"
+                    for d in worst) + ("…" if len(capped) > 6 else ""),
+                action="Check the Solver columns on Stock Check → Demand view",
+                page="pages/stock_check.py",
+                context={"skus": sorted({d["sku"] for d in capped}),
+                         "orders": [d.get("order_id") for d in capped],
+                         "lifted": [d.get("order_id") for d in lifted]},
+            ))
+    else:
+        dns = [d for d in dv if d.get("status") == "DO_NOT_SCHEDULE"]
+        if dns:
+            worst = sorted(dns, key=lambda d: d.get("achievable_ratio") or 0)[:6]
+            out.append(Finding(
+                key="stock_dns_demand", category=STOCK, severity=WARN,
+                title=(f"{len(dns)} demand SKU(s) lack components — do not "
+                       "schedule them"),
+                detail=", ".join(
+                    f"{d['sku']} ({(d.get('achievable_ratio') or 0):.0%} achievable)"
+                    for d in worst) + ("…" if len(dns) > 6 else ""),
+                action="Check constraining components on Stock Check → Demand view",
+                page="pages/stock_check.py",
+                context={"skus": [d["sku"] for d in dns]},
+            ))
 
     for b in report.get("schedule_view", []):
         status = str(b.get("status", "OK"))
@@ -850,8 +874,12 @@ def stock_report_inputs(data_dir: Path | str) -> tuple[str, dict]:
         sc = {}
     vif = str(sc.get("vif_folder", "")).strip()
     if not vif:
+        # presence anchor = the BOM export, ediact.csv (drop of 2026-09-15)
+        # or the legacy "ediact 3.csv" — one rule, shared with data_health
+        # and the Stock Check page
+        from helpers.stock_report_cache import find_bom_file
         ref = dd / "reference"
-        vif = str(ref) if (ref / "ediact 3.csv").exists() else \
+        vif = str(ref) if find_bom_file(ref) is not None else \
             str(dd / "stockcheck" / "dev_vif")
     return vif, dict(sc.get("toggles", {}) or {})
 

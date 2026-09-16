@@ -60,6 +60,7 @@ ALL_CHECKS = [
     "CIP_REQ_MISSING", "CHANGEOVER_GAP", "HORIZON", "DUE_WINDOW",
     "EARLY_BEFORE_COMMITTED", "DEMAND_BOUNDS", "DEMAND_SUM", "UNKNOWN_SKU", "UNKNOWN_LINE",
     "UNKNOWN_ORDER", "DUPLICATE_ROWS", "NEGATIVE_OR_ZERO", "MATERIAL",
+    "STOCK_FLOOR",
 ]
 
 
@@ -198,6 +199,10 @@ class Order:
     qty_min: float
     qty_max: float
     qty_target: float
+    # Stock-policy floor (slice 3): demand_plan.csv earliest_start_hour —
+    # the order's receipt ready hour + buffer; None when the column is
+    # absent or blank.
+    earliest_start: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------
@@ -644,11 +649,13 @@ def _load_demand(inp: Inputs, path: Path) -> None:
             qmin, qmax = float(qmin_c), float(qmax_c)
         else:
             qmin, qmax = 0.0, float("inf")
+        es = _num(r.get("earliest_start_hour"))
         inp.orders[oid] = Order(
             order_id=oid, sku=sku,
             due_start=float(_num(r.get("due_start_hour"), 0.0) or 0.0),
             due_end=float(_num(r.get("due_end_hour"), inp.cfg.horizon_h - 1)),
-            qty_min=qmin, qty_max=qmax, qty_target=tgt)
+            qty_min=qmin, qty_max=qmax, qty_target=tgt,
+            earliest_start=None if es is None else float(es))
 
 
 def _load_line_cip_hrs(inp: Inputs, path: Path) -> None:
@@ -1264,6 +1271,7 @@ class _Ctx:
         late_kg_total = 0.0
         late_kg_weeks_total = 0.0
         late_orders: set = set()
+        n_floor_orders: set = set()
         for b in self.prod:
             if b.committed or not b.order_id or b.order_id not in inp.orders:
                 continue
@@ -1289,6 +1297,18 @@ class _Ctx:
                 rep.add("DUE_WINDOW", sev, b.line_name, b.order_id, early,
                         f"starts {b.start:g} < due_start_hour {o.due_start:g} (early by {early:g}h; "
                         f"window [{o.due_start:g},{o.due_end + 1:g}))" + note)
+            # Stock-policy floor (slice 3): a run may not start before the
+            # receipt it depends on has landed plus the buffer. The floor is
+            # a hard constraint in the model under EVERY early-fill policy,
+            # so crossing it is an ERROR (advisory in calendar mode like the
+            # rest of the due checks).
+            if o.earliest_start is not None:
+                n_floor_orders.add(b.order_id)
+                short = o.earliest_start - b.start
+                if short > self.tol:
+                    rep.add("STOCK_FLOOR", due_sev, b.line_name, b.order_id, short,
+                            f"starts {b.start:g} < earliest_start_hour {o.earliest_start:g} "
+                            f"(stock policy: receipt + buffer; early by {short:g}h)")
             if late > self.tol:
                 # kg that landed past due_end + 1 (the block's kg spread
                 # evenly over its hours) and the kg x whole weeks late: hours
@@ -1325,6 +1345,11 @@ class _Ctx:
                     if soft_weeks else "hard end due_end+1")
         self.ran("DUE_WINDOW", (f"{end_rule}; {policy}" if not self.calendar_mode
                  else "advisory in calendar mode: reference demand_plan.csv anchor may differ from the board"))
+        n_floors = sum(1 for o in inp.orders.values() if o.earliest_start is not None)
+        rep.stats["stock_floor_orders"] = n_floors
+        self.ran("STOCK_FLOOR", (f"{n_floors} order(s) carry earliest_start_hour, "
+                                 f"{len(n_floor_orders)} scheduled") if n_floors
+                 else "skipped: no earliest_start_hour column")
         # produced per order from schedule
         made: Dict[str, float] = defaultdict(float)
         for b in self.prod:

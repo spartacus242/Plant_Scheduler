@@ -5,6 +5,18 @@ Watches the plant data files listed in fs-live-data.conf.json and pushes any
 changes to the private `flowstate-live-data` GitHub repo. Run once per
 scheduled task / every N minutes (or leave running with --watch).
 
+Several source folders (2026-09-15 revision): the drop is split into the
+ERP's own exports (fs_vif) and the files people maintain (fs_manual), so
+"source_dirs_work" in the conf lists every folder to watch, in priority order
+(see docs/vif_exports.md for the layout). A file present in more than one
+folder is taken from wherever it is newest. When the list is empty or absent
+the single "source_dir_work" (or SRC_DIR below) is watched as before.
+
+AZAP demand (2026-09-16): when this script runs from a repo checkout, a
+watched folder holding "New Export AZAP MMDDYY.xlsx" first gets its
+demand_plan_summary.csv rebuilt from it (rebuild_azap_summaries); a
+hand-copied script prints "AZAP rebuild skipped: ..." and pushes as before.
+
 This is the ONLY file that ever touches the plant network. It never runs AI —
 it just copies files and git-pushes. One-way (plant -> GitHub). Nothing is
 pulled back into the plant.
@@ -27,20 +39,26 @@ Usage:
 One-time setup (run once from the work computer):
     1. Install Git for Windows (https://git-scm.com).
     2. Create the private repo flowstate-live-data on GitHub.
-    3. Configure SRC_DIR below + your GitHub identity/token (git credential
-       manager); set "clone_dir_work" in fs-live-data.conf.json.
+    3. Configure "source_dirs_work" (or SRC_DIR below) + your GitHub identity/
+       token (git credential manager); set "clone_dir_work" in
+       fs-live-data.conf.json.
     4. Run this script once; it clones the repo and starts pushing.
 """
 import argparse
 import json
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 CONF = Path(__file__).resolve().parent / "fs-live-data.conf.json"
 # ── EDIT THESE on the work computer ──────────────────────────────────────
 SRC_DIR = Path(r"C:\FlowstateLive\fs_live_data")  # where the plant system drops the raw files
+# or set "source_dir_work" in fs-live-data.conf.json (e.g. the ERP drop folder on the
+# share, 2026-09-14) and leave the constant alone; the conf value wins when present.
+# "source_dirs_work" (a list, 2026-09-15) wins over both: every folder in it is
+# watched, e.g. the ERP export folder plus the people-maintained folder.
 GIT_BIN = shutil.which("git") or r"C:\Program Files\Git\bin\git.exe"
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -94,6 +112,158 @@ def resolve_entries(entries, src_dir):
         if prev is None or src.stat().st_mtime > prev.stat().st_mtime:
             picked[dest] = src
     return [(picked[d], d) for d in order]
+
+
+# ── several source folders (2026-09-15) ─────────────────────────────────────
+# The drop of 2026-09-15 split the plant files over two folders (the ERP's
+# exports and the files people maintain), so the work PC watches a LIST of
+# folders. resolve_entries stays single-folder and byte-identical to the copy
+# in fs-live-pull.py (a test pins it); the merge lives in these local helpers.
+
+def source_dirs_work(conf: dict) -> list[Path]:
+    """Folders to watch, in conf order: "source_dirs_work" when it is a
+    non-empty list, else the single "source_dir_work" (or SRC_DIR)."""
+    raw = conf.get("source_dirs_work")
+    if isinstance(raw, str):
+        raw = [raw]
+    if isinstance(raw, (list, tuple)):
+        dirs = [Path(p.strip()) for p in raw if isinstance(p, str) and p.strip()]
+        if dirs:
+            return dirs
+    return [Path(conf.get("source_dir_work") or SRC_DIR)]
+
+
+def _entry_dest(entry) -> str | None:
+    """Destination name a conf entry copies under (None for a bad entry)."""
+    if not isinstance(entry, str):
+        return None
+    if GLOB_SEP in entry:
+        dest = entry.split(GLOB_SEP, 1)[1].strip()
+        return dest or None
+    return entry
+
+
+def resolve_entries_multi(entries, src_dirs) -> list[tuple[Path, str]]:
+    """resolve_entries over several source folders, merged newest-source-wins
+    per destination name, in conf order. A folder that is not reachable
+    contributes nothing (the others still push); a stat that fails mid-way
+    drops only that candidate."""
+    picked: dict[str, Path] = {}
+    for d in src_dirs:
+        d = Path(d)
+        try:
+            if not d.is_dir():
+                print(f"Source folder not reachable, skipped: {d}", flush=True)
+                continue
+        except OSError as e:
+            print(f"Source folder not reachable, skipped: {d} ({e})", flush=True)
+            continue
+        for src, dest in resolve_entries(entries, d):
+            try:
+                prev = picked.get(dest)
+                if prev is None or src.stat().st_mtime > prev.stat().st_mtime:
+                    picked[dest] = src
+            except OSError:
+                continue
+    order: list[str] = []
+    for e in entries:
+        dest = _entry_dest(e)
+        if dest in picked and dest not in order:
+            order.append(dest)
+    return [(picked[d], d) for d in order]
+
+
+# ── AZAP workbook -> demand_plan_summary.csv (2026-09-16) ───────────────────
+# The planners drop the weekly "New Export AZAP MMDDYY.xlsx" into fs_manual
+# instead of cutting demand_plan_summary.csv by hand. Folder-mode sync
+# (fs-live-pull.py) rebuilds the csv on the planner's PC, but GitHub mode
+# never did: this script pushed whatever csv sat in fs_manual. So before
+# resolving the file list, each watched folder that holds a workbook gets
+# the same rebuild — best-effort, only when this script runs from a repo
+# checkout (the helper is code/helpers/azap_demand.py next to scripts/). A
+# hand-copied single script cannot import it: it prints one line and pushes
+# as before. Never raises.
+AZAP_GLOB = "New Export AZAP*.xls[xm]"
+AZAP_SETTLE_SECONDS_DEFAULT = 60   # a workbook modified this recently may still be copying in
+
+
+def rebuild_azap_summaries(conf: dict, src_dirs) -> list[str]:
+    """Rebuild demand_plan_summary.csv in every folder of `src_dirs` holding
+    an AZAP workbook (helpers.azap_demand.refresh_demand_summary: unless the
+    csv is up to date with it; a 0-row or much smaller build is refused and
+    the previous csv kept). Prints and returns one line per thing that
+    happened. Never raises.
+
+    2026-09-16: every pass also says when the csv in use comes from a
+    workbook with no MMDDYY in its name, and names every workbook the
+    ranking passed over although it was saved after the one in use
+    (helpers.azap_demand.passed_over_workbooks) — "AZAP rebuild WARNING:"
+    for a doubtful name date (a year typo), "AZAP rebuild note:" otherwise."""
+    lines: list[str] = []
+
+    def say(msg: str) -> None:
+        print(msg, flush=True)
+        lines.append(msg)
+
+    try:
+        holders: list[Path] = []
+        for d in src_dirs:
+            d = Path(d)
+            try:
+                if d.is_dir() and any(p.is_file() for p in d.glob(AZAP_GLOB)):
+                    holders.append(d)
+            except OSError:
+                continue                    # an unreachable folder is reported by the copy step
+        if not holders:
+            return lines
+        try:
+            code_dir = Path(__file__).resolve().parent.parent / "code"
+            if not (code_dir / "helpers" / "azap_demand.py").is_file():
+                raise ImportError(f"no repo checkout around this script "
+                                  f"({code_dir} has no helpers/azap_demand.py)")
+            if str(code_dir) not in sys.path:
+                sys.path.insert(0, str(code_dir))
+            from helpers.azap_demand import (export_date_warning, find_azap_workbook,
+                                             passed_over_workbooks, refresh_demand_summary,
+                                             workbook_date_warning)
+        except Exception as exc:  # noqa: BLE001 — no helper / pandas / openpyxl: push as before
+            say(f"AZAP rebuild skipped: {exc} - run scripts/azap_demand_summary.py")
+            return lines
+        try:
+            settle = float(conf.get("settle_seconds", AZAP_SETTLE_SECONDS_DEFAULT) or 0)
+        except (TypeError, ValueError):
+            settle = float(AZAP_SETTLE_SECONDS_DEFAULT)
+        for d in holders:
+            passed: list[dict] = []
+            try:
+                wb = find_azap_workbook(d)
+                if wb is None:
+                    continue
+                passed = passed_over_workbooks(d, wb, settle_seconds=settle)   # never raises
+                age = time.time() - wb.stat().st_mtime
+                if settle and abs(age) < settle:
+                    say(f"AZAP rebuild: {wb.name} modified {age:.0f}s ago, settling - next pass")
+                else:
+                    out = refresh_demand_summary(d)
+                    if out.get("ran"):
+                        meta = out.get("meta") or {}
+                        weeks = meta.get("weeks") or [None]
+                        say(f"AZAP rebuild: demand_plan_summary.csv built from {wb.name} in {d}: "
+                            f"{out.get('rows')} rows (W{weeks[0]}..W{weeks[-1]})")
+                        warning = export_date_warning(meta)
+                    else:
+                        say(f"AZAP rebuild: demand_plan_summary.csv in {d} {out.get('reason')}")
+                        warning = workbook_date_warning(wb) if out.get("from_workbook") else None
+                    if warning:
+                        say(f"AZAP rebuild WARNING: {warning}")
+            except Exception as exc:  # noqa: BLE001 — a bad workbook costs only the rebuild
+                say(f"AZAP rebuild failed in {d}: {exc} - the existing "
+                    f"demand_plan_summary.csv is pushed unchanged")
+            for item in passed:
+                say(f"AZAP rebuild {'WARNING' if item['problem'] else 'note'}: {item['message']}")
+    except Exception as exc:  # noqa: BLE001 — never end the push over the rebuild
+        say(f"AZAP rebuild skipped: {exc} - run scripts/azap_demand_summary.py")
+    return lines
 
 
 # ── git helpers ─────────────────────────────────────────────────────────────
@@ -205,8 +375,13 @@ def push_once(conf: dict) -> list[str]:
 
     sync_with_remote(clone, remote, branch)
 
+    # rebuild demand_plan_summary.csv from the AZAP workbook first (best-effort,
+    # 2026-09-16) so this pass pushes the fresh csv
+    src_dirs = source_dirs_work(conf)
+    rebuild_azap_summaries(conf, src_dirs)
+
     changed: list[str] = []
-    for src, fname in resolve_entries(conf["files"], SRC_DIR):
+    for src, fname in resolve_entries_multi(conf["files"], src_dirs):
         dst = clone / fname
         if dst.exists():
             try:

@@ -209,8 +209,11 @@ except Exception as _exc:  # noqa: BLE001
     _cs_err = f"Could not read the live feeds: {_exc}"
 _cs_ready = _cs is not None and len(_cs.blocks) > 0
 
+from helpers.live_sync import is_configured as _sync_is_configured
+_sync_configured = _sync_is_configured()
 
-def _rebuild_from_plant_state() -> None:
+
+def _rebuild_from_plant_state(note: str = "") -> None:
     """Back up calendar_blocks.csv to data/_backups/, then replace the whole
     board with the live plant state (manprg + cip_info). ONE routine behind
     the control-row button and the Plant state tab (planner request
@@ -221,9 +224,39 @@ def _rebuild_from_plant_state() -> None:
     # Remount the Gantt or it keeps showing the PRE-replace board
     # (the component holds its own state under a stable key).
     st.session_state["cal_reset_gen"] += 1
-    st.toast(f"Calendar rebuilt from plant state ({_cs.counts['blocks']} blocks).",
+    st.toast(f"Calendar rebuilt from plant state ({_cs.counts['blocks']} blocks)."
+             + (f" {note}" if note else ""),
              icon=":material/factory:")
     st.rerun()
+
+
+def _sync_then_rebuild() -> None:
+    """Sync the live files first (planner request 2026-09-14: a rebuild must
+    never trail the scheduled sync), then rebuild. The plant state above was
+    built from the files as they were when the page rendered, so when the
+    sync changed anything the page reruns and rebuilds from the fresh files
+    (cal_rebuild_pending) instead of saving the stale state. Not configured
+    on this PC (no bridge, files copied in by hand): plain rebuild."""
+    if not _sync_configured:
+        _rebuild_from_plant_state()
+        return
+    from helpers.live_sync import run_sync
+    with st.spinner("Syncing live data…"):
+        outcome = run_sync(dd)
+    if outcome.updated:
+        st.session_state["cal_rebuild_pending"] = outcome.summary
+        st.rerun()
+    _rebuild_from_plant_state(note=outcome.summary if outcome.ran else "")
+
+
+_pending = st.session_state.pop("cal_rebuild_pending", None)
+if _pending:
+    if _cs_ready:
+        _rebuild_from_plant_state(note=str(_pending))
+    else:
+        st.warning(f"{_pending} The feeds gave no blocks"
+                   + (f" ({_cs_err})" if _cs_err else "")
+                   + ", so the board was left unchanged.")
 
 # (MO drift — running/queued MO blocks moved to their live manprg times by
 # one click — and float links were both removed on 2026-09-11 at the
@@ -241,9 +274,10 @@ _past_rows = cal.iloc[0:0]
 # 'completed' flag on the export (both frames must agree, 2026-09-03)
 _now_h = (_horizon.now - _anchor).total_seconds() / 3600.0
 if _hide_past:
-    _mask_past = cal["end_h"].astype(float) <= _now_h
-    _past_rows = cal[_mask_past].copy()
-    cal = cal[~_mask_past].copy()
+    # A split MO is hidden as a WHOLE or not at all — see
+    # calendar_io.split_finished_rows for why (card-trust fix 2026-09-15).
+    from helpers.calendar_io import split_finished_rows as _split_finished
+    cal, _past_rows = _split_finished(cal, _now_h)
 
 _chips = []
 if _live_bad:
@@ -320,11 +354,12 @@ with _cc5:
                  help="Back up calendar_blocks.csv to data/_backups/, then "
                       "replace the whole board with the live plant state "
                       "(manprg + cip_info). Same action as the Plant state "
-                      "tab below, which also previews the blocks."
+                      "tab below, which also previews the blocks. Syncs the live "
+                      "data first when the sync is set up on this PC."
                       + ("" if _cs_ready else
                          " Disabled: the live feeds gave no blocks"
                          + (f" ({_cs_err})" if _cs_err else "") + ".")):
-        _rebuild_from_plant_state()
+        _sync_then_rebuild()
 if _hide_past_widget != _hide_past:
     # First run of a toggled setting: the value above the widget was stale.
     st.rerun()
@@ -536,6 +571,7 @@ if st.session_state.get("cal_mount_gen") != st.session_state["cal_reset_gen"]:
 # real future production it must not re-plan) — see
 # build_ledger_from_data(made_only=...) for where the line is drawn.
 _made_credit: dict = {}
+_credit_notes: list[str] = []
 try:
     from helpers.demand_coverage import build_ledger_from_data as _blfd
     _board_oids = {
@@ -548,17 +584,35 @@ try:
     # build_ledger_from_data.
     _board_attrs: dict = {}
     if "attrs" in cal.columns:
-        for _o, _a in cal.loc[cal["block_type"] == "production",
-                              ["order_id", "attrs"]].itertuples(index=False):
-            if _o is not None and str(_o).lower() != "nan":
-                _board_attrs[str(_o)] = (_board_attrs.get(str(_o), "") + ";"
-                                         + str(_a or ""))
+        # Keyed by MO **and** by "<mo>@<line>" (current_state's `mo_uid`):
+        # the same MO number can run on two lines, and then the credit must
+        # come from THAT line's own block, not from a blob of both
+        # (reconcile_completed_to_board credits per block, never per MO).
+        for _o, _ln, _a in cal.loc[
+                cal["block_type"] == "production",
+                ["order_id", "line_name", "attrs"]].itertuples(index=False):
+            if _o is None or str(_o).lower() == "nan":
+                continue
+            for _k in (str(_o), f"{_o}@{_ln}"):
+                _board_attrs[_k] = (_board_attrs.get(_k, "") + ";"
+                                    + str(_a or ""))
     _led0 = _blfd(dd, cfg, made_only=True, exclude_mos=_board_oids,
                   board_attrs=_board_attrs)
     if _led0 is not None:
         _made_credit = _led0.applied_by_order()
-except Exception:  # noqa: BLE001 — numbers degrade to board-only
+        # The ledger's own diagnostics used to be dropped on the floor: a
+        # card reading 0% for an order the plant had already made was
+        # exactly what they explained. Surface them above the board
+        # (2026-09-15). WARNING = kg the cards do NOT count; NOTE = kg they
+        # DO count that has no demand week of its own.
+        _credit_notes = [n for n in _led0.notes
+                         if n.startswith(("WARNING", "NOTE"))]
+except Exception as _ce:  # noqa: BLE001 — numbers degrade to board-only
     _made_credit = {}
+    _credit_notes = [
+        f"WARNING: the already-made credit could not be computed ({_ce}) — "
+        "the cards below count BOARD kg only, so a week the plant has "
+        "already produced can read low."]
 
 # Holding reflects the OFFICIAL BOARD, not the latest solve (user report
 # 2026-08-18: "why only 1 item for W35?" — Monday's un-promoted proposal
@@ -746,6 +800,86 @@ _stock_payload = (build_stock_payload(_stock_cached.report, cfg, _anchor,
                                       cases_left=_left_by_mo)
                   if _stock_cached else None)
 
+# --- Week filter: which demand weeks get a card and a holding column -----
+# Planner request 2026-09-15: the board is used to plan 1-3 weeks AHEAD of
+# what the plant is running, so the current week's card and its holding
+# cards are usually noise. RENDER ONLY — the holding list, the adherence
+# pass and every KPI keep every week, so hiding a week never changes a
+# number and never loses a card (the holding header counts what it hides).
+_week_choices: list[int] = []
+if dem_path.exists():
+    try:
+        from datetime import date as _date
+        from datetime import timedelta as _td
+        _wk_raw = pd.read_csv(dem_path, usecols=["week_index"])["week_index"]
+        # (iso_year, iso_week) keys, never bare week numbers: W53-2026 is not
+        # "before" W1-2027, and the base+k arithmetic cannot carry a year.
+        _today_key = _date.today().isocalendar()[:2]
+        for _w in sorted({int(x) for x in
+                          pd.to_numeric(_wk_raw, errors="coerce").dropna()}):
+            # Past demand weeks are misses (Reconcile's job), never cards —
+            # the same rule the holding area and the client already apply.
+            if _dem_anchor0 is not None:
+                _p = (_dem_anchor0 + _td(weeks=_w)).isocalendar()
+                if (_p[0], _p[1]) < _today_key:
+                    continue
+            _week_choices.append(_w)
+    except Exception:  # noqa: BLE001 — no filter beats no board
+        _week_choices = []
+
+
+def _week_opt_label(k: int) -> str:
+    return (f"WW{week_index_to_iso(k, _dem_anchor0):02d}"
+            if _dem_anchor0 is not None else f"W{k}")
+
+
+_weeks_shown: list[int] | None = None
+if len(_week_choices) > 1:
+    # A week INDEX is only meaningful against the demand file's anchor, and
+    # the weekly re-import re-bases it — so a stored selection of [1,2] means
+    # different ISO weeks after a new import. Stamp the anchor: when it
+    # moves, drop the selection so every week shows again. Streamlit ignores
+    # `default` once the widget key exists, so a newly imported week has to
+    # be opted in here too; and a stale index left in session state would
+    # raise. All of this must happen BEFORE the widget is created.
+    _wk_stamp = f"{_dem_anchor0:%Y-%m-%d}" if _dem_anchor0 is not None else ""
+    _wk_reset = False
+    if st.session_state.get("cal_weeks_anchor") != _wk_stamp:
+        _wk_reset = "cal_weeks_shown" in st.session_state
+        st.session_state.pop("cal_weeks_shown", None)
+        st.session_state["cal_weeks_anchor"] = _wk_stamp
+    elif "cal_weeks_shown" in st.session_state:
+        _seen = st.session_state.get("cal_weeks_seen") or []
+        _added = [_w for _w in _week_choices if _w not in _seen]
+        _kept = [_w for _w in st.session_state["cal_weeks_shown"]
+                 if _w in _week_choices]
+        st.session_state["cal_weeks_shown"] = sorted(set(_kept) | set(_added))
+    st.session_state["cal_weeks_seen"] = list(_week_choices)
+    if _wk_reset:
+        st.caption("A new demand plan was imported, so the week filter was "
+                   "reset to show every week.")
+    _wc1, _wc2 = st.columns([3, 2])
+    with _wc1:
+        _weeks_shown = st.multiselect(
+            "Weeks shown on the score cards and in holding",
+            options=_week_choices, default=_week_choices,
+            format_func=_week_opt_label, key="cal_weeks_shown",
+            help="Deselect a week to take its score card and its holding "
+                 "cards off the screen — for planning 1-3 weeks ahead of "
+                 "what the plant is running. Nothing is deleted or "
+                 "re-scored: the cards stay held, Save still writes them, "
+                 "and the numbers on the remaining cards do not move.")
+    with _wc2:
+        _n_wk_hidden = len(_week_choices) - len(_weeks_shown or [])
+        if _n_wk_hidden:
+            st.caption(f"{_n_wk_hidden} week(s) hidden — score cards and "
+                       "holding columns only; no number changes.")
+for _cn in _credit_notes[:3]:
+    if _cn.startswith("WARNING"):
+        st.warning(f"⚠️ {_cn}")
+    else:
+        st.caption(_cn)
+
 state = gantt_calendar(
     schedule=schedule,
     cip_windows=windows,
@@ -781,6 +915,8 @@ state = gantt_calendar(
         # inferring it from the base week (agent FE handoff W-4).
         "demand_anchor": (f"{_dem_anchor0:%Y-%m-%d %H:%M:%S}"
                           if _dem_anchor0 is not None else None),
+        # Render-only week filter (see the multiselect above the board).
+        "weeks_shown": _weeks_shown,
     },
     height=820,
     key=f"gantt_calendar_{st.session_state['cal_reset_gen']}",
@@ -1101,7 +1237,7 @@ with _tab_plant:
         if st.button("Replace calendar with current plant state",
                      key="cal_from_plant_state", type="primary",
                      disabled=not _cs_ready):
-            _rebuild_from_plant_state()
+            _sync_then_rebuild()
 
 
 with _tab_dt:

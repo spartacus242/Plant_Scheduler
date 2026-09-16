@@ -76,6 +76,12 @@ export interface SandboxConfig {
    * missing. */
   cip_interval_h?: Record<string, number>;
   cip_interval_default_h?: number;
+  /** Demand week indexes (the -W<k> suffix) whose week card and holding
+   * column are SHOWN; null/absent = every week (planner request
+   * 2026-09-15: plan 1-3 weeks ahead without the current week's noise).
+   * Render-only — the holding list, the adherence pass and every KPI keep
+   * every week, so hiding a week never changes a number or loses a card. */
+  weeks_shown?: number[] | null;
 }
 
 /** One SKU-pair changeover classification, precomputed server-side by

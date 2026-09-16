@@ -169,15 +169,34 @@ def block_rows(report: dict, stamp: Callable[[float], str],
 # Demand plan rows
 # ---------------------------------------------------------------------------
 
+PROJECTED_TEXT = {"OK": "OK", "COVERED": "COVERED", "LIFTED": "LIFTED BY PO",
+                  "DNS": "CAPPED", "NO_DATA": "NO DATA"}
+
+
+def projected_of(d: dict) -> dict | None:
+    """The slice-3 projection riding on a demand_view row, or None for a
+    report saved before it existed (the table then shows no such columns)."""
+    p = d.get("projected")
+    return p if isinstance(p, dict) else None
+
+
 def demand_rows(report: dict, week_index: int | None,
-                week_label: Callable[[int], str]) -> list[dict]:
+                week_label: Callable[[int], str],
+                stamp: Callable[[float], str] | None = None) -> list[dict]:
+    """One row per demand order. When the report carries the per-order
+    projection (stockcheck.projection, slice 3) four columns follow the
+    flat coverage: what the solver policy does with the order (Solver),
+    the projected coverage of the gross target, the cap on new production
+    and the earliest start a receipt imposes."""
+    stamp = stamp or (lambda h: f"h{float(h):.0f}")
     rows: list[dict] = []
+    any_proj = any(projected_of(d) for d in report.get("demand_view") or [])
     for d in report.get("demand_view") or []:
         if week_index is not None and d.get("week_index") != week_index:
             continue
         c = (d.get("constraining") or [{}])[0] if d.get("constraining") else {}
         st_ = str(d.get("status") or "")
-        rows.append({
+        row = {
             "Status": status_text(st_),
             "SKU": str(d.get("sku") or ""),
             "Week": week_label(int(d.get("week_index") or 0)),
@@ -187,9 +206,24 @@ def demand_rows(report: dict, week_index: int | None,
                                f"({fmt_qty(c.get('available_total'))} / "
                                f"{fmt_qty(c.get('need'))} {c.get('unit', '')})".strip()
                                if c else ""),
-            "_status": st_,
-            "_ratio": _num(d.get("achievable_ratio")) if _num(d.get("achievable_ratio")) is not None else 9e9,
-        })
+        }
+        if any_proj:
+            p = projected_of(d) or {}
+            pst = str(p.get("status") or "")
+            cap = _num(p.get("cap_kg"))
+            es = _num(p.get("earliest_start_h"))
+            row.update({
+                "Solver": PROJECTED_TEXT.get(pst, pst.replace("_", " ")),
+                "Projected": fmt_pct(p.get("ratio_gross")),
+                "Cap kg": (round(cap) if cap is not None
+                           and pst in ("LIFTED", "DNS") else ""),
+                "Earliest start": stamp(es) if es is not None else "",
+                "Why": str(p.get("text") or ""),
+            })
+        row["_status"] = st_
+        row["_ratio"] = (_num(d.get("achievable_ratio"))
+                         if _num(d.get("achievable_ratio")) is not None else 9e9)
+        rows.append(row)
     rows.sort(key=lambda r: (STATUS_RANK.get(r["_status"], 9), r["_ratio"]))
     return rows
 

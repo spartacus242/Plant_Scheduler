@@ -1,7 +1,7 @@
 # Flowstate configuration — operational truth → twin → optimizer
 
 [scheduler]
-planning_start_date = "2026-09-09 00:00:00"
+planning_start_date = "2026-09-15 00:00:00"
 # Rolling horizon (handoff WW32 #1). "today" = the Plant Calendar opens on the
 # current day and offers to re-base stored blocks onto it; "fixed" keeps the
 # legacy behaviour of always opening on planning_start_date.
@@ -219,6 +219,17 @@ raw_areas = ["RB1", "AMB", "RC1"]
 # Off-site areas: counted only from a joined "SL3 TRANSFER" appointment,
 # otherwise excluded (reason "offsite_no_transfer").
 offsite_areas = ["SL3"]
+# Solver stock policy (Supply Timeline slice 3, 2026-09-15). "projected":
+# every demand order is graded on the same netted curves the Gantt uses —
+# the board's committed draws first, orders in week order, gated PO
+# receipts lifting what on-hand cannot support — and the solver's demand
+# copy is capped per ORDER (not per SKU-worst-week). "flat" = the
+# 2026-08-14 worst-week DNS trim; "off" = component-blind solver.
+solver_policy = "projected"
+# An order whose cap relies on a receipt may not start before the truck's
+# ready hour + min_days_after_delivery (demand column earliest_start_hour,
+# a hard floor in CP-SAT, the greedy seed and the validator).
+solver_earliest_start = true
 
 # Data-health refresh cadences (hours) default in helpers/data_health.py
 # DEFAULT_CADENCE_H (manprg 0.5, cip_info 26, vif 26, demand_plan 192,

@@ -34,7 +34,9 @@ Design decisions (user-approved, final):
     toml by the per-arm input patch (phase2_scheduler reads it);
   * EVERY solve round ingests a FRESH stock check first (stockcheck.api via
     the same resolver the agent uses) — a SKU whose components ran short
-    mid-night gets its demand capped in every later round (trim_dns_demand);
+    mid-night gets its demand capped in every later round
+    (agent_policy.apply_stock_policy: per-order caps from the time-phased
+    projection + earliest-start floors after a receipt, slice 3);
   * generations: gen_id = "<YYYYMMDD-HHMM>-<8 hex of sha1(inputs signature)>".
     The signature (generation_signature: scorecard_engine's shared
     scoring_inputs_signature PLUS the board and the week lock, which the fill
@@ -117,7 +119,7 @@ sys.path.insert(0, str(ROOT / "code"))
 
 import pandas as pd  # noqa: E402
 
-from helpers.agent_policy import dns_ratios, trim_dns_demand  # noqa: E402
+from helpers.agent_policy import apply_stock_policy, policy_signature  # noqa: E402
 from helpers.calendar_io import load_calendar, save_calendar  # noqa: E402
 from helpers.config import load_toml  # noqa: E402
 from helpers.horizon import resolve as resolve_horizon  # noqa: E402
@@ -567,22 +569,31 @@ def live_pull(log: Log) -> None:
         log(f"[pull] FAILED ({exc}) — continuing with current data")
 
 
-def fresh_stock_check(log: Log) -> tuple[dict[str, float], list[str]]:
+def fresh_stock_check(log: Log) -> tuple[dict | None, list[str]]:
     """The agent's stock-check path: stockcheck.api report via the
-    stock_report_inputs resolver -> DNS achievable ratios."""
+    stock_report_inputs resolver. Returns (report, notes); the report is
+    None when the check errored or crashed, so the arm solves without a
+    stock policy (and says so)."""
     try:
         vif, toggles = stock_report_inputs(DATA)
         report = stock_check_report(DATA, vif, toggles)
         if report.get("error"):
-            log(f"[stock] report error: {report['error']} — no DNS caps "
+            log(f"[stock] report error: {report['error']} — no stock caps "
                 "this round")
-            return {}, [f"stock check errored: {report['error']}"]
-        dns = dns_ratios(report)
-        log(f"[stock] fresh check: {len(dns)} component-blocked SKU(s)")
-        return dns, []
+            return None, [f"stock check errored: {report['error']}"]
+        sig = policy_signature(report)
+        proj = report.get("projection") or {}
+        if proj:
+            log(f"[stock] fresh check: {len(sig)} order(s) capped, "
+                f"{proj.get('n_floors', 0)} earliest-start floor(s), PO feed "
+                f"{proj.get('feed_state', '?')}")
+        else:
+            log(f"[stock] fresh check: {len(sig)} component-blocked SKU(s) "
+                "(flat report — no projection)")
+        return report, []
     except Exception as exc:  # noqa: BLE001 — a dead stock feed must not kill the night
-        log(f"[stock] FAILED ({exc}) — no DNS caps this round")
-        return {}, [f"stock check FAILED: {exc}"]
+        log(f"[stock] FAILED ({exc}) — no stock caps this round")
+        return None, [f"stock check FAILED: {exc}"]
 
 
 @dataclass
@@ -952,10 +963,11 @@ def compute_guards(calendar: pd.DataFrame, gen: Generation,
             "cip_req_inherited": int(cip_req_inherited)}
 
 
-def run_arm(arm: dict, gen: Generation, dns: dict[str, float],
+def run_arm(arm: dict, gen: Generation, stock_report: dict | None,
             log: Log) -> dict:
-    """One sequential solve: own work dir, fresh DNS caps, separate pass
-    budgets, overnight_score + guards, leaderboard + history append."""
+    """One sequential solve: own work dir, fresh stock policy (caps +
+    floors from `stock_report`, None = none), separate pass budgets,
+    overnight_score + guards, leaderboard + history append."""
     label = arm["label"]
     budgets = arm["budgets"]
     run_id = f"{label}_{datetime.now():%H%M%S}"
@@ -1007,16 +1019,14 @@ def run_arm(arm: dict, gen: Generation, dns: dict[str, float],
             # demand (its own DNS caps included) stands. Stock changes
             # since the donor staged still reach the brief's stock events.
             notes.extend(plant_chain_seed(work, donor_work))
-            notes.append("DNS trim skipped: chained arm keeps the donor's "
-                         "staged demand (donor-time caps included)")
+            notes.append("stock policy skipped: chained arm keeps the donor's "
+                         "staged demand (donor-time caps and floors included)")
+        elif stock_report is None:
+            notes.append("stock policy skipped: no stock report this round")
         else:
-            dem_path = work / "demand_plan.csv"
-            dem = pd.read_csv(dem_path, dtype={"sku": str})
-            trimmed, tnotes = trim_dns_demand(dem, dns)
-            trimmed.to_csv(dem_path, index=False)
-            if tnotes:
-                notes.append(f"DNS trim: {len(tnotes)} order(s) capped "
-                             f"({len(dns)} component-blocked SKU(s))")
+            res = apply_stock_policy(work, stock_report)
+            notes.append(res.summary())
+            notes.extend(res.notes[1:4])
         _set_work_scheduler_flag(
             work / "flowstate.toml", "time_limit_pass2",
             int(budgets["pass2_s"]))
@@ -1631,12 +1641,12 @@ def run_resume(args: argparse.Namespace, log: Log) -> int:
             "late champion on this generation's frame")
         try:
             gen.co_map = _co_lookup(_load_changeovers(DATA / "reference"))
-            dns, sc_notes = fresh_stock_check(log)
+            stock_rep, sc_notes = fresh_stock_check(log)
             stock_events.extend(sc_notes)
             champion = {"label": "champion_5am", "kind": "champion",
                         "params": {}, "budgets": dict(CHAMPION_BUDGETS)}
             apply_budget_overrides([champion], args.pass1_s, args.pass2_s)
-            cand = run_arm(champion, gen, dns, log)
+            cand = run_arm(champion, gen, stock_rep, log)
             consolidation = {"status": "done",
                              "note": "late champion via --resume",
                              "run_id": cand.get("run_id")}
@@ -1727,7 +1737,7 @@ def main() -> int:
     gen: Generation | None = None
     brief_notes: list[str] = []
     stock_events: list[str] = []
-    prev_dns: dict[str, float] | None = None
+    prev_sig: dict[str, float] | None = None
 
     def batch_ids() -> list[str]:
         return [g.gen_id for g in generations]
@@ -1740,11 +1750,14 @@ def main() -> int:
             brief_notes.append("generation staging FAILED — arm "
                                f"{arm['label']} skipped")
             continue
-        dns, sc_notes = fresh_stock_check(log)
+        stock_rep, sc_notes = fresh_stock_check(log)
         stock_events.extend(sc_notes)
-        if prev_dns is not None and dns != prev_dns:
-            gained = sorted(set(dns) - set(prev_dns))
-            freed = sorted(set(prev_dns) - set(dns))
+        # What the policy caps this round (order -> cap kg under the
+        # projection, SKU -> ratio under the flat fallback) vs last round.
+        sig = policy_signature(stock_rep) if stock_rep is not None else {}
+        if prev_sig is not None and sig != prev_sig:
+            gained = sorted(set(sig) - set(prev_sig))
+            freed = sorted(set(prev_sig) - set(sig))
             if gained:
                 stock_events.append(
                     f"{datetime.now():%H:%M} components ran short for: "
@@ -1753,8 +1766,8 @@ def main() -> int:
                 stock_events.append(
                     f"{datetime.now():%H:%M} components freed up for: "
                     + ", ".join(freed))
-        prev_dns = dns
-        run_arm(arm, gen, dns, log)
+        prev_sig = sig
+        run_arm(arm, gen, stock_rep, log)
         write_state(gen, PHASE_ARMS_RUNNING, batch=batch_ids(),
                     arms_planned=len(arms))
     if gen is not None:
@@ -1794,13 +1807,13 @@ def main() -> int:
             live_pull(log)
         try:
             gen = ensure_generation(gen, generations, log)
-            dns, sc_notes = fresh_stock_check(log)
+            stock_rep, sc_notes = fresh_stock_check(log)
             stock_events.extend(sc_notes)
             champion = {"label": "champion_5am", "kind": "champion",
                         "params": {}, "budgets": dict(CHAMPION_BUDGETS)}
             # --pass1-s/--pass2-s override EVERY arm, the 5am one included
             apply_budget_overrides([champion], args.pass1_s, args.pass2_s)
-            cand = run_arm(champion, gen, dns, log)
+            cand = run_arm(champion, gen, stock_rep, log)
             consolidation = {"status": "done", "note": "5am champion",
                              "run_id": cand.get("run_id")}
             write_state(gen, PHASE_CONSOLIDATED, batch=batch_ids(),

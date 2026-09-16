@@ -39,15 +39,20 @@ Double-click **Flowstate** on your Desktop. The shortcut runs `scripts\open_flow
 
 ## Install on a planner's PC (Windows, from `main`)
 
-Prerequisites: Git for Windows and Python 3.12 (python.org, tick "Add python.exe to PATH"). No Node - the Gantt bundle is committed.
+Prerequisites: Git for Windows and Python 3.12 (python.org, tick "Add python.exe to PATH"). No Node - the Gantt bundle is committed. No GitHub account - the code repo is public.
 
 ```powershell
 git clone --branch main https://github.com/spartacus242/Plant_Scheduler.git "$env:USERPROFILE\Flowstate\Plant_Scheduler"
 cd "$env:USERPROFILE\Flowstate\Plant_Scheduler"
-powershell -ExecutionPolicy Bypass -File .\scripts\install_flowstate.ps1 -LiveData
+powershell -ExecutionPolicy Bypass -File .\scripts\install_flowstate.ps1 -FeedDir "C:\Users\<user>\Flowstate\fs_data\fs_vif;C:\Users\<user>\Flowstate\fs_data\fs_manual"
 ```
 
-The script creates `.venv`, installs `requirements.txt`, puts the **Flowstate** shortcut on the Desktop and, with `-LiveData`, sets up the live-data pull bridge for this PC (per-machine paths in `scripts\fs-live-data.local.json`, a first pull, and a Task Scheduler entry every 30 min). The first pull opens a GitHub sign-in for the private `flowstate-live-data` repo. Re-run the same command later to update to the latest `main`.
+The script creates `.venv`, installs `requirements.txt`, puts the **Flowstate** shortcut on the Desktop and sets up the live data for this PC, one of:
+
+- **`-FeedDir <folder>`** - a PC on the work network. The plant files are copied from the drop folders into `data\reference` every 5 min (Task Scheduler entry "Flowstate Live Data Pull"). Since 2026-09-15 the drop is two folders, separated with `;`: `fs_data\fs_vif` (the ERP's own exports) and `fs_data\fs_manual` (files people maintain) - see `docs/vif_exports.md` for every file. The folders are only ever **read** - no lock, marker, rename or delete - so the ERP and other people keep using them untouched; read permission is all the account needs. The one exception is `fs_manual\demand_plan_summary.csv`, which the sync rebuilds from the weekly AZAP workbook (`New Export AZAP MMDDYY.xlsx`) unless the summary was built from that workbook or is a hand edit newer than every AZAP workbook in the folder (a workbook that yields 0 rows, or under half the current rows, is refused and the previous summary kept; rebuild by hand with `.venv\Scripts\python.exe scripts\azap_demand_summary.py`, which reads the folders from this install's `source_dirs`, or with `--folder <fs_manual>` anywhere else). It can be a file share (use the UNC path `\\server\share\...`, not a mapped drive letter) or a SharePoint library synced by OneDrive: sync the library on the planner's PC, right-click it and tick *Always keep on this device*, then point `-FeedDir` at the local folder, e.g. `C:\Users\<planner>\GROUPE BEL\NPA_ContinuousImprovement - Documents\VIF Extracts` (the ERP's exports land there every evening).
+- **`-LiveData`** - a PC off the work network (the dev laptop). The same files come through the private `flowstate-live-data` GitHub repo every 30 min; the first pull opens a GitHub sign-in.
+
+Per-machine settings land in the git-ignored `scripts\fs-live-data.local.json`. Home shows the last pass under **Live data sync**, and the calendar's **Rebuild from plant state** syncs first. Re-run the same command later to update to the latest `main`.
 
 When editing frontend Gantt source, rebuild:
 

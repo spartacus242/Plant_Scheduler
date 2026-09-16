@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -52,6 +53,7 @@ DEFAULT_CADENCE_H: dict[str, float] = {
     "calendar": 24.0,       # the schedule of record should be touched daily
     "open_pos": 26.0,       # IT's open-PO extract, daily with the VIF job
     "receiving": 168.0,     # weekly dock-appointment xlsm (packaging only)
+    "live_sync": 1.0,       # heartbeat of scripts/fs-live-pull.py (folder or GitHub mode)
 }
 
 
@@ -93,6 +95,40 @@ def _fmt_age(age_h: float | None) -> str:
     if age_h < 24:
         return f"{age_h:.1f} h"
     return f"{age_h / 24:.1f} days"
+
+
+# (path, mtime_ns, size) of the BOM export -> missing semi-finished recipes;
+# the BOM parse costs about a second, so it is paid once per file version.
+_MISSING_RECIPES_MEMO: dict[tuple, list[str]] = {}
+
+
+def _vif_missing_recipes(vif_anchor: Path) -> list[str]:
+    """Semi-finished activities the VIF folder's BOM export references
+    without a recipe (2026-09-16). Cheap by construction: nothing is read
+    when "ediact 4.csv" (the semi-finished recipes) sits beside the BOM
+    export; otherwise the BOM frame is loaded once per file version and
+    handed to vif_import.missing_semi_recipes. Never raises: a loader
+    without the helper, an unreadable export or any error reads as [] —
+    health must not crash on the stock check's data."""
+    try:
+        from stockcheck import vif_import as vi
+        fn = getattr(vi, "missing_semi_recipes", None)
+        if fn is None:
+            return []
+        bom = vi.find_bom_file(Path(vif_anchor).parent)
+        if bom is None:
+            return []
+        if (bom.parent / getattr(vi, "HSM_FILE", "ediact 4.csv")).is_file():
+            return []
+        st = bom.stat()
+        key = (str(bom.resolve()), st.st_mtime_ns, st.st_size)
+        if key not in _MISSING_RECIPES_MEMO:
+            frames = {"ediact 3.csv": vi.load_ediact(bom)}
+            _MISSING_RECIPES_MEMO.clear()
+            _MISSING_RECIPES_MEMO[key] = sorted(str(x) for x in (fn(frames) or []))
+        return list(_MISSING_RECIPES_MEMO[key])
+    except Exception:  # noqa: BLE001 — a warn row, never a crash
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -148,10 +184,62 @@ def _catalog_statuses(dd: Path) -> list[HealthStatus]:
 # Live feed freshness
 # ---------------------------------------------------------------------------
 
+def _live_sync_status(dd: Path, cadence: dict) -> HealthStatus:
+    """The bridge's heartbeat. scripts/fs-live-pull.py writes data/reference/
+    live_sync.json after EVERY pass (folder mode on the planner's PC, GitHub
+    mode on the dev PC). No file = the sync has never run on this machine
+    (files copied in by hand): not a finding. A pass that reported problems,
+    or a heartbeat older than the cadence, is a warning — the feed rows below
+    say which files are actually old, so this row never blocks on its own."""
+    p = reference_dir(dd) / "live_sync.json"
+    if not p.is_file():
+        return HealthStatus(
+            key="live_sync", name="Live data sync", state=NOT_APPLICABLE,
+            detail="No sync has run on this machine (scripts/fs-live-pull.py); "
+                   "the feed files are whatever was copied in by hand.",
+            source="live_feed")
+    try:
+        meta = json.loads(p.read_text(encoding="utf-8"))
+        finished = datetime.fromisoformat(str(meta.get("finished")))
+    except (OSError, ValueError, TypeError):
+        return HealthStatus(
+            key="live_sync", name="Live data sync", state=STALE,
+            detail="live_sync.json is unreadable.",
+            actions=("Run scripts/fs-live-pull.py --once and read its output",),
+            source="live_feed")
+    age = (datetime.now() - finished).total_seconds() / 3600.0
+    mode = str(meta.get("mode") or "?")
+    sources = [str(x) for x in (meta.get("sources") or [])]
+    where = ("folder " + "; ".join(sources)) if mode == "folder" else "GitHub bridge"
+    problems = [str(x) for x in (meta.get("problems") or [])]
+    updated = [str(x) for x in (meta.get("updated") or [])]
+    limit = float(cadence.get("live_sync", 1.0))
+    if problems or not meta.get("ok", True):
+        state = STALE
+        detail = (f"Last sync ({where}) {_fmt_age(age)} ago reported problems: "
+                  + "; ".join(problems[:3]) + ".")
+        actions = ("Check that the source folder is reachable and readable, "
+                   "then run scripts/fs-live-pull.py --once",)
+    elif age > limit:
+        state = STALE
+        detail = (f"Last sync ({where}) finished {_fmt_age(age)} ago; expected every "
+                  f"{limit:g} h or less. Is the scheduled task 'Flowstate Live Data Pull' running?")
+        actions = ("Open Task Scheduler and run 'Flowstate Live Data Pull', "
+                   "or run scripts/fs-live-pull.py --once",)
+    else:
+        state = OK
+        what = ((f"updated {', '.join(updated[:4])}" + ("…" if len(updated) > 4 else ""))
+                if updated else "nothing new")
+        detail = f"Last sync ({where}) finished {_fmt_age(age)} ago: {what}."
+        actions = ()
+    return HealthStatus(key="live_sync", name="Live data sync", state=state, detail=detail,
+                        actions=actions, cadence_h=limit, age_h=age, source="live_feed")
+
+
 def _live_feed_statuses(dd: Path, cfg: dict) -> list[HealthStatus]:
     ds = cfg.get("datasources", {})
     cadence = {**DEFAULT_CADENCE_H, **cfg.get("health", {}).get("cadence_h", {})}
-    out: list[HealthStatus] = []
+    out: list[HealthStatus] = [_live_sync_status(dd, cadence)]
 
     manprg_paths = [p.strip() for p in str(ds.get("manprg_files", "")).split(";")
                     if p.strip()] or [
@@ -242,13 +330,16 @@ def _live_feed_statuses(dd: Path, cfg: dict) -> list[HealthStatus]:
         ))
 
     # VIF exports for the stock check (P1 live link, landed 2026-08-14 via the
-    # bridge). "ediact 3.csv" anchors the set — the engine cannot run without
-    # it, so its age speaks for all six files + the receiving xlsm. Dev
+    # bridge). The BOM export anchors the set — ediact.csv since the ERP drop
+    # of 2026-09-15, the legacy "ediact 3.csv" before it (one rule:
+    # stock_report_cache.find_bom_file) — the engine cannot run without it,
+    # so its age speaks for every VIF file + the receiving xlsm. Dev
     # fixtures under data/stockcheck/dev_vif keep the page usable without the
     # live link, so their presence downgrades MISSING to STALE (warn).
-    vif_anchor = reference_dir(dd) / "ediact 3.csv"
-    if not vif_anchor.exists():
-        dev_ok = (dd / "stockcheck" / "dev_vif" / "ediact 3.csv").exists()
+    from helpers.stock_report_cache import find_bom_file
+    vif_anchor = find_bom_file(reference_dir(dd))
+    if vif_anchor is None:
+        dev_ok = find_bom_file(dd / "stockcheck" / "dev_vif") is not None
         out.append(HealthStatus(
             key="vif_stock",
             name="VIF exports (stock check)",
@@ -263,13 +354,27 @@ def _live_feed_statuses(dd: Path, cfg: dict) -> list[HealthStatus]:
     else:
         age = _age_h(vif_anchor)
         stale = age is not None and age > cadence.get("vif", 26.0)
+        # (2026-09-16) the ediact.csv export carries no semi-finished recipes
+        # (24 of the 27 "ediact 4.csv" activities absent): without that file
+        # the stock check grades intermediates as unstocked leaves. A warn,
+        # never blocking — the report still runs.
+        missing = _vif_missing_recipes(vif_anchor)
+        detail = (f"VIF exports last refreshed {_fmt_age(age)} ago."
+                  if age is not None else "VIF exports present (age unknown).")
+        detail += (f" Expected refresh ≤ {cadence.get('vif', 26.0):g} h." if stale else "")
+        actions: tuple[str, ...] = (
+            ("Refresh the VIF export push from the work PC",) if stale else ())
+        if missing:
+            detail += (f" {len(missing)} semi-finished recipe(s) missing from "
+                       f"{vif_anchor.name} ({', '.join(missing[:3])}"
+                       f"{', …' if len(missing) > 3 else ''}) — add ediact 4.csv "
+                       "(semi-finished recipes) to the VIF folder.")
+            actions += ("Add ediact 4.csv (semi-finished recipes) to the VIF folder",)
         out.append(HealthStatus(
             key="vif_stock", name="VIF exports (stock check)",
-            state=STALE if stale else OK,
-            detail=(f"VIF exports last refreshed {_fmt_age(age)} ago."
-                    if age is not None else "VIF exports present (age unknown).")
-            + (f" Expected refresh ≤ {cadence.get('vif', 26.0):g} h." if stale else ""),
-            actions=("Refresh the VIF export push from the work PC",) if stale else (),
+            state=STALE if (stale or missing) else OK,
+            detail=detail,
+            actions=actions,
             cadence_h=cadence.get("vif"), age_h=age,
             source="live_feed",
         ))

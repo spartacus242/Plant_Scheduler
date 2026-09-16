@@ -3,9 +3,13 @@
 
 The planning agent's loop (charter end-state, dry-run series):
   1. situational input  : reconcile_engine findings + live stock report
-  2. approved policies  : trim component-blocked (DNS) demand in the SOLVER'S
-                          work-dir copy (helpers.agent_policy, user-approved
-                          2026-08-14) — data/reference is never touched
+  2. approved policies  : the stock policy on the SOLVER'S work-dir demand
+                          copy (helpers.agent_policy.apply_stock_policy:
+                          per-order caps from the time-phased projection,
+                          earliest-start floors after a receipt — slice 3,
+                          2026-09-15; flat DNS trim as the fallback,
+                          user-approved 2026-08-14) — data/reference is
+                          never touched
   3. action             : Scenario E (current state + demand) via
                           scenario_runner, with every input mutation logged
   4. output             : a named sandbox version whose notes carry the
@@ -29,7 +33,7 @@ sys.path.insert(0, str(ROOT / "code"))
 
 import pandas as pd  # noqa: E402
 
-from helpers.agent_policy import dns_ratios, trim_dns_demand  # noqa: E402
+from helpers.agent_policy import apply_stock_policy  # noqa: E402
 from helpers.calendar_io import load_calendar  # noqa: E402
 from helpers.reconcile_engine import BLOCKING, assess_plan, summary  # noqa: E402
 from helpers.scenario_runner import SCENARIOS, run_scenario  # noqa: E402
@@ -57,19 +61,16 @@ def main() -> int:
     stock = stock_check_report(DATA, DATA / "reference")
     findings = assess_plan(DATA, stock_report=stock)
     counts = summary(findings)
-    dns = dns_ratios(stock)
 
     # ── 2+3. approved policy inside the agent seam, then solve ──────────
     policy_notes: list[str] = []
+    policy: dict = {"res": None}
 
     def patch(work: Path) -> list[str]:
-        dem_path = work / "demand_plan.csv"
-        dem = pd.read_csv(dem_path, dtype={"sku": str})
-        trimmed, notes = trim_dns_demand(dem, dns)
-        trimmed.to_csv(dem_path, index=False)
-        policy_notes.extend(notes)
-        return [f"DNS trim: {len(notes)} order(s) adjusted "
-                f"({len(dns)} component-blocked SKU(s))"] + notes[:5]
+        res = apply_stock_policy(work, stock)
+        policy["res"] = res
+        policy_notes.extend(res.notes[1:])
+        return res.notes[:6]
 
     scenario = next(s for s in SCENARIOS if s["id"] == args.scenario.upper())
     result = run_scenario(scenario, DATA, time_limit=args.time_limit,
@@ -85,8 +86,10 @@ def main() -> int:
     staging_line = (result.get("log") or "").split("\n", 1)[0][:1500]
 
     # ── 4a. post-solve stock cross-check (belt and braces) ──────────────
+    res = policy["res"]
+    capped_skus = set(res.capped_skus) if res is not None else set()
     prod = proposal[proposal["block_type"] == "production"]
-    flagged = prod[prod["sku"].astype(str).isin(dns)]
+    flagged = prod[prod["sku"].astype(str).isin(capped_skus)]
     flagged_kg = float(pd.to_numeric(flagged["qty_kg"], errors="coerce")
                        .fillna(0).sum())
 
@@ -100,9 +103,10 @@ def main() -> int:
         f"relax level {result.get('relax_level')}.",
         f"Situational input: {counts.get(BLOCKING, 0)} blocking finding(s) "
         f"on the official board at solve time.",
-        ("APPROVED POLICY — component-blocked demand trimmed in the solver's "
-         f"input copy ({len(policy_notes)} order(s), {len(dns)} SKU(s)): "
-         "qty_min→0, qty_max capped at the stock-achievable ratio. "
+        ("APPROVED POLICY — " + (res.summary() if res is not None else "stock policy")
+         + f" in the solver's input copy ({len(policy_notes)} order(s) touched, "
+         f"{len(capped_skus)} SKU(s)): qty_min→0, qty_max capped at what the "
+         "components support, earliest start after a receipt + buffer. "
          "Details:\n  " + "\n  ".join(policy_notes))
         if policy_notes else "No component-blocked demand this run.",
         (f"Post-solve stock cross-check: {len(flagged)} block(s) / "
@@ -138,6 +142,8 @@ def main() -> int:
         "dns_orders_trimmed": len(policy_notes),
         "dns_blocks_in_proposal": int(len(flagged)),
         "dns_kg_in_proposal": flagged_kg,
+        "stock_policy_mode": res.mode if res is not None else "off",
+        "stock_policy_floors": res.n_floors if res is not None else 0,
     }
     # Fill-window verdict (Scenario F): the committed layer cancels out —
     # this is the honest headline for an F proposal (see Compare page).

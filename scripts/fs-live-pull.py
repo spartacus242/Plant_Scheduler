@@ -1,22 +1,45 @@
 #!/usr/bin/env python3
-"""Flowstate live-data PULL script — run on the PERSONAL computer (Hermes).
+"""Flowstate live-data PULL / SYNC script — the side that feeds data/reference.
 
-Pulls the latest plant data from the private `flowstate-live-data` GitHub repo
-into the local clone, then copies any changed files into the tool's
-data/reference/ directory. Read-only with respect to GitHub (pull only, never
-pushes). Safe to run on a cron cadence: skips cleanly when nothing changed.
+Two sources, one behaviour (copy changed files into data/reference/, re-derive
+demand_plan.csv when the summary changed, stamp the manprg as-of, write the
+live_sync.json heartbeat the app's health page reads):
+
+  GitHub mode  (dev PC, off the work network): pull the private
+               `flowstate-live-data` repo into a local clone, copy from there.
+  Folder mode  (planner's PC on the work network, 2026-09-14): copy straight
+               from the folder(s) the ERP drops its exports into — set
+               "source_dirs" in the git-ignored fs-live-data.local.json
+               (install_flowstate.ps1 -FeedDir writes it) or pass --source-dir.
+               The folders are only ever READ: no lock, marker, rename or
+               delete, so other people and the ERP keep using them untouched.
+               ONE exception (2026-09-15): the folder that holds the planners'
+               weekly "New Export AZAP MMDDYY.xlsx" (fs_manual) gets ONE file
+               written into it — demand_plan_summary.csv, rebuilt from that
+               workbook by helpers/azap_demand.refresh_demand_summary unless
+               the csv is up to date with it. Nothing else is
+               ever written to a source folder.
+
+Read-only towards every source (bar that one csv). Safe on a schedule: a pass
+with nothing new changes nothing. Exit code 1 when a pass failed or reported problems (a share
+that is not reachable, a file that could not be read), so the Task Scheduler
+"Last Run Result" and the installer's first sync both see it.
 
 Usage:
-    python fs-live-pull.py            # one pass
-    python fs-live-pull.py --watch 900   # loop every 15 min
+    python fs-live-pull.py --once                 # one pass, conf decides the mode
+    python fs-live-pull.py --watch 900            # loop every 15 min
+    python fs-live-pull.py --once --source-dir "\\\\server\\share\\erp_out"   # folder mode, ad hoc
 """
 import argparse
 import hashlib
 import json
+import os
 import shutil
+import stat
 import subprocess
 import sys
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 CONF = Path(__file__).resolve().parent / "fs-live-data.conf.json"
@@ -35,6 +58,28 @@ def load_conf():
         with open(LOCAL_CONF, encoding="utf-8-sig") as f:
             conf.update(json.load(f))
     return conf
+
+
+# ── source folders (folder mode) ─────────────────────────────────────────────
+# "source_dirs" (list) or "source_dir" (string) in the conf switches the pass
+# to folder mode: files are copied from those folders instead of from a clone
+# of the GitHub repo. Several folders may be listed (the ERP drop folder plus
+# a planning folder, say); a file present in more than one is taken from
+# wherever it is newest. A folder that is not reachable right now costs the
+# pass a problem entry, never a crash: the others still sync.
+SETTLE_SECONDS_DEFAULT = 60   # a file modified this recently may still be being written
+SYNC_STATE_NAME = "live_sync.json"   # heartbeat written into data/reference after every pass
+
+
+def source_dirs(conf: dict) -> list[Path]:
+    raw = conf.get("source_dirs")
+    if not raw:
+        raw = conf.get("source_dir") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [Path(p.strip()) for p in raw if isinstance(p, str) and p.strip()]
 
 # Glob entries in conf["files"]: "<glob> -> <dest name>". IT's open-PO export
 # carries a date in its name ("NPA Open POs -8.24.xlsx"), so a fixed conf
@@ -79,6 +124,44 @@ def resolve_entries(entries, src_dir):
             order.append(dest)
         if prev is None or src.stat().st_mtime > prev.stat().st_mtime:
             picked[dest] = src
+    return [(picked[d], d) for d in order]
+
+
+def _entry_dest(entry) -> str | None:
+    """Destination name a conf entry copies under (None for a bad entry)."""
+    if not isinstance(entry, str):
+        return None
+    if GLOB_SEP in entry:
+        dest = entry.split(GLOB_SEP, 1)[1].strip()
+        return dest or None
+    return entry
+
+
+def resolve_entries_multi(entries, src_dirs) -> list[tuple[Path, str]]:
+    """resolve_entries over several source folders, merged newest-source-wins
+    per destination name, in conf order. An unreachable folder contributes
+    nothing (the caller reports it); a stat that fails mid-way drops only
+    that candidate."""
+    picked: dict[str, Path] = {}
+    for d in src_dirs:
+        d = Path(d)
+        try:
+            if not d.is_dir():
+                continue
+        except OSError:
+            continue
+        for src, dest in resolve_entries(entries, d):
+            try:
+                prev = picked.get(dest)
+                if prev is None or src.stat().st_mtime > prev.stat().st_mtime:
+                    picked[dest] = src
+            except OSError:
+                continue
+    order: list[str] = []
+    for e in entries:
+        dest = _entry_dest(e)
+        if dest in picked and dest not in order:
+            order.append(dest)
     return [(picked[d], d) for d in order]
 
 
@@ -138,6 +221,27 @@ def manprg_observation_time(clone: Path) -> str | None:
     return best
 
 
+def manprg_source_asof(src_dirs) -> str | None:
+    """Folder mode: newest manprg file mtime across the source folders as
+    local naive ISO. The ERP wrote the file at that moment — the closest
+    thing to the observation time (git author time plays that role in
+    GitHub mode). None when no manprg file is reachable."""
+    best: float | None = None
+    for d in src_dirs:
+        for name in MANPRG_FILES:
+            p = Path(d) / name
+            try:
+                if p.is_file():
+                    m = p.stat().st_mtime
+                    if best is None or m > best:
+                        best = m
+            except OSError:
+                continue
+    if best is None:
+        return None
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(best))
+
+
 def stamp_manprg_asof(ref_dir: Path, updated: list[str], *,
                       as_of: str | None = None, head: str | None = None,
                       ) -> bool:
@@ -180,94 +284,327 @@ def ensure_clone(conf: dict) -> Path:
     return clone
 
 
-def pull_once(conf: dict) -> list[str]:
-    """git pull, then copy changed files into data/reference. Returns names."""
-    clone = ensure_clone(conf)
-    git(clone, "fetch", conf["remote"], conf["branch"])
-    before = git(clone, "rev-parse", "HEAD").stdout.strip()
-    git(clone, "pull", "--ff-only", conf["remote"], conf["branch"])
-    after = git(clone, "rev-parse", "HEAD").stdout.strip()
+@dataclass
+class SyncResult:
+    """What one pass did. `problems` are failures the planner should see
+    (unreachable folder, unreadable file, derive failure); `skipped` are
+    files left for the next pass on purpose (still being written)."""
+    mode: str                                   # "folder" | "github"
+    sources: list[str]
+    updated: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+    problems: list[str] = field(default_factory=list)
+    head: str | None = None                     # github mode: new HEAD when it advanced
 
+    @property
+    def ok(self) -> bool:
+        return not self.problems
+
+
+def _replace_with_retry(tmp: Path, dst: Path, attempts: int = 5, pause_s: float = 0.2) -> None:
+    """os.replace, retried briefly: on Windows the swap is refused while the
+    app happens to hold the old copy open for reading (milliseconds), and a
+    refused swap must not leave the stale copy in place for a whole pass."""
+    for i in range(attempts):
+        try:
+            os.replace(tmp, dst)
+            return
+        except PermissionError:
+            if i == attempts - 1:
+                raise
+            time.sleep(pause_s)
+
+
+def copy_into_reference(pairs, ref_dir: Path, *, settle_seconds: float = 0.0,
+                        ) -> tuple[list[str], list[str], list[str]]:
+    """Copy each (src, dest_name) into ref_dir when its bytes differ.
+
+    Returns (updated, skipped, problems). One busy or unreadable file costs
+    only itself — a sharing violation on one export used to end the whole
+    pass. With settle_seconds > 0 a source modified that recently is left
+    for the next pass (an export may still be being written), and so is a
+    file whose size or mtime moves while it is read. The local copy is
+    written to a temp name and swapped in, so the app never reads a half
+    copied file; the source mtime is kept because the health page ages
+    files by it."""
+    ref_dir = Path(ref_dir)
+    updated: list[str] = []
+    skipped: list[str] = []
+    problems: list[str] = []
+    for src, fname in pairs:
+        dst = ref_dir / fname
+        try:
+            st0 = src.stat()
+            age = time.time() - st0.st_mtime
+            if settle_seconds and abs(age) < settle_seconds:
+                skipped.append(f"{fname} (modified {age:.0f}s ago, settling)")
+                continue
+            data = src.read_bytes()
+            st1 = src.stat()
+            if (st1.st_mtime, st1.st_size) != (st0.st_mtime, st0.st_size):
+                skipped.append(f"{fname} (changed while reading)")
+                continue
+            if dst.exists() and data == dst.read_bytes():
+                continue
+            tmp = dst.with_name(dst.name + ".tmp")
+            tmp.write_bytes(data)
+            os.utime(tmp, ns=(st0.st_atime_ns, st0.st_mtime_ns))
+            if dst.exists():
+                try:
+                    os.chmod(dst, stat.S_IWRITE | stat.S_IREAD)  # a read-only copy blocks the swap on Windows
+                except OSError:
+                    pass
+            _replace_with_retry(tmp, dst)
+            updated.append(fname)
+        except OSError as exc:
+            problems.append(f"{fname}: {exc}")
+    return updated, skipped, problems
+
+
+def derive_demand_plan(ref_dir: Path) -> None:
+    """demand_plan.csv is DERIVED, never copied: it is the summary exploded
+    into per-week orders with due windows in the file's own anchor frame
+    (staging re-bases at solve time). It used to be a manual Data-page
+    import, which is how it sat 4 days stale while the summary refreshed
+    underneath it (found 2026-08-15). Re-derive whenever the summary lands."""
+    code_dir = Path(__file__).resolve().parent.parent / "code"
+    if str(code_dir) not in sys.path:
+        sys.path.insert(0, str(code_dir))
+    from helpers.demand_summary_import import import_summary
+
+    dem, meta = import_summary(ref_dir / "demand_plan_summary.csv")
+    dem.to_csv(ref_dir / "demand_plan.csv", index=False)
+    (ref_dir / "demand_plan.source.json").write_text(json.dumps({
+        "source": "demand_plan_summary.csv",
+        "imported": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "rows": meta.rows,
+        "weeks": [int(w) for w in meta.weeks],
+        "skus": len(meta.skus),
+        "anchor": meta.anchor.strftime("%Y-%m-%d %H:%M:%S")
+        if meta.anchor else None,
+        "anchor_iso_week": meta.anchor_iso_week,
+    }, indent=2), encoding="utf-8")
+
+
+def refresh_demand_summaries(src_dirs, res: SyncResult, *,
+                             settle_seconds: float = 0.0) -> None:
+    """Folder mode (2026-09-15): the planners drop the weekly AZAP workbook
+    ("New Export AZAP MMDDYY.xlsx", ~14 MB) into fs_manual instead of cutting
+    demand_plan_summary.csv from it by hand. For every source folder that
+    holds such a workbook, rebuild the folder's demand_plan_summary.csv
+    unless it is up to date with it (helpers/azap_demand), BEFORE
+    the copy step so the same pass carries it into data/reference and
+    re-derives demand_plan.csv. This is the ONE file the sync ever writes
+    into a source folder. A workbook modified less than settle_seconds ago
+    may still be being copied in: it waits a pass, like any source file.
+    Never raises: a failure is a problem entry, the rest of the pass runs.
+
+    2026-09-16: a build the helper refuses to write (0 rows, or under half
+    the rows of the csv it would replace) raises ValueError, so it lands in
+    `problems` on EVERY pass while the previous csv survives. A window taken
+    from the workbook's mtime (no MMDDYY in the name) is not a problem but a
+    warning: it rides on the "(built from ...)" note, which the heartbeat
+    readers treat as a note and Home's sync row shows, and goes to stderr —
+    and on EVERY later pass that keeps the csv built from that workbook it
+    rides on an "(unchanged, from ...)" note, so it never drops off Home
+    after one pass. A workbook the ranking passes over although it was
+    saved after the one in use (helpers/azap_demand.passed_over_workbooks)
+    is reported on every pass too: a doubtful name date (a year typo) under
+    `problems`, anything else (an AutoSave on last week's export) as a
+    "(NOTE: ...)" entry."""
+    code_dir = Path(__file__).resolve().parent.parent / "code"
+    if str(code_dir) not in sys.path:
+        sys.path.insert(0, str(code_dir))
+    try:
+        from helpers.azap_demand import (export_date_warning, find_azap_workbook,
+                                         passed_over_workbooks, refresh_demand_summary,
+                                         workbook_date_warning)
+    except Exception as exc:  # noqa: BLE001 — a missing helper/openpyxl must not end the pass
+        res.problems.append(f"demand_plan_summary.csv from AZAP workbook: helper unavailable ({exc})")
+        return
+    for d in src_dirs:
+        wb = find_azap_workbook(d)
+        if wb is None:
+            continue
+        for item in passed_over_workbooks(d, wb, settle_seconds=settle_seconds):
+            if item["problem"]:
+                print(f"[warn] {item['message']}", file=sys.stderr)
+                res.problems.append(f"demand_plan_summary.csv: {item['message']}")
+            else:
+                res.updated.append(f"demand_plan_summary.csv (NOTE: {item['message']})")
+        try:
+            age = time.time() - wb.stat().st_mtime
+            if settle_seconds and abs(age) < settle_seconds:
+                res.skipped.append(f"{wb.name} (modified {age:.0f}s ago, settling)")
+                continue
+            out = refresh_demand_summary(d)
+        except Exception as exc:  # noqa: BLE001 — the pass must not die on this
+            print(f"[warn] demand_plan_summary.csv build from {wb.name} failed: {exc}",
+                  file=sys.stderr)
+            res.problems.append(f"demand_plan_summary.csv from {wb.name}: {exc}")
+            continue
+        if out.get("ran"):
+            warning = export_date_warning(out.get("meta"))
+            if warning:
+                print(f"[warn] {warning}", file=sys.stderr)
+                res.updated.append(f"demand_plan_summary.csv (built from {wb.name}; "
+                                   f"WARNING: {warning})")
+            else:
+                res.updated.append(f"demand_plan_summary.csv (built from {wb.name})")
+        elif out.get("from_workbook"):
+            # the csv in use still comes from an undated workbook: say so every pass
+            warning = workbook_date_warning(wb)
+            if warning:
+                res.updated.append(f"demand_plan_summary.csv (unchanged, from {wb.name}; "
+                                   f"WARNING: {warning})")
+
+
+def write_sync_state(ref_dir: Path, result: SyncResult | None, *,
+                     error: str | None = None) -> Path:
+    """Heartbeat for the app (helpers/data_health row "live_sync"): what ran,
+    from where, when it finished, what changed, what went wrong. Written
+    after EVERY pass, including a failed one, so a silent scheduled task
+    and a broken share both show up as age or as problems."""
+    ref_dir = Path(ref_dir)
+    ref_dir.mkdir(parents=True, exist_ok=True)
+    problems = list(result.problems) if result else []
+    if error:
+        problems.append(error)
+    body = {
+        "mode": result.mode if result else None,
+        "sources": list(result.sources) if result else [],
+        "finished": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "ok": not problems,
+        "updated": list(result.updated) if result else [],
+        "skipped": list(result.skipped) if result else [],
+        "problems": problems,
+        "head": result.head if result else None,
+    }
+    out = ref_dir / SYNC_STATE_NAME
+    tmp = out.with_name(out.name + ".tmp")
+    tmp.write_text(json.dumps(body, indent=2), encoding="utf-8")
+    os.replace(tmp, out)
+    return out
+
+
+def pull_once(conf: dict) -> SyncResult:
+    """One pass. Folder mode when the conf names source folders, else the
+    GitHub clone. Copies changed files into data/reference, re-derives
+    demand_plan.csv when the summary changed, stamps the manprg as-of and
+    writes the live_sync.json heartbeat."""
     ref_dir = Path(conf["data_reference_dir"])
     ref_dir.mkdir(parents=True, exist_ok=True)
-    updated: list[str] = []
+    dirs = source_dirs(conf)
+    if dirs:
+        res = SyncResult(mode="folder", sources=[str(d) for d in dirs])
+        for d in dirs:
+            try:
+                reachable = d.is_dir()
+            except OSError:
+                reachable = False
+            if not reachable:
+                res.problems.append(f"source folder not reachable: {d}")
+        settle = conf.get("settle_seconds", SETTLE_SECONDS_DEFAULT)
+        try:
+            settle = float(settle or 0)
+        except (TypeError, ValueError):
+            settle = float(SETTLE_SECONDS_DEFAULT)
+        # the AZAP workbook -> demand_plan_summary.csv in its own folder,
+        # before the copy so this pass picks the rebuilt csv up
+        refresh_demand_summaries(dirs, res, settle_seconds=settle)
+        pairs = resolve_entries_multi(conf["files"], dirs)
+        upd, skp, prb = copy_into_reference(pairs, ref_dir, settle_seconds=settle)
+        as_of, stamp_head = manprg_source_asof(dirs), None
+    else:
+        clone = ensure_clone(conf)
+        git(clone, "fetch", conf["remote"], conf["branch"])
+        before = git(clone, "rev-parse", "HEAD").stdout.strip()
+        git(clone, "pull", "--ff-only", conf["remote"], conf["branch"])
+        after = git(clone, "rev-parse", "HEAD").stdout.strip()
+        res = SyncResult(mode="github", sources=[str(conf.get("repo_url", "")), str(clone)],
+                         head=after[:7] if after and after != before else None)
+        upd, skp, prb = copy_into_reference(resolve_entries(conf["files"], clone), ref_dir)
+        as_of, stamp_head = manprg_observation_time(clone), after[:7]
     # downtimes.csv is deliberately NOT in conf["files"] (removed 2026-08-21):
     # it is planner-owned wall-clock data edited ONLY in the app's Start-of-day
     # downtime strip (helpers/downtime_ui.py). Pulling it from the live repo
     # clobbered the planner's edits with the plant feed's stale copy.
-    for src, fname in resolve_entries(conf["files"], clone):
-        dst = ref_dir / fname
-        if dst.exists() and src.read_bytes() == dst.read_bytes():
-            continue
-        shutil.copy2(src, dst)
-        updated.append(fname)
+    res.updated.extend(upd)
+    res.skipped.extend(skp)
+    res.problems.extend(prb)
 
-    # demand_plan.csv is DERIVED, never pulled: it is the summary exploded
-    # into per-week orders with due windows in the file's own anchor frame
-    # (staging re-bases at solve time). It used to be a manual Data-page
-    # import, which is how it sat 4 days stale while the summary refreshed
-    # underneath it (found 2026-08-15). Re-derive whenever the summary lands.
-    if "demand_plan_summary.csv" in updated:
+    if "demand_plan_summary.csv" in res.updated:
         try:
-            code_dir = Path(__file__).resolve().parent.parent / "code"
-            sys.path.insert(0, str(code_dir))
-            from helpers.demand_summary_import import import_summary
-
-            dem, meta = import_summary(ref_dir / "demand_plan_summary.csv")
-            dem.to_csv(ref_dir / "demand_plan.csv", index=False)
-            (ref_dir / "demand_plan.source.json").write_text(json.dumps({
-                "source": "demand_plan_summary.csv",
-                "imported": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                "rows": meta.rows,
-                "weeks": [int(w) for w in meta.weeks],
-                "skus": len(meta.skus),
-                "anchor": meta.anchor.strftime("%Y-%m-%d %H:%M:%S")
-                if meta.anchor else None,
-                "anchor_iso_week": meta.anchor_iso_week,
-            }, indent=2), encoding="utf-8")
-            updated.append("demand_plan.csv (derived)")
-        except Exception as exc:  # noqa: BLE001 — pull must not die on this
+            derive_demand_plan(ref_dir)
+            res.updated.append("demand_plan.csv (derived)")
+        except Exception as exc:  # noqa: BLE001 — the pass must not die on this
             print(f"[warn] demand_plan derive failed: {exc}", file=sys.stderr)
+            res.problems.append(f"demand_plan derive failed: {exc}")
 
     # manprg content changed (or never stamped): record WHEN it was observed
     # so the running-MO re-forecast measures its rate up to that moment, not
     # the page's render clock (audit C01).
     try:
-        if stamp_manprg_asof(ref_dir, updated,
-                             as_of=manprg_observation_time(clone),
-                             head=after[:7]):
-            updated.append(f"{ASOF_STAMP_NAME} (stamped)")
-    except Exception as exc:  # noqa: BLE001 — pull must not die on this
+        if stamp_manprg_asof(ref_dir, res.updated, as_of=as_of, head=stamp_head):
+            res.updated.append(f"{ASOF_STAMP_NAME} (stamped)")
+    except Exception as exc:  # noqa: BLE001 — the pass must not die on this
         print(f"[warn] manprg as-of stamp failed: {exc}", file=sys.stderr)
 
-    # Report new HEAD only if we actually advanced
-    changed = before != after
-    return (updated, after[:7]) if changed else (updated, None)
+    write_sync_state(ref_dir, res)
+    return res
 
 
-def main() -> None:
+def _describe(res: SyncResult) -> str:
+    if res.mode == "folder":
+        where = "synced from " + "; ".join(res.sources)
+    else:
+        where = f"pulled -> {res.head}" if res.head else "github up to date"
+    what = f"updated {', '.join(res.updated)}" if res.updated else "nothing new"
+    msg = f"{where}: {what}"
+    if res.skipped:
+        msg += " | left for next pass: " + "; ".join(res.skipped)
+    if res.problems:
+        msg += " | PROBLEMS: " + "; ".join(res.problems)
+    return msg
+
+
+def main() -> int:
     conf = load_conf()
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--watch", type=int, default=0)
-    ap.add_argument("--once", action="store_true")
+    ap = argparse.ArgumentParser(
+        description="Flowstate live-data sync (GitHub clone or shared folder -> data/reference).")
+    ap.add_argument("--watch", type=int, default=0, metavar="SECONDS",
+                    help="loop with this many seconds between passes (default: one pass)")
+    ap.add_argument("--once", action="store_true",
+                    help="one pass (the default; kept for the scheduled task)")
+    ap.add_argument("--source-dir", action="append", default=None, metavar="FOLDER",
+                    help="folder mode: copy from this folder (repeatable; overrides the conf)")
+    ap.add_argument("--reference-dir", default=None, metavar="FOLDER",
+                    help="where to copy to (default: data_reference_dir from the conf)")
     args = ap.parse_args()
+    if args.source_dir:
+        conf["source_dirs"] = list(args.source_dir)
+    if args.reference_dir:
+        conf["data_reference_dir"] = args.reference_dir
 
+    ok = True
     while True:
+        ts = time.strftime("%H:%M:%S")
         try:
-            updated, head = pull_once(conf)
-            ts = time.strftime("%H:%M:%S")
-            if head:
-                print(f"[{ts}] pulled -> {head}: updated {', '.join(updated) or 'nothing'}", flush=True)
-            elif updated:
-                print(f"[{ts}] data changed in place: {', '.join(updated)}", flush=True)
-            else:
-                print(f"[{ts}] up to date", flush=True)
-        except Exception as e:  # noqa: BLE001
-            print(f"[{ts if 'ts' in dir() else ''}] ERROR: {e}", flush=True)
+            res = pull_once(conf)
+            ok = res.ok
+            print(f"[{ts}] {_describe(res)}", flush=True)
+        except Exception as e:  # noqa: BLE001 — report, keep the loop alive
+            ok = False
+            print(f"[{ts}] ERROR: {e}", flush=True)
+            try:
+                write_sync_state(Path(conf["data_reference_dir"]), None, error=str(e))
+            except Exception:  # noqa: BLE001 — the heartbeat is best effort
+                pass
         if args.watch <= 0 or args.once:
             break
         time.sleep(args.watch)
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

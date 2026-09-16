@@ -31,7 +31,7 @@ from pathlib import Path
 
 CACHE_NAME = "report.cache.json"
 
-# Everything the report reads besides the toggles: the six VIF exports
+# Everything the report reads besides the toggles: the VIF exports
 # (refresh_vif_snapshot's own mtime guard uses the same list), the board
 # (schedule view), the demand plan (demand view), the rates file (kg per
 # block) and the supply-timeline inputs (open-PO file incl. a configured
@@ -39,8 +39,63 @@ CACHE_NAME = "report.cache.json"
 # stockcheck.api.supply_input_paths so cache and report cannot drift). A
 # missing file signs 0.0 — appearing and disappearing both move the
 # signature.
-_VIF_FILES = ("ediact 3.csv", "ediact 4.csv", "jestkexp.csv",
-              "jestkexp2.csv", "azapart.csv", "rmpkitems.csv")
+#
+# The ERP drop of 2026-09-15 replaced "ediact 3.csv" + "ediact 4.csv" with
+# one headerless ediact.csv and added the AMB / QC / apple / semi-finished
+# lot exports plus the packaging receipt slips (PKG-REC.csv). The names come
+# from stockcheck.vif_import.VIF_FILES (the loader owns the list) unioned
+# with the local fallback below, so the signature covers every file whether
+# the loader on this box already knows the new names or not.
+_BOM_FILES_FALLBACK = ("ediact.csv", "ediact 3.csv")
+_VIF_FILES_FALLBACK = (
+    "ediact.csv", "ediact 3.csv", "ediact 4.csv",
+    "jestkexp.csv", "jestkexp2.csv", "jestkamb.csv", "jestkexq.csv",
+    "jestksav.csv", "jestksa.csv", "jestkexp5.csv", "jestkexp4.csv",
+    "PKG-REC.csv", "azapart.csv", "rmpkitems.csv",
+)
+
+
+def vif_file_names() -> tuple[str, ...]:
+    """Every recognised VIF export name, old and new, in a stable order:
+    the loader's VIF_FILES first (when importable), then any fallback name
+    it does not list."""
+    names: list[str] = []
+    try:
+        from stockcheck.vif_import import VIF_FILES
+        names = [str(n) for n in VIF_FILES]
+    except Exception:  # noqa: BLE001 — the loader may be mid-upgrade
+        names = []
+    for n in _VIF_FILES_FALLBACK:
+        if n not in names:
+            names.append(n)
+    return tuple(names)
+
+
+def find_bom_file(folder) -> Path | None:
+    """The BOM export present in `folder`: ediact.csv (the drop of
+    2026-09-15) or the legacy "ediact 3.csv", whichever exists first —
+    vif_import.find_bom_file when the loader exports it, the same rule
+    locally otherwise. None when neither exists. This is the presence
+    anchor every "is the VIF folder live?" check keys on (data_health,
+    reconcile_engine.stock_report_inputs, the Stock Check page)."""
+    try:
+        from stockcheck.vif_import import find_bom_file as _find
+    except Exception:  # noqa: BLE001
+        _find = None
+    if _find is not None:
+        try:
+            hit = _find(folder)
+            return Path(hit) if hit is not None else None
+        except Exception:  # noqa: BLE001 — presence is a yes/no, never a crash
+            pass
+    for name in _BOM_FILES_FALLBACK:
+        p = Path(folder) / name
+        if p.is_file():
+            return p
+    return None
+
+
+_VIF_FILES = vif_file_names()
 
 
 def _mtime(p: Path) -> float:

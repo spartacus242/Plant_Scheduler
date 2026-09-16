@@ -3,6 +3,9 @@
 #
 #   git clone --branch main https://github.com/spartacus242/Plant_Scheduler.git "$env:USERPROFILE\Flowstate\Plant_Scheduler"
 #   cd "$env:USERPROFILE\Flowstate\Plant_Scheduler"
+#   # planner's PC on the work network: live data straight from the ERP's drop folder
+#   powershell -ExecutionPolicy Bypass -File .\scripts\install_flowstate.ps1 -FeedDir "\\server\share\erp_out"
+#   # a PC off the work network (dev laptop): live data through the private GitHub repo
 #   powershell -ExecutionPolicy Bypass -File .\scripts\install_flowstate.ps1 -LiveData
 #
 # What it does (every step skips what is already in place, so re-running the
@@ -10,19 +13,32 @@
 #   1. git fetch + fast-forward the chosen branch (default: main)
 #   2. .venv with Python 3.12 (py launcher, else python on PATH) + requirements.txt
 #   3. Desktop shortcut "Flowstate" (scripts\install_desktop_shortcut.ps1)
-#   4. -LiveData: per-machine paths for the live-data pull bridge
-#      (scripts\fs-live-data.local.json, git-ignored), one first pull (a GitHub
-#      sign-in window may open - the flowstate-live-data repo is private), and
-#      a Task Scheduler entry "Flowstate Live Data Pull" every -PullEveryMinutes.
+#   4. Live data for THIS machine, one of:
+#      -FeedDir   folder mode: scripts\fs-live-pull.py copies the plant files
+#                 from the given folder(s) (several: separate with ';') into
+#                 data\reference. Read-only towards the folder - no lock,
+#                 marker, rename or delete - so the ERP and other people keep
+#                 using it untouched. Needs read permission there; no GitHub
+#                 login at all (the code repo is public). A UNC path, or a
+#                 local folder such as the OneDrive-synced SharePoint library
+#                 "VIF Extracts" the ERP exports into (sync it on this PC and
+#                 tick "Always keep on this device" first).
+#      -LiveData  GitHub mode: pull the private flowstate-live-data repo into
+#                 -LiveClone (a sign-in window may open) and copy from there.
+#      Both write the git-ignored scripts\fs-live-data.local.json, run one
+#      first sync and register the Task Scheduler entry "Flowstate Live Data
+#      Pull" every -PullEveryMinutes (default: 5 in folder mode, 30 in GitHub
+#      mode). The app's Home page shows the last sync under "Live data sync".
 #
 # Prerequisites on the PC: Git for Windows, Python 3.12 (python.org, tick
 # "Add python.exe to PATH"). No Node needed - the Gantt bundle is committed.
 
 param(
     [string]$Branch = "main",
+    [string]$FeedDir = "",
     [switch]$LiveData,
     [string]$LiveClone = (Join-Path $env:USERPROFILE "FlowstateLive"),
-    [int]$PullEveryMinutes = 30,
+    [int]$PullEveryMinutes = 0,
     [switch]$NoShortcut,
     [switch]$NoPip
 )
@@ -32,6 +48,10 @@ $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $RepoRoot
 
 function Step($msg) { Write-Host ""; Write-Host "== $msg" -ForegroundColor Cyan }
+
+if ($LiveData -and $FeedDir) {
+    throw "Use either -FeedDir (shared folder) or -LiveData (GitHub bridge), not both."
+}
 
 # ---------------------------------------------------------------- 0. prerequisites
 Step "Prerequisites"
@@ -98,22 +118,51 @@ if (-not $NoShortcut) {
     if ($LASTEXITCODE -ne 0) { throw "install_desktop_shortcut.ps1 failed" }
 }
 
-# ---------------------------------------------------------------- 4. live-data pull bridge
-if ($LiveData) {
-    Step "Live-data pull bridge"
+# ---------------------------------------------------------------- 4. live data for this machine
+if ($LiveData -or $FeedDir) {
+    Step "Live data for this machine"
     $LocalConf = Join-Path $RepoRoot "scripts\fs-live-data.local.json"
-    $override = @{
-        clone_dir_personal = $LiveClone
-        data_reference_dir = (Join-Path $RepoRoot "data\reference")
+    $override = @{ data_reference_dir = (Join-Path $RepoRoot "data\reference") }
+    if ($FeedDir) {
+        $Mode = "folder"
+        $dirs = @($FeedDir -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        if ($dirs.Count -eq 0) { throw "-FeedDir is empty." }
+        foreach ($d in $dirs) {
+            if (Test-Path -LiteralPath $d -PathType Container) {
+                Write-Host "  source folder : $d"
+            } else {
+                Write-Warning "source folder not reachable right now: $d  (the sync keeps retrying; check the path and read permission)"
+            }
+            if ($d -match '^([A-Za-z]):') {
+                # a local folder (a OneDrive-synced SharePoint library, say) is fine;
+                # only a MAPPED network drive is per-logon and may be invisible to the task
+                $drv = Get-PSDrive -Name $Matches[1] -ErrorAction SilentlyContinue
+                if ($drv -and $drv.DisplayRoot -and ("$($drv.DisplayRoot)" -match '^\\\\')) {
+                    Write-Host "  note: '$d' is on a mapped network drive ($($drv.DisplayRoot)). Drive letters are per-logon; if the scheduled task cannot see it, use the UNC path instead." -ForegroundColor Yellow
+                }
+            }
+        }
+        $override.source_dirs = $dirs
+        if ($PullEveryMinutes -le 0) { $PullEveryMinutes = 5 }
+    } else {
+        $Mode = "github"
+        $override.clone_dir_personal = $LiveClone
+        if ($PullEveryMinutes -le 0) { $PullEveryMinutes = 30 }
     }
     ($override | ConvertTo-Json) | Set-Content -Path $LocalConf -Encoding utf8
-    Write-Host "  wrote $LocalConf"
-    Write-Host "  first pull (a GitHub sign-in window may open: the live-data repo is private) ..."
+    Write-Host "  wrote $LocalConf ($Mode mode)"
+
     $PullScript = Join-Path $RepoRoot "scripts\fs-live-pull.py"
+    if ($Mode -eq "github") {
+        Write-Host "  first pull (a GitHub sign-in window may open: the live-data repo is private) ..."
+    } else {
+        Write-Host "  first sync from the folder ..."
+    }
     & $VenvPy $PullScript --once
     if ($LASTEXITCODE -ne 0) {
-        Write-Warning "first pull failed - fix access to flowstate-live-data, then run: .venv\Scripts\python.exe scripts\fs-live-pull.py --once"
+        Write-Warning "first sync reported problems (see the line above). Fix the source, then run: .venv\Scripts\python.exe scripts\fs-live-pull.py --once"
     }
+
     $TaskName = "Flowstate Live Data Pull"
     $Action = New-ScheduledTaskAction -Execute $VenvPy `
         -Argument "`"$PullScript`" --once" -WorkingDirectory $RepoRoot
@@ -122,9 +171,14 @@ if ($LiveData) {
         -RepetitionDuration ([TimeSpan]::MaxValue)
     $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
         -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 20)
+    if ($Mode -eq "folder") {
+        $What = "the shared folder(s) $($dirs -join '; ')"
+    } else {
+        $What = "the flowstate-live-data GitHub repo"
+    }
     Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings `
-        -Description ("Pulls the plant's live data files into Flowstate's data\reference " +
-                      "every $PullEveryMinutes min (scripts\fs-live-pull.py --once).") -Force | Out-Null
+        -Description ("Copies the plant's live data files from $What into Flowstate's data\reference " +
+                      "every $PullEveryMinutes min (scripts\fs-live-pull.py --once). Read-only towards the source.") -Force | Out-Null
     Write-Host "  registered Task Scheduler entry '$TaskName' (every $PullEveryMinutes min)"
 }
 

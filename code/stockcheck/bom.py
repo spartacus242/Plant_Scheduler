@@ -26,6 +26,17 @@ class RequirementGroup:
     unit: str
     alternates: list[dict] = field(default_factory=list)  # [{item, designation}]
     paths: list[list[str]] = field(default_factory=list)  # activity chains
+    # (2026-09-16) True when the primary looks semi-finished (SEMI_PREFIXES)
+    # but no loaded export carries its recipe: the walker cannot explode
+    # through it, and the group must never gate a SKU — not on its own
+    # stock and not on its tracked alternates (rule of 2026-08-14). See
+    # BomGraph.explode and coverage.coverage_for_requirement.
+    no_recipe: bool = False
+
+
+# Item-code prefixes of house-made semi-finished intermediates — mirrors
+# vif_import.SEMI_PREFIXES (kept local: bom.py imports no loader).
+SEMI_PREFIXES = ("HSM", "RF")
 
 
 @dataclass
@@ -82,10 +93,26 @@ class BomGraph:
             return res
         req: dict[str, RequirementGroup] = {}
         # ediact lists ALL sub-activities under the PF section. Only the FG
-        # activity (code == PF, or PF-variant like '280358-A') is the entry
-        # point — the rest are reachable by recursion from it.
-        entries = sorted(a for a in self._by_pf[sku]
-                         if a == sku or a.startswith(sku + "-"))
+        # activity is the entry point — the rest are reachable by recursion
+        # from it.
+        #
+        # Exact activity wins (2026-09-16): when the activity code == PF
+        # exists it is the ONLY entry. The ediact.csv export of 2026-09-15
+        # files the alternative recipe "280351-DS" (same Output item 280351,
+        # same inputs — an alternate FG route, not an input of 280351) under
+        # PF 280351, where "ediact 3.csv" kept it under its own PF; walking
+        # both at full quantity doubled all 24 requirements of 280351
+        # (752420 0.54912 -> 1.09824 M2 per case) and flipped 280351-W0/W2/W4
+        # to DO_NOT_SCHEDULE. The sku-prefixed variants ('280358-A') are the
+        # entry only when no exact activity exists; several variants with no
+        # exact one are all walked (today's behaviour, kept on purpose —
+        # verified 2026-09-16: no PF of either export generation has more
+        # than one variant without an exact activity).
+        acts = self._by_pf[sku]
+        if sku in acts:
+            entries = [sku]
+        else:
+            entries = sorted(a for a in acts if a.startswith(sku + "-"))
         if not entries:  # no self-activity: fall back to FG-family activity
             entries = sorted(
                 a for a in self._by_pf[sku]
@@ -96,6 +123,16 @@ class BomGraph:
         # Intermediates are produced in-line, never purchased/stocked: their
         # own "need" rows are meaningless once exploded through. Drop them.
         req = {k: g for k, g in req.items() if g.primary_item not in self._by_act}
+        # Recipe-less semi-finished primaries (2026-09-16): with "ediact
+        # 4.csv" absent the filter above cannot drop HSMBT001 / HSM750216,
+        # and their blank-qty alternates (750061 lemon juice; 750145 /
+        # 750221) made the group "tracked" — the real drop read 3 board
+        # blocks AT_RISK and 12 demand orders DO_NOT_SCHEDULE on them.
+        # Flag the group (alternates included) so it never gates a SKU,
+        # the same outcome as the recipe case; it stays listed, NOT_TRACKED.
+        for g in req.values():
+            if str(g.primary_item).strip().upper().startswith(SEMI_PREFIXES):
+                g.no_recipe = True
         res.requirements = sorted(req.values(), key=lambda r: r.primary_item)
         if res.unk_items:
             res.status = "UNK_PARTIAL"

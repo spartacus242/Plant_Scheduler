@@ -340,3 +340,59 @@ Unknown verdict values are ignored (forward-compatible).
 - `focusBlock`: on mount, if set and a block with that id exists → set `highlightSku` to its sku and scroll it into view.
 - Rebuild: `cd code/components/gantt/frontend && npm run build`; commit `dist/`; grep `stockRisk`/`supply` symbols in
   `dist/index.js` before declaring done.
+
+---
+
+## 10. Slice 3 — solver stock policy (BUILT 2026-09-15)
+
+**Engine — `code/stockcheck/projection.py::project_demand(orders, timelines, *, rules, feed_state, kg_per_case,
+dns_ratio, stamp, week_label) -> {order_id: record}`** (pure, stdlib; consumes the board's `Timelines` from §3.6, never
+mutates them). Orders `{order_id, sku, week_index, target_kg, cases, priority, ws_h, we_h}` with the demand week
+already converted to BOARD hours by the caller (`stockcheck.weeks.demand_anchor` + `timefmt.datetime_to_hour(…, anchor)`).
+Processing order `(ws_h, priority, −target_kg, order_id)` (largest first inside a week, like the greedy seed); a
+residual ≤ 0.5 kg reads as covered (`RESIDUAL_FLOOR_KG`, the ledger's netting-7 rule); a `_Ledger` books each order's take per funding source (on-hand per item,
+each receipt separately) so a later order that counts fewer receipts never reads an earlier receipt-funded take as
+missing on-hand.
+
+Per order: `board_kg` = the registered blocks of the SKU inside `[ws, we)` pro-rated by time overlap (the ledger's
+week rule); `residual = max(0, gross − board_kg)`; group availability at a floor `F` = Σ members
+`[opening − board draws(≤ we) − booked on-hand + Σ receipts with ready + L ≤ F (minus booked)]`.
+`onhand_ratio` = min over tracked groups of avail(None)/need. Rule:
+
+| status | when | cap_kg | earliest_start_h |
+|---|---|---|---|
+| `COVERED` | residual = 0 | headroom beyond the board (avail(None)) | None |
+| `OK` | onhand_ratio ≥ 0.90 | None (untouched) | None |
+| `LIFTED` | on-hand < 0.90 and the best floor `F` reaches ≥ 0.90 | supportable new-production kg at `F` | `F` |
+| `DNS` | below 0.90 even at the best floor | supportable kg at the best floor (None floor = on-hand only) | `F` or None |
+| `NO_DATA` | no recipe / unknown quantity | None | None |
+
+Candidate floors = `ready_h + L` of every receipt of the SKU's tracked groups with `F < we`; score(F) =
+`min(1, ratio(F)) × frac(F)`, `frac = 1` if `F ≤ ws` else `(we − F)/(we − ws)`; the on-hand-only option scores
+`min(1, onhand_ratio) × 1`; the best strictly-greater score wins (ties → fewer dependencies). Receipts are counted only
+on a fresh feed (`feed_state == "ok"`). `summarize(projected)` → `{by_status, n_floors, n_capped}`.
+
+**Report (`api.py`)**: `demand_view[i].projected` (record above, JSON-safe) + top-level `projection`
+`{demand_anchor, buffer_h, dns_ratio, feed_state, by_status, n_floors, n_capped}`. Flat fields untouched.
+
+**Policy — `helpers/agent_policy.py`**: `projected_caps(report)` (order_id → record, `_by_week` alias),
+`trim_projected_demand(demand, caps, *, shift_h, earliest_start)` (netted rows: `qty_max = min(qty_max, cap_kg)`,
+`qty_min → 0`; pct rows: `upper_pct = min(upper_pct, (board_kg + cap_kg)/target)`, `lower_pct → 0`; floors written to
+`earliest_start_hour` in the WORK frame, `shift_h = report anchor − work anchor`), `apply_stock_policy(work, report,
+cfg)` → `PolicyResult{mode, notes, capped_orders, capped_skus, n_floors, shift_h}` — the ONE patch used by the Generate
+page, `scripts/agent_propose.py` and `scripts/overnight_batch.py` (chained arms keep the donor's staged demand).
+`policy_signature(report)` feeds the overnight "ran short / freed up" diff. Config `[stock] solver_policy =
+"projected" | "flat" | "off"`, `solver_earliest_start = true`.
+
+**Solver**: `data_loader._parse_demand` reads `earliest_start_hour` → `order["earliest_start"]` (ceil, ≥ 0, None when
+blank); `model_builder.effective_due_start` raises the floor under every early-fill policy (so dead-pair pruning, the
+window-capacity clamp and the interval constraint all see it); cross-week mode adds the hard `seg_a_start ≥ floor`;
+`greedy_fill` clamps `ds`; `independent_validator` check `STOCK_FLOOR` (ERROR, advisory in calendar mode; stat
+`stock_floor_orders`). Committed MOs / trials never carry a floor.
+
+**Surfaces**: Stock Check → Demand tab columns `Solver / Projected / Cap kg / Earliest start / Why` + policy caption;
+Reconcile `stock_dns_demand` names capped orders (lifted ones apart); Generate checkbox = the whole policy.
+
+**Tests**: `tests/test_projection.py` (engine goldens), `test_agent_policy.py` (trim + apply), `test_stock_policy_solver.py`
+(loader, model incl. cross-week, window clamp, greedy, validator), `test_stockcheck_projection_report.py` (report on the
+dev VIF board, demand anchor 08-31 vs board anchor 09-01, Reconcile + table columns).

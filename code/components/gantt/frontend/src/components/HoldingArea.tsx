@@ -44,6 +44,10 @@ interface Props {
   nowH?: number | null;
   demandTargets?: DemandTarget[];
   supplyStamp?: StampFn | null;
+  /** Demand week indexes whose column is shown (config.weeks_shown);
+   * null = every week. Render-only: `blocks` still holds every card, so
+   * Save, undo and the auto-derivation are untouched by the filter. */
+  visibleWeeks?: number[] | null;
 }
 
 const HoldingCard: React.FC<{
@@ -179,7 +183,7 @@ function weekIndexOf(orderId: string): number | null {
 export const HoldingArea: React.FC<Props> = ({
   blocks, anchor, skuFormats, onCardContextMenu, highlightSku, onCardRemove,
   stock = null, supplyTimelines = null, caps, lockedThroughH = null, demandTargets, supplyStamp = null,
-  nowH = null,
+  nowH = null, visibleWeeks = null,
 }) => {
   const [expanded, setExpanded] = useState(true);
   const { setNodeRef, isOver } = useDroppable({ id: "holding_area" });
@@ -227,7 +231,16 @@ export const HoldingArea: React.FC<Props> = ({
   }
   const qtyDesc = (a: ScheduleBlock, b: ScheduleBlock) =>
     (b.qty_kg ?? 0) - (a.qty_kg ?? 0) || b.run_hours - a.run_hours;
-  const weeks = [...byWeek.keys()].sort((a, b) => a - b);
+  // Week filter (planner request 2026-09-15): deselecting a week hides its
+  // COLUMN only. Cards of a hidden week stay in `blocks` — they are still
+  // saved, still undoable and reappear the moment the week is selected
+  // again — so the header reports them instead of pretending they are gone.
+  const shown = visibleWeeks ? new Set(visibleWeeks) : null;
+  const allWeeks = [...byWeek.keys()].sort((a, b) => a - b);
+  const weeks = shown ? allWeeks.filter((w) => shown.has(w)) : allWeeks;
+  const hiddenCount = allWeeks
+    .filter((w) => !weeks.includes(w))
+    .reduce((n, w) => n + (byWeek.get(w)?.length ?? 0), 0);
 
   return (
     <div
@@ -245,7 +258,12 @@ export const HoldingArea: React.FC<Props> = ({
         onClick={() => setExpanded(!expanded)}
       >
         <strong style={{ fontSize: 12.5, color: T.ink2, letterSpacing: 0.3 }}>
-          HOLDING AREA <span style={{ fontWeight: 500, color: T.ink3 }}>· {blocks.length} card{blocks.length === 1 ? "" : "s"} — demand not yet on the board; drag a card onto a line, drop a block here to take it off, × on a card removes it (the table's + brings it back)</span>
+          HOLDING AREA <span style={{ fontWeight: 500, color: T.ink3 }}>· {blocks.length - hiddenCount} card{blocks.length - hiddenCount === 1 ? "" : "s"}
+            {hiddenCount > 0 && (
+              <span title="Cards of weeks the week filter above the board hides. They are still held, still saved and come back when the week is selected again.">
+                {" "}· {hiddenCount} hidden by the week filter
+              </span>
+            )} — demand not yet on the board; drag a card onto a line, drop a block here to take it off, × on a card removes it (the table's + brings it back)</span>
         </strong>
         <span style={{ fontSize: 11, color: T.ink3 }}>{expanded ? "▲ collapse" : "▼ expand"}</span>
       </div>
@@ -255,6 +273,11 @@ export const HoldingArea: React.FC<Props> = ({
           {blocks.length === 0 && (
             <span style={{ fontSize: 12, color: T.ink3, fontStyle: "italic" }}>
               Every demand order is on the board. Drag blocks here to take them off the schedule.
+            </span>
+          )}
+          {blocks.length > 0 && weeks.length === 0 && loose.length === 0 && (
+            <span style={{ fontSize: 12, color: T.ink3, fontStyle: "italic" }}>
+              Every held card belongs to a week the filter hides — select a week above the board to see it.
             </span>
           )}
           {weeks.map((wk) => (

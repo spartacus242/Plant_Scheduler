@@ -22,10 +22,19 @@
 #   * (order_no, line_no) is unique; line_seq (the SECOND "Numéro de la
 #     ligne") is the delivery sub-line. 15 French header names repeat, so
 #     the layout maps duplicates by ORDER of occurrence;
-#   * line_status 20 = open, 60 = fully received (remaining 0), 70 = mixed
-#     (cancelled zero-qty lines AND pending lines with the full qty). The
-#     ERP meaning of 70 is unconfirmed, so nothing here keys on the code:
-#     "still inbound" is qty_remaining > 0 and the code rides along.
+#   * line_status (IT, 2026-09-15): 20 = receivable (pending receipt),
+#     60 = archived (closed), 70 = deleted. A fully archived order drops out
+#     of the export; an order keeps showing while some of its lines are
+#     deleted and the rest not yet archived. So: 70 lines are `cancelled`
+#     (never inbound, whatever their remaining qty), 60 lines are closed
+#     (`received`), and "still inbound" is status 20 with qty_remaining > 0.
+#     An unknown code falls back to the remaining-qty rule;
+#   * order unit KEA = thousand each (1.5 KEA = 1,500 EA; the price is per
+#     KEA). to_po_lines scales such lines to EA so the BOM join counts them;
+#     purchasing still owes a written confirmation of the convention;
+#   * the export leaves the ERP at ~19:10 and lands in the SharePoint library
+#     "VIF Extracts" within the next 15-min refresh, same file name every
+#     day, no archive copy.
 #
 # Best-effort like the other importers: problems land in errors, rows are
 # kept (a mis-aligned row is flagged, never dropped), nothing raises.
@@ -495,16 +504,29 @@ def _crit(row: dict, code: str) -> str:
     return ""
 
 
+# ERP line-status codes, confirmed by IT on 2026-09-15 (meeting on this export).
+STATUS_RECEIVABLE = 20
+STATUS_ARCHIVED = 60
+STATUS_DELETED = 70
+STATUS_TEXT = {STATUS_RECEIVABLE: "receivable", STATUS_ARCHIVED: "archived",
+               STATUS_DELETED: "deleted"}
+KEA_TO_EA = 1000.0     # order unit KEA = thousand each (IT, 2026-09-15)
+
+
 def to_po_lines(export: X3PoExport) -> list[dict]:
     """PoLine dicts for the supply timeline — the 15 contract keys (see
     po_import) plus the export's own facts the planner asked to keep.
 
     qty = qty_remaining (what is still inbound; the received part of a
     partially delivered line is already in stock). received = nothing left
-    to receive (qty_remaining ≤ 0) — the ERP's line_status is carried as
-    `status` but not interpreted (70 is ambiguous, see the module header).
-    supplier_id drops the ERP's zero padding ('000048' -> '48', the id the
-    old workbook showed); `supplier_code` keeps the exact ERP key."""
+    to receive (qty_remaining ≤ 0) OR the line is archived (status 60).
+    cancelled = the line is deleted in the ERP (status 70): the timeline
+    gives it its own fate and never counts it, whatever remains on it.
+    status_text names the code (receivable / archived / deleted, blank when
+    unknown). A KEA line (thousand each) is scaled to EA, `unit_original`
+    keeping "KEA". supplier_id drops the ERP's zero padding ('000048' ->
+    '48', the id the old workbook showed); `supplier_code` keeps the exact
+    ERP key."""
     from .po_import import po8   # lazy: po_import imports this module
     out: list[dict] = []
     for i, row in enumerate(export.rows):
@@ -522,6 +544,15 @@ def to_po_lines(export: X3PoExport) -> list[dict]:
                  for k in ("company", "site", "order_type")] + [order_no]
         stat_unit = str(row.get("stat_unit") or "").strip().upper()
         unit = str(row.get("order_unit") or "").strip()
+        unit_original = ""
+        if unit.upper() == "KEA":
+            unit_original, unit = unit, "EA"
+            rem = rem * KEA_TO_EA if rem is not None else None
+            ordered = ordered * KEA_TO_EA if ordered is not None else None
+        status = row.get("line_status")
+        status_code = status if isinstance(status, int) and not isinstance(status, bool) else None
+        cancelled = status_code == STATUS_DELETED
+        received = (rem is not None and rem <= 0) or status_code == STATUS_ARCHIVED
         rem_stat = _f(row.get("qty_remaining_stat"))
         # the ERP only converts KG/L lines into the statistical unit (KG);
         # EA/M2 lines carry a 0 there, which is "no figure", not "0 kg"
@@ -541,13 +572,16 @@ def to_po_lines(export: X3PoExport) -> list[dict]:
             "arrival_area": str(row.get("receipt_location") or "").strip(),
             "supplier": str(row.get("supplier_name") or "").strip(),
             "supplier_id": code.lstrip("0") or code,
-            "received": rem is not None and rem <= 0,
+            "received": received,
             "order_date": od,
             "row": i + 2,
             # export facts kept for the planner (additive; legacy lines lack them)
             "qty_ordered": ordered,
             "qty_remaining_kg": rem_stat if stat_unit == "KG" else None,
-            "status": row.get("line_status"),
+            "status": status,
+            "status_text": STATUS_TEXT.get(status_code, ""),
+            "cancelled": cancelled,
+            "unit_original": unit_original,
             "line_no": str(row.get("line_no") or "").strip(),
             "line_seq": str(row.get("line_seq") or "").strip(),
             "supplier_code": code,

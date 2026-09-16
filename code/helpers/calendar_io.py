@@ -189,6 +189,47 @@ def save_calendar(df: pd.DataFrame, path: Path, *,
     return result
 
 
+def split_finished_rows(cal: pd.DataFrame, now_h: float
+                        ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(still-running, finished) split for the board's "hide finished" toggle.
+
+    A row is finished when it ends at or before `now_h` — EXCEPT that a
+    current-state MO is hidden as a WHOLE or not at all (card-trust fix
+    2026-09-15).
+
+    Why the exception: the calendar's made-only credit map excludes every MO
+    that is still on the board and credits only the kg FROZEN in that block's
+    attrs, because the block itself carries the MO's remaining kg. Hiding one
+    finished piece of a still-running split MO therefore deleted that piece's
+    kg from BOTH sides of the sum — the block was gone and the credit did not
+    grow to cover it — and the week card silently lost it. Pieces of one MO
+    share their order_id (the MO number), which is exactly the key the credit
+    rule excludes on, so grouping the mask by it makes the two rules agree by
+    construction. An MO whose every piece is finished still disappears, and
+    the credit map then takes over its full made kg.
+
+    Rows that are not current-state MOs (planner or solver blocks) are hidden
+    row by row, as before.
+    """
+    if cal is None or cal.empty:
+        return cal, cal.iloc[0:0] if cal is not None else cal
+    past = cal["end_h"].astype(float) <= float(now_h)
+    if "attrs" in cal.columns and "order_id" in cal.columns:
+        # Only a row that actually NAMES an MO may join a group. A blank
+        # order_id is not an identity, it is a collision bucket: every CIP
+        # row carries current_state: attrs and an empty order_id, so keying
+        # on it alone let one future clean keep every finished clean on the
+        # board (live 2026-09-15: 55 CIP rows sharing the blank key, 17
+        # finished rows wrongly kept visible at hour 120).
+        oid = cal["order_id"].astype(str).str.strip()
+        named = ~oid.str.lower().isin(["", "nan", "none"])
+        is_mo = cal["attrs"].astype(str).str.contains(
+            "current_state:", regex=False) & named
+        alive = set(oid[is_mo & ~past])
+        past = past & ~(is_mo & oid.isin(alive))
+    return cal[~past].copy(), cal[past].copy()
+
+
 def duplicate_block_ids(df: pd.DataFrame) -> list[str]:
     """block_ids shared by rows whose (order_id, sku, block_type) differ —
     unrelated blocks under one name (writeback-8). Split pieces of one MO

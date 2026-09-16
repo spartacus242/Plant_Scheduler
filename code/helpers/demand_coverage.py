@@ -39,6 +39,7 @@
 from __future__ import annotations
 
 import bisect
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -89,6 +90,10 @@ class CoverageLedger:
     # history demand row to settle against; excluded from the carry unless
     # build_ledger(carry_unsettled_past=True). See C54 / netting-2.
     unsettled_past: dict[tuple[str, int], float] = field(default_factory=dict)
+    # The subset of unsettled_past that WAS carried forward (made in the week
+    # immediately before the plan — Sunday's pre-build of this week). Always
+    # reported so the planner can see what a card leans on.
+    carried_past: dict[tuple[str, int], float] = field(default_factory=dict)
 
     def applied_by_order(self) -> dict[str, float]:
         return {r.order_id: r.applied_kg for r in self.rows if r.applied_kg > _EPS}
@@ -390,22 +395,50 @@ def build_ledger(
     history: dict[tuple[str, int], float] = {
         k: v for k, v in (history_demand or {}).items() if k not in live_keys}
 
-    if not carry_unsettled_past and ledger.anchor_week_key is not None:
+    if ledger.anchor_week_key is not None:
+        # The quarantine now runs in BOTH modes, so `unsettled_past` and the
+        # note below are populated whatever the caller chose — the flag only
+        # decides whether the kg stays in the carry. (It used to live inside
+        # `if not carry_unsettled_past`, which meant switching the carry on
+        # silently removed the only diagnostic that explained the numbers.)
+        #
+        # And the carry is bounded by RECENCY, not by the netting lookback:
+        # the case it legitimately covers is the pre-build of THIS plan,
+        # which keys to the week immediately before the anchor week. Older
+        # production is far more likely to have served its own week's demand,
+        # so it stays quarantined even when carrying is on (live 2026-09-15:
+        # only ~42% of the 139 t on hand was a current-week pre-build).
+        a = pd.Timestamp(anchor)
+        prev_key = iso_week_key(a - timedelta(days=a.weekday() + 7))
         for (sku, key), kg in list(produced.items()):
             if (key < ledger.anchor_week_key and (sku, key) not in live_keys
                     and (sku, key) not in (history_demand or {})):
                 ledger.unsettled_past[(sku, key)] = round(kg, 1)
-                del produced[(sku, key)]
-        if ledger.unsettled_past:
-            tot = sum(ledger.unsettled_past.values())
+                if carry_unsettled_past and key >= prev_key:
+                    ledger.carried_past[(sku, key)] = round(kg, 1)
+                else:
+                    del produced[(sku, key)]
+        dropped = {k: v for k, v in ledger.unsettled_past.items()
+                   if k not in ledger.carried_past}
+        if dropped:
+            tot = sum(dropped.values())
             detail = ", ".join(
                 f"{s} {kg:,.0f} kg in {_key_label(k, iso_mode)}"
-                for (s, k), kg in sorted(ledger.unsettled_past.items(),
+                for (s, k), kg in sorted(dropped.items(),
                                          key=lambda kv: -kv[1])[:5])
             ledger.notes.append(
                 f"WARNING: {tot:,.0f} kg of past production has no demand week "
                 f"to settle against and is NOT carried forward ({detail}) — "
                 "import the prior week's demand or accept it as inventory")
+        if ledger.carried_past:
+            tot = sum(ledger.carried_past.values())
+            detail = ", ".join(
+                f"{s} {kg:,.0f} kg" for (s, _k), kg in
+                sorted(ledger.carried_past.items(), key=lambda kv: -kv[1])[:5])
+            ledger.notes.append(
+                f"NOTE: {tot:,.0f} kg made in the week before the plan counts "
+                f"towards the first open week of its SKU ({detail}) — the "
+                "plant pre-built it; it has no demand week of its own")
 
     skus = (set(dem_rows)
             | {s for s, _ in planned} | {s for s, _ in produced}
@@ -576,6 +609,102 @@ def keep_completed_row(row: dict, exclude_mos: set[str],
     return "made_kg=" in str(board_attrs.get(mo) or "")
 
 
+_MADE_KG_TOKEN = re.compile(r"made_kg=(-?\d+(?:\.\d+)?)")
+
+
+def board_made_kg(mo: str, board_attrs: dict[str, str] | None) -> float | None:
+    """The made kg FROZEN in the board block's attrs for this MO, or None.
+
+    current_state writes `;fct_kg=<F>;made_kg=<M>` on a running MO's block
+    and gives the block itself the REMAINING kg (F - M). Every piece of the
+    MO carries the same token, so the first match is the MO's made kg.
+    """
+    if not board_attrs:
+        return None
+    m = _MADE_KG_TOKEN.search(str(board_attrs.get(str(mo)) or ""))
+    return float(m.group(1)) if m else None
+
+
+def _frozen_tokens(key, board_attrs: dict[str, str] | None) -> list[float]:
+    """Every `made_kg=` value recorded under one attrs key, in order."""
+    if not board_attrs:
+        return []
+    return [float(v) for v in
+            _MADE_KG_TOKEN.findall(str(board_attrs.get(str(key)) or ""))]
+
+
+def reconcile_completed_to_board(
+    completed: list[dict] | None,
+    exclude_mos: set[str] | None,
+    board_attrs: dict[str, str] | None,
+) -> list[dict]:
+    """made-only credit rows reconciled against the board SNAPSHOT (card
+    trust fix, 2026-09-15).
+
+    The board is a FILE (rebuilt on demand) while the completed/made_part
+    rows are rebuilt from the CURRENT manprg on every render, so the two
+    halves of `board kg + made kg = Fct` drift apart between rebuilds. The
+    old rule credited the LIVE made kg of a running MO on top of the block's
+    FROZEN remaining kg (over-credit, growing with every manprg pull: a
+    finished-since-rebuild order read OVER) and credited NOTHING for an MO
+    the plant has since completed, because its row stopped being a
+    `made_part` row and the MO was still on the board (under-credit: a
+    fully-made order read 10% with a phantom holding card).
+
+    The rule now: an MO on the board is credited EXACTLY the made kg frozen
+    in that board block's attrs — the kg the block deliberately does not
+    carry — whatever manprg says today. board kg + credit then sums to the
+    MO's Fct by construction, in both drift directions. An MO with no
+    `made_kg=` token on the board (a queued block at full Fct, or a board
+    saved before fix CA-3) is credited nothing, exactly as before. An MO
+    that is NOT on the board keeps its live made kg (the board shows none
+    of it). With no board attrs at all the legacy `keep_completed_row`
+    filter stands.
+    """
+    rows = list(completed or [])
+    if not rows or not exclude_mos:
+        return rows
+    if board_attrs is None:
+        return [r for r in rows if keep_completed_row(r, exclude_mos, None)]
+    out: list[dict] = []
+    emitted: set[str] = set()
+    for r in rows:
+        mo = str(r.get("mo") or "")
+        if mo not in exclude_mos:
+            out.append(r)
+            continue
+        # The SAME MO number can run on two lines (current_state mints
+        # `mo_uid` = "<mo>@<line>" and warns), and then `completed` carries
+        # one row per line while the board carries one block per line. The
+        # credit must be per BLOCK, never per MO, or each row would be
+        # credited the whole MO's frozen kg and the surplus would land on
+        # the SKU's later weeks.
+        line = str(r.get("line") or "").strip()
+        uid = str(r.get("mo_uid") or (f"{mo}@{line}" if line else ""))
+        toks = _frozen_tokens(uid, board_attrs) if uid else []
+        if toks:
+            frozen, dedupe = toks[0], uid
+        else:
+            # No per-line key: fall back to the MO. Two DIFFERENT tokens
+            # under one key cannot be attributed to this row, and even one
+            # token may belong to another line's block — so credit at most
+            # ONE row per MO and drop an ambiguous blob entirely. Both
+            # failure modes under-credit, which a card can survive; double
+            # crediting silently marks demand as covered.
+            toks = _frozen_tokens(mo, board_attrs)
+            if len({round(t, 3) for t in toks}) > 1:
+                continue
+            frozen, dedupe = (toks[0] if toks else None), mo
+        # No token -> the block carries the MO's whole Fct; crediting on top
+        # would double count. (_supply_from_completed falls back to qty_kg
+        # when made_kg is 0, so a zero credit must DROP the row, not zero it.)
+        if frozen is None or frozen <= 0 or dedupe in emitted:
+            continue
+        emitted.add(dedupe)
+        out.append({**r, "made_kg": frozen, "reconciled_to_board": True})
+    return out
+
+
 def build_ledger_from_data(
     data_dir: Path | str,
     cfg: dict | None = None,
@@ -585,6 +714,7 @@ def build_ledger_from_data(
     made_only: bool = False,
     exclude_mos: set[str] | None = None,
     board_attrs: dict[str, str] | None = None,
+    carry_unsettled_past: bool | None = None,
 ) -> CoverageLedger | None:
     """Ledger for the live data dir: reference demand vs manprg current state.
 
@@ -597,10 +727,25 @@ def build_ledger_from_data(
     Committed MOs ARE board blocks after a rebuild, so crediting them here
     too is double counting by construction. In this mode the supply side is
     completed (hidden) MOs' made kg ONLY — no committed blocks, no pinned
-    calendar blocks — and `exclude_mos` (the order_ids visible on the board)
-    drops any completed MO whose block still IS on the board. The SOLVER's
-    netting must keep the full supply (a queued MO's kg is real future
-    production it must not re-plan): never pass made_only on a netting path.
+    calendar blocks. `exclude_mos` (the order_ids visible on the board) and
+    `board_attrs` (their attrs) reconcile the credit against the board
+    SNAPSHOT: an MO still on the board is credited exactly the made kg
+    frozen in its block's `made_kg=` token, so board kg + credit sums to the
+    MO's Fct however far the saved board has drifted from today's manprg
+    (see reconcile_completed_to_board). The SOLVER's netting must keep the
+    full supply (a queued MO's kg is real future production it must not
+    re-plan): never pass made_only on a netting path.
+
+    `carry_unsettled_past` defaults to `made_only`. Made kg keyed to a week
+    the demand file no longer carries (the file is re-imported each Monday
+    anchored at W0, so Sunday's pre-build of THIS week keys to last week)
+    has no row to settle against. The solver must not guess whether such kg
+    was a pre-build or last week's consumption (fix C54) and keeps it out of
+    the carry; the calendar's question is "is this week's demand covered?"
+    and that product is physically in the warehouse, so the made-only path
+    carries it forward — each order still takes at most its gross target,
+    and the ledger's WARNING note names the kg either way. Pass the flag
+    explicitly to override.
     """
     from helpers import horizon as _hz
     from helpers.config import datasources_config, load_toml
@@ -628,6 +773,17 @@ def build_ledger_from_data(
             cip_path=cip_path if Path(cip_path).exists() else None, cfg=cfg,
             caps_path=ref / "capabilities_rates.csv")
 
+    # Made kg the plant produced in a week the demand file no longer carries
+    # (the file is re-imported each Monday anchored at W0) has nowhere to
+    # settle. The SOLVER must not guess (fix C54: a pre-build and last
+    # week's consumption are indistinguishable), but the CALENDAR's question
+    # is "is this week's demand covered?" and that product is physically in
+    # the warehouse — carrying it forward is the honest answer there. Live
+    # 2026-09-15: 139 t of Sunday production was discarded and five W0
+    # orders read 0% with phantom holding cards.
+    if carry_unsettled_past is None:
+        carry_unsettled_past = bool(made_only)
+
     completed = getattr(state, "completed", None)
     if made_only:
         blocks = None
@@ -643,8 +799,12 @@ def build_ledger_from_data(
             # saved BEFORE CA-3 still draws the running block at FULL Fct
             # kg, so crediting made_part on top would double count — such a
             # row is dropped until the board is rebuilt.
-            completed = [r for r in completed
-                         if keep_completed_row(r, exclude_mos, board_attrs)]
+            # Card-trust fix 2026-09-15: credit the made kg FROZEN in the
+            # board block's attrs, not today's manprg value, so board kg +
+            # credit sums to the MO's Fct however far the board has drifted
+            # from the live feed (see reconcile_completed_to_board).
+            completed = reconcile_completed_to_board(
+                completed, exclude_mos, board_attrs)
     else:
         blocks = state.blocks
         cal_path = dd / "calendar_blocks.csv"
@@ -662,4 +822,5 @@ def build_ledger_from_data(
         demand, blocks,
         completed=completed,
         anchor=hz.anchor, demand_anchor=demand_anchor,
-        lookback_weeks=lookback_weeks)
+        lookback_weeks=lookback_weeks,
+        carry_unsettled_past=carry_unsettled_past)

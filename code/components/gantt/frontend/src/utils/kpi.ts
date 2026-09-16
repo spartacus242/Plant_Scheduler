@@ -178,6 +178,29 @@ export function weekFulfillmentCredit(row: AdherenceRow): number {
   return Math.min(row.scheduled_qty, orderTarget(row.qty_min, row.qty_max));
 }
 
+/** One order's two shares of its week card: what the BOARD covers and what
+ * already-made production adds ON TOP of it, both capped at the order's own
+ * target (overproduction on one order cannot raise the week's fulfillment —
+ * the same cap as weekly_breakdown).
+ *
+ * `row` must come from the BOARD-ONLY adherence pass (no credit map) and
+ * `madeKg` from that order's entry in the made-only credit map. The cards
+ * used to difference a credited pass against a board-only pass instead, which
+ * called any kg the credit displaced into a neighbouring week's order
+ * "already made": live 2026-09-15 the whole of W39's "+1.7% already made"
+ * and all of W40's was displaced BOARD kg, with no made kg behind it.
+ * Computing the shares directly cannot attribute board kg to made kg, and
+ * the two shares never double-count the same kg (card-trust fix). */
+export function weekCardShares(
+  row: AdherenceRow,
+  madeKg: number,
+): { board: number; made: number; target: number } {
+  const target = orderTarget(row.qty_min, row.qty_max);
+  const board = Math.min(row.scheduled_qty, target);
+  const made = Math.min(row.scheduled_qty + Math.max(0, madeKg), target) - board;
+  return { board, made, target };
+}
+
 export interface ChangeoverCounts {
   total: number;
   recipe: number;

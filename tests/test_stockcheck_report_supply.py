@@ -77,8 +77,18 @@ RATES = ("line_id,sku,line_name,capable,calc_rate_kgph\n"
 def vif(tmp_path_factory) -> Path:
     d = tmp_path_factory.mktemp("vif")
     t = time.mktime(SNAP.timetuple())
+    # VIF_FILES is the full recognised vocabulary (aliases and ignored
+    # exports included) so the mtime gate sees any of them appear; the dev
+    # fixture carries only the core exports. import_vif_folder treats a
+    # missing file as simply absent from .frames — never an error — so the
+    # fixture must copy what EXISTS, not assume the whole vocabulary is
+    # present (the list grew on 2026-09-15 and this loop then died on the
+    # first optional export).
     for name in VIF_FILES:
-        shutil.copy(DEV_VIF / name, d / name)
+        src = DEV_VIF / name
+        if not src.is_file():
+            continue
+        shutil.copy(src, d / name)
         os.utime(d / name, (t, t))
     return d
 
@@ -479,9 +489,15 @@ def test_empty_feed(dd, vif, tmp_path):
 def test_flat_views_identical_with_and_without_feed(dd, vif, tmp_path):
     with_po = _report(dd, vif, po_path=_write_pos(tmp_path / "open_pos.xlsx"))
     without = _report(dd, vif, po_path=False)
-    for k in ("demand_view", "item_reverse", "no_bom_skus", "unk",
-              "availability_toggles"):
+    for k in ("item_reverse", "no_bom_skus", "unk", "availability_toggles"):
         assert with_po[k] == without[k], k
+    # demand_view: the flat fields never move; only the additive slice-3
+    # projection may (it counts the feed's receipts)
+    for a, b in zip(with_po["demand_view"], without["demand_view"]):
+        assert {k: v for k, v in a.items() if k != "projected"} == \
+            {k: v for k, v in b.items() if k != "projected"}
+        assert a["projected"]["feed_state"] == "ok"
+        assert b["projected"]["feed_state"] == "missing"
     flat = ("block_id", "sku", "line_id", "line_name", "start_h", "end_h",
             "qty_kg", "cases", "status", "items", "unk", "cycles")
     for a, b in zip(with_po["schedule_view"], without["schedule_view"]):

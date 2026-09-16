@@ -565,25 +565,25 @@ with _fc1:
         "The budget is per solve, not per run.")
 with _fc2:
     _f_dns = st.checkbox(
-        "Cap component-blocked SKUs (stock policy)", value=True, key="f_dns",
-        help="The approved agent policy: DO-NOT-SCHEDULE SKUs get qty_min→0 "
-             "and qty_max capped at what components actually support.")
+        "Stock policy: cap orders at what components support, wait for trucks",
+        value=True, key="f_dns",
+        help="Every demand order is graded on the Gantt's time-phased curves "
+             "(board draws first, PO receipts counted): an order the components "
+             "cannot support gets qty_min→0 and qty_max capped; an order that "
+             "needs a receipt may not start before the truck's ready hour + "
+             "the [stock] buffer. Same policy as the agent and the overnight "
+             "batch ([stock] solver_policy / solver_earliest_start).")
 if st.button("Run Fill the tail", type="primary", key="run_fill_tail"):
     _f_patch = None
     if _f_dns:
         try:
-            from helpers.agent_policy import dns_ratios as _dnsr
-            from helpers.agent_policy import trim_dns_demand as _trim
+            from helpers.agent_policy import apply_stock_policy as _apply_policy
             from stockcheck.api import stock_check_report as _stockrep
-            _dns_map = _dnsr(_stockrep(dd, dd / "reference"))
+            _stock_rep = _stockrep(dd, dd / "reference")
 
             def _f_patch(work):
-                _dp = work / "demand_plan.csv"
-                _dm = _pd.read_csv(_dp, dtype={"sku": str})
-                _tr, _pnotes = _trim(_dm, _dns_map)
-                _tr.to_csv(_dp, index=False)
-                return [f"DNS trim: {len(_pnotes)} order(s) adjusted "
-                        f"({len(_dns_map)} component-blocked SKU(s))"] + _pnotes[:5]
+                _res = _apply_policy(work, _stock_rep, cfg=cfg)
+                return _res.notes[:1] + _res.notes[1:9]
         except Exception as _pe:  # noqa: BLE001
             st.warning(f"Stock policy unavailable — solving without it: {_pe}")
             _f_patch = None

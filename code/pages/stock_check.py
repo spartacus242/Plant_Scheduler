@@ -10,8 +10,11 @@
 # planner chases with purchasing — and the same tables as an Excel workbook.
 # Plus the Inbound tab: every open-PO line and the fate the timeline engine
 # gave it (contract .hermes/plans/2026-09-01-po-stock-contracts.md §7).
-# Data: VIF CSV exports (ediact 3/4, jestkexp/2, azapart, rmpkitems) +
-#       weekly Shipping/Receiving xlsm (appointment feed) + open-PO report.
+# Data: VIF CSV exports (ediact.csv — or the legacy ediact 3/4 —, the lot
+#       exports jestkexp/2 + the 2026-09-15 drop's jestkamb / jestkexq /
+#       jestksav / jestkexp5, the receipt slips PKG-REC.csv, azapart,
+#       rmpkitems) + weekly Shipping/Receiving xlsm (appointment feed) +
+#       the open-PO report.
 
 from __future__ import annotations
 
@@ -29,6 +32,7 @@ if str(BASE_DIR) not in sys.path:
 from helpers import stock_reports as sr  # noqa: E402
 from helpers.config import load_toml  # noqa: E402
 from helpers.paths import data_dir  # noqa: E402
+from helpers.stock_report_cache import find_bom_file  # noqa: E402
 from helpers.theme import (TOKENS, chip, kind_for, note, page_header,  # noqa: E402
                            render_chips, section_label, state_chip)
 from helpers.timefmt import hour_to_stamp, planning_anchor  # noqa: E402
@@ -59,7 +63,9 @@ REF_RECV = REF_VIF / "Shipping Receiving Schedule NPA - 2024.xlsm"
 def _default_vif_folder() -> str:
     if Path(DEFAULT_VIF).exists():
         return DEFAULT_VIF
-    if (REF_VIF / "ediact 3.csv").exists():
+    # presence anchor = the BOM export: ediact.csv (drop of 2026-09-15) or
+    # the legacy "ediact 3.csv" — the same rule stock_report_inputs uses
+    if find_bom_file(REF_VIF) is not None:
         return str(REF_VIF)
     return str(DEV_VIF)
 
@@ -166,7 +172,7 @@ def _supply_text(s: dict) -> str:
 # on, then housekeeping; unknown fates sort after, alphabetically.
 _FATE_ORDER = ["used", "landed_unverifiable", "overdue", "offsite_no_transfer",
                "unjoinable", "unit_mismatch", "bad_qty", "bad_date", "landed",
-               "received"]
+               "received", "cancelled"]
 # Per state: WHY. The consequence ("nothing is counted, gaps read NO DATA")
 # is said once, in the state line next to the 'Would count' metric.
 _FEED_STATE_HELP = {
@@ -184,8 +190,9 @@ _QUALITY_HINTS = [
     ("unjoinable_items", "Unjoinable PO items",
      "Fix: the PO's item code matches no BOM item — neither exactly nor as "
      "a single '-X' suffixed variant — so its receipts are not counted. Check "
-     "the code on the PO line against the BOM/item exports (ediact 3.csv, "
-     "rmpkitems.csv); if the plant uses a suffixed code, fix the item master, "
+     "the code on the PO line against the BOM/item exports (ediact.csv or "
+     "ediact 3.csv, rmpkitems.csv); if the plant uses a suffixed code, fix "
+     "the item master, "
      "not the PO."),
     ("unit_mismatch", "Unit mismatch (PO vs BOM)",
      "Fix: the PO orders the item in a different unit than the recipe "
@@ -260,21 +267,37 @@ with st.expander("Sources & availability — VIF folder, which stock counts", ex
         settings["vif_folder"] = vif_folder
         _save_settings(settings)
     if ENGINE_OK:
-        st.caption("Which stock counts as available — default: only **Ava**. "
-                   "`Loc` = QC/warehouse-hold — opt in per depot if you know it will "
-                   "release. Changing a toggle saves it and marks the report stale — "
-                   "press **Refresh from VIF** to apply.")
-        toggles = settings.get("toggles", cov.default_toggles())
-        depots = ["M01", "SB1", "SC1", "SF1", "M02", "SFG", "M21"]
-        cols = st.columns(len(depots))
+        # (2026-09-16) the semi-finished lot export (jestkexp5) never counts:
+        # a house-made intermediate never gates a SKU on its own stock
+        # (rule of 2026-08-14, stockcheck.api._NEVER_COUNTED_FRAMES)
+        st.caption("Which stock counts as available — default: **Ava** in the "
+                   "plant, off-site (AMB), apple (SA1/SA2) and M12 depots; the "
+                   "quality-control depots QCR/QCP count nothing until you opt "
+                   "in. `Loc` = QC/warehouse-hold, `Out` = out of stock, `OL` "
+                   "= semi-finished on hold — opt in per depot if you know it "
+                   "will release. The semi-finished lot export (jestkexp5) "
+                   "never counts, whatever the toggles: an in-house "
+                   "intermediate is checked through its recipe's components; "
+                   "its lots still show in the lot detail. Changing a toggle "
+                   "saves it and marks the report stale — press **Refresh "
+                   "from VIF** to apply.")
+        _defaults = cov.default_toggles()
+        toggles = settings.get("toggles", _defaults)
         new_toggles = dict(toggles)
-        for ci, dep in enumerate(depots):
-            with cols[ci]:
-                st.markdown(f"**{dep}**")
-                for stt in ("Ava", "Loc", "Out"):
-                    key = f"{dep}|{stt}"
-                    new_toggles[key] = st.checkbox(
-                        stt, value=toggles.get(key, stt == "Ava"), key=f"t_{key}")
+        # one labelled row per depot group (drop of 2026-09-15): a saved
+        # settings.json from before the drop lacks the new keys — they take
+        # their defaults here and are saved on the rerun below
+        for _label, _deps in cov.DEPOT_GROUPS:
+            st.markdown(f"**{_label}**")
+            cols = st.columns(max(len(_deps), 1))
+            for ci, dep in enumerate(_deps):
+                with cols[ci]:
+                    st.markdown(f"**{dep}**")
+                    for stt in cov.STATUSES:
+                        key = f"{dep}|{stt}"
+                        new_toggles[key] = st.checkbox(
+                            stt, value=bool(toggles.get(key, _defaults.get(key, False))),
+                            key=f"t_{key}")
         if new_toggles != toggles:
             settings["toggles"] = new_toggles
             settings["vif_folder"] = vif_folder
@@ -345,6 +368,33 @@ if _feed_state:
 render_chips(_status_chips)
 if rep.get("import_errors"):
     st.warning("Some files failed to import: " + "; ".join(rep["import_errors"]))
+# (2026-09-16) ediact.csv carries no semi-finished recipes: without "ediact
+# 4.csv" the intermediates are graded as unstocked leaves (NOT TRACKED) and
+# their sub-components are never checked. The report's missing_recipes
+# (the snapshot's, via stockcheck.api) or a loader note says so. Wording
+# checked on the real drop (2026-09-16, after the no_recipe flag): vs the
+# same drop + ediact 4.csv the flat board / demand statuses match, and 4
+# projected orders differ — 3 read LIFTED instead of DNS (a short 750188
+# unseen), 1 the other way (shared stock netted differently).
+_missing_recipes = [str(x) for x in (rep.get("missing_recipes") or [])]
+_recipe_notes = [str(n) for n in (rep.get("import_notes") or [])
+                 if "semi-finished recipes missing" in str(n)]
+if _missing_recipes or _recipe_notes:
+    st.warning(
+        "Semi-finished recipes missing"
+        + (f" for {len(_missing_recipes)} intermediate(s) "
+           f"({', '.join(_missing_recipes[:6])}"
+           f"{', …' if len(_missing_recipes) > 6 else ''})" if _missing_recipes
+           else "")
+        + ": those intermediates read NOT TRACKED and their sub-components "
+          "are not checked, so a short sub-component goes unseen — the board "
+          "and demand statuses that depend on them can look better than they "
+          "are, and orders sharing that stock can shift either way. Add "
+          "**ediact 4.csv** "
+          "(semi-finished recipes) to the VIF folder and press **Refresh "
+          "from VIF**."
+        + (f" ({'; '.join(_recipe_notes[:2])})" if _recipe_notes and not _missing_recipes
+           else ""))
 
 # ---------------------------------------------------------------- tables
 _stamp = lambda h: hour_to_stamp(h, _ANCHOR)  # noqa: E731
@@ -357,7 +407,7 @@ board_all = sr.block_rows(rep, _stamp)
 # once whichever (or both) flagged it (contract §3.5)
 board_risk = [r for r in board_all
               if r["_status"] in sr.RISK_STATUSES or r.get("_supply_flagged")]
-demand_tbl = sr.demand_rows(rep, week_index, _wk_label)
+demand_tbl = sr.demand_rows(rep, week_index, _wk_label, stamp=_stamp)
 shortages = sr.component_shortages(rep, week_index, stamp=_stamp, week_label=_wk_label)
 
 has_supply = any(_supply(b) is not None for b in sv)
@@ -490,6 +540,17 @@ with tab_demand:
     section_label("Should it be scheduled?")
     st.caption("Achievable coverage of each demand SKU's target with the stock on hand. "
                "DO NOT SCHEDULE = under 90% achievable; worst first.")
+    _proj = rep.get("projection") or {}
+    if _proj:
+        _pb = _proj.get("by_status") or {}
+        st.caption(
+            "**Solver policy** (time-phased, board netted, PO receipts counted): "
+            f"{_pb.get('DNS', 0)} order(s) capped · {_pb.get('LIFTED', 0)} lifted by "
+            f"inbound POs · {_pb.get('COVERED', 0)} covered by the board · "
+            f"{_proj.get('n_floors', 0)} earliest-start floor(s) (receipt + "
+            f"{float(_proj.get('buffer_h', 96)) / 24:g} d buffer) · PO feed "
+            f"{_proj.get('feed_state', '?')}. The Generate page's Fill-the-tail "
+            "run and the overnight batch apply exactly these caps and floors.")
     if demand_tbl:
         st.dataframe(_style_status(_public(demand_tbl)), use_container_width=True,
                      hide_index=True)
@@ -568,6 +629,42 @@ with tab_item:
         cons = cons.drop(columns=["week_index"])
     st.dataframe(cons, use_container_width=True, hide_index=True)
 
+    @st.cache_data(show_spinner=False)
+    def _lot_rows(vif_folder: str, sources_key: str, item: str) -> pd.DataFrame:
+        # every lot export of the mtime-guarded snapshot (rm, pkg, AMB, QC,
+        # apples, semi-finished — drop of 2026-09-15), all statuses: the
+        # toggles decide what COUNTS, this table shows what EXISTS
+        from stockcheck.api import _lot_frames, refresh_vif_snapshot
+        snap = refresh_vif_snapshot(vif_folder, DATA)
+        lots = _lot_frames(snap)
+        rm = snap.frames.get("jestkexp.csv")
+        pkg = snap.frames.get("jestkexp2.csv")
+        extra = [df for n, df in lots
+                 if n not in ("jestkexp.csv", "jestkexp2.csv")]
+        return cov.lot_detail(rm, pkg, item, extra=extra)
+
+    with st.expander(f"Lot detail — every VIF stock export for {item or '…'}",
+                     expanded=False):
+        _lots = pd.DataFrame()
+        if item:
+            try:
+                _lots = _lot_rows(vif_folder, json.dumps(src, sort_keys=True),
+                                  str(item))
+            except Exception as exc:  # noqa: BLE001 — a lot table is a courtesy
+                st.caption(f"Lot detail unavailable: {exc}")
+        if _lots is None or _lots.empty:
+            st.caption("No lot of this item in any VIF stock export.")
+        else:
+            _show = [c for c in ("source", "depot", "location", "status", "batch",
+                                 "bbd", "qty", "unit", "designation")
+                     if c in _lots.columns]
+            st.caption(f"{len(_lots)} lot(s) across "
+                       f"{_lots['source'].nunique() if 'source' in _lots.columns else '?'}"
+                       " export(s); depot|status toggles above decide which count.")
+            # st.table: st.dataframe never mounts inside an initially-
+            # collapsed expander (helpers/st_compat)
+            st.table(_lots[_show].head(300) if _show else _lots.head(300))
+
 with tab_recv:
     section_label("Inbound appointments (Shipping/Receiving schedule)")
     if appts:
@@ -612,8 +709,9 @@ with tab_inb:
         c2.metric("Overdue", counts.get("overdue", 0),
                   help="receipt date before the stock snapshot — never counted")
         c3.metric("Landed", counts.get("landed", 0),
-                  help="a stock lot with a matching batch date already holds "
-                       "it")
+                  help="already here: the ERP booked a receipt slip for it "
+                       "(PKG-REC.csv) or a stock lot with a matching batch "
+                       "date holds it")
         c4.metric("Received", counts.get("received", 0),
                   help="nothing left to receive: the ERP shows zero remaining "
                        "quantity (or, on the legacy workbook, a receipt number)")
@@ -658,11 +756,15 @@ with tab_inb:
                     "item": ln.get("item") or "",
                     "designation": ln.get("designation") or "",
                     "qty": ln.get("qty"),
-                    "unit": ln.get("unit") or "",
-                    # ERP export only: the original order qty and the raw
-                    # line status (legacy workbook lines leave them blank)
+                    # a KEA line is shown in EA with its original unit noted
+                    "unit": (ln.get("unit") or "")
+                            + (f" (from {ln['unit_original']})" if ln.get("unit_original") else ""),
+                    # ERP export only: the original order qty, the raw line
+                    # status and its meaning (receivable / archived /
+                    # deleted; legacy workbook lines leave them blank)
                     "ordered": ln.get("qty_ordered"),
                     "status": ln.get("status"),
+                    "state": ln.get("status_text") or "",
                     "receipt_date": ln.get("receipt_date") or "",
                     "slip_days": ln.get("slip_days"),
                     "arrival_area": ln.get("arrival_area") or "",
@@ -685,6 +787,24 @@ with tab_inb:
         if errs:
             st.caption(f"{len(errs)} import problem(s): "
                        + "; ".join(errs[:5]) + (" …" if len(errs) > 5 else ""))
+        # receipt slips (PKG-REC.csv, 2026-09-15): the ERP's booked receipts
+        # that landed PO lines before the batch-dated lot rule
+        _slips = inb.get("slips")
+        if isinstance(_slips, dict) and _slips.get("n_slips"):
+            st.caption(f"Receipt slips: {_slips.get('n_slips', 0)} slip line(s) on "
+                       f"{_slips.get('n_pos', 0)} PO(s), dated "
+                       f"{_slips.get('date_min') or '—'} → {_slips.get('date_max') or '—'}"
+                       f" · {_slips.get('n_landed', 0)} PO line(s) landed by a slip"
+                       # (2026-09-16) slips booked after the stock export
+                       + (f" · {_slips['n_counted']} counted as booked after the "
+                          f"stock export" if _slips.get("n_counted") else "")
+                       + ".")
+        # loader notes (empty exports, dropped duplicates, ignored stale
+        # files) — the snapshot's `notes`, carried on the report
+        _notes = [str(n) for n in (inb.get("notes") or rep.get("import_notes") or [])]
+        if _notes:
+            st.caption(f"{len(_notes)} import note(s): " + "; ".join(_notes[:6])
+                       + (" …" if len(_notes) > 6 else ""))
 
 with tab_dq:
     section_label("Data quality")
@@ -692,9 +812,9 @@ with tab_dq:
                 "schedule/demand universe — no recipe in ediact 3, cannot be "
                 "checked:")
     st.caption("Fix: these SKUs are on the board or in the demand plan but "
-               "have no recipe in the BOM export (ediact 3.csv). Add the "
-               "recipe to the VIF export, or take the SKU off the schedule / "
-               "out of the demand plan.")
+               "have no recipe in the BOM export (ediact.csv, or the legacy "
+               "ediact 3.csv). Add the recipe to the VIF export, or take the "
+               "SKU off the schedule / out of the demand plan.")
     st.code(", ".join(rep["no_bom_skus"]) or "none in the current plan")
     st.markdown("**All SKUs without a BOM** (full catalog from `sku_info.csv`):")
     st.caption("Fix: these SKUs are listed in sku_info.csv but have no recipe "
@@ -760,3 +880,7 @@ with tab_dq:
                          for v in vals]))
     st.markdown("**Source files** (name · export timestamp):")
     st.code("\n".join(f"{n}  {t}" for n, t in sorted(src.items())) or "none")
+    _imp_notes = [str(n) for n in (rep.get("import_notes") or [])]
+    if _imp_notes:
+        st.caption("Import notes (empty exports, dropped duplicate rows, "
+                   "ignored stale files): " + "; ".join(_imp_notes))

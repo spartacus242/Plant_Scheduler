@@ -148,6 +148,13 @@ def stock_config(cfg: dict | None = None) -> dict[str, Any]:
         "raw_areas": ["RB1", "AMB", "RC1"],
         # Count only from a joined "SL3 TRANSFER" appointment, else excluded.
         "offsite_areas": ["SL3"],
+        # Solver stock policy (slice 3, 2026-09-15): "projected" caps each
+        # demand order from the time-phased projection (board netted,
+        # receipts lift the cap); "flat" is the 2026-08-14 worst-week DNS
+        # trim; "off" leaves the solver component-blind.
+        "solver_policy": "projected",
+        # Orders that depend on a receipt may not start before ready + L.
+        "solver_earliest_start": True,
     }
     for k, v in defaults.items():
         sc.setdefault(k, list(v) if isinstance(v, list) else v)

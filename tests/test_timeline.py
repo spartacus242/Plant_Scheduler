@@ -801,3 +801,363 @@ def test_fixture_shape():
             assert set(sup) == supply_keys
             assert sup["verdict"] in {"OK", "DEPENDENT", "SHORT", "NO_DATA"}
             assert sup["action"] in {"none", "move", "chase_po"}
+
+
+def test_gate_cancelled_and_archived_lines_never_become_receipts():
+    """ERP line status (IT 2026-09-15): a deleted line (`cancelled`) is not
+    inbound whatever its remaining qty — its own fate, before every other
+    check; an archived line closes with a reason that says so; the legacy
+    'nothing left to receive' reason is untouched."""
+    lines = [
+        _line(row=1, cancelled=True, status_text="deleted"),
+        _line(row=2, received=True, status_text="archived"),
+        _line(row=3, received=True, qty=0.0),
+        _line(row=4),
+    ]
+    receipts, fates, feed = _gate(lines)
+    by_row = {f["row"]: f for f in fates}
+    assert by_row[1]["fate"] == "cancelled" and "deleted" in by_row[1]["reason"]
+    assert by_row[2]["fate"] == "received" and by_row[2]["reason"] == "archived in the ERP"
+    assert by_row[3]["fate"] == "received" and by_row[3]["reason"] == "nothing left to receive"
+    assert by_row[4]["fate"] == "used"
+    assert sum(len(v) for v in receipts.values()) == 1
+    assert feed["fates"].get("cancelled") == 1
+
+
+def test_gate_receipt_slips_land_before_the_lot_rule():
+    """Receipt-slip rule (PKG-REC.csv, drop of 2026-09-15): a PO line whose
+    (po8, item) has slips dated on/before today totalling >= the landed
+    fraction is LANDED before the batch-dated lot rule runs, the reason
+    names the slip number(s) and date(s), slip qty is CONSUMED per line,
+    future-dated slips are not evidence, a slip matches on the resolved
+    key or the raw code, and garbage slips are noted — never raised."""
+    slips = {
+        # PO 30043543 / 754751: two slips = 67,200 -> lands line 1 in full
+        "30043543": [
+            {"item": "754751", "qty": 35200.0, "date": "2026-09-01",
+             "slip": "30119536"},
+            {"item": "754751", "qty": 32000.0, "date": date(2026, 8, 31),
+             "slip": "30119540"},
+            # another item on the same PO: never matched to 754751
+            {"item": "999999", "qty": 99999.0, "date": "2026-09-01",
+             "slip": "30119999"},
+        ],
+        # PO 30043550 / 752420: one slip of 1,500 M2 -> lands the first
+        # 1,000-unit line, leaves 500 (< 95%) for the second
+        "30043550": [{"item": "752420", "qty": 1500, "date": "2026-08-30",
+                      "slip": "30119600"}],
+        # PO 30043560 / 730021: slip dated AFTER today -> ignored
+        "30043560": [{"item": "730021", "qty": 500.0, "date": "2026-09-05",
+                      "slip": "30119700"}],
+        # PO 30043544 / 735009 (raw code; BOM key 735009-A): matches on code
+        "30043544": [{"item": "735009", "qty": 67200.0, "date": "2026-08-31",
+                      "slip": "30119800"}],
+        # garbage next to a good slip: noted, the good one still lands
+        "30043570": ["junk", 42,
+                     {"item": "754751", "qty": 100.0, "date": "garbage",
+                      "slip": "30119901"},
+                     {"item": "754751", "qty": "abc", "date": "2026-08-31",
+                      "slip": "30119902"},
+                     {"item": "754751", "qty": None, "date": "2026-08-31",
+                      "slip": "30119903"},
+                     {"item": "754751", "qty": 67200.0, "date": "2026-08-31",
+                      "slip": "30119904"}],
+        "30043580": 7,                                   # not a list
+    }
+    lots = {
+        # a lot (2026-09-05) outside every slip's -3..+1 d window, so the
+        # slips' own lot consumption (2026-09-16) leaves it for line 2
+        # (PO 30043545, no slips); test_gate_slip_consumes_the_lot_it_became
+        # pins the in-window case
+        "754751": [("N62480001", 67200.0)],
+    }
+    lines = [
+        _line(row=1),                                             # slips
+        _line(row=2, po8="30043545", receipt_date="2026-09-06"),  # lots
+        _line(row=3, qty=10000.0),      # same PO: slips spent, lots spent
+        _line(row=4, item="752420", unit="M2", qty=1000.0, po8="30043550",
+              receipt_date="2026-09-03"),
+        _line(row=5, item="752420", unit="M2", qty=1000.0, po8="30043550",
+              receipt_date="2026-09-04"),
+        _line(row=6, item="730021", unit="KG", qty=500.0, po8="30043560",
+              receipt_date="2026-09-03"),
+        _line(row=7, item="735009", po8="30043544", receipt_date="2026-09-04"),
+        _line(row=8, po8="30043570", receipt_date="2026-09-02"),
+        _line(row=9, po8="30043580", receipt_date="2026-09-02"),
+    ]
+    # (2026-09-16) a batch-less slip dated ON the snapshot day is no longer
+    # evidence by its date (test_gate_slip_booked_after_the_export_counts_
+    # on_the_slip_date): the stock count here is of 2026-09-02, so every
+    # slip below predates it
+    receipts, fates, feed = _gate(lines, stock_lots=lots, receipt_slips=slips,
+                                  snapshot_date="2026-09-02",
+                                  today=date(2026, 9, 2))
+    by_row = {f["row"]: f for f in fates}
+    assert by_row[1]["fate"] == "landed"
+    assert by_row[1]["reason"] == ("receipt slips 30119536, 30119540 on "
+                                   "2026-08-31..2026-09-01: 67,200 of 67,200")
+    assert by_row[2]["fate"] == "landed" and "lots dated" in by_row[2]["reason"]
+    assert by_row[3]["fate"] == "used"                # nothing left to prove it
+    assert by_row[4]["fate"] == "landed"
+    assert by_row[4]["reason"] == "receipt slip 30119600 on 2026-08-30: 1,000 of 1,000"
+    assert by_row[5]["fate"] == "used"                # 500 left < 95% of 1,000
+    assert by_row[6]["fate"] == "used"                # future-dated slip
+    assert by_row[7]["fate"] == "landed" and by_row[7]["item_key"] == "735009-A"
+    assert "30119800" in by_row[7]["reason"]
+    assert by_row[8]["fate"] == "landed" and "30119904" in by_row[8]["reason"]
+    assert by_row[9]["fate"] == "used"                # entry not a list: skipped
+    assert feed["n_landed_by_slip"] == 4
+    assert feed["fates"]["landed"] == 5 and feed["fates"]["used"] == 4
+    assert set(receipts) == {"754751", "752420", "730021"}
+    errs = feed["errors"]
+    assert any("'junk'" in e and "30043570" in e for e in errs)
+    assert any("30119901" in e and "'garbage'" in e for e in errs)
+    assert any("30119902" in e and "'abc'" in e for e in errs)
+    assert not any("30119903" in e for e in errs)     # a blank qty is not an error
+    assert any("30043580" in e and "not a list" in e for e in errs)
+    # receipt_slips itself not a dict -> rule skipped, noted, nothing raised
+    _, fates2, feed2 = _gate([lines[0]], receipt_slips=[("754751", 67200.0)])
+    assert fates2[0]["fate"] == "used" and any("receipt_slips" in e for e in feed2["errors"])
+    # no receipt_slips at all -> the feed still carries the counter
+    _, fates3, feed3 = _gate([lines[0]])
+    assert fates3[0]["fate"] == "used" and feed3["n_landed_by_slip"] == 0
+
+
+def test_gate_slip_consumes_the_lot_it_became():
+    """Slip-landed lots are consumed (2026-09-16): the truck a receipt slip
+    books IS a stock lot, so landing a line by slip takes its qty from the
+    item's lot pool — the slip's own batch first, then lots dated slip
+    date -3..+1 d, earliest first — and one physical lot never lands a
+    second PO line by the lot rule. The reason is singular when the rows
+    consumed (one per batch) carry ONE distinct slip number."""
+    slips = {
+        # one slip, two batch rows (PKG-REC prints one row per batch)
+        "30043543": [
+            {"item": "754751", "qty": 40000.0, "date": "2026-09-01",
+             "slip": "30119689", "batch": "N62440007"},
+            {"item": "754751", "qty": 27200.0, "date": "2026-09-01",
+             "slip": "30119689", "batch": "n62440008 "},
+        ],
+        # batch-first: the slip's own lot is dated 2026-08-18 (outside the
+        # window) and is taken before the in-window lot of 2026-09-01
+        "30043550": [{"item": "752420", "qty": 1000.0, "date": "2026-09-01",
+                      "slip": "30119700", "batch": "N62300001"}],
+    }
+    lots = {
+        "754751": [("N62440007", 40000.0), ("N62440008", 27200.0)],
+        "752420": [("N62300001", 1000.0), ("N62440009", 1000.0)],
+    }
+    lines = [
+        _line(row=1),                                          # slip lands
+        _line(row=2, po8="30043545", receipt_date="2026-09-03"),  # lots gone
+        _line(row=3, item="752420", unit="M2", qty=1000.0, po8="30043550"),
+        _line(row=4, item="752420", unit="M2", qty=1000.0, po8="30043551"),
+    ]
+    receipts, fates, feed = _gate(lines, stock_lots=lots, receipt_slips=slips)
+    by_row = {f["row"]: f for f in fates}
+    assert by_row[1]["fate"] == "landed"
+    assert by_row[1]["reason"] == "receipt slip 30119689 on 2026-09-01: 67,200 of 67,200"
+    # before 2026-09-16 the same two lots landed line 2 a second time
+    assert by_row[2]["fate"] == "used"
+    assert by_row[3]["fate"] == "landed" and "30119700" in by_row[3]["reason"]
+    # the 2026-09-01 lot survived (the slip took its own batch): lot rule
+    assert by_row[4]["fate"] == "landed" and "lots dated" in by_row[4]["reason"]
+    assert feed["n_landed_by_slip"] == 2
+    assert list(receipts) == ["754751"]
+    # without stock_lots a slip dated BEFORE the snapshot still lands;
+    # nothing to consume, no error (2026-09-16: on the snapshot day itself
+    # it would need its batch in the lots)
+    _, f2, feed2 = _gate(lines[:1], receipt_slips=slips,
+                         snapshot_date="2026-09-02", today=date(2026, 9, 2))
+    assert f2[0]["fate"] == "landed" and not feed2["errors"]
+
+
+def test_gate_slip_after_snapshot_needs_its_batch_in_the_lots():
+    """Slip after the stock snapshot (2026-09-16): a slip dated AFTER
+    snapshot_date is landed evidence only when its batch already sits in
+    stock_lots[key]; otherwise the goods are not in the counted on-hand and
+    the line stays a receipt (on the real drop 25 of 34 slips of 2026-09-15
+    had batches in no lot frame). BEFORE the snapshot day a slip needs no
+    lot; ON it, it needs its batch like a later one (second pass,
+    2026-09-16). A batch-matched slip consumes that lot."""
+    today = date(2026, 9, 3)
+    slips = {"30043543": [{"item": "754751", "qty": 67200.0,
+                           "date": "2026-09-02", "slip": "30119750",
+                           "batch": "N62450001"}]}
+    line = _line(row=1, receipt_date="2026-09-04")
+    other = _line(row=2, po8="30043545", receipt_date="2026-09-03")
+    # batch in no lot frame -> counted as a receipt, not landed
+    receipts, fates, feed = _gate([line], today=today, receipt_slips=slips,
+                                  stock_lots={"754751": [("N62440001", 5.0)]})
+    assert fates[0]["fate"] == "used" and feed["n_landed_by_slip"] == 0
+    assert list(receipts) == ["754751"]
+    # no lot information at all -> same
+    _, fates, _ = _gate([line], today=today, receipt_slips=slips)
+    assert fates[0]["fate"] == "used"
+    # the batch IS on hand -> landed by the slip, and that lot is consumed
+    lots = {"754751": [("N62450001", 67200.0)]}
+    _, fates, feed = _gate([line, other], today=today, receipt_slips=slips,
+                           stock_lots=lots)
+    assert fates[0]["fate"] == "landed" and "30119750" in fates[0]["reason"]
+    assert fates[1]["fate"] == "used"
+    assert feed["n_landed_by_slip"] == 1
+    # the same slip dated ON the snapshot day (export mid-day) is no longer
+    # evidence by its date: batch in no lot -> counted on the slip date
+    # (2026-09-16 second pass); dated the day BEFORE, it needs no lot
+    on_snap = {"30043543": [dict(slips["30043543"][0], date="2026-09-01")]}
+    _, fates, feed = _gate([line], today=today, receipt_slips=on_snap)
+    assert fates[0]["fate"] == "used" and feed["n_counted_by_slip"] == 1
+    assert fates[0]["ready_h"] == 16.0                  # 09-01 16:00, not 09-04
+    before = {"30043543": [dict(slips["30043543"][0], date="2026-08-31")]}
+    _, fates, _ = _gate([line], today=today, receipt_slips=before)
+    assert fates[0]["fate"] == "landed"
+
+
+def test_gate_slip_evidence_runs_before_the_overdue_rule():
+    """Order of the gate (2026-09-16): slip evidence (with the snapshot /
+    batch constraint) is evaluated BEFORE the receipt-date-before-snapshot
+    overdue branch — 14 slip-covered lines read "overdue" on the real drop.
+    A line whose only slip is not evidence (booked after the stock export)
+    is counted on the slip date instead of overdue (2026-09-16 second
+    pass); a line with no slip is overdue as before."""
+    today = date(2026, 9, 3)
+    late = _line(row=1, receipt_date="2026-08-28")
+    slips = {"30043543": [{"item": "754751", "qty": 67200.0,
+                           "date": "2026-08-29", "slip": "30119600",
+                           "batch": "N62410001"}]}
+    _, fates, feed = _gate([late], today=today, receipt_slips=slips)
+    assert fates[0]["fate"] == "landed"
+    assert fates[0]["reason"] == "receipt slip 30119600 on 2026-08-29: 67,200 of 67,200"
+    # a slip after the snapshot whose batch is in no lot: not evidence, but
+    # the ERP booked the goods after the count -> a receipt on 09-02 16:00
+    after = {"30043543": [dict(slips["30043543"][0], date="2026-09-02")]}
+    receipts, fates, feed = _gate([late], today=today, receipt_slips=after,
+                                  stock_lots={})
+    assert fates[0]["fate"] == "used" and feed["n_landed_by_slip"] == 0
+    assert feed["n_counted_by_slip"] == 1
+    assert [r["ready_h"] for r in receipts["754751"]] == [40.0]
+    # no slips -> overdue, unchanged
+    _, fates, _ = _gate([late], today=today)
+    assert fates[0]["fate"] == "overdue"
+
+
+def test_gate_slip_booked_after_the_export_counts_on_the_slip_date():
+    """Snapshot-day slips (review of 2026-09-16): the lot export runs mid-day
+    (14:05), so a slip dated ON the snapshot day is landed evidence only when
+    its batch sits in the item's lots — on the real drop 25 of that day's 34
+    slips were in no lot and landed PO 30044092's lines, dropping the trucks
+    from supply. A slip booked after the count makes the line a receipt
+    ready on the slip date @ receipt_ready_hour (+ raw QC offset), never
+    landed and never overdue: a covered line counts qty minus the part its
+    evidence slips prove on hand (those slips consume their lots); a partial
+    late booking on an overdue line counts the booked qty only. A partial
+    booking on a line still due, and an offsite line, take the normal path."""
+    snap, today = "2026-09-15", datetime(2026, 9, 15, 20, 0)
+    old_lots = {"754751": [("N62400001", 2400.0), ("N62410002", 2400.0)]}
+
+    def slip(qty, batch, no="30120900", d="2026-09-15"):
+        return {"item": "754751", "qty": qty, "date": d, "slip": no, "batch": batch}
+
+    def gate(lines, slips, lots=old_lots, **kw):
+        return _gate(lines, snapshot_date=snap, today=today, stock_lots=lots,
+                     receipt_slips=slips, **kw)
+
+    # the reviewer's repro: same-day slip, batch in no lot -> counted 09-15 16:00
+    truck = _line(row=1, po8="30044100", qty=2400.0, receipt_date="2026-09-15")
+    receipts, fates, feed = gate([truck], {"30044100": [slip(2400.0, "N62580001")]})
+    assert fates[0]["fate"] == "used" and fates[0]["tier"] == "erp"
+    assert fates[0]["reason"] == ("counted; receipt slip 30120900 on 2026-09-15 booked "
+                                  "after the stock export: 2,400 of 2,400")
+    assert [(r["ready_h"], r["qty"]) for r in receipts["754751"]] == [(352.0, 2400.0)]
+    assert feed["n_counted_by_slip"] == 1 and feed["n_landed_by_slip"] == 0
+    # ... its batch IS in the export -> booked before the count: landed
+    lots = {"754751": old_lots["754751"] + [("N62580001", 2400.0)]}
+    receipts, fates, feed = gate([truck], {"30044100": [slip(2400.0, "N62580001")]},
+                                 lots=lots)
+    assert fates[0]["fate"] == "landed" and receipts == {}
+
+    # PO 30044092 shape: ERP date 09-14 (< snapshot), booked 09-15 -> counted
+    # on the slip date instead of overdue; a raw area adds the QC offset
+    rd14 = _line(row=2, po8="30044092", qty=22230.0, receipt_date="2026-09-14")
+    five = {"30044092": [slip(4446.0, f"N6258047{i}", no="30120860") for i in range(5)]}
+    receipts, fates, _ = gate([rd14], five)
+    assert fates[0]["fate"] == "used"
+    assert [(r["ready_h"], r["qty"]) for r in receipts["754751"]] == [(352.0, 22230.0)]
+    receipts, fates, _ = gate([dict(rd14, arrival_area="RB1")], five)
+    assert receipts["754751"][0]["ready_h"] == 352.0 + 72.0
+    # partial late booking on the overdue line: the booked qty only
+    receipts, fates, _ = gate([dict(rd14, qty=31122.0)], five)
+    assert fates[0]["fate"] == "used" and fates[0]["reason"].endswith("; the rest is overdue")
+    assert [r["qty"] for r in receipts["754751"]] == [22230.0]
+    # offsite line: normal path (overdue)
+    _, fates, feed = gate([dict(rd14, arrival_area="SL3")], five)
+    assert fates[0]["fate"] == "overdue" and feed["n_counted_by_slip"] == 0
+
+    # evidence + late on one line (PO 30043986 shape): the on-hand part is
+    # not counted again and its lot is consumed — a second line cannot land
+    # by it
+    mixed = {"30043986": [slip(29608.0, "N62580100", no="30119536"),
+                          slip(54400.0, "N62580101", no="30119536")]}
+    lots = {"754751": [("N62580100", 29608.0)]}
+    first = _line(row=3, po8="30043986", qty=89600.0, receipt_date="2026-09-11")
+    second = _line(row=4, po8="30043999", qty=29000.0, receipt_date="2026-09-15")
+    receipts, fates, _ = gate([first, second], mixed, lots=lots)
+    assert fates[0]["fate"] == "used"
+    assert "(29,608 already on hand); the rest is overdue" in fates[0]["reason"]
+    assert fates[1]["fate"] == "used"                 # the lot went to line 3
+    assert sorted(r["qty"] for r in receipts["754751"]) == [29000.0, 54400.0]
+
+    # partial late booking on a line still due: the normal path, whole line
+    # at its ERP date 09-17 16:00
+    due = _line(row=5, po8="30044200", qty=10000.0, receipt_date="2026-09-17")
+    receipts, fates, feed = gate([due], {"30044200": [slip(5000.0, "N62580200")]})
+    assert fates[0]["fate"] == "used" and fates[0]["reason"] == "counted"
+    assert [(r["ready_h"], r["qty"]) for r in receipts["754751"]] == [(400.0, 10000.0)]
+    assert feed["n_counted_by_slip"] == 0
+
+
+def test_gate_daily_lots_land_only_same_day_lines_of_the_snapshot_day():
+    """Daily lots (review of 2026-09-16): fresh-apple lots (jestksav.csv)
+    come off daily trucks. A daily lot lands a PO line only when the line is
+    dated on/before the snapshot day and the lot is dated that same day —
+    the snapshot day's trucks already in the export are not counted twice
+    (five 730070 lines of 2026-09-15 were, 130,000 kg), while a future line
+    (another day's truck) and a line whose lots are from earlier days stay
+    receipts. As regular stock_lots the same lot would land the future line
+    by the -3..+1 d window. Daily lots feed the slip batch check; an
+    undecodable daily lot flags only an eligible line; garbage is noted."""
+    snap, today = "2026-09-15", datetime(2026, 9, 15, 20, 0)
+    kw = {"bom_items": {"730070"}, "unit_by_item": {"730070": "KG"},
+          "snapshot_date": snap, "today": today}
+
+    def line(row, po8, rd):
+        return _line(row=row, po8=po8, item="730070", unit="KG", qty=26000.0,
+                     receipt_date=rd)
+
+    future = line(1, "30044332", "2026-09-17")   # first: it would take the lot
+    same = line(2, "30044313", "2026-09-15")
+    daily = {"730070": [("N62580001", 139082.0)]}
+    receipts, fates, _ = _gate([future, same], daily_lots=daily, **kw)
+    assert fates[0]["fate"] == "used"
+    assert fates[1]["fate"] == "landed"
+    assert fates[1]["reason"] == "139082 of 26000 already in lots dated 2026-09-15"
+    assert [r["receipt_date"] for r in receipts["730070"]] == ["2026-09-17"]
+    # the same lot as a regular stock lot lands the future line too
+    _, fates, _ = _gate([future, same], stock_lots=daily, **kw)
+    assert [f["fate"] for f in fates] == ["landed", "landed"]
+    # a daily lot of the day BEFORE never lands the snapshot-day line
+    _, fates, _ = _gate([same], daily_lots={"730070": [("N62570001", 139082.0)]}, **kw)
+    assert fates[0]["fate"] == "used"
+    # the slip batch check sees daily lots like any lot
+    slips = {"30044313": [{"item": "730070", "qty": 26000.0, "date": "2026-09-15",
+                           "slip": "1", "batch": "N62580001"}]}
+    _, fates, feed = _gate([same], daily_lots=daily, receipt_slips=slips, **kw)
+    assert fates[0]["fate"] == "landed" and feed["n_landed_by_slip"] == 1
+    # undecodable daily lots: only the eligible line reads unverifiable
+    blind = {"730070": [("S123456", 139082.0)]}
+    _, fates, _ = _gate([future, same], daily_lots=blind, **kw)
+    assert [f["fate"] for f in fates] == ["used", "landed_unverifiable"]
+    # not a dict -> noted, never raised
+    _, fates, feed = _gate([same], daily_lots=[("N62580001", 1.0)], **kw)
+    assert fates[0]["fate"] == "used"
+    assert any("daily_lots" in e for e in feed["errors"])

@@ -137,6 +137,12 @@ def build_greedy_fill(
             qmax = target * 1.1 if qmax is None else qmax
         ds = float(d.get("due_start_hour", 0) or 0)
         de = min(horizon_h, float(d.get("due_end_hour", 0) or 0) + 1)
+        # Stock-policy floor (slice 3): the seed must not hand CP-SAT a hint
+        # that starts an order before its receipt + buffer — the model
+        # holds the same floor and would discard the hint.
+        es = _num(d.get("earliest_start_hour"))
+        if es is not None:
+            ds = max(ds, es)
         remaining = target
         used_lines = 0
 

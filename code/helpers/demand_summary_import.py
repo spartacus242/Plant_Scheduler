@@ -13,11 +13,52 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+# Self-anchoring year inference (2026-09-15): a week whose Monday is more than
+# this far in the past cannot be what a fresh demand file means.
+SELF_ANCHOR_LOOKBACK_WEEKS = 12
+# (2026-09-16) The look-back picks the year of the file's FIRST week only;
+# every other week lands on the first Monday of its number on or after that
+# one (forward, 0..52 weeks). A week mapped more than this many weeks after
+# the first one is reported in the warnings (a long horizon, or a file whose
+# weeks are not one run).
+SELF_ANCHOR_SPAN_WEEKS = 26
+
+
+def _run_start_order(weeks: list[int]) -> list[int]:
+    """The file's distinct valid weeks (1..53), best run start first
+    (2026-09-16): the week after the widest gap on the 53-slot ISO week
+    circle leads, so a window in order (38..44), a New-Year wrap (51, 52, 53,
+    1, 2) and the same wrap sorted by number (1, 2, 51, 52, 53) all start
+    where the plan starts. Ties go to the week seen first in the file."""
+    seen: list[int] = []
+    for w in weeks:
+        w = int(w)
+        if 1 <= w <= 53 and w not in seen:
+            seen.append(w)
+    ordered = sorted(seen)
+    keyed = []                                   # ((gap, -file position), week)
+    for i, w in enumerate(ordered):
+        prev = ordered[i - 1] if i else ordered[-1] - 53
+        keyed.append(((w - prev, -seen.index(w)), w))
+    return [w for _, w in sorted(keyed, reverse=True)]
+
+
+def _run_start_week(weeks: list[int]) -> int | None:
+    """The week that starts the file's run of weeks (the first of
+    _run_start_order). None for no valid week."""
+    order = _run_start_order(weeks)
+    return order[0] if order else None
+
+
+def _today() -> date:
+    """The clock the self-anchoring year inference reads (patched in tests)."""
+    return datetime.now().date()
 
 
 @dataclass
@@ -53,6 +94,27 @@ def import_summary(
 
     Week → hour mapping: ISO weeks are always Monday-to-Sunday. We compute the
     Monday of each ISO week and convert it to hours from the anchor.
+
+    ISO week → year (2026-09-15, revised 2026-09-16): the file carries week
+    NUMBERS only, so the year is inferred, ONCE for the whole file.
+    Self-anchoring (anchor None): the week that starts the file's run of
+    weeks (_run_start_order: 38 for 38..44, 51 for 51,52,53,1,2) takes the
+    year among (this year - 1, this year, this year + 1) whose Monday is the
+    EARLIEST one on or after today minus 12 weeks; every other week takes
+    the first Monday of its number on or after that reference Monday
+    (FORWARD, 0..52 weeks: the run start is by construction the week the
+    others follow). So a window that crosses New Year (51, 52, 1, 2) puts
+    week 1 in the coming January, a contiguous window stays contiguous
+    however late it is re-imported (the per-week look-back of 2026-09-15
+    split W38..W44 re-imported on 2026-12-14 into week_index [52, 0, 1, ...])
+    and however long it is (the "nearest Monday" rule of 2026-09-16 put the
+    tail of a 28+ week horizon in the past). One exception: when the file
+    holds the CURRENT ISO week, the run starts at the best-ranked week that
+    maps it onto this week's Monday, so [20, 38] read in W38 of 2026 is W38
+    now and W20 of 2027 (35 weeks on), never W38 of 2027. A week mapped more
+    than SELF_ANCHOR_SPAN_WEEKS after the run start is listed in warnings.
+    With an explicit `anchor` the legacy mapping stays: the anchor's year,
+    then the next. `_today()` is the clock, so tests can freeze it.
     """
     path = Path(path)
     src = path if path.suffix == ".csv" else path
@@ -89,12 +151,79 @@ def import_summary(
 
     # ISO week → Monday datetime.
     # Python's date.fromisocalendar(year, week, 1) returns the Monday.
+    def _floor_monday(iso_week: int) -> date:
+        # the look-back rule of 2026-09-15: the earliest Monday on or after
+        # today - 12 weeks among 3 years
+        today = _today()
+        floor = today - timedelta(weeks=SELF_ANCHOR_LOOKBACK_WEEKS)
+        cands = []
+        for year in (today.year - 1, today.year, today.year + 1):
+            try:
+                monday = date.fromisocalendar(year, iso_week, 1)
+            except ValueError:
+                continue
+            if monday >= floor:
+                cands.append(monday)
+        if not cands:
+            raise ValueError(f"ISO week {iso_week} not found in years "
+                             f"{today.year - 1}-{today.year + 1}")
+        return min(cands)
+
+    def _forward_monday(iso_week: int, ref: date) -> date | None:
+        # (2026-09-16) the first Monday of `iso_week` on or after `ref`
+        ref_year = ref.isocalendar()[0]
+        for year in (ref_year, ref_year + 1):
+            try:
+                monday = date.fromisocalendar(year, iso_week, 1)
+            except ValueError:
+                continue
+            if monday >= ref:
+                return monday
+        return None
+
+    self_ref: tuple[int, date] | None = None
+    far: list[tuple[int, date, int]] = []        # (week, Monday, weeks after the run start)
+    if anchor is None:
+        starts = _run_start_order(list(pd.unique(raw["week"])))
+        today = _today()
+        this_week, this_monday = today.isocalendar()[1], today - timedelta(days=today.weekday())
+        for s in starts:
+            try:
+                ref = _floor_monday(s)
+            except ValueError:
+                continue
+            if this_week in starts:
+                # (2026-09-16) the current ISO week in the file is never pushed a year out
+                lands = ref if s == this_week else _forward_monday(this_week, ref)
+                if lands != this_monday:
+                    continue
+            self_ref = (s, ref)
+            break
+        if self_ref is None and starts:
+            self_ref = (starts[0], _floor_monday(starts[0]))   # raises for an impossible week
+
     def _iso_monday(iso_week: int) -> datetime:
-        anchor_year = (anchor or datetime.now()).year
+        if anchor is None:
+            # self-anchoring (see the docstring): the file's first week by the
+            # look-back rule, every other week forward from it
+            if self_ref is None:
+                monday = _floor_monday(iso_week)        # no valid week: raises
+            elif iso_week == self_ref[0]:
+                monday = self_ref[1]
+            else:
+                monday = _forward_monday(iso_week, self_ref[1])
+                if monday is None:
+                    raise ValueError(f"ISO week {iso_week} not found within a year after the "
+                                     f"file's first week W{self_ref[0]} ({self_ref[1]})")
+                ahead = (monday - self_ref[1]).days // 7
+                if ahead > SELF_ANCHOR_SPAN_WEEKS:
+                    far.append((iso_week, monday, ahead))
+            return datetime(monday.year, monday.month, monday.day)
+        # explicit anchor: legacy mapping (the anchor's year, then the next)
+        anchor_year = anchor.year
         for year in (anchor_year, anchor_year + 1):
             try:
-                import datetime as _dt_mod
-                monday = _dt_mod.date.fromisocalendar(year, iso_week, 1)
+                monday = date.fromisocalendar(year, iso_week, 1)
                 return datetime(monday.year, monday.month, monday.day)
             except ValueError:
                 continue
@@ -102,6 +231,12 @@ def import_summary(
                          f"{anchor_year}-{anchor_year+1}")
 
     week_starts = {w: _iso_monday(w) for w in raw["week"].unique()}
+    if far and self_ref is not None:
+        far.sort(key=lambda f: f[1])
+        warnings.append(
+            f"{len(far)} ISO week(s) more than {SELF_ANCHOR_SPAN_WEEKS} weeks after the file's "
+            f"first week W{self_ref[0]} ({self_ref[1]}), mapped forward: "
+            + ", ".join(f"W{w} -> {m} (+{n})" for w, m, n in far))
     invalid = {w for w in week_starts if w < 1 or w > 53}
     if invalid:
         warnings.append(f"invalid ISO weeks ignored: {sorted(invalid)}")

@@ -655,6 +655,14 @@ class Data:
             else:
                 raise ValueError(
                     f"{where}: needs lower_pct/upper_pct or qty_min/qty_max.")
+            # Stock-policy floor (slice 3): the order may not start before
+            # this hour (a receipt's ready hour + buffer). Blank = no floor.
+            # Rounded UP to a whole hour so the floor is never crossed by
+            # the integer model.
+            es_raw = _num("earliest_start_hour", r.get("earliest_start_hour"),
+                          allow_blank=True)
+            earliest_start = (None if es_raw is None
+                              else max(0, int(math.ceil(es_raw))))
             out.append(
                 dict(
                     order_id=order_id,
@@ -662,6 +670,7 @@ class Data:
                     due_start=num_or_default(r.get("due_start_hour"), 0),
                     due_end=num_or_default(r.get("due_end_hour"),
                                            self.P.horizon_h - 1),
+                    earliest_start=earliest_start,
                     qty_min=qmin,
                     qty_max=qmax,
                     # 100%-of-demand point for the two-tier fill reward

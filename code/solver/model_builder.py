@@ -93,12 +93,20 @@ def effective_due_start(P: Params, o: dict, frame: Optional[dict] = None) -> int
     ds_raw = int(o["due_start"])
     if o.get("is_current_mo") or o.get("is_trial"):
         return ds_raw
+    # Stock-policy floor (Supply Timeline slice 3, 2026-09-15): an order
+    # whose components arrive by PO may not start before the truck's ready
+    # hour + buffer (demand column earliest_start_hour). It raises the
+    # floor under EVERY early-fill policy and feeds the same consumers —
+    # the interval constraint, dead-pair pruning and the window-capacity
+    # clamp — because they all read this function.
+    es = o.get("earliest_start")
+    floor = 0 if es is None else max(0, int(es))
     if not getattr(P, "allow_week1_in_week0", False):
-        return ds_raw
+        return max(ds_raw, floor)
     efh = getattr(P, "early_fill_hours", None)
     if efh is None:
-        return 0
-    return max(0, ds_raw - int(efh))
+        return floor
+    return max(0, ds_raw - int(efh), floor)
 
 
 # -- Soft due weeks (OPT-IN: [scheduler] due_week_policy = "soft") -----------
@@ -685,6 +693,14 @@ def build_model(
                 ).OnlyEnforceIf(seg_b_present[key])
                 week_dev[key] = (early_v, late_v)
                 continue_due_block = False
+                # The stock-policy floor stays HARD even when the AZAP week
+                # is only a preference: a run cannot draw on a truck that
+                # has not landed (slice 3; demand orders only).
+                if (o.get("earliest_start") is not None
+                        and not o.get("is_current_mo") and not o.get("is_trial")):
+                    model.Add(
+                        seg_a_start[key] >= max(0, int(o["earliest_start"]))
+                    ).OnlyEnforceIf(present[key])
             else:
                 model.Add(
                     seg_a_start[key] >= ds_eff

@@ -216,7 +216,7 @@ def test_stock_check_renders_supply_inbound_and_quality(tmp_path,
     # 'ordered' / 'status' come from the ERP export (order_npa.csv,
     # 2026-09-14); the legacy workbook leaves them blank (<NA>)
     assert list(df.columns) == ["po8", "item", "designation", "qty", "unit",
-                                "ordered", "status", "receipt_date", "slip_days",
+                                "ordered", "status", "state", "receipt_date", "slip_days",
                                 "arrival_area", "supplier", "fate", "reason",
                                 "ready", "tier"]
     assert list(df["fate"]) == ["used", "overdue", "unjoinable"]

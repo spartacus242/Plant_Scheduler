@@ -25,8 +25,181 @@ from .bom import BomGraph
 from .explode import (demand_requirements, load_rates, schedule_requirements)
 from .po_import import load_open_pos
 from .receiving_import import parse_receiving_schedule
+from . import vif_import as _vi
 from .vif_import import (VifSnapshot, import_vif_folder, load_latest_snapshot,
                          save_snapshot)
+
+# --------------------------------------------------------------------------
+# VIF loader contract (drop of 2026-09-15) — resolved through getattr so this
+# module reads the new lot exports as soon as vif_import ships lot_frames /
+# receipts_frame / VIF_FILES for them, and keeps working on the two legacy
+# lot files (jestkexp / jestkexp2) with an older loader or a pickled
+# snapshot from before the drop.
+# --------------------------------------------------------------------------
+
+# Lot frames in contract order: raw materials, packaging, off-site AMB,
+# quality control, fresh apples, semi-finished. rm FIRST so an item present
+# in several exports keeps the rm frame's snapshot hour (the old rule).
+_LOT_FRAME_ORDER = ("jestkexp.csv", "jestkexp2.csv", "jestkamb.csv",
+                    "jestkexq.csv", "jestksav.csv", "jestkexp5.csv")
+# short tag per lot file for supply_meta.snapshot_stamp / snapshot_h ("rm"
+# and "pkg" are the pre-drop keys every consumer already reads)
+_FRAME_TAGS = {"jestkexp.csv": "rm", "jestkexp2.csv": "pkg",
+               "jestkamb.csv": "amb", "jestkexq.csv": "qc",
+               "jestksav.csv": "apples", "jestkexp5.csv": "semi"}
+_VIF_FILES_FALLBACK = ("ediact.csv", "ediact 3.csv", "ediact 4.csv",
+                       "jestkexp.csv", "jestkexp2.csv", "jestkamb.csv",
+                       "jestkexq.csv", "jestksav.csv", "jestksa.csv",
+                       "jestkexp5.csv", "jestkexp4.csv", "PKG-REC.csv",
+                       "azapart.csv", "rmpkitems.csv")
+
+
+def _vif_file_names() -> tuple:
+    """vif_import.VIF_FILES (the loader owns the list) unioned with the
+    names the drop introduced, so the mtime guard re-imports when a new
+    export lands even before the loader lists it."""
+    names = [str(n) for n in (getattr(_vi, "VIF_FILES", None) or ())]
+    for n in _VIF_FILES_FALLBACK:
+        if n not in names:
+            names.append(n)
+    return tuple(names)
+
+
+def _lot_frames(snap) -> list:
+    """[(file name, frame)] for every lot export in the snapshot, rm first:
+    vif_import.lot_frames when the loader has it, else the frames dict
+    walked in contract order (the two legacy files on an old snapshot)."""
+    fn = getattr(_vi, "lot_frames", None)
+    if fn is not None:
+        return [(str(n), df) for n, df in fn(snap) if df is not None]
+    frames = getattr(snap, "frames", None) or {}
+    return [(n, frames[n]) for n in _LOT_FRAME_ORDER
+            if frames.get(n) is not None]
+
+
+def _receipts_frame(snap):
+    """The packaging receipt-slip frame (PKG-REC.csv) or None."""
+    fn = getattr(_vi, "receipts_frame", None)
+    if fn is not None:
+        return fn(snap)
+    return (getattr(snap, "frames", None) or {}).get("PKG-REC.csv")
+
+
+def _snapshot_notes(snap) -> list:
+    """Import notes (empty exports, ignored duplicates, stale files): a
+    snapshot pickled before the drop has no `notes` attribute."""
+    return [str(n) for n in (getattr(snap, "notes", None) or [])]
+
+
+def _frame_tag(name: str) -> str:
+    return _FRAME_TAGS.get(name) or Path(name).stem
+
+
+# (2026-09-16) The user rule of 2026-08-14 — a house-made HSM /
+# semi-finished intermediate never gates a SKU on its own stock; the BOM
+# explodes THROUGH it to its sub-components — applied to the drop's
+# semi-finished lot export: jestkexp5.csv never feeds available_stock,
+# tracked_items or the landed rule's stock_lots. With the recipes present
+# the intermediate is no requirement anyway; with them missing ("ediact
+# 4.csv" absent) it must read NOT_TRACKED, never AT_RISK on a few WIP lots
+# — alternates included (BomGraph.explode flags the group no_recipe).
+# Its lots still show in the lot-detail view (pages/stock_check._lot_rows).
+_NEVER_COUNTED_FRAMES = frozenset({"jestkexp5.csv"})
+# (2026-09-16) Fresh apples (jestksav.csv, SA1/SA2) arrive on daily trucks:
+# a lot dated near a FUTURE apple PO line is another truck. The frame's
+# lots go to the gate as daily_lots: they land only a line dated on/before
+# the snapshot day, and only with lots of that same date — the five 730070
+# lines of 2026-09-15 are in the 14:05 export (139,082 kg dated that day)
+# and must not be counted again. The frame still counts on hand (avail /
+# tracked) and shows in lot detail.
+_DAILY_LOT_FRAMES = frozenset({"jestksav.csv"})
+# (2026-09-16) The gate's snapshot date (overdue rule) comes from the raw
+# material and packaging exports only — the pre-drop rule. A small side
+# export (jestkexp5 / jestkexq / jestkamb / jestksav) that kept an old mtime
+# must not pull the date back: that loosened the overdue rule and counted
+# receipts already in on-hand a second time.
+_GATE_SNAPSHOT_TAGS = ("rm", "pkg")
+# alias -> canonical, mirrored from vif_import.LOT_FALLBACKS for a loader
+# that predates it (the loader's own dict wins)
+_LOT_FALLBACKS = {"jestkexp.csv": "jestkexp4.csv", "jestksav.csv": "jestksa.csv"}
+# a lot export this much older than the newest one gets an import note
+_STALE_FRAME_H = 24.0
+
+
+def _counted_lot_frames(lots: list) -> list:
+    """The lot frames that count toward on-hand / tracked (every one but the
+    semi-finished export — see _NEVER_COUNTED_FRAMES)."""
+    return [(n, df) for n, df in lots if n not in _NEVER_COUNTED_FRAMES]
+
+
+def _frame_stamp(snap, name: str, df=None) -> str:
+    """Export stamp of a lot frame (2026-09-16). source_files under the
+    canonical name first; a frame the loader filled from its alias
+    (jestkexp4.csv / jestksa.csv) may be stamped under the REAL file only,
+    so fall back to the name in the frame's 'source' column, then to the
+    LOT_FALLBACKS alias. '' when nothing is stamped."""
+    sf = getattr(snap, "source_files", None) or {}
+    s = sf.get(name)
+    if s:
+        return str(s)
+    if df is None:
+        return ""
+    real = ""
+    try:
+        real = str(df.attrs.get("source") or "")
+        if not real and "source" in df.columns and len(df):
+            real = str(df["source"].iloc[0] or "")
+    except Exception:  # noqa: BLE001 — a stamp is a courtesy, never a crash
+        real = ""
+    real = real.strip()
+    if real and sf.get(real):
+        return str(sf[real])
+    alias = {**_LOT_FALLBACKS, **(getattr(_vi, "LOT_FALLBACKS", None) or {})}.get(name)
+    if alias and sf.get(alias):
+        return str(sf[alias])
+    return ""
+
+
+def _stale_frame_notes(snap, lots: list) -> list:
+    """(2026-09-16) One import note per lot export stamped more than
+    _STALE_FRAME_H older than the newest lot export: its lots (and, before
+    the gate fix, the overdue rule) are that old."""
+    from helpers.timefmt import parse_datetime
+    dts = []
+    for name, df in lots:
+        s = _frame_stamp(snap, name, df)
+        dt = parse_datetime(s) if s else None
+        if dt is not None:
+            dts.append((name, s, dt))
+    if len(dts) < 2:
+        return []
+    newest = max(dts, key=lambda t: t[2])
+    out = []
+    for name, s, dt in dts:
+        age_h = (newest[2] - dt).total_seconds() / 3600.0
+        if age_h > _STALE_FRAME_H:
+            out.append(f"{name}: exported {s}, {age_h / 24.0:.1f} d before the "
+                       f"newest lot export ({newest[0]} {newest[1]}) — its "
+                       f"lots may be out of date")
+    return out
+
+
+def _report_notes(snap) -> list:
+    """The loader's notes plus the stale-lot-export notes (2026-09-16):
+    one list for report['import_notes'] and inbound['notes']."""
+    notes = _snapshot_notes(snap)
+    try:
+        extra = _stale_frame_notes(snap, _lot_frames(snap))
+    except Exception:  # noqa: BLE001 — notes never break the report
+        extra = []
+    return notes + [n for n in extra if n not in notes]
+
+
+def _missing_recipes(snap) -> list:
+    """Semi-finished activities the BOM references but no recipe export
+    carries (vif_import.missing_semi_recipes, recorded on the snapshot);
+    [] for a loader / snapshot without the attribute."""
+    return [str(x) for x in (getattr(snap, "missing_recipes", None) or [])]
 
 # Dock appointment sheet: the bridge copy first, else the bundled dev sheet
 # (same names pages/stock_check.py and helpers/data_health.py use).
@@ -56,23 +229,52 @@ def _finite(x, default: float = 0.0) -> float:
 
 def refresh_vif_snapshot(vif_folder: str | Path, data_dir: str | Path
                          ) -> VifSnapshot:
-    """Re-import only if any source mtime changed; keep last-good on failure."""
+    """Re-import only if any source mtime changed; keep last-good on failure.
+
+    The gate signs every recognised export name (_vif_file_names) and
+    remembers that signature ON the saved snapshot (`gate_mtimes`) rather
+    than comparing against snap.source_files: what the loader records
+    there is its own business (a loader mid-upgrade may skip a name the
+    gate signs), and since the drop of 2026-09-15 the folder also holds
+    aliases the loader ignores (jestkexp4.csv, jestksa.csv) — a compare
+    that disagrees on one name would re-import and write a new snapshot
+    pickle on EVERY report. A snapshot pickled before this change has no
+    gate_mtimes and falls back to source_files (one extra import, then
+    gated).
+
+    A file the loader could not read (snap.errors, "name: exc") is left
+    OUT of the signature so it is retried on the next call — a share
+    hiccup must not hide a depot for a day — but an import whose outcome
+    (frames, errors, signature) equals the saved one is returned without
+    being saved again, so a persistently corrupt file costs an import per
+    call, never a pickle per call."""
     snapshots_dir = Path(data_dir) / "stockcheck" / "snapshots"
     prev = load_latest_snapshot(snapshots_dir)
     folder = Path(vif_folder)
     current_mtimes = {}
-    for name in ("ediact 3.csv", "ediact 4.csv", "jestkexp.csv",
-                 "jestkexp2.csv", "azapart.csv", "rmpkitems.csv"):
+    # every recognised export, old names and the 2026-09-15 drop's alike
+    for name in _vif_file_names():
         p = folder / name
         if p.exists():
             import time
             current_mtimes[name] = time.strftime(
                 "%Y-%m-%d %H:%M:%S", time.localtime(p.stat().st_mtime))
-    if prev is not None and prev.source_files == current_mtimes:
-        return prev
+    if prev is not None:
+        seen = getattr(prev, "gate_mtimes", None)
+        if (seen if isinstance(seen, dict) else prev.source_files) == current_mtimes:
+            return prev
     snap = import_vif_folder(folder)
     if snap.frames:
-        save_snapshot(snap, snapshots_dir)
+        failed = {str(e).split(":", 1)[0].strip() for e in (snap.errors or [])}
+        snap.gate_mtimes = {k: v for k, v in current_mtimes.items()
+                            if k not in failed}
+        same_outcome = (
+            prev is not None
+            and list(prev.errors or []) == list(snap.errors or [])
+            and set(prev.frames) == set(snap.frames)
+            and getattr(prev, "gate_mtimes", None) == snap.gate_mtimes)
+        if not same_outcome:
+            save_snapshot(snap, snapshots_dir)
         return snap
     if prev is not None:
         return prev
@@ -219,20 +421,32 @@ def stock_check_report(data_dir: str | Path, vif_folder: str | Path,
     data_dir = Path(data_dir)
     snap = refresh_vif_snapshot(vif_folder, data_dir)
     frames = snap.frames
+    # "ediact 3.csv" is the BOM frame whichever export it came from
+    # (ediact.csv since the drop of 2026-09-15, "ediact 3.csv" before)
     ediact = frames.get("ediact 3.csv")
     azapart = frames.get("azapart.csv")
     if ediact is None or azapart is None:
-        return {"error": "ediact 3.csv / azapart.csv not importable",
+        return {"error": "BOM export (ediact.csv / ediact 3.csv) or azapart.csv "
+                         "not importable",
                 "import_errors": snap.errors,
+                "import_notes": _report_notes(snap),
+                "missing_recipes": _missing_recipes(snap),
                 "source_files": snap.source_files}
 
     bom = BomGraph(ediact, frames.get("ediact 4.csv"))
+    # every lot export that COUNTS, rm first: AMB / QC / apple frames ride
+    # in `extra` so the legacy two-frame call keeps its numbers. The
+    # semi-finished export (jestkexp5) is left out of avail AND tracked
+    # (rule of 2026-08-14 — an intermediate never gates a SKU on its own
+    # stock; see _NEVER_COUNTED_FRAMES, 2026-09-16).
+    counted = _counted_lot_frames(_lot_frames(snap))
     rm = frames.get("jestkexp.csv")
     pkg = frames.get("jestkexp2.csv")
-    avail = cov.available_stock(rm, pkg, toggles)
+    extra = [df for n, df in counted if n not in ("jestkexp.csv", "jestkexp2.csv")]
+    avail = cov.available_stock(rm, pkg, toggles, extra=extra)
     tracked_items = set(avail.keys())
     # items with stock rows entirely toggled off still count as tracked
-    for df in (rm, pkg):
+    for _n, df in counted:
         if df is not None and not df.empty:
             tracked_items |= set(df["item"]) - {""}
 
@@ -317,15 +531,29 @@ def stock_check_report(data_dir: str | Path, vif_folder: str | Path,
     unk = [{"sku": b["sku"], **u} for b in schedule_view for u in b["unk"]]
     unk += [{"sku": d["sku"], **u} for d in demand_view for u in d["unk"]]
 
+    # Order priority rides into the projection's netting order (slice 3):
+    # lower = more important, the loader's convention (blank -> 999).
+    priorities: dict = {}
+    if "priority" in demand.columns:
+        for oid, pr in zip(demand["order_id"], demand["priority"]):
+            priorities[str(oid)] = _finite(pr, 999.0)
     supply = _supply_section(
         data_dir, snap, bom, frames, avail, tracked_items, azapart, blocks,
         sreqs, dreqs, schedule_view,
-        po_path=po_path, receiving_path=receiving_path, today=today)
+        po_path=po_path, receiving_path=receiving_path, today=today,
+        demand_view=demand_view, priorities=priorities)
 
     return {
         "generated_at": snap.imported_at,
         "source_files": snap.source_files,
         "import_errors": snap.errors,
+        # loader notes (empty exports, dropped duplicates, ignored stale
+        # files — drop of 2026-09-15) plus a note per lot export stamped
+        # > 24 h before the newest one (2026-09-16); [] on an older snapshot
+        "import_notes": _report_notes(snap),
+        # semi-finished activities with no recipe in the VIF folder (the
+        # loader's snap.missing_recipes, 2026-09-16); [] when not recorded
+        "missing_recipes": _missing_recipes(snap),
         "availability_toggles": toggles or cov.default_toggles(),
         "schedule_view": schedule_view,
         "demand_view": demand_view,
@@ -344,12 +572,17 @@ def _supply_section(data_dir: Path, snap: VifSnapshot, bom: BomGraph,
                     frames: dict, avail: dict, tracked_items: set,
                     azapart: pd.DataFrame, blocks: pd.DataFrame,
                     sreqs: list, dreqs: list, schedule_view: list, *,
-                    po_path, receiving_path, today) -> dict:
+                    po_path, receiving_path, today,
+                    demand_view: list | None = None,
+                    priorities: dict | None = None) -> dict:
     """Additive report keys (anchor, supply_meta, sku_needs, inbound,
-    quality) + schedule_view[i].key / .supply. Mutates schedule_view rows
-    in place; the flat statuses are never touched."""
+    quality, projection) + schedule_view[i].key / .supply and
+    demand_view[i].projected (slice 3). Mutates the view rows in place;
+    the flat statuses are never touched."""
+    from datetime import timedelta
     from helpers import config as hcfg
-    from helpers.timefmt import datetime_to_hour, parse_datetime, planning_anchor
+    from helpers.timefmt import (datetime_to_hour, hour_to_stamp,
+                                 parse_datetime, planning_anchor)
 
     cfg = hcfg.load_toml()
     anchor = planning_anchor(cfg)
@@ -362,23 +595,40 @@ def _supply_section(data_dir: Path, snap: VifSnapshot, bom: BomGraph,
         today = now.date()
     elif isinstance(today, datetime):
         now = today
-    rm = frames.get("jestkexp.csv")
-    pkg = frames.get("jestkexp2.csv")
+    # every lot export in contract order (rm, pkg, amb, qc, apples, semi);
+    # only the present ones, rm first (drop of 2026-09-15)
+    lots = _lot_frames(snap)
 
     # -- snapshot hour per stock frame: an item's on-hand is as old as the
-    # export it came from (rm first). The gate's overdue rule uses the
-    # EARLIER date — a receipt older than the youngest count could still be
-    # missing from the other frame.
-    stamps = {"rm": snap.source_files.get("jestkexp.csv", ""),
-              "pkg": snap.source_files.get("jestkexp2.csv", "")}
+    # export it came from (rm first). "rm" and "pkg" are always present in
+    # the stamps (blank when the file is missing) — the keys every consumer
+    # reads; the other lot frames add their tag only when they exist. A
+    # frame the loader filled from its alias is stamped through
+    # _frame_stamp (2026-09-16: the canonical-name lookup read blank).
+    by_name = dict(lots)
+    stamps = {"rm": _frame_stamp(snap, "jestkexp.csv", by_name.get("jestkexp.csv")),
+              "pkg": _frame_stamp(snap, "jestkexp2.csv", by_name.get("jestkexp2.csv"))}
+    for name, df in lots:
+        tag = _frame_tag(name)
+        if tag not in stamps:
+            stamps[tag] = _frame_stamp(snap, name, df)
     frame_h: dict = {}
-    frame_dates = []
+    gate_dates = []
+    side_dates = []
     for k, s in stamps.items():
         dt = parse_datetime(s) if s else None
         if dt is not None:
             frame_h[k] = float(datetime_to_hour(dt, anchor))
-            frame_dates.append(dt.date())
-    snapshot_date = min(frame_dates) if frame_dates else None
+            (gate_dates if k in _GATE_SNAPSHOT_TAGS else side_dates).append(dt.date())
+    # The gate's overdue rule uses the EARLIER of the rm / pkg dates — a
+    # receipt older than the youngest of those counts could still be missing
+    # from the other. Since 2026-09-16 the side exports (AMB, QC, apples,
+    # semi-finished) no longer take part: one that kept an old mtime
+    # loosened the rule and double counted receipts already on hand (see
+    # _GATE_SNAPSHOT_TAGS). Only a snapshot with neither rm nor pkg stamped
+    # falls back to the side exports rather than dropping the rule.
+    snapshot_date = (min(gate_dates) if gate_dates
+                     else (min(side_dates) if side_dates else None))
 
     # -- unit recipe per SKU (board + demand), memoised: explosion is linear
     # in cases, so one explode(sku, 1.0) serves every block of that SKU and
@@ -388,6 +638,7 @@ def _supply_section(data_dir: Path, snap: VifSnapshot, bom: BomGraph,
     sku_needs: dict = {}
     designations: dict = {}
     seen: set = set()
+    no_recipe_items: set = set()
 
     def unit_recipe(sku: str) -> None:
         if sku in seen:
@@ -399,11 +650,18 @@ def _supply_section(data_dir: Path, snap: VifSnapshot, bom: BomGraph,
         items = []
         for g in exp.requirements:
             alts = [str(a["item"]) for a in g.alternates]
+            if getattr(g, "no_recipe", False):
+                # recipe-less semi-finished primary (2026-09-16): no
+                # alternates and never tracked, so the timeline lists it
+                # untracked instead of grading it on 750061-style
+                # alternates (rule of 2026-08-14)
+                alts = []
+                no_recipe_items.add(str(g.primary_item))
             items.append({"item": str(g.primary_item),
                           "per_case": _finite(g.need_qty),
                           "unit": str(g.unit or ""), "alts": alts})
             designations.setdefault(str(g.primary_item), str(g.designation or ""))
-            for a in g.alternates:
+            for a in (g.alternates if alts else ()):
                 designations.setdefault(str(a["item"]), str(a.get("designation") or ""))
         sku_needs[str(sku)] = {"kg_per_case": _finite(kpc.get(sku)),
                                "items": items}
@@ -435,18 +693,26 @@ def _supply_section(data_dir: Path, snap: VifSnapshot, bom: BomGraph,
             if unit and item not in unit_by_item:
                 unit_by_item[item] = str(unit).strip()
     stock_lots: dict = {}
-    rm_items: set = set()
-    for df, is_rm in ((rm, True), (pkg, False)):
+    daily_lots: dict = {}
+    # item -> tag of the FIRST lot frame it appears in (rm before pkg before
+    # the drop's frames): that frame's export hour is the item's snapshot_h
+    item_frame: dict = {}
+    # the semi-finished export never counts (rule of 2026-08-14, see
+    # _NEVER_COUNTED_FRAMES): no snapshot hour, no landed-rule lots
+    for name, df in _counted_lot_frames(lots):
         if df is None or df.empty:
             continue
+        tag = _frame_tag(name)
+        # fresh apples arrive daily: their lots land only same-day lines of
+        # the snapshot day (_DAILY_LOT_FRAMES, 2026-09-16)
+        pool = daily_lots if name in _DAILY_LOT_FRAMES else stock_lots
         for item, unit, desig, batch, q in zip(df["item"], df["unit"],
                                                df["designation"], df["batch"],
                                                df["qty"]):
             item = str(item).strip()
             if not item:
                 continue
-            if is_rm:
-                rm_items.add(item)
+            item_frame.setdefault(item, tag)
             if unit and item not in unit_by_item:
                 unit_by_item[item] = str(unit).strip()
             if desig and item not in designations:
@@ -455,7 +721,7 @@ def _supply_section(data_dir: Path, snap: VifSnapshot, bom: BomGraph,
             # truck is physically here, not whether QC released it. Raw qty
             # (NaN as blank): the gate counts None/blank as 0 quietly and
             # NOTES garbage — pre-coercing here swallowed that diagnostic.
-            stock_lots.setdefault(item, []).append(
+            pool.setdefault(item, []).append(
                 (batch, None if isinstance(q, float) and math.isnan(q) else q))
     rmpk = frames.get("rmpkitems.csv")
     if rmpk is not None and not rmpk.empty:
@@ -464,12 +730,53 @@ def _supply_section(data_dir: Path, snap: VifSnapshot, bom: BomGraph,
                 designations.setdefault(str(item), str(desig))
     bom_items |= tracked_items | recipe_items
 
+    # -- packaging receipt slips (PKG-REC.csv, drop of 2026-09-15): the
+    # ERP's own booked receipts, {po8: [{item, qty, date, slip, batch}]}.
+    # Raw-ish values (NaT/NaN -> None) so the gate notes garbage like it
+    # does for lots; the gate applies the on/before-today and snapshot /
+    # batch rules and consumes them — and, through the batch (2026-09-16),
+    # the lots each landed slip became.
+    receipt_slips: dict = {}
+    slips_meta = {"n_slips": 0, "n_pos": 0, "date_min": None, "date_max": None,
+                  "source_mtime": snap.source_files.get("PKG-REC.csv", "")}
+    rf = _receipts_frame(snap)
+    if rf is not None and not rf.empty:
+        slip_dates = []
+        batches = (rf["batch"].tolist() if "batch" in rf.columns
+                   else [None] * len(rf))
+        for po8, item, q, d, slip, batch in zip(
+                rf.get("po8", []), rf.get("item", []), rf.get("qty", []),
+                rf.get("receipt_date", []), rf.get("slip", []), batches):
+            k = str(po8 or "").strip()
+            if not k or k == "nan":
+                continue
+            if d is not None and d == d and hasattr(d, "date"):
+                d = d.date()
+            elif d != d:
+                d = None
+            if isinstance(d, date):
+                slip_dates.append(d)
+            receipt_slips.setdefault(k, []).append({
+                "item": str(item or "").strip(),
+                "qty": None if isinstance(q, float) and math.isnan(q) else q,
+                "date": d, "slip": str(slip or "").strip(),
+                "batch": ("" if batch is None or batch != batch
+                          else str(batch).strip())})
+        slips_meta.update(
+            n_slips=int(sum(len(v) for v in receipt_slips.values())),
+            n_pos=len(receipt_slips),
+            date_min=min(slip_dates).isoformat() if slip_dates else None,
+            date_max=max(slip_dates).isoformat() if slip_dates else None)
+
     # -- open-PO feed
     inbound: dict = {"state": "missing", "source_path": "", "source_mtime": "",
                      "as_of": None, "max_receipt_date": None, "n_rows": 0,
                      "errors": [], "lines": [], "receipts": {}, "join": {},
                      "appt_join": {"matched": 0, "total": 0},
-                     "receiving_path": ""}
+                     "receiving_path": "",
+                     # additive (2026-09-15): the receipt-slip feed and the
+                     # loader's import notes, shown on the Inbound tab
+                     "slips": slips_meta, "notes": _report_notes(snap)}
     po_lines = None
     p = None
     if po_path is None:
@@ -512,7 +819,12 @@ def _supply_section(data_dir: Path, snap: VifSnapshot, bom: BomGraph,
         snapshot_date=snapshot_date, today=today, anchor=anchor, rules=rules,
         stock_lots=stock_lots, appts=appts or None,
         source_mtime=inbound.get("source_mtime") or None,
-        as_of=inbound.get("as_of"), now=now)
+        as_of=inbound.get("as_of"), now=now,
+        receipt_slips=receipt_slips or None, daily_lots=daily_lots or None)
+    slips_meta["n_landed"] = int(feed.get("n_landed_by_slip") or 0)
+    # lines counted as receipts because their slips were booked after the
+    # stock export (2026-09-16)
+    slips_meta["n_counted"] = int(feed.get("n_counted_by_slip") or 0)
     feed_state = "missing" if po_lines is None else str(feed["state"])
     # Window end is the gate's alone: it already takes max(latest counted
     # ready_h, 23:59 of the file's last receipt date) over the same lines
@@ -578,13 +890,21 @@ def _supply_section(data_dir: Path, snap: VifSnapshot, bom: BomGraph,
             "locked": locked, "running": running, "cases_left": cases_left,
         })
 
-    tracked = sorted(recipe_items & tracked_items)
+    # a recipe-less semi-finished primary is never tracked (2026-09-16)
+    tracked = sorted((recipe_items & tracked_items) - no_recipe_items)
     opening = {i: _finite(avail.get(i, 0.0)) for i in tracked}
     snapshot_h: dict = {}
+    # hours of the exports that count on hand (the semi-finished stamp
+    # never dates an opening, 2026-09-16)
+    never_tags = {_frame_tag(n) for n in _NEVER_COUNTED_FRAMES}
+    counted_h = [h for k, h in frame_h.items() if k not in never_tags]
     for i in tracked:
-        h = frame_h.get("rm" if i in rm_items else "pkg")
-        if h is None:
-            h = frame_h.get("pkg" if i in rm_items else "rm")
+        # the export the item was counted in; an item whose own frame has
+        # no stamp (or none at all) takes the EARLIEST counted hour — the
+        # conservative end, matching the gate's overdue rule
+        h = frame_h.get(item_frame.get(i, ""))
+        if h is None and counted_h:
+            h = min(counted_h)
         if h is not None:
             snapshot_h[i] = h
     in_house = sorted(cov.IN_HOUSE_ITEMS)
@@ -597,6 +917,41 @@ def _supply_section(data_dir: Path, snap: VifSnapshot, bom: BomGraph,
         # is only for the fixture parity
         sup["text"] = tl.verdict_text(sup, anchor)
         row["supply"] = sup
+
+    # -- slice 3: every demand order graded on the SAME curves, netted in
+    # week order, receipts lifting what on-hand cannot support (projection
+    # module). Demand weeks live in the demand anchor's frame; they are
+    # converted to board hours HERE and nowhere else (time-frame invariant).
+    from stockcheck.projection import project_demand, summarize
+    from stockcheck.weeks import demand_anchor as _demand_anchor
+    from stockcheck.weeks import week_index_label
+    dem_anchor = _demand_anchor(data_dir)
+    proj_orders = []
+    for d in dreqs:
+        wk = int(d["week_index"])
+        ws = datetime_to_hour(dem_anchor + timedelta(weeks=wk), anchor)
+        proj_orders.append({
+            "order_id": str(d["order_id"]), "sku": str(d["sku"]),
+            "week_index": wk, "target_kg": _finite(d["target_kg"]),
+            "cases": _finite(d["cases"]),
+            "priority": (priorities or {}).get(str(d["order_id"]), 999.0),
+            "ws_h": float(ws), "we_h": float(ws) + 168.0,
+        })
+    projected = project_demand(
+        proj_orders, timelines, rules=rules, feed_state=feed_state,
+        kg_per_case={str(k): v for k, v in kpc.items()},
+        dns_ratio=cov.DNS_RATIO,
+        stamp=lambda h: hour_to_stamp(h, anchor),
+        week_label=lambda w: week_index_label(w, dem_anchor))
+    for row in (demand_view or []):
+        row["projected"] = projected.get(str(row.get("order_id")))
+    projection = {
+        "demand_anchor": dem_anchor.isoformat(sep=" ", timespec="seconds"),
+        "buffer_h": 24.0 * float(rules.get("min_days_after_delivery", 4)),
+        "dns_ratio": cov.DNS_RATIO,
+        "feed_state": feed_state,
+        **summarize(projected),
+    }
 
     recipe_sorted = sorted(recipe_items)
     supply_meta = {
@@ -618,4 +973,5 @@ def _supply_section(data_dir: Path, snap: VifSnapshot, bom: BomGraph,
         "sku_needs": sku_needs,
         "inbound": inbound,
         "quality": quality,
+        "projection": projection,
     }

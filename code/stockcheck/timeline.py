@@ -89,6 +89,15 @@ def _item(x) -> str:
     return "" if x is None else str(x).strip()
 
 
+def _batch_key(x) -> str:
+    """Lot / receipt-slip batch as a join key (2026-09-16): stripped and
+    upper-cased; None, NaN and blanks -> '' (never matches anything)."""
+    if x is None or (isinstance(x, float) and x != x):
+        return ""
+    s = str(x).strip().upper()
+    return "" if s in ("NAN", "NONE", "NAT") else s
+
+
 def _js_num(x: float) -> str:
     """JS `String(number)` for the hour range: integral values print without
     a fraction ("10", never "10.0"), anything else in the shortest
@@ -837,18 +846,25 @@ _EMPTY_LINE = {"po": "", "po8": "", "item": "", "designation": "", "qty": None,
                "unit": "", "receipt_date": None, "initial_receipt_date": None,
                "slip_days": None, "arrival_area": "", "supplier": "",
                "supplier_id": "", "received": False, "order_date": None,
-               "row": None}
+               "row": None, "cancelled": False, "status_text": ""}
 
 
 def _to_date(v) -> date | None:
     if v is None:
         return None
     if isinstance(v, datetime):
-        return v.date()
-    if isinstance(v, date):
-        return v
-    dt = parse_datetime(v)
-    return dt.date() if dt else None
+        d = v.date()
+    elif isinstance(v, date):
+        d = v
+    else:
+        dt = parse_datetime(v)
+        d = dt.date() if dt else None
+    # pandas NaT passes both isinstance checks and .date() hands NaT back;
+    # it is the one date that is not equal to itself (receipt frames of the
+    # 2026-09-15 drop carry NaT for an unparseable slip date)
+    if d is not None and d != d:
+        return None
+    return d
 
 
 def _appt_time(v) -> time | None:
@@ -932,9 +948,50 @@ def _to_datetime(v) -> datetime | None:
 
 def gate_receipts(lines, *, bom_items, unit_by_item, snapshot_date, today,
                   anchor, rules, stock_lots=None, appts=None,
-                  source_mtime=None, as_of=None, now=None
-                  ) -> tuple[dict, list, dict]:
+                  source_mtime=None, as_of=None, now=None,
+                  receipt_slips=None, daily_lots=None) -> tuple[dict, list, dict]:
     """(receipts_by_item, line_fates, feed_info) — see contract §3.6.
+
+    Receipt-slip rule (drop of 2026-09-15, PKG-REC.csv): `receipt_slips` is
+    {po8: [{"item", "qty", "date", "slip", "batch"}]} — the ERP's own
+    packaging receipt slips for a rolling week, one entry per (slip, batch).
+    A PO line whose (po8, item) has slips dated on/before `today` totalling
+    >= landed_match_frac x its qty is LANDED (fate "landed", reason naming
+    the slip number(s) and date(s), e.g. "receipt slip 30119536 on
+    2026-09-15: 35,200 of 35,200" — plural only when several DISTINCT slip
+    numbers were consumed). A slip is stronger evidence than a batch-dated
+    lot, so this check runs BEFORE the lot rule below — and before the
+    overdue rule (2026-09-16: a line the dock already booked is landed,
+    not overdue) — and, like lots, slip qty is CONSUMED by the lines it
+    lands (two lines of one item on one PO share the PO's slips). A slip
+    matches the line when its item equals the line's resolved item key or
+    its raw code. Slips dated after `today` are ignored (not evidence yet).
+    Only a slip dated BEFORE `snapshot_date` is evidence by its date alone;
+    one dated ON or after it is evidence only when its batch is among the
+    item's lots (stock_lots / daily_lots) — the lot export runs mid-day
+    (14:05), and on the real drop 25 of the 34 slips of the snapshot day
+    had batches in no lot (2026-09-16). A slip that is not evidence is a
+    delivery booked AFTER the stock count: when such "late" slips, with
+    any evidence slips of the line, total >= landed_match_frac x qty — or
+    the line's receipt date is before the snapshot (else overdue, never
+    counted) — the line is counted as a receipt (fate "used", tier "erp")
+    ready on the latest late slip's date @ receipt_ready_hour (+ the raw
+    QC offset on raw areas), of qty - the evidence part when covered, else
+    of the late qty only (the unbooked rest stays overdue); the reason
+    names the slip(s) "booked after the stock export". Late slips consume
+    their qty but no lots (their goods are in none); evidence slips of a
+    counted line consume theirs as when landing. A partial late booking
+    on a line still due (receipt date on/after the snapshot) and any
+    offsite-area line take the normal path. feed_info["n_counted_by_slip"]
+    counts the lines counted this way.
+    Landing by slip also CONSUMES the lots that truck became (2026-09-16):
+    the landed qty is taken from the item's lot pool, the slip's own batch
+    first, then lots dated slip date - 3 d .. slip date + 1 d, earliest
+    first — one physical lot never lands a second PO line by the lot rule.
+    Malformed slips (not a dict, unreadable date, non-numeric qty), a
+    non-list PO entry or a non-dict `receipt_slips` are noted in
+    feed_info["errors"] and skipped — never raised.
+    feed_info["n_landed_by_slip"] counts the lines the rule landed.
 
     Freshness (audit stock-6): TWO rules, and feed_info["stale_reason"]
     lists which fired. "content": the latest receipt date in the extract
@@ -951,10 +1008,25 @@ def gate_receipts(lines, *, bom_items, unit_by_item, snapshot_date, today,
     only lots dated receipt_date - 3 d .. receipt_date + 1 d count as
     "that truck came early".
 
+    Daily lots (2026-09-16): `daily_lots` has stock_lots' shape and holds
+    the lots of a daily-delivery export (fresh apples, jestksav.csv). A
+    lot dated near a FUTURE line is another day's truck, so a daily lot
+    lands only a line whose receipt date is on/before `snapshot_date`
+    (with the overdue rule: the snapshot day itself), and only when the
+    lot is dated that same receipt date. It counts toward the slip rule's
+    batch check like any lot. A non-dict `daily_lots` is noted and
+    skipped.
+
     Appointment tier (audit stock-9): a dock appointment dated BEFORE the
     ERP receipt date cannot pull the delivery forward — the ready hour is
     clamped to the ERP rule (receipt date @ receipt_ready_hour); same-day
     and later appointments time the receipt as before.
+
+    A line flagged `cancelled` (deleted in the ERP, line status 70 on the
+    order_npa.csv export) gets fate "cancelled" before any other check:
+    it is never a receipt, whatever quantity still "remains" on it. A
+    `received` line's reason says "archived in the ERP" when the export
+    marked it archived (status 60), else "nothing left to receive".
 
     Never raises. A line that is not a dict gets fate "bad_row"; a stock
     lot whose qty is not numeric counts as 0 (None/blank silently, garbage
@@ -976,7 +1048,8 @@ def gate_receipts(lines, *, bom_items, unit_by_item, snapshot_date, today,
     R = _rules(rules)
     feed = {"state": "ok", "receipts_window_end_h": 0.0, "n_used": 0,
             "n_lines": 0, "max_receipt_date": None, "fates": {}, "errors": [],
-            "stale_reason": [], "source_age_h": None, "age_basis": None}
+            "stale_reason": [], "source_age_h": None, "age_basis": None,
+            "n_landed_by_slip": 0, "n_counted_by_slip": 0}
     errors: list = feed["errors"]
 
     def note(msg: str) -> None:
@@ -1013,6 +1086,15 @@ def gate_receipts(lines, *, bom_items, unit_by_item, snapshot_date, today,
         note(f"stock_lots is {type(stock_lots).__name__}, not a dict; "
              f"landed rule skipped")
         stock_lots = None
+    if daily_lots is not None and not isinstance(daily_lots, dict):
+        note(f"daily_lots is {type(daily_lots).__name__}, not a dict; "
+             f"daily lots skipped")
+        daily_lots = None
+    have_lots = stock_lots is not None or daily_lots is not None
+    if receipt_slips is not None and not isinstance(receipt_slips, dict):
+        note(f"receipt_slips is {type(receipt_slips).__name__}, not a dict; "
+             f"receipt-slip rule skipped")
+        receipt_slips = None
     snap_d = _to_date(snapshot_date)
     today_d = _to_date(today)
     raw_areas = _area_set(R.get("raw_areas"))
@@ -1026,38 +1108,138 @@ def gate_receipts(lines, *, bom_items, unit_by_item, snapshot_date, today,
     max_date = None
     window_end = None
 
-    # Landed-rule lot pools, built once per item: [[batch date, qty left]]
-    # in date order (mutable: a landed line consumes its qty), plus whether
-    # the item had lots at all and whether any lot carried a decodable date.
+    # Landed-rule lot pools, built once per item: [[batch date, qty left,
+    # batch, daily]] in date order (mutable: a landed line consumes its
+    # qty; daily = from daily_lots, 2026-09-16), plus flags: whether the
+    # item had regular / daily lots at all and whether any of them carried
+    # a decodable date. lot_batches[key] = every batch of the item's lots,
+    # dated or not (the slip rule's "already counted" check, 2026-09-16).
     pools: dict = {}
+    lot_batches: dict = {}
 
-    def lot_pool(key: str) -> tuple[list, bool, bool]:
+    def lot_pool(key: str) -> tuple[list, dict]:
         if key in pools:
             return pools[key]
-        lots = stock_lots.get(key) or []
-        if not isinstance(lots, (list, tuple)):
-            note(f"{key}: stock_lots entry is {type(lots).__name__}, "
-                 f"not a list; landed rule skipped")
-            lots = []
         dated = []
-        for lot in lots:
-            try:
-                batch, q = lot
-            except (TypeError, ValueError):
-                note(f"{key}: lot {lot!r} is not (batch, qty); ignored")
+        batches: set = set()
+        flags = {"reg": False, "reg_dated": False,
+                 "daily": False, "daily_dated": False}
+        for src, is_daily in ((stock_lots, False), (daily_lots, True)):
+            if src is None:
                 continue
-            qn = _num(q)
-            if qn is None:
-                if q is not None and str(q).strip():
-                    note(f"{key}: lot {batch!r} qty {q!r} not numeric; "
-                         f"treated as 0")
-                qn = 0.0
-            d = decode_batch_date(batch)
-            if d is not None:
-                dated.append([d, qn])
+            name = "daily_lots" if is_daily else "stock_lots"
+            lots = src.get(key) or []
+            if not isinstance(lots, (list, tuple)):
+                note(f"{key}: {name} entry is {type(lots).__name__}, "
+                     f"not a list; landed rule skipped")
+                lots = []
+            tag = "daily" if is_daily else "reg"
+            flags[tag] = flags[tag] or bool(lots)
+            for lot in lots:
+                try:
+                    batch, q = lot
+                except (TypeError, ValueError):
+                    note(f"{key}: lot {lot!r} is not (batch, qty); ignored")
+                    continue
+                qn = _num(q)
+                if qn is None:
+                    if q is not None and str(q).strip():
+                        note(f"{key}: lot {batch!r} qty {q!r} not numeric; "
+                             f"treated as 0")
+                    qn = 0.0
+                bk = _batch_key(batch)
+                if bk:
+                    batches.add(bk)
+                d = decode_batch_date(batch)
+                if d is not None:
+                    dated.append([d, qn, bk, is_daily])
+                    flags[tag + "_dated"] = True
         dated.sort(key=lambda t: t[0])
-        pools[key] = (dated, bool(lots), bool(dated))
+        pools[key] = (dated, flags)
+        lot_batches[key] = batches
         return pools[key]
+
+    def slip_is_evidence(s: list, key: str) -> bool:
+        """(2026-09-16) A slip dated BEFORE the stock snapshot date is taken
+        as in the counted on-hand; one dated ON or after it only when its
+        batch already sits in the item's lots. The lot export runs mid-day
+        (14:05 on the drop of 2026-09-15), so a slip of the snapshot day
+        may be booked after it — 25 of that day's 34 slips were in no lot —
+        and must then stay a receipt."""
+        if snap_d is None or s[0] < snap_d:
+            return True
+        if not have_lots or not s[4]:
+            return False
+        lot_pool(key)
+        return s[4] in lot_batches.get(key, set())
+
+    def consume_lots_for_slip(key: str, s: list, take: float) -> None:
+        """(2026-09-16) The slip's truck IS a lot now: take the landed qty
+        from the item's lot pool — the slip's batch first, then lots dated
+        slip date - 3 d .. + 1 d, earliest first — so the same physical
+        lot cannot land a second PO line by the lot rule."""
+        if not have_lots or take <= 0:
+            return
+        pool, _flags = lot_pool(key)
+        left = take
+        if s[4]:
+            for lot in pool:
+                if left <= 0:
+                    return
+                if lot[2] == s[4] and lot[1] > 0:
+                    t = lot[1] if lot[1] < left else left
+                    lot[1] -= t
+                    left -= t
+        lo = s[0] - timedelta(days=3)
+        hi = s[0] + timedelta(days=1)
+        for lot in pool:                  # date-sorted: earliest first
+            if left <= 0:
+                return
+            if lo <= lot[0] <= hi and lot[1] > 0:
+                t = lot[1] if lot[1] < left else left
+                lot[1] -= t
+                left -= t
+
+    # Receipt-slip pools per PO, built once: [[date, qty left, slip no,
+    # item, batch]] in date order (mutable: a landed line consumes its
+    # qty). Only slips dated on/before today are evidence; malformed ones
+    # are noted.
+    slip_pools: dict = {}
+
+    def slip_pool(po8: str) -> list:
+        if po8 in slip_pools:
+            return slip_pools[po8]
+        raw = receipt_slips.get(po8) or []
+        if not isinstance(raw, (list, tuple)):
+            note(f"PO {po8}: receipt_slips entry is {type(raw).__name__}, "
+                 f"not a list; ignored")
+            raw = []
+        out: list = []
+        for s in raw:
+            if not isinstance(s, dict):
+                note(f"PO {po8}: receipt slip {s!r} is not a dict; ignored")
+                continue
+            slip_no = str(s.get("slip") or "").strip() or "?"
+            d = _to_date(s.get("date"))
+            if d is None:
+                note(f"PO {po8}: receipt slip {slip_no} date "
+                     f"{s.get('date')!r} unreadable; ignored")
+                continue
+            if today_d is not None and d > today_d:
+                continue            # dated in the future: not received yet
+            q = _num(s.get("qty"))
+            if q is None:
+                if s.get("qty") is not None and str(s.get("qty")).strip():
+                    note(f"PO {po8}: receipt slip {slip_no} qty "
+                         f"{s.get('qty')!r} not numeric; ignored")
+                continue
+            if q <= 0:
+                continue
+            out.append([d, q, slip_no, _item(s.get("item")),
+                        _batch_key(s.get("batch"))])
+        out.sort(key=lambda t: (t[0], t[2]))
+        slip_pools[po8] = out
+        return out
 
     for i, line in enumerate(lines):
         if not isinstance(line, dict):
@@ -1074,8 +1256,14 @@ def gate_receipts(lines, *, bom_items, unit_by_item, snapshot_date, today,
         if rd is not None and (max_date is None or rd > max_date):
             max_date = rd
         code = str(line.get("item") or "").strip()
+        if line.get("cancelled"):
+            out.update(fate="cancelled", reason="deleted in the ERP (line status 70)")
+            continue
         if line.get("received"):
-            out.update(fate="received", reason="nothing left to receive")
+            out.update(fate="received",
+                       reason="archived in the ERP"
+                       if str(line.get("status_text") or "") == "archived"
+                       else "nothing left to receive")
             continue
         key = resolve_item_key(code, bom) if code else None
         if key is None:
@@ -1096,6 +1284,88 @@ def gate_receipts(lines, *, bom_items, unit_by_item, snapshot_date, today,
             out.update(fate="bad_date",
                        reason=f"receipt date {line.get('receipt_date')!r}")
             continue
+        po8 = str(line.get("po8") or "").strip()
+        # Receipt-slip rule (2026-09-15): the ERP booked the receipt itself —
+        # stronger than a batch-dated lot, so it is checked first. Since
+        # 2026-09-16 it also runs BEFORE the overdue rule (14 slip-covered
+        # lines read "overdue" on the real drop), a slip after the stock
+        # snapshot (or ON its day, 2026-09-16 second pass) counts only when
+        # its batch is already in the lots, and the landed qty is consumed
+        # from the lots too (one physical lot never lands a second line).
+        # Slips booked after the stock count ("late") make the line a
+        # receipt on the slip date instead of landed / overdue.
+        area = str(line.get("arrival_area") or "").strip().upper()
+        if receipt_slips is not None and po8:
+            cands = [s for s in slip_pool(po8)
+                     if s[1] > 0 and s[3] in (key, code)]
+            evid = [s for s in cands if slip_is_evidence(s, key)]
+            late = [s for s in cands if not slip_is_evidence(s, key)]
+            m_evid = sum(s[1] for s in evid)
+            m_late = sum(s[1] for s in late)
+
+            def take_slips(pool_: list, left_: float, lots_too: bool):
+                taken_: list = []
+                for s in pool_:          # consume, earliest slip first
+                    if left_ <= 0:
+                        break
+                    take = s[1] if s[1] < left_ else left_
+                    s[1] -= take
+                    left_ -= take
+                    taken_.append(s)
+                    if lots_too:
+                        consume_lots_for_slip(key, s, take)
+                return taken_, left_
+
+            def slip_words(taken_: list) -> str:
+                # plural only for several DISTINCT slip numbers: PKG-REC
+                # prints one row per (slip, batch) (2026-09-16)
+                slip_nos = sorted({s[2] for s in taken_})
+                days = sorted({s[0] for s in taken_})
+                when = (days[0].isoformat() if len(days) == 1
+                        else f"{days[0].isoformat()}..{days[-1].isoformat()}")
+                return (f"receipt slip{'s' if len(slip_nos) > 1 else ''} "
+                        f"{', '.join(slip_nos)} on {when}")
+
+            if evid and m_evid >= frac * qty:
+                taken, left = take_slips(evid, qty, True)
+                got = qty - left if left > 0 else qty
+                out.update(fate="landed",
+                           reason=f"{slip_words(taken)}: {got:,.0f} of {qty:,.0f}")
+                feed["n_landed_by_slip"] += 1
+                continue
+            covered = m_evid + m_late >= frac * qty
+            if (late and area not in offsite
+                    and (covered or (snap_d is not None and rd < snap_d))):
+                # booked after the stock count (2026-09-16): the goods are
+                # in no lot, so count them — on the slip date, not the
+                # (often earlier) ERP date, and never as overdue
+                _e_taken, e_left = take_slips(evid, qty, True)
+                e_got = qty - e_left
+                l_taken, l_left = take_slips(late, qty - e_got, False)
+                l_got = (qty - e_got) - l_left
+                full = e_got + l_got >= frac * qty
+                n_qty = qty - e_got if full else l_got
+                last = max(s[0] for s in l_taken)
+                ready_dt = datetime.combine(last, time(ready_hour))
+                if area in raw_areas:
+                    ready_dt += timedelta(hours=raw_off)
+                ready_h = float(datetime_to_hour(ready_dt, anchor))
+                why = (f"counted; {slip_words(l_taken)} booked after the stock "
+                       f"export: {l_got:,.0f} of {qty:,.0f}")
+                if e_got > 0:
+                    why += f" ({e_got:,.0f} already on hand)"
+                if not full:
+                    why += "; the rest is overdue"
+                out.update(fate="used", reason=why, ready_h=ready_h, tier="erp")
+                receipts.setdefault(key, []).append({
+                    "ready_h": ready_h, "qty": n_qty, "po8": po8, "tier": "erp",
+                    "receipt_date": last.isoformat(),
+                    "label": (f"PO {po8} · {key} · {n_qty:,.0f} {unit} · "
+                              f"{last.isoformat()} · receipt slip")})
+                window_end = (ready_h if window_end is None
+                              else max(window_end, ready_h))
+                feed["n_counted_by_slip"] += 1
+                continue
         if snap_d is not None and rd < snap_d:
             out.update(fate="overdue",
                        reason=f"receipt date {rd.isoformat()} before stock "
@@ -1105,16 +1375,24 @@ def gate_receipts(lines, *, bom_items, unit_by_item, snapshot_date, today,
         # the truck came early — counting it again is the false-comfort
         # direction. Undecodable batches can only be flagged, not proven.
         unverifiable = False
-        if stock_lots is not None:
-            pool, had_lots, had_dated = lot_pool(key)
+        if have_lots:
+            pool, fl = lot_pool(key)
+            # daily lots (fresh apples) prove only a truck of the snapshot
+            # day or earlier (2026-09-16)
+            daily_ok = snap_d is not None and rd <= snap_d
+            had_lots = fl["reg"] or (daily_ok and fl["daily"])
+            had_dated = fl["reg_dated"] or (daily_ok and fl["daily_dated"])
             if had_lots and not had_dated:
                 unverifiable = True
             elif had_lots:
                 # a lot dated in the window AROUND the receipt date is this
-                # truck; one dated months later is another delivery
+                # truck; one dated months later is another delivery. A daily
+                # lot must be dated the receipt date itself.
                 lo = rd - timedelta(days=3)
                 hi = rd + timedelta(days=1)
-                cands = [lot for lot in pool if lo <= lot[0] <= hi and lot[1] > 0]
+                cands = [lot for lot in pool if lot[1] > 0 and (
+                    (daily_ok and lot[0] == rd) if lot[3]
+                    else lo <= lot[0] <= hi)]
                 matched = sum(lot[1] for lot in cands)
                 if matched >= frac * qty:
                     left = qty
@@ -1124,13 +1402,13 @@ def gate_receipts(lines, *, bom_items, unit_by_item, snapshot_date, today,
                         left -= take
                         if left <= 0:
                             break
+                    span = (f"{lo.isoformat()}..{hi.isoformat()}"
+                            if any(not lot[3] for lot in cands)
+                            else rd.isoformat())
                     out.update(fate="landed",
                                reason=f"{matched:g} of {qty:g} already in "
-                                      f"lots dated {lo.isoformat()}.."
-                                      f"{hi.isoformat()}")
+                                      f"lots dated {span}")
                     continue
-        area = str(line.get("arrival_area") or "").strip().upper()
-        po8 = str(line.get("po8") or "").strip()
         if area in offsite:
             appt = _match_appt(appts, po8, rd, need_cat="SL3")
             if appt is None:

@@ -73,14 +73,20 @@ with their French labels).
 
 ## Codes seen on the sample
 
-**Line status (`line_status`)** — the ERP's meaning is not documented on
-our side; the app does **not** key on it (see below). Evidence:
+**Line status (`line_status`)** — confirmed by IT on 2026-09-15 (see
+*Answers from IT* below). The app keys on it since that day:
 
-| Code | Rows | Remaining qty | Reading |
-|---|---|---|---|
-| 20 | 889 | = ordered (882), partially received (7) | open |
-| 60 | 20 | 0 (19), full (1) | fully received / closed |
-| 70 | 74 | 0 on 29 zero-quantity lines (cancelled/re-entered); full on 45 lines, mixed with status-20 lines inside the same PO | **ask IT** — cancelled *and* pending lines share it |
+| Code | Rows | Remaining qty | ERP meaning | App |
+|---|---|---|---|---|
+| 20 | 889 | = ordered (882), partially received (7) | receivable — actively pending receipt | inbound while `qty_remaining` > 0 |
+| 60 | 20 | 0 (19), full (1) | archived (closed) | `received` — closed, never counted |
+| 70 | 74 | 0 on 29 lines; full on 45 lines mixed with status-20 lines inside the same PO | deleted | `cancelled` — its own fate, never inbound whatever remains |
+| other | — | — | unknown | remaining-qty rule, `status_text` blank |
+
+A fully archived order drops out of the export. An order keeps appearing
+while some of its lines are deleted and the rest are not yet archived, and
+a status change made after the previous evening's export only shows in the
+next one.
 
 **Receipt locations** (`receipt_location`, the old *Arrival area*): RP1
 packaging 374, SL3 IDL Salt Lake City DC 306, RB1 ambient raw 144, AMB
@@ -91,7 +97,11 @@ offsite_areas`.
 
 **Units**: order unit KG 612, EA 240, M2 127, L 2, FT 1, KEA 1. Price unit
 KEA (per thousand) on 191 EA lines. Statistical (KG) quantities are only
-filled for KG/L lines.
+filled for KG/L lines. IT (2026-09-15): **KEA = thousand each** — the one
+KEA line (PO 30044091) orders 1.5 KEA = 1,500 EA, priced per KEA, and the
+amount reconciles. `to_po_lines` scales KEA lines to EA (`unit_original`
+keeps `KEA`) so the BOM join counts them; purchasing / contracts still owe a
+written confirmation of the convention.
 
 ## What the app takes from it
 
@@ -103,16 +113,19 @@ supply timeline already consumes (`po_import`, plan §2):
 | `po` | `company site order_type order_no` | `M2 02 1ACDE 30043074` (old workbook: `2 02 1ACDE 30043074`) |
 | `po8` | `order_no` | the join key to dock appointments — unchanged |
 | `item`, `designation` | `item`, `item_name` | |
-| `qty` | **`qty_remaining`** | what is still inbound; the received part of a partial delivery is already in stock |
-| `unit` | `order_unit` | compared case-insensitively to the BOM unit |
+| `qty` | **`qty_remaining`** | what is still inbound; the received part of a partial delivery is already in stock; a KEA line ×1000 |
+| `unit` | `order_unit` | compared case-insensitively to the BOM unit; `KEA` becomes `EA` (`unit_original` = `KEA`) |
 | `receipt_date`, `initial_receipt_date` | `receipt_date`, `requested_date` | old *Receipt date* / *Initial Receipt Date* |
 | `arrival_area` | `receipt_location` | same codes as the old *Arrival area* |
 | `supplier`, `supplier_id` | `supplier_name`, `supplier_code` without zero padding (`48`) | `supplier_code` keeps the ERP key |
-| `received` | `qty_remaining ≤ 0` | old rule: *Receipt number* present |
+| `received` | `qty_remaining ≤ 0` **or status 60** (archived) | old rule: *Receipt number* present; the timeline's reason says "archived in the ERP" for status 60 |
+| `cancelled` | status 70 (deleted) | never inbound whatever remains; fate `cancelled` on the Inbound tab |
+| `status_text` | `line_status` | `receivable` / `archived` / `deleted`, blank for an unknown code (shown as *state* on the Inbound tab) |
 | `order_date`, `row` | `order_date`, file line | |
 
 Extras carried on every line (blank on legacy-workbook lines):
-`qty_ordered`, `qty_remaining_kg`, `status`, `line_no`, `line_seq`,
+`qty_ordered`, `qty_remaining_kg`, `status`, `status_text`, `cancelled`,
+`unit_original`, `line_no`, `line_seq`,
 `supplier_code`, `supplier_ref`, `warehouse`, `receipt_time`, `price`,
 `price_unit`, `amount`, `currency`, `buyer`, `planner`, `delivery_terms`,
 `contract`, `producer`, `origin`, `comment`, `comment_external`. The
@@ -144,16 +157,36 @@ listed in `missing_columns` and blank on every row; rows with the wrong
 field count are kept and flagged. All of it lands in `errors`, which the
 Inbound tab lists — nothing is dropped silently.
 
-## Open questions for IT
+## Answers from IT (meeting 2026-09-15)
 
-1. What do line statuses **60** and **70** mean, and is status 70 ever a
-   firm order that will be received?
-2. Export cadence and time of day: the file carries no as-of stamp, so the
-   app measures its age from the bridge copy's mtime (≤ 30 min after the
-   push). The 26 h health cadence (`open_pos`) assumes a daily export.
-3. Which lines are included: the sample carries fully received lines
-   (status 60, remaining 0) and zero-quantity lines, but none of the POs
-   that were open on the 08-24 workbook and have since been received —
-   is the filter "PO not fully closed", or a date window?
-4. One line orders in `KEA` with a price per `EA` (PO 30044091) — a data
-   entry quirk or a valid convention? The app shows it as a unit mismatch.
+1. **Line status**: 20 = receivable (actively pending receipt), 60 =
+   archived, 70 = deleted. Applied in `to_po_lines` the same day (table
+   above). Example walked through: order 30044376, three lines 1–3 all
+   status 20; repeated order numbers are the lines of one order.
+2. **Cadence**: the export leaves the ERP at about **19:10** every day. The
+   SharePoint Power BI upload refreshes every 15 min, so the file lands
+   between 19:10 and about 19:25. No as-of stamp inside the file; the
+   local copy's modified time (kept by OneDrive from SharePoint) is the
+   observation time. The 26 h `open_pos` health cadence stands.
+3. **Which lines**: everything not fully archived. A fully archived order
+   disappears; an order with deleted lines stays visible until all its
+   lines and the order are archived; a change made today may still show
+   until tomorrow's export.
+4. **KEA**: thousand each — 1.5 KEA = 1,500 units, price per KEA, the
+   amount reconciles. Purchasing / contracts own the unit configuration
+   and should confirm in writing. Small last-digit differences between
+   amount columns are rounding, currency conversion or export formatting.
+5. **Comments and criteria**: internal and external line comments are the
+   two columns near the right of the extract (`line_comment_internal`,
+   `line_comment_external`); line criteria carry `COO` (country of origin)
+   and `PRO` (believed to be raw-material traceability — exact meaning to
+   confirm if ever needed).
+6. **Where the file lands**: the SharePoint library **VIF Extracts** of the
+   NPA_ContinuousImprovement site (Shared Documents), same file name every
+   day, no separate archive. Synced by OneDrive on the work PC at
+   `C:\Users\B70048652\GROUPE BEL\NPA_ContinuousImprovement - Documents\VIF Extracts`
+   — the bridge's `source_dir_work`, and the folder a planner's PC syncs
+   for `install_flowstate.ps1 -FeedDir` (mark it *Always keep on this
+   device*).
+7. **MRP views** cannot be reproduced as extracts: only a few people build
+   them and IT cannot export exactly what another user sees.

@@ -11,7 +11,7 @@ import { isWindowBlock } from "./types";
 import { useScheduleState } from "./hooks/useScheduleState";
 import { useBlockResize } from "./hooks/useBlockResize";
 import { useContextMenu } from "./hooks/useContextMenu";
-import { computeKpis, computeAdherence, checkOverlapsSimple, serverKpisToKpiData, orderTarget, weekFulfillmentCredit, countChangeoversByWeek } from "./utils/kpi";
+import { computeKpis, computeAdherence, checkOverlapsSimple, serverKpisToKpiData, orderTarget, weekCardShares, countChangeoversByWeek } from "./utils/kpi";
 import { isCapable, recalcDuration, findOverlapsOnLine, placedQtyKg } from "./utils/validation";
 import { LINE_HEIGHT, MIN_HOUR_WIDTH, MAX_HOUR_WIDTH, fitToWidth, hourToStamp, displayOrderId, setDemandBaseWeek, isoWeekLabel, isoWeekAtHour, isPastDemandWeek, nowHour, isoWeekKey, demandWeekKey, mondayBoundaries } from "./utils/layout";
 import { getRate } from "./utils/validation";
@@ -1555,26 +1555,30 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     // from completed MOs the board hides, and that addend renders as a
     // visibly separate "+ made" element — never silently summed into the
     // headline. A nearly empty week must read as a small board %.
-    const rows = computeAdherence(schedule, args.demandTargets, args.capabilities, coveredByOrder);
-    const boardByOrder: Record<string, number> = {};
-    for (const r of computeAdherence(schedule, args.demandTargets, args.capabilities)) {
-      boardByOrder[r.order_id] = r.scheduled_qty;
-    }
-    const dem: Record<string, { sched: number; board: number; target: number }> = {};
+    // ONE adherence pass, with NO credit map: the headline is board fill.
+    // The made addend is then read STRAIGHT off the credit map per order
+    // (card-trust fix 2026-09-15). Differencing a credited pass against a
+    // board-only pass used to call it "already made" whenever the credit
+    // displaced board kg into a neighbouring week's order through the
+    // waterfall — live 2026-09-15 the whole of W39's "+1.7% already made"
+    // and all of W40's was displaced BOARD kg, no made kg at all.
+    const boardRows = computeAdherence(schedule, args.demandTargets, args.capabilities);
+    const dem: Record<string, { made: number; board: number; target: number }> = {};
     const nowKey = isoWeekKey(new Date());   // (year, week) key, see layout.ts
-    for (const r of rows) {
+    for (const r of boardRows) {
       const m = /-W(\d+)$/.exec(r.order_id);
       if (!m) continue;
       const k = parseInt(m[1], 10);
       if (demandWeekKey(k, anchor) < nowKey) continue; // past weeks are misses, not plan
       const wk = `W${isoWeekLabel(k, anchor)}`;
-      const d = (dem[wk] ??= { sched: 0, board: 0, target: 0 });
-      // Credit caps at the order's own target — overproduction on one order
-      // cannot raise the week's fulfillment (same cap as weekly_breakdown).
-      d.sched += weekFulfillmentCredit(r);
-      const tgt = orderTarget(r.qty_min, r.qty_max);
-      d.board += Math.min(boardByOrder[r.order_id] ?? 0, tgt);
-      d.target += tgt;
+      const d = (dem[wk] ??= { made: 0, board: 0, target: 0 });
+      // Both addends cap at the order's own target and the made share is
+      // what the credit adds ON TOP of the board, so the two never
+      // double-count the same kg (utils/kpi.weekCardShares).
+      const s = weekCardShares(r, coveredByOrder?.[r.order_id] ?? 0);
+      d.board += s.board;
+      d.made += s.made;
+      d.target += s.target;
     }
     // Changeovers per ISO week from the ONE port of score_changeovers'
     // weekly rows (kpi.countChangeoversByWeek — fix FE / audit ui-5): the
@@ -1599,7 +1603,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     for (const [wk, d] of Object.entries(dem)) {
       const st = (stats[wk] ??= { boardPct: null, madePct: null, tl: 0, ffs: 0, cp: 0, ttp: 0, cipReq: 0, cipGap: null as { lineName: string; lineId: number; start: number } | null, board: 0, credit: 0, target: 0 });
       st.board = d.board;
-      st.credit = Math.max(0, d.sched - d.board);
+      st.credit = d.made;
       st.target = d.target;
       st.boardPct = d.target > 0 ? Math.round((d.board / d.target) * 1000) / 10 : null;
       st.madePct = d.target > 0 ? Math.round((st.credit / d.target) * 1000) / 10 : null;
@@ -1609,6 +1613,20 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
     // never required for them to be accurate.
     return { byWeek: stats, computedAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) };
   }, [schedule, cipWindows, args.demandTargets, args.capabilities, args.kpis, anchor, coveredByOrder, horizon]);
+
+  // Week filter (planner request 2026-09-15): config.weeks_shown lists the
+  // DEMAND week indexes to show; the cards are keyed by ISO week label, so
+  // the selection maps through the demand anchor first. Render-only —
+  // weekStats, the adherence pass, holding derivation and every KPI still
+  // see every week, so hiding a week moves no number and loses no card.
+  const visibleWeekCards = useMemo(() => {
+    const entries = Object.entries(weekStats.byWeek)
+      .sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }));
+    const sel = args.config.weeks_shown;
+    if (!sel) return entries;
+    const labels = new Set(sel.map((k) => `W${isoWeekLabel(k, anchor)}`));
+    return entries.filter(([wk]) => labels.has(wk));
+  }, [weekStats, args.config.weeks_shown, anchor]);
 
   const zoomIn = useCallback(() => {
     userZoomed.current = true;
@@ -1848,11 +1866,10 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
       >
         {/* Per-week stats OUTSIDE the chart (user 2026-08-18): a simple
             row that roughly aligns with the 3-week window; live-updating. */}
-        {Object.keys(weekStats.byWeek).length > 0 && (
+        {visibleWeekCards.length > 0 && (
           <>
             <div style={{ display: "flex", gap: 8, margin: "6px 0 4px 50px" }}>
-              {Object.entries(weekStats.byWeek)
-                .sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }))
+              {visibleWeekCards
                 .map(([wk, ws]) => (
                   <div key={wk}
                        title={ws.target > 0
@@ -1941,6 +1958,7 @@ export const GanttSandbox: React.FC<Props> = ({ args }) => {
         <div style={{ marginTop: 8 }}>
           <HoldingArea blocks={holdingArea} anchor={anchor} skuFormats={args.skuFormats ?? {}}
             highlightSku={highlightSku}
+            visibleWeeks={args.config.weeks_shown ?? null}
             stock={stockEnabled ? stock : null}
             supplyTimelines={supply?.timelines ?? null}
             caps={caps}

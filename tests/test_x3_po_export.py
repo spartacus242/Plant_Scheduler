@@ -386,3 +386,35 @@ def test_write_clean_csv_and_xlsx(tmp_path):
     assert cols[0] == ["#", "key", "French header (as exported)", "kind"]
     assert len(cols) == 220 and cols[6][1:3] == ["order_no", "Numéro de commande"]
     wb.close()
+
+
+# ── ERP line status + KEA (IT meeting 2026-09-15) ───────────────────────────
+
+def test_status_codes_and_kea_follow_the_erp_meaning(tmp_path):
+    """IT (2026-09-15): 20 = receivable, 60 = archived (closed), 70 = deleted;
+    order unit KEA = thousand each. A deleted line must never count as
+    inbound however much 'remains' on it, an archived line is closed, and a
+    1.5 KEA line is 1,500 EA for the BOM join. An unknown code keeps the
+    remaining-qty rule."""
+    rows = [
+        _row(order_no="30049101", line_status="70"),                       # deleted, full qty
+        _row(order_no="30049102", line_status="60"),                       # archived, full qty
+        _row(order_no="30049103", line_status="20"),                       # receivable
+        _row(order_no="30049104", line_status="20", order_unit="KEA",
+             qty_ordered="0000000015000", qty_remaining="0000000015000",
+             price_unit="EA"),
+        _row(order_no="30049105", line_status="35"),                       # unknown code
+    ]
+    ex = x3.read_x3_po_export(_write(tmp_path / "order_npa.csv", rows=rows))
+    deleted, archived, open_, kea, unknown = x3.to_po_lines(ex)
+    assert deleted["cancelled"] is True and deleted["status_text"] == "deleted"
+    assert deleted["received"] is False and deleted["qty"] == 33600.0   # facts kept, never inbound
+    assert archived["received"] is True and archived["cancelled"] is False
+    assert archived["status_text"] == "archived" and archived["qty"] == 33600.0
+    assert open_["received"] is False and open_["cancelled"] is False
+    assert open_["status_text"] == "receivable" and open_["status"] == 20
+    assert kea["qty"] == 1500.0 and kea["qty_ordered"] == 1500.0
+    assert kea["unit"] == "EA" and kea["unit_original"] == "KEA"
+    assert open_["unit_original"] == ""                    # EA line priced per KEA: untouched
+    assert unknown["status_text"] == "" and unknown["received"] is False
+    assert unknown["cancelled"] is False and unknown["status"] == 35
