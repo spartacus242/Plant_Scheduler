@@ -69,6 +69,21 @@ data/reference/Shipping Receiving Schedule NPA - 2024.xlsm
 data/reference/open_pos.xlsx
 data/reference/open_pos.csv
 data/reference/order_npa*
+# ERP / Sage X3 VIF exports added with the fs_data drop (2026-09-15). This is
+# the rest of stockcheck.vif_import.VIF_FILES, listed by name like the rest of
+# this block, so a bridge pull of any of them can never be committed.
+data/reference/ediact.csv
+data/reference/jestkamb.csv
+data/reference/jestkexq.csv
+data/reference/jestksav.csv
+data/reference/jestkexp5.csv
+data/reference/jestkexp4.csv
+data/reference/jestksa.csv
+data/reference/PKG-REC.csv
+data/reference/jestkex2.csv
+data/reference/jestkami.csv
+data/reference/jestkavg.csv
+data/reference/jestktgb.csv
 
 # Generated scorecard runs (the app writes these on every run)
 data/scorecards/Week-*.json
@@ -91,6 +106,8 @@ data/versions/
 # Runtime state / logs written by the app and the live-data bridge (never committed)
 data/promoted.json
 data/reference/manprg.asof.json
+data/reference/live_sync.json
+data/reference/*.tmp
 scripts/fs-live-pull.log
 scripts/fs-live-data.local.json
 code/solver/solver_error.txt
