@@ -2,8 +2,8 @@
 """Overnight batch engine — Phase 1 of "Continuously Optimize".
 
 One nightly invocation (Task Scheduler, 19:00) runs a sequential portfolio of
-Scenario F solves, scores every candidate with the frozen overnight_score v1
-(helpers/overnight_score.py), maintains a per-generation leaderboard under
+Scenario F solves, scores every candidate with the frozen overnight_score
+(helpers/overnight_score.py, version in OVERNIGHT_SCORE_VERSION), maintains a per-generation leaderboard under
 data/optimizer/<gen_id>/, publishes the top-1 and runner-up as fixed-slug
 versions (overnight_best / overnight_runner_up), waits for ~05:00, runs one
 final champion consolidation on the freshest data, and writes the morning

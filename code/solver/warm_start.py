@@ -110,15 +110,29 @@ def build_hint_plan(
     for key, segs in grouped.items():
         segs.sort(key=lambda s: s["start_hour"])
         a = segs[0]
+        a_end = a["start_hour"] + a["run_hours"]
+        # An UNSPLIT present pair parks its (absent) seg_b at seg_a's end,
+        # never at 0 (fix C1, 2026-09-16). model_builder's availability floor
+        # is gated on `present`, not on `seg_b_present`:
+        #     seg_b_start >= available_from   OnlyEnforceIf(present)
+        # so a 0 here broke the hint on EVERY gated line (all 14 live lines,
+        # gates 10-167 h): the fixed-hint anchor was INFEASIBLE in 0.5 s and
+        # pass 1 started from nothing. seg_a_end satisfies every seg_b
+        # constraint the model posts for an absent seg_b: >= the gate
+        # (seg_a_start already is), inside [0, H], and the optional interval
+        # (start + 0 == end), seg_b_start >= seg_a_end and the due-window /
+        # CIP-link rows are all enforced only when seg_b_present holds.
+        # ABSENT pairs keep the all-zero EMPTY entry in apply_warm_start:
+        # every gate on them is enforced only when present.
         entry = {
             "present": 1,
             "seg_a_start": a["start_hour"],
             "seg_a_run": a["run_hours"],
-            "seg_a_end": a["start_hour"] + a["run_hours"],
+            "seg_a_end": a_end,
             "seg_b_present": 0,
-            "seg_b_start": 0,
+            "seg_b_start": a_end,
             "seg_b_run": 0,
-            "seg_b_end": 0,
+            "seg_b_end": a_end,
         }
         if len(segs) > 1:
             b = segs[-1]
@@ -184,6 +198,13 @@ def apply_warm_start(
     # schedule used. Pairs absent from the previous schedule are hinted as an
     # empty assignment - not present, zero-length segments - which is exactly
     # what the model implies for them and costs the solver nothing to verify.
+    # (Zeros are safe here and ONLY here: the availability floors on
+    # seg_a_start / seg_b_start are enforced when `present` holds, and
+    # present = 0 forces seg_a_end = 0. A present pair must never hint
+    # seg_b_start = 0 - see build_hint_plan.)
+    # NB: this is still a PARTIAL hint (the ordering / first / CIP vars are
+    # not hinted) and CP-SAT 9.15 does not adopt partial hints as an
+    # incumbent; phase2_scheduler's pass-1 anchor completes it.
     EMPTY = {
         "seg_a_start": 0, "seg_a_run": 0, "seg_a_end": 0,
         "seg_b_present": 0, "seg_b_start": 0, "seg_b_run": 0, "seg_b_end": 0,

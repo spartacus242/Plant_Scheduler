@@ -73,12 +73,19 @@ class _ProgressCallback(cp_model.CpSolverSolutionCallback):
         self._first_obj: float | None = None
         self._prev_placed: int | None = None
         self._first_co: int | None = None
+        # First incumbent of this solve (seed-adoption telemetry, fix C3):
+        # a pass 1 that adopted the anchored seed shows the seed's kg here
+        # at ~presolve time instead of 0 kg.
+        self.first_wall_s: float | None = None
+        self.first_placed_kg: int | None = None
 
     def on_solution_callback(self) -> None:
         self._count += 1
         obj = self.ObjectiveValue()
         wall = self.WallTime()
         bound = self.BestObjectiveBound()
+        if self._count == 1:
+            self.first_wall_s = round(float(wall), 2)
         # Watched planner metrics: evaluated from the incumbent itself. A
         # failed evaluation falls back to the generic label — never invent.
         placed: int | None = None
@@ -110,6 +117,8 @@ class _ProgressCallback(cp_model.CpSolverSolutionCallback):
                 self._count, obj, self._first_obj,
                 direction=self._direction, prefix=self._prefix)
         if placed is not None:
+            if self._count == 1:
+                self.first_placed_kg = placed
             self._prev_placed = placed
         add_solution(
             self._data_dir, wall, obj, label,
@@ -831,6 +840,14 @@ def _model_warnings(vars_dict: Dict[str, Any] | None) -> List[str]:
     return [str(w) for w in ((vars_dict or {}).get("warnings") or [])]
 
 
+def _min_run_too_small(vars_dict: Dict[str, Any] | None) -> List[Dict[str, Any]]:
+    """Demand orders no capable line can host one minimum run of (plant
+    decision 2026-09-16, model_builder min_run_too_small: order_id, sku,
+    bounds, reason, best line, longest free window, why) - the structured
+    twin of the one-line model warning, for feasibility_report.json."""
+    return [dict(t) for t in ((vars_dict or {}).get("min_run_too_small") or [])]
+
+
 def _log_model_warnings(vars_dict: Dict[str, Any] | None, label: str = "") -> List[str]:
     ws = _model_warnings(vars_dict)
     for w in ws:
@@ -943,6 +960,117 @@ def _co_load_value(solver: cp_model.CpSolver, vars_dict: Dict[str, Any]) -> int 
         return int(solver.Value(co))
     except Exception:  # noqa: BLE001
         return None
+
+
+def _anchor_warm_start_hint(model: cp_model.CpModel, vars_dict: Dict[str, Any],
+                            data: Data, P: Params, tl: float, *,
+                            level: int = 0) -> Dict[str, Any]:
+    """Fix C3 (2026-09-16): make a warm-start hint COMPLETE before pass 1.
+
+    apply_warm_start hints ~16k of ~100k variables (presence + segments);
+    CP-SAT 9.15 does not adopt a PARTIAL hint as an incumbent even when it is
+    feasible (09-16 evidence: "#1 30.49s best:-0" with the partial hint,
+    still 0 kg with hint_conflict_limit 100,000), while it adopts a COMPLETE
+    feasible one ("#1 30.68s ... complete_hint" at 3,687,723 kg). Production
+    pass 1 therefore started at 0 kg and built the board from 4-h pieces.
+
+    Same pattern as the pass-2 anchor: solve once with every hinted variable
+    FIXED to its hint (1 worker, <= min(120 s, tl)), and on FEASIBLE/OPTIMAL
+    replace the hint by the full solution. C80: the search strategy (the
+    soft-demand fill-first strategy over `present`) is cleared for the anchor,
+    because with every strategy variable fixed it presolves to EMPTY and
+    CP-SAT aborts the process (CHECK heuristics.fixed_search != nullptr); it
+    is ALWAYS restored for the real solve. An infeasible or unfinished anchor
+    leaves the partial hint in place and says so loudly.
+
+    Returns the telemetry record stamped into feasibility_report.json as
+    ``seed_anchor``. Never raises.
+    """
+    import time as _time
+
+    proto = model.Proto()
+    anchor_tl = min(120.0, float(tl))
+    rec: Dict[str, Any] = {
+        "ran": True,
+        "level": level,
+        "hinted_vars": len(proto.solution_hint.vars),
+        "model_vars": len(proto.variables),
+        "workers": ANCHOR_WORKERS,
+        "time_limit_s": anchor_tl,
+        "status": None,
+        "seconds": None,
+        "installed": False,
+    }
+    _strategy_backup = [copy.deepcopy(_s) for _s in proto.search_strategy]
+    proto.search_strategy.clear()
+    _t0 = _time.perf_counter()
+    try:
+        _sa = cp_model.CpSolver()
+        _sa.parameters.num_search_workers = ANCHOR_WORKERS
+        _sa.parameters.max_time_in_seconds = anchor_tl
+        apply_solver_seed(_sa, P)
+        _sa.parameters.fix_variables_to_their_hinted_value = True
+        _st = _sa.Solve(model)
+        rec["status"] = _sa.StatusName(_st)
+        rec["seconds"] = round(_time.perf_counter() - _t0, 2)
+        if _st in (cp_model.FEASIBLE, cp_model.OPTIMAL):
+            _resp = _sa.ResponseProto()
+            # What the seed is worth, read BEFORE the hint is replaced.
+            _dem = [i for i, o in enumerate(data.orders)
+                    if not o.get("is_current_mo")]
+            try:
+                rec["seed_placed_kg"] = int(sum(
+                    _sa.Value(vars_dict["produced"][i]) for i in _dem))
+            except Exception:  # noqa: BLE001
+                rec["seed_placed_kg"] = None
+            try:
+                rec["seed_present_pairs"] = int(sum(
+                    1 for _v in vars_dict["present"].values() if _sa.Value(_v)))
+            except Exception:  # noqa: BLE001
+                rec["seed_present_pairs"] = None
+            _ps = vars_dict.get("prod_score")
+            try:
+                rec["seed_prod_score"] = (None if _ps is None
+                                          else int(_sa.Value(_ps)))
+            except Exception:  # noqa: BLE001
+                rec["seed_prod_score"] = None
+            rec["seed_co_load"] = _co_load_value(_sa, vars_dict)
+            # ortools 9.15's proto wrapper has no ClearField; ClearHints()
+            # empties the hint, then the repeated fields take the full
+            # assignment (identical to the pass-2 anchor).
+            model.ClearHints()
+            proto.solution_hint.vars.extend(range(len(_resp.solution)))
+            proto.solution_hint.values.extend(_resp.solution)
+            rec["installed"] = True
+            rec["complete_hint_vars"] = len(_resp.solution)
+            _kg = rec.get("seed_placed_kg")
+            log(f"[seed-anchor] level {level}: anchor {rec['status']} in "
+                f"{rec['seconds']:.1f}s - complete {len(_resp.solution):,}-var "
+                f"hint installed (was {rec['hinted_vars']:,} vars); seed places "
+                f"{'?' if _kg is None else format(_kg, ',')} kg, fill score "
+                f"{rec.get('seed_prod_score')}, co_load {rec.get('seed_co_load')}, "
+                f"{rec.get('seed_present_pairs')} (line, order) pairs - pass 1 "
+                "starts FROM this plan")
+        else:
+            _why = ("VIOLATES the model" if _st == cp_model.INFEASIBLE
+                    else "could not be completed")
+            log(f"[seed-anchor] !!! level {level}: the warm-start plan "
+                f"(greedy seed / previous schedule) {_why} (fixed-hint anchor "
+                f"{rec['status']} after {rec['seconds']:.1f}s) - pass 1 runs "
+                f"from the PARTIAL {rec['hinted_vars']:,}-var hint, which "
+                "CP-SAT does not adopt: expect a cold start (first solutions "
+                "near 0 kg). Check the prev_schedule.csv rows against the "
+                "model (setup gaps at the gate, min run, qty_max).")
+    except Exception as _exc:  # noqa: BLE001
+        rec["status"] = rec.get("status") or "ERROR"
+        rec["seconds"] = round(_time.perf_counter() - _t0, 2)
+        rec["error"] = f"{type(_exc).__name__}: {_exc}"
+        log(f"[seed-anchor] !!! level {level}: anchor FAILED ({rec['error']}) "
+            "- pass 1 runs from the partial hint")
+    finally:
+        # C80: the real solve needs its strategy back, whatever happened.
+        proto.search_strategy.extend(_strategy_backup)
+    return rec
 
 
 def _adopt_pass2(co1: int | None, co2: int | None,
@@ -1122,6 +1250,7 @@ def _write_single_phase_outputs(solver: cp_model.CpSolver, data: Data, P: Params
     report.update(_dev_kg_week_totals(solver, vars_dict))
     report.update(fields)
     report["model_warnings"] = _model_warnings(vars_dict)
+    report["min_run_too_small"] = _min_run_too_small(vars_dict)
     if extra:
         report.update(extra)
     if not fields["setup_times_enforced"]:
@@ -2076,6 +2205,7 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
             "deterministic": DETERMINISTIC,
             "search_workers": SEARCH_WORKERS,
             "model_warnings": _model_warnings(vars0),
+            "min_run_too_small": _min_run_too_small(vars0),
         }
         _rep0.update(_fields0)
         _rep0["validation"] = _run_independent_validation(data_dir, label=" (two-phase, W0 only)")
@@ -2205,6 +2335,7 @@ def _run_two_phase(P: Params, F: Files, data_dir: Path) -> None:
         "deterministic": DETERMINISTIC,
         "search_workers": SEARCH_WORKERS,
         "model_warnings": _model_warnings(vars0) + _model_warnings(vars1),
+        "min_run_too_small": _min_run_too_small(vars0) + _min_run_too_small(vars1),
         "validation": _run_independent_validation(data_dir, label=" (two-phase)"),
         "relax_level": final_level,
         "relax_mode": RELAX_LABELS[final_level],
@@ -2308,6 +2439,10 @@ def main() -> None:
             _tl2_b = TWO_PASS_TL or _tl_b
             _msg += (f"; two-pass adds anchor <= {min(120.0, _tl2_b):.0f}s + pass 2 "
                      f"{_tl2_b:.0f}s -> typical wall ~{_tl_b + min(120.0, _tl2_b) + _tl2_b:.0f}s")
+        # fix C3: a warm-started solve anchors its seed first (seconds when
+        # the seed is feasible; an infeasible one fails in under a second)
+        _msg += (f"; a warm start adds a seed anchor <= {min(120.0, _tl_b):.0f}s "
+                 f"({ANCHOR_WORKERS} worker) per ladder level")
         log(_msg)
 
     # Initialise structured progress
@@ -2364,6 +2499,9 @@ def main() -> None:
                 status = None
                 vars_dict = None
                 _mo_state = "n/a"
+                # Seed-adoption telemetry (fix C3) -> feasibility_report.json
+                _seed_anchor: Dict[str, Any] = {"ran": False,
+                                                "reason": "no solve attempted"}
                 # Warm-start hints are only useful when the previous schedule
                 # honoured AT LEAST this attempt's constraints. Hinting a
                 # changeover-ENFORCING level with a changeover-IGNORING
@@ -2463,6 +2601,34 @@ def main() -> None:
                         except Exception as _wsexc:  # noqa: BLE001
                             log(f"[warm-start] FAILED, solving cold: {_wsexc}")
 
+                    # ── Seed anchor (fix C3, 2026-09-16) ──
+                    # The warm start above is a PARTIAL hint and CP-SAT 9.15
+                    # never adopts one (09-16: pass 1's first solution was
+                    # 0 kg at 28.6 s from a 3.7 Mt seed). Materialize the
+                    # complete plan with a fixed-hint anchor, exactly as
+                    # pass 2 does, but only when THIS level's model actually
+                    # carries a hint (each ladder level builds a fresh model
+                    # and re-applies the warm start through the trust gates).
+                    # Pass 1's own solver parameters stay as measured (seed-4:
+                    # anchored complete hint + default parameters, i.e.
+                    # repair_hint off, 'fixed' subsolver on): C80's crash was
+                    # repair_hint=True on pass 2 plus an EMPTY strategy in
+                    # the anchor, and the anchor clears/restores the strategy.
+                    if len(proto.solution_hint.vars) > 0:
+                        update_stage(
+                            DATA_DIR, "solving", "active",
+                            "seed anchor: locking the warm-start plan in as "
+                            "pass 1's starting point")
+                        reset_solver_stats(
+                            DATA_DIR, status="ANCHORING",
+                            time_limit_s=min(120.0, tl), direction="max",
+                            pass_id=("fill" if _SOFT_DEMAND_ACTIVE else ""))
+                        _seed_anchor = _anchor_warm_start_hint(
+                            model, vars_dict, data, P, tl, level=lvl)
+                    else:
+                        _seed_anchor = {"ran": False, "level": lvl,
+                                        "reason": "no warm-start hint at this level"}
+
                     # ── Stage: Solving ──
                     update_stage(
                         DATA_DIR, "solving", "active",
@@ -2504,6 +2670,10 @@ def main() -> None:
                         DATA_DIR, label_prefix=_lvl_prefix, **_cb_kwargs)
                     status = solver.Solve(model, cb)
                     status_name = solver.StatusName(status)
+                    # Adoption proof: the first incumbent of an anchored
+                    # pass 1 carries the seed's kg (not 0) at presolve time.
+                    _seed_anchor["pass1_first_solution_s"] = cb.first_wall_s
+                    _seed_anchor["pass1_first_placed_kg"] = cb.first_placed_kg
                     log(f"SOLVER level={lvl} status={status_name}")
                     update_solver_stats(
                         DATA_DIR,
@@ -2563,7 +2733,8 @@ def main() -> None:
                             extra={"two_pass": {"adopted": "pass 1",
                                                 "decision": "pass 2 pending",
                                                 "co_load_pass1": _co1},
-                                   "committed_mo_bounds": _mo_state},
+                                   "committed_mo_bounds": _mo_state,
+                                   "seed_anchor": _seed_anchor},
                             announce_stage=False)
                         _outputs_done = True
                         _two_pass_extra = {"two_pass": _pass1_report["two_pass"]}
@@ -2780,7 +2951,8 @@ def main() -> None:
                 if status in (cp_model.FEASIBLE, cp_model.OPTIMAL):
                     update_stage(DATA_DIR, "solving", "done", status_name)
                     if not _outputs_done:
-                        _extra_out: Dict[str, Any] = {"committed_mo_bounds": _mo_state}
+                        _extra_out: Dict[str, Any] = {"committed_mo_bounds": _mo_state,
+                                                      "seed_anchor": _seed_anchor}
                         if _two_pass_extra:
                             _extra_out.update(_two_pass_extra)
                         _write_single_phase_outputs(

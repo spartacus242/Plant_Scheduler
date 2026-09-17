@@ -51,7 +51,11 @@ class Params:
     stale_setup_extra_h: int = 4
     long_shutdown_default_h: int = 4
     planning_start_date: str = "2026-02-15 00:00:00"
-    # Min runtime per (line, order): at least min_run_hours or 50% of qty_min on that line
+    # Min runtime per (line, order): at least min_run_hours (every demand run
+    # and CIP-split segment; flowstate.toml sets 8 since the plant decision of
+    # 2026-09-16, 4 is the legacy absent-key default; committed MOs / trials
+    # keep min(min_run_hours, 4), see model_builder.LEGACY_COMMITTED_MIN_RUN_HOURS)
+    # and, under hard demand only, min_run_pct_of_qty of qty_min on that line
     min_run_hours: int = 4
     min_run_pct_of_qty: float = 0.5
     # Allow Week-1 orders to be produced in Week-0 to fill slack and smooth week-to-week

@@ -158,10 +158,12 @@ def trim_projected_demand(
       * cap: when the record carries `cap_kg` (statuses LIFTED / DNS /
         COVERED) and it is below the row's qty_max, qty_max drops to it and
         qty_min to 0 (never FORCE a run the components cannot support).
-        Netted rows (explicit bounds, `credit_kg`) are capped on their NET
-        target directly — the projection already netted the board's own
-        draws; pct rows are capped on the gross: the board's kg in the week
-        plus the cap, as a share of the target.
+        Netted rows (explicit bounds with `credit_kg` > 0) are capped on
+        their NET target directly — the projection already netted the
+        board's own draws; pct rows AND uncredited explicit rows (the
+        partial-week pre-build blanks pct without netting anything) are
+        capped on the gross: the board's kg in the week plus the cap (as a
+        share of the target on pct rows, in kg on explicit rows).
       * floor: when the record carries `earliest_start_h` (the order needs
         a receipt: ready + buffer) the column `earliest_start_hour` is
         written in the WORK frame (`shift_h` = report anchor - work anchor,
@@ -215,8 +217,17 @@ def trim_projected_demand(
             else:
                 old_min = float(r.get("qty_min")) if pd.notna(r.get("qty_min")) else target
                 old_max = float(r.get("qty_max")) if pd.notna(r.get("qty_max")) else target
-                if cap < old_max:
-                    new_max = round(max(0.0, cap), 1)
+                # Explicit bounds are NOT proof of netting (review fix PR-1,
+                # 2026-09-16): the partial-week pre-build (plan_fill,
+                # partial_week_demand = "prebuild") blanks pct on every
+                # clipped row, credited or not. Only a row the ledger really
+                # credited (credit_kg > 0) is capped on its net target; an
+                # uncredited explicit row is gross like a pct row, so the
+                # board's own kg in the week come on top of the cap.
+                credit = _num(r.get("credit_kg")) or 0.0
+                allow = cap if credit > 0 else (_num(rec.get("board_kg")) or 0.0) + cap
+                if allow < old_max:
+                    new_max = round(max(0.0, allow), 1)
                     df.at[idx, "qty_min"] = 0.0
                     df.at[idx, "qty_max"] = new_max
                     touched.append(

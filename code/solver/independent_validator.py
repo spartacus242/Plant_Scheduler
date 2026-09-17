@@ -261,6 +261,14 @@ class Cfg:
 # 48 to get a bounded allowance back — for every demand order.
 EARLY_FILL_H = 48.0
 
+# Minimum run (plant decision 2026-09-16, "4 hrs is too short. Make it 8
+# hrs"): [scheduler] min_run_hours governs every DEMAND run. Committed work
+# (committed/locked calendar rows, trials, current-state MOs) keeps the legacy
+# floor min(min_run_hours, this) — the same number as
+# model_builder.LEGACY_COMMITTED_MIN_RUN_HOURS, restated here so the validator
+# shares no code with the model it checks.
+COMMITTED_MIN_RUN_H = 4.0
+
 
 def parse_early_fill_hours(value: Any) -> Optional[float]:
     """[scheduler] early_fill_hours -> Cfg.early_fill_hours (restated on
@@ -1042,35 +1050,68 @@ class _Ctx:
                  + f", tol max({cfg.qty_abs_tol_kg} kg, {cfg.qty_rel_tol:.3%})")
 
     # ---- min run / max lines ----------------------------------------------
+    def _min_run_exempt(self, b: Block) -> bool:
+        """Committed work the minimum-run rule does not govern: a committed /
+        locked calendar row, a trial, or a current-state MO row ('<mo>|CUR')."""
+        return bool(b.committed or b.is_trial or self._is_committed_mo(b))
+
     def check_runs(self) -> None:
+        """MIN_RUN, restated from the plant rule (not imported from the model).
+
+        Plant decision 2026-09-16 ("4 hrs is too short. Make it 8 hrs"):
+        every DEMAND production block — each CIP-split piece is its own block
+        — and every demand (line, order) total runs >= [scheduler]
+        min_run_hours, with NO exception (the model makes a pair that cannot
+        host one minimum run dead instead of shortening the run) -> ERROR.
+        Committed work (committed / locked calendar rows, trials, current-
+        state '<mo>|CUR' rows) is exempt: it keeps the legacy floor
+        min(min_run_hours, COMMITTED_MIN_RUN_H) and even that is conditional
+        in the model (a committed MO's remainder may be shorter, a forced
+        clean may leave a short leg), so a committed block below it is a WARN
+        and one between that floor and min_run_hours is not reported.
+        Scenario F work dirs carry only fill blocks (the committed layer is
+        downtimes.csv), so there every short block is an ERROR."""
         rep, inp, cfg = self.rep, self.inp, self.cfg
+        committed_floor = min(cfg.min_run_hours, COMMITTED_MIN_RUN_H)
         per_lo: Dict[Tuple[Optional[int], Optional[str]], float] = defaultdict(float)
+        exempt_lo: Dict[Tuple[Optional[int], Optional[str]], bool] = {}
         lines_per_order: Dict[str, set] = defaultdict(set)
         for b in self.prod:
-            if b.run_hours is not None and b.run_hours < cfg.min_run_hours - self.tol:
-                sev = WARN if (b.committed or b.is_trial) else ERROR
+            exempt = self._min_run_exempt(b)
+            floor = committed_floor if exempt else cfg.min_run_hours
+            if b.run_hours is not None and b.run_hours < floor - self.tol:
+                sev = WARN if exempt else ERROR
                 rep.add("MIN_RUN", sev, b.line_name, b.order_id, b.run_hours,
-                        f"block run {b.run_hours:g}h < min_run_hours {cfg.min_run_hours:g} ({b.src})"
-                        + (" [committed]" if b.committed else ""))
-            per_lo[(b.line_id, b.order_id)] += (b.run_hours if b.run_hours is not None else b.dur)
+                        f"block run {b.run_hours:g}h < "
+                        + (f"committed floor {floor:g}h" if exempt else f"min_run_hours {floor:g}")
+                        + f" ({b.src})"
+                        + (" [committed]" if b.committed else "")
+                        + (" [trial]" if b.is_trial else "")
+                        + (" [current-state MO]" if (exempt and not b.committed and not b.is_trial) else ""))
+            key = (b.line_id, b.order_id)
+            per_lo[key] += (b.run_hours if b.run_hours is not None else b.dur)
+            exempt_lo[key] = exempt_lo.get(key, False) or exempt
             if b.order_id and not b.committed:
                 lines_per_order[b.order_id].add(b.line_id)
-        # per (line, order) total: only when the blocks are individually >= min
-        # (otherwise already reported) -- so it catches two 3h blocks summing 6? no:
-        # the total rule is a floor on the SUM, report when sum < min.
+        # per (line, order) total: a floor on the SUM (a single short block is
+        # already reported above, so it is not repeated here).
         for (lid, oid), tot in per_lo.items():
-            if tot < cfg.min_run_hours - self.tol:
+            exempt = exempt_lo.get((lid, oid), False)
+            floor = committed_floor if exempt else cfg.min_run_hours
+            if tot < floor - self.tol:
                 blocks = [b for b in self.prod if b.line_id == lid and b.order_id == oid]
-                if all(b.run_hours is not None and b.run_hours < cfg.min_run_hours - self.tol for b in blocks) \
+                if all(b.run_hours is not None and b.run_hours < floor - self.tol for b in blocks) \
                         and len(blocks) == 1:
                     continue  # identical to the per-block finding
-                rep.add("MIN_RUN", ERROR, inp.lines.get(lid, str(lid)), oid, tot,
-                        f"(line, order) total {tot:g}h < min_run_hours {cfg.min_run_hours:g}")
+                rep.add("MIN_RUN", WARN if exempt else ERROR, inp.lines.get(lid, str(lid)), oid, tot,
+                        f"(line, order) total {tot:g}h < "
+                        + (f"committed floor {floor:g}h" if exempt else f"min_run_hours {floor:g}"))
         for oid, ls in lines_per_order.items():
             if len(ls) > cfg.max_lines_per_order:
                 rep.add("MAX_LINES_PER_ORDER", ERROR, ",".join(inp.lines.get(l, str(l)) for l in sorted(ls, key=str)),
                         oid, None, f"order on {len(ls)} lines > max_lines_per_order {cfg.max_lines_per_order}")
-        self.ran("MIN_RUN", f"min_run_hours={cfg.min_run_hours:g}")
+        self.ran("MIN_RUN", f"min_run_hours={cfg.min_run_hours:g} on demand blocks; committed/trial/"
+                            f"current-MO blocks exempt (WARN below {committed_floor:g}h)")
         self.ran("MAX_LINES_PER_ORDER", f"max={cfg.max_lines_per_order}")
 
     # ---- gate / initial setup / horizon / trials ---------------------------

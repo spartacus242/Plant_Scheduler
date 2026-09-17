@@ -308,11 +308,26 @@ _RULES: list[dict[str, Any]] = [
         id="min_run_hours", group=GROUP_KNOB, ui="exposed",
         name="Minimum run length",
         config="scheduler.min_run_hours", default=4,
-        where="model_builder.py run-bound block; [scheduler] min_run_hours",
-        planner="Hard floor: any run a line gets must last at least this "
-                "many hours (each segment of a CIP-split run too). Stops "
-                "the solver scattering 1-hour stubs. Committed MOs are "
-                "exempt when their remaining kg physically can't support it.",
+        where="model_builder.py min_run_dead_reason + run-bound block "
+              "(demand_min_run_hours); independent_validator.py MIN_RUN; "
+              "helpers/greedy_fill.py floor; Plant Calendar manual edits; "
+              "[scheduler] min_run_hours",
+        planner="Hard floor on every DEMAND run the solver creates: the "
+                "run of an order on a line and each piece of a CIP-split "
+                "run last at least this many hours. Plant decision "
+                "2026-09-16: 8 h (\"4 hrs is too short. Make it 8 hrs\"; "
+                "was 4). No exception: a line whose free window is shorter "
+                "than the floor, or where ONE minimum run would make more "
+                "than the order's qty_max, cannot take that order at all "
+                "(dead pair, never a shorter run); an order no capable line "
+                "can host is left unplaced, its minimum clamped to 0 so "
+                "hard demand stays feasible, and named in the model "
+                "warnings. Committed work is exempt: current-state MOs and "
+                "trials keep the legacy floor min(min_run_hours, 4) (see "
+                "the committed-MO row). The Plant Calendar refuses manual "
+                "production blocks under this many hours (drop, resize, "
+                "edit, picker; split needs twice it). The absent-key "
+                "default stays the legacy 4.",
     ),
     dict(
         id="min_run_pct_of_qty", group=GROUP_KNOB, ui="exposed",
@@ -412,7 +427,8 @@ _RULES: list[dict[str, Any]] = [
                 "deviation prices count whole 168 h steps from an order's own "
                 "due_start (early) or due_end + 1 (late). A 4-week horizon "
                 "(horizon_weeks = 4 / 672 h) is supported end to end: staging "
-                "pro-rates the partial fourth week, the model's CIP slots and "
+                "stages the partial last week per [scheduler] "
+                "partial_week_demand, the model's CIP slots and "
                 "week steps follow the horizon.",
     ),
     dict(
@@ -432,6 +448,20 @@ _RULES: list[dict[str, Any]] = [
                 "Either way the right week is a soft preference: the fill "
                 "week gradient and week_deviation_weight (per early hour) "
                 "serve the nearest due week first when capacity is short.",
+    ),
+    dict(
+        id="partial_week_demand", group=GROUP_FIXED, ui="needs care",
+        name="Partial last demand week (pre-build or pro-rate)",
+        config="scheduler.partial_week_demand", default="prebuild",
+        where="flowstate.toml [scheduler] partial_week_demand; "
+              "helpers/plan_fill.py rebase_demand (read from the staged "
+              "work toml by scenario_runner._stage_time_frame)",
+        planner="Plant decision 2026-09-16: the demand week the horizon end "
+                "cuts in two keeps its FULL week target and upper band, so "
+                "idle tail capacity may pre-build it as inventory (early-fill "
+                "prices apply); only its floor (qty_min) is pro-rated to the "
+                "covered hours. \"prorate\" = fix C20: target, floor and cap "
+                "all pro-rated, the rest deferred to the next run.",
     ),
     dict(
         id="week_stitch", group=GROUP_FIXED, ui="needs care",
@@ -463,7 +493,8 @@ _RULES: list[dict[str, Any]] = [
         id="producible_zeroing", group=GROUP_FIXED, ui="don't expose",
         name="Impossible-demand clamp",
         value="qty_min clamped to provable window capacity",
-        where="model_builder.py _producible_kg_in_window",
+        where="model_builder.py _producible_kg_in_window + "
+              "demand_line_start_floors",
         planner="An order asking for more than its capable lines can "
                 "physically make inside its window (gates and the UNION of "
                 "downtime subtracted, capable == 1 lines only, at most "
@@ -473,16 +504,34 @@ _RULES: list[dict[str, Any]] = [
                 "clamped. (Capable/union/max-lines tightened 2026-09-03: "
                 "before, non-capable lines and double-counted downtime "
                 "inflated the bound ~4x and 105 t of unmakeable demand was "
-                "reported as a solver shortfall.)",
+                "reported as a solver shortfall.) Since the minimum-run "
+                "decision (2026-09-16) lines that cannot host one minimum "
+                "run of the order add nothing to the bound, and an order "
+                "no capable line can host is clamped to 0 and listed. "
+                "Review fixes (2026-09-16): a demand order's bound counts "
+                "only free stretches that can hold one minimum run (at most "
+                "two per line: a run and its CIP-split continuation), starts "
+                "each line's window after the hours the line's first "
+                "changeover, long-shutdown extra and (level 0) queued locked "
+                "MOs certainly take, and uses no more lines than qty_max "
+                "allows one minimum run on each — so hard demand never goes "
+                "INFEASIBLE because of the 8 h floor.",
     ),
     dict(
         id="dead_pair_pruning", group=GROUP_FIXED, ui="don't expose",
         name="Dead-pair pruning",
         value="automatic",
-        where="model_builder.py dead_pairs",
+        where="model_builder.py dead_pairs / min_run_dead_reason",
         planner="A (line, order) pair whose whole window is eaten by the "
                 "availability gate or downtime is removed from the model "
-                "up front — pure speed, no schedule it could have joined.",
+                "up front — pure speed, no schedule it could have joined. "
+                "Since 2026-09-16 a demand pair that cannot host ONE "
+                "minimum run is removed too: its longest free stretch is "
+                "shorter than min_run_hours (counted from the hours the "
+                "line's first changeover, long-shutdown extra and queued "
+                "locked MOs certainly take), or one minimum run on that "
+                "line makes more than the order's qty_max. Dead pairs "
+                "carry no changeover arcs, CIP links or idle bookkeeping.",
     ),
     dict(
         id="availability_gate", group=GROUP_FIXED, ui="don't expose",
@@ -708,7 +757,11 @@ _RULES: list[dict[str, Any]] = [
                 "demand file. horizon_weeks = 4 (672 h) is supported end to "
                 "end (plant decision 2026-09-04 #2: look 3-4 weeks out so a "
                 "SKU's week-1 and week-3 tonnage can be consolidated); "
-                "staging pro-rates a partial last week and defers the rest.",
+                "the week the horizon end cuts in two follows [scheduler] "
+                "partial_week_demand: \"prebuild\" (default, plant decision "
+                "2026-09-16) keeps its full target and cap as optional "
+                "pre-build and pro-rates only its floor; \"prorate\" (fix "
+                "C20) pro-rates target, floor and cap and defers the rest.",
     ),
     dict(
         id="budget_ceiling", group=GROUP_FIXED, ui="don't expose",
@@ -792,11 +845,32 @@ _RULES: list[dict[str, Any]] = [
         id="greedy_seed", group=GROUP_FIXED, ui="don't expose",
         name="Greedy warm start (Scenario F)",
         value="format-aware, same [changeover] weights + min_run_hours",
-        where="helpers/scenario_runner.py _greedy_seed; helpers/greedy_fill",
+        where="helpers/scenario_runner.py _greedy_seed; helpers/greedy_fill; "
+              "phase2_scheduler.py _anchor_warm_start_hint",
         planner="A dense greedy fill is built with the SAME changeover "
-                "economics and min-run floor the solver optimizes, and "
-                "handed to CP-SAT as a starting point. It only steers the "
-                "search — it cannot change what is feasible.",
+                "economics and min-run floor the solver optimizes (8 h "
+                "since 2026-09-16; a line where one minimum run would "
+                "exceed the order's qty_max is skipped, as in the model), "
+                "and handed to CP-SAT as a starting point. It only steers "
+                "the search — it cannot change what is feasible. Every "
+                "seed row satisfies the model's own setup rules (the "
+                "changeover from the SKU a line holds at its gate plus the "
+                "long-shutdown extra, setup hours between ANY two fill "
+                "blocks on a line, qty_max at the model's whole-number "
+                "rate), and pass 1 first locks the seed in with a 1-worker "
+                "anchor solve so the search starts FROM it; "
+                "feasibility_report.json seed_anchor records whether it was "
+                "adopted. The seed runs three passes in order: each order "
+                "inside its own due week; then the in-window remainder of "
+                "orders still below target on lines they do not use yet "
+                "(nearest week first, so a later week never takes time a "
+                "nearer week can use); then the pre-build pass (2026-09-16: "
+                "\"the solver can pre-build the full week 41 into the idle "
+                "tail\") that places orders still below target into time "
+                "left free before their due week, as late as the model's "
+                "early-fill window allows, by extending the order's run, "
+                "pairing it around a committed CIP, or opening a row on a "
+                "line the order does not use yet.",
     ),
     dict(
         id="line_rates", group=GROUP_FIXED, ui="easy",
@@ -811,12 +885,19 @@ _RULES: list[dict[str, Any]] = [
     dict(
         id="cur_mo_min_run_exempt", group=GROUP_FIXED, ui="don't expose",
         name="Committed-MO min-run exemption",
-        value="floor only when remaining kg supports it",
-        where="model_builder.py is_current branch",
-        planner="A committed MO whose remaining work is smaller than the "
-                "min-run floor is not forced to fake extra hours, and its "
-                "CIP-split segments have no per-segment floor (a forced "
-                "clean can leave a short leg).",
+        value="legacy floor min(min_run_hours, 4), only when remaining kg supports it",
+        where="model_builder.py is_current / trial branches "
+              "(LEGACY_COMMITTED_MIN_RUN_HOURS); independent_validator.py "
+              "MIN_RUN (COMMITTED_MIN_RUN_H)",
+        planner="Committed work is not the solver's run: the 2026-09-16 "
+                "8 h decision governs demand runs only. A committed MO "
+                "keeps the legacy floor min(min_run_hours, 4) h, applied "
+                "only when its remaining work supports it (it is never "
+                "forced to fake extra hours), and its CIP-split segments "
+                "have no per-segment floor (a forced clean can leave a "
+                "short leg). A pinned trial's segments keep the same "
+                "legacy floor. The validator reports committed/trial "
+                "blocks below it as warnings only.",
     ),
     dict(
         id="inert_params", group=GROUP_FIXED, ui="don't expose",

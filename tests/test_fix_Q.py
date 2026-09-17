@@ -469,14 +469,16 @@ def test_weekly_breakdown_applies_the_cip_waiver(monkeypatch, tmp_path):
 
 
 def test_overnight_weighted_co_load_uses_the_same_waiver_and_default():
-    """overnight_score v2: S0->S1 waived at the CIP (not a transition, no
+    """overnight_score v2+ (the rule is unchanged in v3): S0->S1 waived at the CIP (not a transition, no
     cost); S1->S2 with no standards row costs the recipe-only 1.0 (v1: 0).
     With an ffs row for S1->S2 the cost is 10; an ffs row for the WAIVED
     pair changes nothing."""
     from helpers.overnight_score import (OVERNIGHT_SCORE_VERSION, _normalize,
                                          weighted_co_load)
 
-    assert OVERNIGHT_SCORE_VERSION == "v2"
+    # The waiver/default rule dates from v2 and still holds; v3 (2026-09-16)
+    # changed only the order target (pinned in tests/test_integrate_0916.py).
+    assert int(OVERNIGHT_SCORE_VERSION.lstrip("v")) >= 2
     cal = _normalize(_cal(_waiver_rows(line_id="1", line_name="P09")))
     load, n = weighted_co_load(cal, cal.index, {})
     assert (n, load) == (1, 1.0)

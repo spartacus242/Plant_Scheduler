@@ -250,9 +250,11 @@ def test_committed_windows_labels_cips_purely():
 def test_rebase_demand_prorates_the_horizon_clipped_week():
     """Wednesday anchor (shift +48h): W3 = raw [504, 671] -> [456, 623],
     clipped to [456, 503] = 504-456 = 48 covered hours of 168.
-    1,715,000 x 48/168 = 490,000 kept; 1,225,000 deferred."""
+    1,715,000 x 48/168 = 490,000 kept; 1,225,000 deferred.
+    Pinned to mode "prorate" (the C20 rule as shipped); the default since
+    2026-09-16 is "prebuild" — tests/test_partial_week_prebuild.py."""
     dem = _dem([("A-W0", "A", 0, 1000), ("A-W3", "A", 3, 1_715_000)])
-    out, notes = rebase_demand(dem, 48.0, 504.0)
+    out, notes = rebase_demand(dem, 48.0, 504.0, mode="prorate")
     w3 = out[out["order_id"] == "A-W3"].iloc[0]
     assert (w3["due_start_hour"], w3["due_end_hour"]) == (456.0, 503.0)
     assert w3["qty_target"] == 490_000.0
@@ -262,7 +264,7 @@ def test_rebase_demand_prorates_the_horizon_clipped_week():
     assert w0["qty_target"] == 1000.0 and w0["lower_pct"] == 0.9
     # explicit bounds (when present) scale with the same fraction
     dem2 = dem.assign(qty_min=[900.0, 1_543_500.0], qty_max=[1100.0, 1_886_500.0])
-    out2, _ = rebase_demand(dem2, 48.0, 504.0)
+    out2, _ = rebase_demand(dem2, 48.0, 504.0, mode="prorate")
     w3b = out2[out2["order_id"] == "A-W3"].iloc[0]
     assert w3b["qty_min"] == 441_000.0 and w3b["qty_max"] == 539_000.0  # x 48/168
 
@@ -588,6 +590,8 @@ _SANDBOX_TOML = textwrap.dedent("""\
     max_lines_per_order = 2
     use_current_mo = true
     reforecast_running_mo_ends = false
+    # C20 assertions below are the legacy pro-rating (default is "prebuild")
+    partial_week_demand = "prorate"
 
     [cip]
     interval_h = 120

@@ -339,7 +339,11 @@ def _capable_rate(data: Data, l: int, sku: str) -> float:
 
 def _producible_kg_in_window(P: Params, data: Data, o: dict, lines,
                              mlpo: Optional[int] = None,
-                             frame: Optional[dict] = None) -> int:
+                             frame: Optional[dict] = None,
+                             skip_lines=None,
+                             cross_week: bool = False,
+                             relax_due: bool = False,
+                             line_floors: Optional[Dict[int, int]] = None) -> int:
     """Provable upper bound on what ONE order can produce in its due window.
 
     Sum over CAPABLE lines of usable hours in [ds_eff, min(H, de+1)] × rate,
@@ -351,19 +355,53 @@ def _producible_kg_in_window(P: Params, data: Data, o: dict, lines,
     (effective_due_start: 0 under the unbounded early-fill policy, plant
     decision 2026-09-04; due_start - early_fill_hours when bounded). `frame`
     is accepted for compatibility (week_frame) and no longer needed.
-    Contention with other orders and min-run rounding are deliberately
-    ignored — the bound must only ever OVER-estimate, so clamping qty_min to
-    it removes provably-impossible demand and nothing else.
+    `skip_lines` (minimum run, plant decision 2026-09-16): lines that provably
+    cannot host one minimum run of this order (build_model's min-run dead
+    pairs) contribute nothing.
+
+    DEMAND orders (minimum run, 2026-09-16 review fixes SOLVER-1 / TESTS-1):
+    usable hours are only the CONTIGUOUS free stretches of the order's hard
+    window (_min_run_window: the same window the model's intervals and
+    min_run_dead_reason use, including cross_week / relax_due and the per-line
+    `line_floors` of demand_line_start_floors) that can host one minimum run
+    — a 6 h fragment between two committed windows can never carry an 8 h
+    run — and at most the TWO longest of them per line (one (line, order)
+    pair has only seg_a and seg_b, each inside one free stretch). The number
+    of lines is also capped by qty_max: an order on k lines runs at least
+    min_run_hours on each, so k is at most the largest count whose k smallest
+    one-run kg still fit under qty_max (two 8 h runs of 1,000 kg/h lines
+    overshoot a 13,750 kg cap -> one line). Committed MOs and trials keep the
+    plain usable-hours bound.
+    Contention with other orders is deliberately ignored — the bound must
+    only ever OVER-estimate, so clamping qty_min to it removes
+    provably-impossible demand and nothing else.
     """
     H = P.horizon_h
     ds_eff = effective_due_start(P, o, frame)
     # Soft due weeks (2026-09-04 #2): a demand order may finish late inside
     # the horizon, so its window for the bound is [ds_eff, H).
     win_end = effective_due_end(P, o)
+    skip = set(skip_lines or ())
+    is_demand = not (o.get("is_current_mo") or o.get("is_trial"))
+    mrh = demand_min_run_hours(P)
+    floors = line_floors or {}
     per_line = []
+    one_run_kg = []   # demand: kg of ONE minimum run on each contributing line
     for l in lines:
+        if l in skip:
+            continue
         r = _capable_rate(data, l, o["sku"])
         if r <= 0:
+            continue
+        if is_demand:
+            a, b = _min_run_window(P, data, o, l, cross_week, relax_due,
+                                   floors.get(l))
+            runs = sorted((s for s in _free_stretches_h(data, l, a, b)
+                           if s >= mrh), reverse=True)[:2]
+            usable = float(sum(runs))
+            if usable > 0:
+                per_line.append(usable * r)
+                one_run_kg.append(int(round(r)) * mrh)
             continue
         gate = max(0, data.init_map.get(l, {}).get("available_from", 0))
         a = max(0, ds_eff, gate)
@@ -376,6 +414,15 @@ def _producible_kg_in_window(P: Params, data: Data, o: dict, lines,
     per_line.sort(reverse=True)
     if mlpo is not None and mlpo > 0:
         per_line = per_line[:mlpo]
+    if is_demand and len(per_line) > 1:
+        qmax = int(o["qty_max"])
+        k, acc = 0, 0
+        for kg in sorted(one_run_kg):
+            if acc + kg > qmax:
+                break
+            acc += kg
+            k += 1
+        per_line = per_line[:max(1, k)]
     return int(sum(per_line))
 
 
@@ -392,6 +439,286 @@ def _usable_hours_on_line(P: Params, data: Data, l: int,
         return 0.0
     usable = float(b - a) - _blocked_hours_in_window(data, l, a, b)
     return max(0.0, usable)
+
+
+# ── Minimum run (plant decision 2026-09-16) ────────────────────────────────
+#
+# "4 hrs is too short. Make it 8 hrs." [scheduler] min_run_hours (8 since the
+# decision) is a HARD floor on every DEMAND production run the solver
+# creates: the per-(line, order) run_h AND each CIP-split segment (seg_a_run,
+# seg_b_run). Until 2026-09-16 the floor had one silent exception and one
+# implicit trap:
+#   * the max_len clamp `min(max_len, min_run_hours)`. max_len is the length
+#     of the order's due window, effective_due_end - effective_due_start (gate
+#     and downtimes NOT subtracted), so a window shorter than the floor
+#     quietly shrank the floor to the window instead of forbidding the run;
+#   * qty_max. produced == sum(round(rate) x run_h) is an EQUALITY (see the
+#     produced block), so the model can never run 8 h and book fewer kg; a
+#     line where one minimum run makes more than qty_max was infeasible only
+#     implicitly, and under hard demand an order in that state on EVERY
+#     capable line (with qty_min > 0) turned the whole model INFEASIBLE and
+#     escalated the relax ladder.
+# Now a demand (line, order) pair that provably cannot host ONE minimum run is
+# a DEAD pair (present = 0, excluded from the changeover web, the CIP-link and
+# idle bookkeeping and the fill search), for one of three reasons
+# (min_run_dead_reason): "no_hours" (no free hour in its window: the
+# pre-existing dead pair), "window" (the longest CONTIGUOUS free stretch of
+# its window, gate and downtime union subtracted, is shorter than the floor:
+# seg_a alone must fit in one stretch), "qty_max" (round(rate) x the floor >
+# qty_max). The window starts at demand_line_start_floors (review fix
+# SOLVER-1): the hours the line's initial changeover, long-shutdown extra and
+# queued locked MOs certainly take count against the stretch, and the window
+# bound (_producible_kg_in_window) counts only stretches that can hold a
+# minimum run and only as many lines as qty_max allows one run on each
+# (TESTS-1). An order with no live capable pair left because of the rule has
+# its qty_min floor clamped to 0 through the producible machinery below (hard
+# demand stays FEASIBLE, soft demand simply stays short) and is listed in the
+# model warnings and vars_dict["min_run_too_small"]. The hard-demand
+# min_run_pct_of_qty floor and its soft-demand bypass are unchanged.
+#
+# Committed work is NOT the solver's run: current-state MOs (Scenario E) and
+# pinned trials are plant fact that manprg scheduled under the old 4 h rule,
+# with fixed windows and remaining kg the solver may not invent. They keep the
+# legacy floor min(min_run_hours, 4) - identical to their behaviour before
+# the decision at every min_run_hours <= 4, and never infeasible because the
+# demand floor went to 8 (a 6 h trial or a 5 h MO remainder stays placeable).
+LEGACY_COMMITTED_MIN_RUN_HOURS = 4
+
+
+def demand_min_run_hours(P: Params) -> int:
+    """Hard floor (h) on every demand run and CIP-split segment the solver
+    creates: [scheduler] min_run_hours, at least 1 (plant decision
+    2026-09-16: 8 h)."""
+    return max(1, int(P.min_run_hours))
+
+
+def committed_min_run_hours(P: Params) -> int:
+    """Floor (h) for committed work (current-state MOs, pinned trials): the
+    legacy 4 h rule, never above [scheduler] min_run_hours."""
+    return max(0, min(int(P.min_run_hours), LEGACY_COMMITTED_MIN_RUN_HOURS))
+
+
+def _free_stretches_h(data: Data, l: int, a: int, b: int) -> list:
+    """Lengths (h) of every CONTIGUOUS run of hours in [a, b) that no
+    downtime row of line `l` covers (rows unioned; same int truncation as the
+    fixed NoOverlap intervals), in time order. [] when [a, b) is empty or
+    fully blocked."""
+    a, b = int(a), int(b)
+    if b <= a:
+        return []
+    ivs = []
+    for dt in data.downtimes:
+        if dt["line_id"] != l:
+            continue
+        s = max(a, int(dt["start"]))
+        e = min(b, int(dt["end"]))
+        if e > s:
+            ivs.append((s, e))
+    out, cur = [], a
+    for s, e in sorted(ivs):
+        if s > cur:
+            out.append(s - cur)
+        cur = max(cur, e)
+    if b > cur:
+        out.append(b - cur)
+    return out
+
+
+def _longest_free_stretch_h(data: Data, l: int, a: int, b: int) -> int:
+    """Longest CONTIGUOUS run of hours in [a, b) that no downtime row of line
+    `l` covers (rows unioned; same int truncation as the fixed NoOverlap
+    intervals). 0 when [a, b) is empty or fully blocked."""
+    return max(_free_stretches_h(data, l, a, b), default=0)
+
+
+def demand_line_start_floors(P: Params, data: Data, phase: str,
+                             relax_demand: bool = False,
+                             cross_week: bool = False) -> Dict[int, int]:
+    """Per line, an hour before which NO demand run can start, from hard
+    constraints that certainly consume hours past the availability gate
+    (2026-09-16 review fix SOLVER-1; the minimum-run rule and the producible
+    clamp read it through _min_run_window). Only a LOWER bound on the true
+    start, so it never kills a pair that could run:
+
+    * initial changeover + long-shutdown extra (phases "sanity3" / "full",
+      where build_model adds `seg_a_start >= avail + setup(init, sku) +
+      extra` for the FIRST order on the line and every other present order
+      starts at or after the first): avail + min over the line's eligible
+      SKUs (capable with rate > 0, plus trials pinned to the line) of
+      setup(initial_sku, sku) (0 for CLEAN), + long_shutdown_extra (default 4)
+      when long_shutdown_flag == 1. Built at every relax level (ignore_co
+      drops only the price).
+    * queued current-state MOs (Scenario E) LOCKED to the line with
+      qty_min > 0, at relax level 0 only (relax_demand False; above it
+      build_model zeroes MO floors): every demand order starts at or after
+      each MO's effective end, the MOs share one NoOverlap, and each runs at
+      least ceil(qty_min / round(rate)) h from max(gate, its due_start) (gate
+      only under cross_week, where the MO's due start is not hard). Floor =
+      max(gate + sum of the MO hours, max over MOs of start + hours).
+    """
+    floors: Dict[int, int] = {}
+    orders = data.orders
+    lines = data.lines
+    for l in lines:
+        im = data.init_map.get(l, {})
+        avail_raw = int(im.get("available_from", 0))
+        gate = max(0, avail_raw)
+        lo = gate
+        if phase in ("sanity3", "full"):
+            skus = [
+                o["sku"] for o in orders
+                if (o.get("is_trial") and o.get("trial_line") == l)
+                or (not o.get("is_trial")
+                    and data.capable.get((l, o["sku"]))
+                    and (data.rate.get((l, o["sku"])) or 0) > 0)
+            ]
+            if skus:
+                init_sku = str(im.get("initial_sku", "CLEAN"))
+                base = 0
+                if init_sku != "CLEAN":
+                    base = min(int(math.floor(float(data.setup.get((init_sku, s), 0))))
+                               for s in skus)
+                long_flag = int(im.get("long_shutdown_flag", 0))
+                extra = int(im.get("long_shutdown_extra", 4)) if long_flag == 1 else 0
+                lo = max(lo, avail_raw + base + extra)
+        if not relax_demand:
+            mo_hours, mo_lo = 0, gate
+            for c in orders:
+                if not c.get("is_current_mo") or c.get("is_trial"):
+                    continue
+                if c.get("locked_line") is None or c.get("locked_line") != l:
+                    continue
+                qmin_c = int(c["qty_min"])
+                ir = int(round(data.rate.get((l, c["sku"])) or 0))
+                if qmin_c <= 0 or ir <= 0:
+                    continue
+                # build_model's legacy MO producible test: without it the
+                # MO floor is 0 and the MO need not run its kg.
+                if not any((data.rate.get((ll, c["sku"])) or 0) > 0
+                           and available_hours_line(P, data, ll) > 0
+                           for ll in lines):
+                    continue
+                h = -(-qmin_c // ir)
+                start_c = gate if cross_week else max(gate, int(c["due_start"]))
+                mo_hours += h
+                mo_lo = max(mo_lo, start_c + h)
+            if mo_hours:
+                lo = max(lo, gate + mo_hours, mo_lo)
+        if lo > gate:
+            floors[l] = int(lo)
+    return floors
+
+
+def _min_run_window(P: Params, data: Data, o: dict, l: int,
+                    cross_week: bool = False,
+                    relax_due: bool = False,
+                    line_floor: Optional[int] = None) -> Tuple[int, int]:
+    """[a, b) that every run of demand order `o` on line `l` must lie in, from
+    HARD floors only: the start floor (effective_due_start; under cross_week
+    only the stock-policy earliest_start is hard), the line gate and
+    `line_floor` (demand_line_start_floors: initial changeover, long-shutdown
+    extra, queued locked MOs); the end wall effective_due_end (the horizon
+    under relax_due, soft weeks and cross_week)."""
+    H = int(P.horizon_h)
+    if cross_week:
+        es = o.get("earliest_start")
+        start = 0 if es is None else max(0, int(es))
+    else:
+        start = max(0, int(effective_due_start(P, o)))
+    end = H if relax_due else effective_due_end(P, o, cross_week)
+    gate = max(0, int(data.init_map.get(l, {}).get("available_from", 0)))
+    a = max(start, gate)
+    if line_floor is not None:
+        a = max(a, int(line_floor))
+    return a, min(int(end), H)
+
+
+def min_run_dead_reason(P: Params, data: Data, o: dict, l: int,
+                        cross_week: bool = False,
+                        relax_due: bool = False,
+                        line_floor: Optional[int] = None) -> Optional[str]:
+    """Why DEMAND order `o` cannot run at all on line `l` under the minimum
+    run rule (plant decision 2026-09-16), or None when one minimum run fits.
+
+    "no_hours" - not one free hour in its window (the pre-existing dead pair);
+    "qty_max"  - one minimum run makes round(rate) x min_run_hours kg, more
+                 than qty_max allows (produced == rate x run_h exactly);
+    "window"   - the longest contiguous free stretch of its window is shorter
+                 than min_run_hours.
+    The window starts at `line_floor` when given (demand_line_start_floors:
+    hours the initial changeover, the long-shutdown extra or queued locked
+    MOs certainly consume past the gate).
+    None for current MOs, trials and incapable pairs (their own gates apply).
+    """
+    if o.get("is_current_mo") or o.get("is_trial"):
+        return None
+    r = _capable_rate(data, l, o["sku"])
+    if r <= 0:
+        return None
+    a, b = _min_run_window(P, data, o, l, cross_week, relax_due, line_floor)
+    stretch = _longest_free_stretch_h(data, l, a, b)
+    if stretch <= 0:
+        return "no_hours"
+    mrh = demand_min_run_hours(P)
+    if int(round(r)) * mrh > int(o["qty_max"]):
+        return "qty_max"
+    if stretch < mrh:
+        return "window"
+    return None
+
+
+def _min_run_too_small_record(P: Params, data: Data, o: dict, rule_dead_lines,
+                              dead: Dict[Tuple[int, int], str], o_idx: int,
+                              cross_week: bool = False,
+                              relax_due: bool = False,
+                              line_floors: Optional[Dict[int, int]] = None) -> dict:
+    """Telemetry row for a demand order that no capable line can host under
+    the minimum run (vars_dict["min_run_too_small"], model warnings).
+    best_line / best_line_min_run_kg: the capable line whose ONE minimum run
+    makes the fewest kg (round(rate) x min_run_hours); longest_free_h /
+    longest_free_line: the longest contiguous free stretch of the order's
+    window on any of those lines (from its line floor, see
+    demand_line_start_floors)."""
+    mrh = demand_min_run_hours(P)
+    floors = line_floors or {}
+    per = []
+    for l in rule_dead_lines:
+        ir = int(round(_capable_rate(data, l, o["sku"])))
+        a, b = _min_run_window(P, data, o, l, cross_week, relax_due,
+                               floors.get(l))
+        per.append((l, ir * mrh, _longest_free_stretch_h(data, l, a, b),
+                    dead[(l, o_idx)]))
+
+    def _name(l):
+        return data.line_names.get(l, f"L{l}")
+
+    qmax = int(o["qty_max"])
+    smallest = min(per, key=lambda p: (p[1], -p[2]))
+    longest = max(per, key=lambda p: (p[2], -p[1]))
+    parts = []
+    by_qmax = [p for p in per if p[3] == "qty_max"]
+    if by_qmax:
+        q = min(by_qmax, key=lambda p: p[1])
+        parts.append(f"one {mrh} h run makes >= {q[1]:,} kg ({_name(q[0])}) "
+                     f"> qty_max {qmax:,}")
+    by_win = [p for p in per if p[3] == "window"]
+    if by_win:
+        w = max(by_win, key=lambda p: p[2])
+        parts.append(f"longest free window {w[2]} h ({_name(w[0])}) < {mrh} h")
+    return {
+        "order_id": str(o["order_id"]),
+        "sku": str(o["sku"]),
+        "qty_min": int(o["qty_min"]),
+        "qty_target": int(float(o.get("qty_target") or 0)),
+        "qty_max": qmax,
+        "reason": "+".join(sorted({p[3] for p in per})),
+        "best_line": _name(smallest[0]),
+        "best_line_min_run_kg": int(smallest[1]),
+        "longest_free_h": int(longest[2]),
+        "longest_free_line": _name(longest[0]),
+        "min_run_hours": mrh,
+        "why": "; ".join(parts),
+    }
 
 
 # ── Pass-2 fill exchange rate (fix SA-3 / audit C73, F4) ──────────────────
@@ -504,6 +831,36 @@ def build_model(
     # 2026-09-03 (SA-8/SA-11): the bound now requires capable == 1 (not
     # just rate > 0), unions overlapping downtimes and keeps at most
     # max_lines_per_order lines.
+    # 2026-09-16 (minimum run, plant decision "4 hrs is too short. Make it 8
+    # hrs"): the demand pairs that cannot host one minimum run are computed
+    # HERE, before the clamp, so (a) the window bound skips their lines and
+    # (b) an order with no live capable pair left because of the rule gets
+    # its floor clamped to 0 instead of making hard demand INFEASIBLE. See
+    # min_run_dead_reason for the three reasons.
+    # Review fixes SOLVER-1 / TESTS-1 (2026-09-16): both the dead-pair test
+    # and the clamp start each line's window at demand_line_start_floors (the
+    # initial changeover + long-shutdown extra, and at level 0 the queued MOs
+    # locked to the line, certainly consume those hours), the clamp counts
+    # only free stretches that can host one minimum run (two per line at
+    # most) and caps the number of lines by qty_max — otherwise hard demand
+    # (Scenarios A-E) could still go INFEASIBLE at level 0 because of the 8 h
+    # floor and escalate the whole plan to relax_demand.
+    mrh_demand = demand_min_run_hours(P)
+    mrh_committed = committed_min_run_hours(P)
+    demand_line_floors = demand_line_start_floors(
+        P, data, phase, relax_demand=relax_demand, cross_week=cross_week)
+    min_run_dead: Dict[Tuple[int, int], str] = {}
+    for o_idx, o in enumerate(orders):
+        if o.get("is_current_mo") or o.get("is_trial"):
+            continue
+        for l in lines:
+            why = min_run_dead_reason(P, data, o, l, cross_week=cross_week,
+                                      relax_due=relax_due,
+                                      line_floor=demand_line_floors.get(l))
+            if why is not None:
+                min_run_dead[(l, o_idx)] = why
+    min_run_too_small: list = []   # telemetry: orders no capable line can host
+    min_run_warnings: list = []
     qmin_clamped: Dict[int, int] = {}   # demand qmin after the window clamp (relax ignored)
     qmin_floor: Dict[int, int] = {}     # the floor actually enforced (0 under relax_demand)
     for o_idx, o in enumerate(orders):
@@ -521,17 +878,50 @@ def build_model(
                 and available_hours_line(P, data, l) > 0
                 for l in lines)
         q_demand = int(o["qty_min"]) if producible else 0
+        dead_lines_o = [l for l in lines if (l, o_idx) in min_run_dead]
+        if producible and not is_cmo_or_trial and int(o["qty_max"]) > 0:
+            capable_o = [l for l in lines if _capable_rate(data, l, o["sku"]) > 0]
+            rule_dead = [l for l in capable_o
+                         if min_run_dead.get((l, o_idx)) in ("qty_max", "window")]
+            if rule_dead and len(dead_lines_o) == len(capable_o):
+                rec = _min_run_too_small_record(P, data, o, rule_dead,
+                                                min_run_dead, o_idx,
+                                                cross_week, relax_due,
+                                                line_floors=demand_line_floors)
+                min_run_too_small.append(rec)
+                if q_demand > 0:
+                    print(f"[min_run] {o['order_id']}: qty_min {q_demand} -> 0 "
+                          f"(no capable line can host one {mrh_demand} h "
+                          f"minimum run: {rec['why']})")
+                q_demand = 0
         if q_demand > 0 and not is_cmo_or_trial:
             cap_kg = _producible_kg_in_window(P, data, o, lines, mlpo=mlpo,
-                                              frame=wk_frame)
+                                              frame=wk_frame,
+                                              skip_lines=dead_lines_o,
+                                              cross_week=cross_week,
+                                              relax_due=relax_due,
+                                              line_floors=demand_line_floors)
             if cap_kg < q_demand:
                 print(f"[producible] {o['order_id']}: qty_min {q_demand} -> "
-                      f"{cap_kg} (window capacity: capable lines x usable "
-                      f"hours in [{int(o['due_start'])},{int(o['due_end'])}+1], "
+                      f"{cap_kg} (window capacity: capable lines x free "
+                      f"stretches >= {mrh_demand} h in "
+                      f"[{int(o['due_start'])},{int(o['due_end'])}+1], "
                       f"at most {mlpo} lines)")
                 q_demand = cap_kg
         qmin_clamped[o_idx] = q_demand
         qmin_floor[o_idx] = 0 if relax_demand else q_demand
+    if min_run_too_small:
+        n_ts = len(min_run_too_small)
+        shown = "; ".join(
+            f"{t['order_id']} (target {t['qty_target']:,} kg: {t['why']})"
+            for t in min_run_too_small[:10])
+        more = f"; +{n_ts - 10} more" if n_ts > 10 else ""
+        min_run_warnings.append(
+            f"{n_ts} demand order(s) cannot host one {mrh_demand} h minimum "
+            f"run on any capable line (plant decision 2026-09-16; "
+            f"{sum(t['qty_target'] for t in min_run_too_small):,} kg of "
+            f"target): qty_min floor clamped to 0, left unplaced — "
+            f"{shown}{more}")
 
     # ── Per (line, order) decision variables ──────────────────────────────
     #
@@ -599,6 +989,12 @@ def build_model(
             if (not o.get("is_current_mo") and not o.get("is_trial")
                     and not relax_due
                     and _usable_hours_on_line(P, data, l, max(0, ds_eff), de_win - 1) <= 0):
+                dead_pairs.add(key)
+            # Minimum run (plant decision 2026-09-16): a demand pair that
+            # cannot host ONE minimum run (no contiguous free stretch that
+            # long, or one run over qty_max) is dead too — never a shorter
+            # run (min_run_dead above; demand orders only).
+            if key in min_run_dead:
                 dead_pairs.add(key)
             run_h[key] = model.NewIntVar(
                 0, max(H, max_len), f"runh_l{l}_o{oid}"
@@ -773,12 +1169,16 @@ def build_model(
                     if trial_run is not None:
                         model.Add(run_h[key] == trial_run)
                     # Allow CIP to split: seg_b determined by solver
-                    # Per-segment minimums (avoid short stubs)
+                    # Per-segment minimums (avoid short stubs). A trial is
+                    # committed work: the legacy floor min(min_run_hours, 4)
+                    # (plant decision 2026-09-16 raised only the DEMAND floor;
+                    # an 8 h segment floor would make a pinned 6 h trial
+                    # INFEASIBLE at every relax level).
                     model.Add(
-                        seg_a_run[key] >= P.min_run_hours
+                        seg_a_run[key] >= mrh_committed
                     ).OnlyEnforceIf(present[key])
                     model.Add(
-                        seg_b_run[key] >= P.min_run_hours
+                        seg_b_run[key] >= mrh_committed
                     ).OnlyEnforceIf(seg_b_present[key])
                 else:
                     model.Add(present[key] == 0)
@@ -840,9 +1240,14 @@ def build_model(
                     # rate > remaining -> INFEASIBLE at every relax level,
                     # dispatch 5 A/B). The floor applies only when the
                     # remaining work physically supports it.
+                    # The floor is the LEGACY committed floor
+                    # min(min_run_hours, 4): the plant decision of
+                    # 2026-09-16 (8 h) governs the runs the solver creates,
+                    # not manprg's committed MOs (see
+                    # LEGACY_COMMITTED_MIN_RUN_HOURS).
                     max_hours_qty = (qmin / r) if (r is not None and r > 0) else 0.0
-                    if max_hours_qty >= P.min_run_hours:
-                        min_run = min(max_len, max(1, P.min_run_hours))
+                    if max_hours_qty >= mrh_committed:
+                        min_run = min(max_len, max(1, mrh_committed))
                     else:
                         min_run = 0
                 else:
@@ -863,9 +1268,14 @@ def build_model(
                                       * qmin_clamped[o_idx] / r)
                             if r > 0 else 0
                         )
-                    min_run = min(
-                        max_len, max(1, P.min_run_hours, min_run_from_pct)
-                    )
+                    # Minimum run (plant decision 2026-09-16): the demand
+                    # floor is NEVER clamped below min_run_hours. The old
+                    # min(max_len, ...) let a due window shorter than the
+                    # floor shrink it; such a pair is now dead (above), so
+                    # only the share floor (hard demand) is still capped at
+                    # the window length, as before.
+                    min_run = max(mrh_demand, min(
+                        max_len, max(mrh_demand, min_run_from_pct)))
                 model.Add(run_h[key] >= min_run).OnlyEnforceIf(present[key])
                 model.Add(run_h[key] == 0).OnlyEnforceIf(present[key].Not())
                 # Per-segment minimums (avoid wasteful short stubs) -- normal
@@ -874,14 +1284,18 @@ def build_model(
                 # leave < 4h on one side of a clean, which made the model
                 # INFEASIBLE at every relax level -- dispatch 5 A/B). The
                 # ORDER-level run_h floor above already guarantees committed
-                # work runs >= min_run_hours in total, which is the
+                # work runs >= the committed floor in total, which is the
                 # stub-prevention contract.
+                # Demand segments (plant decision 2026-09-16): each CIP-split
+                # piece is a run of its own and meets the full min_run_hours;
+                # the old min(min_run_hours, max_len) clamp is gone.
                 if not is_current:
+                    seg_floor = max(0, int(P.min_run_hours))
                     model.Add(
-                        seg_a_run[key] >= min(P.min_run_hours, max_len)
+                        seg_a_run[key] >= seg_floor
                     ).OnlyEnforceIf(present[key])
                     model.Add(
-                        seg_b_run[key] >= min(P.min_run_hours, max_len)
+                        seg_b_run[key] >= seg_floor
                     ).OnlyEnforceIf(seg_b_present[key])
 
                 # ── Kg-week deviation (plant decision 2026-09-04 #2) ────
@@ -1638,10 +2052,17 @@ def build_model(
             if not elig_idxs:
                 cip_model_vars[l] = []
                 continue
+            # Dead pairs (present == 0 by construction: gate/downtime or the
+            # minimum-run rule, 2026-09-16) can never run here, so they get
+            # no end or CIP-link variables. The slot machinery itself stays
+            # keyed on elig_idxs so a line whose pairs are all dead keeps the
+            # clean it had before (last_end 0 + carry).
+            live_idxs = [o_idx for o_idx in elig_idxs
+                         if (l, o_idx) not in dead_pairs]
 
             # Last production end on the line (0 when nothing is scheduled)
             e_or_0_list = []
-            for o_idx in elig_idxs:
+            for o_idx in live_idxs:
                 key = (l, o_idx)
                 e_o0 = model.NewIntVar(0, H, f"cipEo0_l{l}_o{o_idx}")
                 model.Add(e_o0 == eff_end[key]).OnlyEnforceIf(
@@ -1650,7 +2071,10 @@ def build_model(
                 model.Add(e_o0 == 0).OnlyEnforceIf(present[key].Not())
                 e_or_0_list.append(e_o0)
             last_end_l = model.NewIntVar(0, H, f"last_end_l{l}")
-            model.AddMaxEquality(last_end_l, e_or_0_list)
+            if e_or_0_list:
+                model.AddMaxEquality(last_end_l, e_or_0_list)
+            else:
+                model.Add(last_end_l == 0)
 
             # ── Dirty clock at t0 ────────────────────────────────────
             # Two sources describe the previous clean: the carry column
@@ -1803,7 +2227,7 @@ def build_model(
             # Either one of the solver's CIP slots, or (fix SB-5) a FIXED
             # committed CIP window of this line; other blocks may sit in
             # between in both cases (same rule as before for solver CIPs).
-            for o_idx in elig_idxs:
+            for o_idx in live_idxs:
                 key = (l, o_idx)
                 links = []
                 for k, (ck_s, ck_e, ck_b) in enumerate(
@@ -1995,9 +2419,15 @@ def build_model(
                 sum(present[(l, i)] for i in elig) == 0
             ).OnlyEnforceIf(any_c.Not())
 
+            # Dead pairs (present == 0 by construction) contribute a constant
+            # H / 0 below, so they get no start / end variables (minimum-run
+            # rule, 2026-09-16: nothing references an impossible assignment).
+            live_elig = [o_idx for o_idx in elig
+                         if (l, o_idx) not in dead_pairs]
+
             # First production start on line (H when not present)
             s_list = []
-            for o_idx in elig:
+            for o_idx in live_elig:
                 v = model.NewIntVar(0, H, f"cS_l{l}_o{o_idx}")
                 model.Add(
                     v == seg_a_start[(l, o_idx)]
@@ -2007,11 +2437,14 @@ def build_model(
                 )
                 s_list.append(v)
             first_s = model.NewIntVar(0, H, f"cidle_fs_l{l}")
-            model.AddMinEquality(first_s, s_list)
+            if s_list:
+                model.AddMinEquality(first_s, s_list)
+            else:
+                model.Add(first_s == H)
 
             # Last production end on line (0 when not present)
             e_list = []
-            for o_idx in elig:
+            for o_idx in live_elig:
                 v = model.NewIntVar(0, H, f"cE_l{l}_o{o_idx}")
                 model.Add(
                     v == eff_end[(l, o_idx)]
@@ -2021,7 +2454,10 @@ def build_model(
                 )
                 e_list.append(v)
             last_e = model.NewIntVar(0, H, f"cidle_le_l{l}")
-            model.AddMaxEquality(last_e, e_list)
+            if e_list:
+                model.AddMaxEquality(last_e, e_list)
+            else:
+                model.Add(last_e == 0)
 
             # Span = last end − the line's availability gate (fix SA-10 /
             # bench F3, 2026-09-03). Measured from the FIRST block, leading
@@ -2464,9 +2900,23 @@ def build_model(
         "cip_vars": cip_model_vars,
         # Per-CIP count cost expression (fix SB-4), plain int 0 without CIP
         # slots; and the model-build warnings (fix SB-3: lines already past
-        # their CIP interval at the gate).
+        # their CIP interval at the gate; minimum run 2026-09-16: one summary
+        # line when demand orders cannot host a minimum run anywhere).
         "cip_cost": cip_cost_total,
-        "warnings": cip_warnings,
+        "warnings": cip_warnings + min_run_warnings,
+        # Minimum run (plant decision 2026-09-16): the floors in force
+        # (demand = min_run_hours, committed = legacy min(min_run_hours, 4)),
+        # every dead (line, order) pair, the pairs killed by the rule with
+        # their reason ("no_hours" | "window" | "qty_max"), and the orders no
+        # capable line can host (dicts: order_id, sku, qty_min, qty_target,
+        # qty_max, reason, best_line, best_line_min_run_kg, longest_free_h,
+        # longest_free_line, min_run_hours, why) whose floor was clamped to 0.
+        # phase2_scheduler may copy min_run_too_small into the feasibility
+        # report; the summary already travels in "warnings".
+        "min_run_hours": {"demand": mrh_demand, "committed": mrh_committed},
+        "dead_pairs": set(dead_pairs),
+        "min_run_dead_pairs": dict(min_run_dead),
+        "min_run_too_small": list(min_run_too_small),
         "lateness": lateness,
         # Soft due weeks (plant decision 2026-09-04 #2): the policy in force,
         # the kg-week deviation totals (LinearExpr, or plain int 0 when

@@ -45,6 +45,9 @@ def scorecard_config(cfg: dict | None = None) -> dict[str, Any]:
     cfg = cfg if cfg is not None else load_toml()
     sc = dict(cfg.get("scorecard", {}))
     defaults = {
+        # Legacy absent-key default. flowstate.toml carries 8.0 since the
+        # plant decision of 2026-09-16 ("4 hrs is too short. Make it 8 hrs");
+        # a run strictly shorter than this is a short run.
         "short_run_h": 4.0,
         "align_tolerance_h": 2.0,
         "at_risk_h": 24.0,

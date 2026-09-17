@@ -62,6 +62,8 @@ _TOML = textwrap.dedent("""\
     max_lines_per_order = 2
     use_current_mo = true
     reforecast_running_mo_ends = false
+    # the C20 assertions below are the legacy pro-rating (default "prebuild")
+    partial_week_demand = "prorate"
 
     [cip]
     interval_h = 120

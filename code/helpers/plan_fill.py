@@ -392,10 +392,113 @@ def line_free_from(blocks: pd.DataFrame, horizon_h: float) -> dict[str, float]:
     return out
 
 
+# [scheduler] partial_week_demand — how staging treats the due week the
+# horizon end cuts in two (planner decision 2026-09-16: "the solver can
+# pre-build the full week 41 into the idle tail as inventory").
+#   "prebuild" (default): the FULL week target and upper band stay; only the
+#       floor is pro-rated to the covered hours. The rest of the target is
+#       optional pre-build, rewarded as ordinary fill up to the target.
+#   "prorate": fix C20 as shipped 2026-09-03 — target, floor and cap all
+#       pro-rated; the remainder is deferred to the next run.
+PARTIAL_WEEK_PREBUILD = "prebuild"
+PARTIAL_WEEK_PRORATE = "prorate"
+PARTIAL_WEEK_MODES = (PARTIAL_WEEK_PREBUILD, PARTIAL_WEEK_PRORATE)
+DEFAULT_PARTIAL_WEEK_DEMAND = PARTIAL_WEEK_PREBUILD
+
+
+def partial_week_demand_mode(scheduler_cfg: dict | None) -> str:
+    """[scheduler] partial_week_demand -> "prebuild" | "prorate".
+
+    Absent or blank = DEFAULT_PARTIAL_WEEK_DEMAND ("prebuild"). Any other
+    value raises ValueError: the mode decides how much demand the solver
+    sees, so a typo must never fall back silently."""
+    raw = (scheduler_cfg or {}).get("partial_week_demand")
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return DEFAULT_PARTIAL_WEEK_DEMAND
+    mode = str(raw).strip().lower()
+    if mode not in PARTIAL_WEEK_MODES:
+        raise ValueError(
+            f"[scheduler] partial_week_demand = {raw!r}: expected one of "
+            f"{', '.join(repr(m) for m in PARTIAL_WEEK_MODES)}")
+    return mode
+
+
+def _prebuild_partial_week(
+    df: pd.DataFrame,
+    clipped: pd.Series,
+    frac: pd.Series,
+) -> tuple[pd.DataFrame, dict]:
+    """The "prebuild" branch of rebase_demand for the clipped rows (in place
+    on `df`, which is already a copy). Returns (df, totals for the note).
+
+    Per clipped row, the planner band is read with data_loader's precedence
+    (_parse_demand: both pct columns present -> pct x target, else the
+    explicit qty_min/qty_max pair):
+      qty_target  unchanged (the full ISO week);
+      qty_max     the full upper band: ceil(upper_pct x target), the whole kg
+                  data_loader's pct path would give; an explicit qty_max is
+                  kept as is;
+      qty_min     floor(covered_h / full_h x the lower band), whole kg (the
+                  loader truncates explicit bounds to int anyway);
+      lower_pct / upper_pct blanked on a pct row, because data_loader
+                  prefers them over the explicit pair.
+    A malformed band (a negative bound, or min above max) is left exactly as
+    it came, so data_loader still refuses the row and names it (fix SA-12);
+    pro-rating the floor would otherwise hide lower_pct > upper_pct.
+    Columns are made float first: pandas 3 refuses NaN or fractions in an
+    int64 column (the 2026-08-14 staging crash)."""
+    for col in ("qty_min", "qty_max"):
+        if col not in df.columns:
+            df[col] = float("nan")
+    for col in ("qty_min", "qty_max", "lower_pct", "upper_pct"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
+    has_pct = "lower_pct" in df.columns and "upper_pct" in df.columns
+    tot = {"target": 0.0, "floor": 0.0, "cap": 0.0, "by_week": {}}
+    for idx in df.index[clipped]:
+        target = pd.to_numeric(pd.Series([df.at[idx, "qty_target"]]),
+                               errors="coerce").fillna(0.0).iloc[0]
+        target = max(0.0, float(target))
+        f = float(frac.at[idx])
+        lo = df.at[idx, "lower_pct"] if has_pct else float("nan")
+        hi = df.at[idx, "upper_pct"] if has_pct else float("nan")
+        # round(…, 6) first: 1,715,000 x 1.1 is 1886500.0000000002 in
+        # floats, and a bare ceil would add a phantom kilogram.
+        if pd.notna(lo) and pd.notna(hi):
+            if float(lo) < 0 or float(hi) < 0 or float(lo) > float(hi):
+                lo_band = hi_band = None          # malformed: loader refuses it
+            else:
+                lo_band = target * float(lo)
+                hi_band = float(math.ceil(round(target * float(hi), 6)))
+                df.at[idx, "lower_pct"] = float("nan")
+                df.at[idx, "upper_pct"] = float("nan")
+        else:
+            qmin_raw, qmax_raw = df.at[idx, "qty_min"], df.at[idx, "qty_max"]
+            lo_band = float(qmin_raw) if pd.notna(qmin_raw) else None
+            hi_band = float(qmax_raw) if pd.notna(qmax_raw) else None
+            if (lo_band is not None and hi_band is not None
+                    and (lo_band < 0 or hi_band < 0 or lo_band > hi_band)):
+                lo_band = hi_band = None          # malformed: loader refuses it
+        if lo_band is not None:
+            floor_kg = float(math.floor(round(lo_band * f, 6)))
+            df.at[idx, "qty_min"] = floor_kg
+            tot["floor"] += floor_kg
+        if hi_band is not None:
+            df.at[idx, "qty_max"] = hi_band
+            tot["cap"] += hi_band
+        optional = target * (1.0 - f)
+        tot["target"] += target
+        wk = (str(df.at[idx, "week_index"]) if "week_index" in df.columns
+              else "?")
+        tot["by_week"][wk] = tot["by_week"].get(wk, 0.0) + optional
+    return df, tot
+
+
 def rebase_demand(
     demand: pd.DataFrame,
     shift_h: float,
     horizon_h: float,
+    mode: str = DEFAULT_PARTIAL_WEEK_DEMAND,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Shift demand due windows from the demand file's anchor frame into the
     staging frame (staging hour 0 = shift_h hours after the demand anchor).
@@ -409,8 +512,14 @@ def rebase_demand(
 
     Weeks whose shifted window ends at/before hour 0 are OVER — their unmet
     tonnage is a miss, not a plan item — and are dropped with a note.
+
+    A due week only PARTLY inside the horizon follows `mode`
+    ([scheduler] partial_week_demand, see partial_week_demand_mode):
+    "prebuild" (default) keeps the full target and upper band and pro-rates
+    only the floor; "prorate" pro-rates target, floor and cap (fix C20).
     """
     notes: list[str] = []
+    mode = partial_week_demand_mode({"partial_week_demand": mode})
     if demand is None or demand.empty:
         return demand, notes
     raw_end = pd.to_numeric(demand["due_end_hour"], errors="coerce")
@@ -437,14 +546,36 @@ def rebase_demand(
                      "beyond the horizon")
         df = df[~beyond].copy()
         full_h = full_h[~beyond]
-    # A due week only PARTLY inside the horizon keeps only the share of its
-    # target that its covered hours can carry (fix C20 / time-3): W3 staged
-    # as [456, 503] = 48h of 168h used to keep the whole 1,715 t, 243% of
-    # what every line together could make in 48h — the solver chased an
-    # impossible week and the service score punished it. The deferred
-    # remainder is REPORTED (it is next run's plan item, not lost demand).
+    # A due week only PARTLY inside the horizon (W3 staged as [456, 503] =
+    # 48h of 168h on a Wednesday anchor):
+    #  * "prorate" (fix C20 / time-3) keeps only the share of its target the
+    #    covered hours can carry. W3 used to keep the whole 1,715 t, floor
+    #    included — 243% of what every line together could make in 48h — so
+    #    the solver chased an impossible week. The deferred remainder is
+    #    REPORTED (it is next run's plan item, not lost demand).
+    #  * "prebuild" (planner decision 2026-09-16) keeps the whole week as
+    #    fill: under unbounded early fill the solver may build it into the
+    #    idle tail of earlier weeks. Only the FLOOR is pro-rated, so the
+    #    impossible-week trap C20 fixed stays fixed; the rest of the target
+    #    is optional and earns fill up to the target, nothing above it.
     clipped = df["due_end_hour"] > horizon_h - 1
-    if clipped.any():
+    if clipped.any() and mode == PARTIAL_WEEK_PREBUILD:
+        covered_h = (float(horizon_h) - df.loc[clipped, "due_start_hour"]).clip(lower=0.0)
+        frac = (covered_h / full_h[clipped]).clip(lower=0.0, upper=1.0)
+        df, tot = _prebuild_partial_week(df, clipped, frac)
+        weeks = sorted(tot["by_week"])
+        per_week = "; ".join(f"week {w}: {kg:,.0f} kg" for w, kg in
+                             sorted(tot["by_week"].items()))
+        notes.append(
+            f"{int(clipped.sum())} order(s) in week(s) {', '.join(weeks) or '?'} "
+            f"only partly inside the horizon ({float(covered_h.iloc[0]):.0f}h of "
+            f"{float(full_h[clipped].iloc[0]):.0f}h): full-week targets KEPT for "
+            f"PRE-BUILD (partial_week_demand = \"prebuild\") — target "
+            f"{tot['target']:,.0f} kg, cap {tot['cap']:,.0f} kg, floor pro-rated "
+            f"to the covered hours {tot['floor']:,.0f} kg; optional pre-build "
+            f"beyond the covered share ({per_week}) earns fill up to the target, "
+            "nothing above it")
+    elif clipped.any():
         covered_h = (float(horizon_h) - df.loc[clipped, "due_start_hour"]).clip(lower=0.0)
         frac = (covered_h / full_h[clipped]).clip(lower=0.0, upper=1.0)
         tgt = pd.to_numeric(df.loc[clipped, "qty_target"], errors="coerce").fillna(0.0)

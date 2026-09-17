@@ -1,7 +1,7 @@
 # Flowstate configuration — operational truth → twin → optimizer
 
 [scheduler]
-planning_start_date = "2026-09-15 00:00:00"
+planning_start_date = "2026-09-17 00:00:00"
 # Rolling horizon (handoff WW32 #1). "today" = the Plant Calendar opens on the
 # current day and offers to re-base stored blocks onto it; "fixed" keeps the
 # legacy behaviour of always opening on planning_start_date.
@@ -9,7 +9,19 @@ anchor_mode = "today"
 horizon_weeks = 3
 horizon_hours = 504
 time_limit = 60
-min_run_hours = 4
+# Minimum run length, in hours. Plant decision 2026-09-16 (was 4):
+#   "4 hrs is too short. Make it 8 hrs"
+# A HARD floor on every demand production run the solver
+# creates: the run of an order on a line AND each piece of a CIP-split run.
+# A line whose free window is shorter, or where one 8 h run would make more
+# than the order's qty_max, cannot take that order at all; an order no line
+# can host is left unplaced (its floor clamped to 0) and named in the model
+# warnings. Committed MOs and trials keep the legacy 4 h floor. The same
+# number drives the Scenario F greedy seed, the independent validator's
+# MIN_RUN check and the Plant Calendar's manual edits (drag, resize, picker:
+# no production block under this many hours). Deleting the key falls back
+# to the legacy 4 everywhere.
+min_run_hours = 8
 max_lines_per_order = 2
 validate = true
 # 2026-09-08: per-pair rates on. capabilities_rates.csv is overlaid with
@@ -74,6 +86,16 @@ due_week_policy = "hard"
 # setting that kept every late order within one week (bench 2026-09-04).
 late_kg_week_weight = 200000
 early_kg_week_weight = 50000
+# Partial last demand week: "prebuild" | "prorate".
+# "prebuild" (plant decision 2026-09-16: "the solver can pre-build the full
+# week 41 into the idle tail as inventory") = the last demand week that is
+# only partly inside the horizon keeps its FULL week target and upper band
+# (qty_max) as optional pre-build inventory, while its floor (qty_min) is
+# pro-rated to the covered hours -- nothing beyond the covered share is owed,
+# but idle tail capacity may build the rest of the week early.
+# "prorate" = the pre-2026-09-16 behaviour (fix C20): target, qty_min and
+# qty_max of that week are all pro-rated to the covered hours.
+partial_week_demand = "prebuild"
 # Pass-2 makespan coefficient (Scenario F two-pass only; default 1 = a pure
 # tiebreaker, 1 unit ~ 0.001 kg of fill per hour of shorter plan). 1 kg-eq ~
 # 1,000 pass-2 units, so 100000 makes one hour of shorter plan worth 0.1 t of
@@ -127,7 +149,15 @@ cip_req_weight = 150
 
 # Draft v0 scorecard formulas — tune with the plant; shown in the UI.
 [scorecard]
-short_run_h = 4.0
+# Short run threshold in hours. Plant decision 2026-09-16 (was 4.0):
+#   "4 hrs is too short. Make it 8 hrs"
+# 4.0 equalled the old min_run_hours, so no solver run could ever count as
+# short (a 4 h block was not < 4). A production block, and a same-SKU
+# campaign, strictly SHORTER than this counts as a short run (an 8.0 h run is
+# not short); short_campaign_count against cap_short_runs feeds the campaigns
+# score. Scorecards saved before the change used 4.0 and are not comparable
+# on this metric.
+short_run_h = 8.0
 align_tolerance_h = 2.0
 at_risk_h = 24.0
 default_co_hours_recipe = 1.0

@@ -621,15 +621,21 @@ def _stage_time_frame(work: Path, dd: Path, hz) -> list[str]:
       3. re-derives the work downtimes.csv from the wall-clock reference
          file so its hours are in the hz.anchor frame too (the copy staged
          by _prepare_work_dir spoke the root-toml frame).
+
+    The due week the horizon end cuts in two follows the STAGED work toml's
+    [scheduler] partial_week_demand ("prebuild" when absent, planner
+    decision 2026-09-16; "prorate" = fix C20) — see plan_fill.rebase_demand.
     """
     import json as _json
     from datetime import datetime as _dt
 
     import pandas as _pd
 
-    from helpers.plan_fill import rebase_demand
+    from helpers.plan_fill import (DEFAULT_PARTIAL_WEEK_DEMAND,
+                                   partial_week_demand_mode, rebase_demand)
 
     notes: list[str] = []
+    _pw_mode = DEFAULT_PARTIAL_WEEK_DEMAND
     _tp = work / "flowstate.toml"
     if _tp.exists():
         # The anchor goes into [scheduler] (fix C21 / time-5 / staging-5):
@@ -655,26 +661,44 @@ def _stage_time_frame(work: Path, dd: Path, hz) -> list[str]:
                 f"{hz.anchor:%Y-%m-%d %H:%M} into {_tp}: {_exc}") from _exc
         notes.append(f"work toml [scheduler].planning_start_date = "
                      f"{hz.anchor:%Y-%m-%d %H:%M} (staging frame)")
+        # Read from the STAGED toml (the copy the solver runs on), after the
+        # stamp succeeded. A bad value decides how much demand the solver
+        # sees, so it is fatal like the stamp, never a silent default.
+        try:
+            _pw_mode = partial_week_demand_mode(_tcfg.get("scheduler") or {})
+        except ValueError as _exc:
+            raise StagingError(f"{_tp}: {_exc}") from _exc
     else:
         notes.append("no work flowstate.toml to stamp the staging anchor into")
 
     dem_path = work / "demand_plan.csv"
     src_meta = dd / "reference" / "demand_plan.source.json"
     if dem_path.exists() and src_meta.exists():
+        # shift_h None = the demand frame is unknown (no/garbled anchor):
+        # the file is staged as is. A KNOWN zero shift (the Monday the file
+        # was imported) still re-bases: rebase_demand is the identity unless
+        # a week lies beyond the horizon or is cut by its end, and the old
+        # `if shift_h:` skip staged those weeks untouched — due_start >= H
+        # rows reached the model as early-fill candidates under the
+        # unbounded early-fill policy, and a cut week kept its full floor.
+        shift_h: float | None
         try:
             _da = str(_json.loads(
                 src_meta.read_text(encoding="utf-8")).get("anchor") or "")
             shift_h = ((hz.anchor - _dt.strptime(
                 _da, "%Y-%m-%d %H:%M:%S")).total_seconds() / 3600.0
-                if _da else 0.0)
+                if _da else None)
         except (OSError, ValueError):
-            shift_h = 0.0
-        if shift_h:
+            shift_h = None
+        if shift_h is not None:
             dem = _pd.read_csv(dem_path, dtype={"sku": str})
-            dem, rb_notes = rebase_demand(dem, shift_h, float(hz.hours))
-            dem.to_csv(dem_path, index=False)
-            notes.append(f"demand due windows re-based {shift_h:+.0f}h "
-                         "(demand anchor -> staging anchor)")
+            dem, rb_notes = rebase_demand(dem, shift_h, float(hz.hours),
+                                          mode=_pw_mode)
+            if shift_h or rb_notes:
+                dem.to_csv(dem_path, index=False)
+            if shift_h:
+                notes.append(f"demand due windows re-based {shift_h:+.0f}h "
+                             "(demand anchor -> staging anchor)")
             notes.extend(rb_notes)
 
     # Downtimes are wall-clock truth; only their HOUR VIEW depends on the
@@ -1410,11 +1434,21 @@ def _seed_setup_hours(setups: dict) -> dict[str, dict[str, float]]:
             for f, row in (setups or {}).items()}
 
 
-def _greedy_seed(work: Path) -> list[str]:
+def _greedy_seed(work: Path, *, prebuild: bool = True) -> list[str]:
     """Scenario F: construct a dense fill greedily and write it as the
     solver's warm start (prev_schedule.csv + a matching prev_feasibility.json
     so the hint gates accept it). Runs AFTER every input patch — the seed
-    sees exactly what the solver will see."""
+    sees exactly what the solver will see.
+
+    Every order still below target first gets an in-window REMAINDER try
+    on lines it does not use yet (at min_run_hours under soft demand), so a
+    nearer week keeps its own hours before any later week pre-builds.
+
+    prebuild (default on): after the in-window passes, orders still below
+    their target get runs BEFORE their due week in the time the first pass
+    left free, down to the model's own start floor under the work toml's
+    [scheduler] early_fill_hours (helpers/greedy_fill.py, PRE-BUILD). Off
+    only where the model forbids early fill (two-phase sub-solves)."""
     import json as _json
 
     import pandas as _pd
@@ -1513,22 +1547,83 @@ def _greedy_seed(work: Path) -> list[str]:
                      f"the {_cip_floor_h:g}h clean (same rule as the solver)")
 
     blocked: dict[str, list[tuple[float, float]]] = {}
+    # Committed CIP windows (model_builder fixed_cip_windows: a downtime row
+    # whose reason contains "CIP", clamped to [0, H) with the same int
+    # truncation): the only clean a pre-build seg_a may sit in front of while
+    # the order's existing row resumes behind it as seg_b.
+    cip_windows: dict[str, list[tuple[float, float]]] = {}
     for _, r in dt.iterrows():
         blocked.setdefault(str(r["line_name"]).upper(), []).append(
             (float(r["start_hour"]), float(r["end_hour"])))
+        if "cip" in str(r.get("reason", "") or "").lower():
+            _s_w = max(0, int(float(r["start_hour"])))
+            _e_w = min(int(H), int(float(r["end_hour"])))
+            if _e_w > _s_w:
+                cip_windows.setdefault(str(r["line_name"]).upper(), []).append(
+                    (float(_s_w), float(_e_w)))
     line_segments: dict[str, list[tuple[float, float]]] = {}
     line_ids: dict[str, int] = {}
     init_sku: dict[str, str] = {}
+    line_gates: dict[str, float] = {}
+    init_extra: dict[str, float] = {}
+
+    def _int_or(v, default: int) -> int:
+        # data_loader: pd.to_numeric(errors="coerce").fillna(default).astype(int)
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return int(default)
+        return int(default) if f != f else int(f)
+
     for _, r in init.iterrows():
         ln = str(r["line_name"]).upper()
         gate = float(r.get("available_from_hour", 0) or 0)
         line_segments[ln] = free_segments(gate, blocked.get(ln, []), H)
         line_ids[ln] = int(r.get("line_id", 0) or 0)
         init_sku[ln] = str(r.get("initial_sku", "") or "")
+        # The model's INITIAL changeover (fix C2, 2026-09-16): the line's
+        # first fill block starts >= gate + setup(initial_sku, sku) + the
+        # long-shutdown extra when flagged (model_builder first-order floor;
+        # extra defaults to 4 h like data_loader). Without it 7 of 14 live
+        # seed lines started 1-2 h too early and the anchor was INFEASIBLE.
+        line_gates[ln] = gate
+        if _int_or(r.get("long_shutdown_flag", 0), 0) == 1:
+            init_extra[ln] = float(_int_or(
+                r.get("long_shutdown_extra_setup_hours", 4), 4))
 
+    # Minimum run (MINRUN, 2026-09-16: "4 hrs is too short. Make it 8 hrs."):
+    # every seed row is >= the work toml's [scheduler] min_run_hours — the
+    # model's per-(line, order) and per-segment floor — and the share floor
+    # is never looser than the model's min_run_pct_of_qty (soft demand drops
+    # the model's share floor; the seed keeps 0.5 of qty_min per line).
+    min_pct = max(0.5, float(sched.get("min_run_pct_of_qty", 0.5) or 0.5))
+    # The seed's in-window REMAINDER pass drops that share floor exactly when
+    # the model does: [scheduler] soft_demand, parsed as phase2_scheduler
+    # params_from_config parses it (absent -> hard demand -> floor kept).
+    soft = bool(sched.get("soft_demand", False))
+    # Never spread an order over more lines than the model allows (the seed
+    # keeps its historical 2 when the toml allows more).
+    _mlpo_cfg = sched.get("max_lines_per_order")
+    mlpo_seed = 2 if _mlpo_cfg is None else max(1, min(2, int(_mlpo_cfg)))
+    # Early-fill policy exactly as the solver parses it (plant rule
+    # "unbounded" -> None: pre-build as early as free capacity allows; an
+    # integer bounds every order to due_start - h). A value the solver would
+    # reject turns the pre-build off here — the solve reports the typo.
+    efh = None
+    if prebuild:
+        from solver.data_loader import parse_early_fill_hours
+        try:
+            efh = parse_early_fill_hours(sched.get("early_fill_hours"))
+        except ValueError as _exc:
+            prebuild = False
+            notes.append(f"greedy seed: pre-build OFF ({_exc})")
     rows, summary = build_greedy_fill(
         dem.to_dict("records"), rates, setups, line_segments, line_ids,
-        init_sku, co_cost=co_cost, min_run_hours=min_run, horizon_h=H)
+        init_sku, co_cost=co_cost, min_run_hours=min_run, min_run_pct=min_pct,
+        horizon_h=H, max_lines_per_order=mlpo_seed,
+        line_gates=line_gates, initial_extra_hours=init_extra,
+        prebuild=prebuild, early_fill_hours=efh, cip_windows=cip_windows,
+        soft_demand=soft)
     if not rows:
         return ["greedy seed: nothing to place"]
     _pd.DataFrame(rows).to_csv(work / "prev_schedule.csv", index=False)
@@ -1540,6 +1635,22 @@ def _greedy_seed(work: Path) -> list[str]:
     notes.append(
         f"greedy seed: {summary['rows']} fill block(s), kg/week "
         f"{summary['kg_by_week']} - handed to CP-SAT as a full warm start")
+    _rem = summary.get("remainder") or {}
+    if _rem.get("runs"):
+        notes.append(
+            f"greedy seed in-window remainder: {_rem['kg']:,} kg in "
+            f"{_rem['runs']} run(s) on lines the order did not use yet "
+            f"(floor {'min_run_hours' if soft else 'min_run_hours + share'}), "
+            "before any later week pre-builds")
+    _pb = summary.get("prebuild") or {}
+    if _pb.get("runs"):
+        notes.append(
+            f"greedy seed pre-build: {_pb['kg']:,} kg placed ahead of its due "
+            f"week in {_pb['runs']} run(s) ({_pb['extended']} row extension(s), "
+            f"{_pb['cip_pairs']} seg_a/seg_b pair(s) around a committed CIP, "
+            f"{_pb['new_rows']} new row(s)); kg by due week "
+            f"{_pb['kg_by_week_index']} (early_fill_hours "
+            f"{'unbounded' if efh is None else efh})")
     if summary["orders_short"]:
         notes.append(f"greedy seed left {len(summary['orders_short'])} "
                      "order(s) short (solver may still improve)")
@@ -1582,6 +1693,11 @@ def _stage_warm_start(work: Path, scenario: dict[str, Any]) -> list[str]:
                     "greedy seed skipped; the solver's trust gates decide"]
         return ["warm start mode 'prev' but no prev_schedule.csv planted — "
                 "solving cold (greedy seed skipped)"]
+    # A two-phase solve (cross-week off) runs its sub-models with
+    # allow_week1_in_week0 off (phase2_scheduler._sub_phase_params): no order
+    # may start before its due week there, so the seed must not pre-build.
+    if scenario.get("two_phase") and not scenario.get("cross_week"):
+        return _greedy_seed(work, prebuild=False)
     return _greedy_seed(work)
 
 
@@ -2437,7 +2553,13 @@ def save_scenario_version(
                 "relax_level", "relax_mode", "status", "ignore_co",
                 "setup_times_enforced", "validation", "two_pass",
                 "committed_mo_bounds", "deterministic", "search_workers",
-                "model_warnings")
+                "model_warnings",
+                # 2026-09-16: whether pass 1 started FROM the greedy seed
+                # (fixed-hint anchor status / seconds / seed kg) and which
+                # demand orders no line can host one minimum run of — a
+                # saved proposal must say both, the work dir is overwritten
+                # by the next run.
+                "seed_anchor", "min_run_too_small")
             if k in feas}
     if scenario.get("id") is not None:
         extra["scenario_id"] = str(scenario["id"])

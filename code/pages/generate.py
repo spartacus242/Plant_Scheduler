@@ -82,7 +82,8 @@ def _expected_wall_s(time_limit: int, *, two_pass: bool, two_phase: bool) -> tup
     """(typical, ceiling) wall seconds for one scenario at this per-solve budget.
 
     The slider value is the budget of ONE CP-SAT solve, not the run: a two-pass
-    fill run is pass 1 + anchor (<= 120 s) + pass 2; a two-phase run solves
+    fill run is pass 1 + anchor (<= 120 s) + pass 2 (plus a seed anchor
+    before pass 1: ~2 s on a feasible seed, <= 120 s); a two-phase run solves
     week 0 and week 1; every solve may climb up to 4 relax-ladder levels on
     UNKNOWN/INFEASIBLE. ~60 s covers staging, model builds and scoring.
     """
@@ -281,7 +282,9 @@ def _feasibility_summary(feas: dict) -> str:
         extras.append("UNSAFE: changeover times NOT enforced")
     _mw = feas.get("model_warnings") or []
     if _mw:
-        extras.append(f"{len(_mw)} model warning(s) (CIP overdue at the gate)")
+        # CIP overdue at the gate (SB-3) or demand orders too small for the
+        # minimum run (2026-09-16) — the page lists each one below.
+        extras.append(f"{len(_mw)} model warning(s)")
     tp = feas.get("two_pass") or {}
     if tp.get("adopted"):
         extras.append(f"two-pass: {tp['adopted']} adopted")
@@ -996,10 +999,16 @@ sr1, sr2, sr3 = st.columns(3)
 with sr1:
     w_min_run = st.number_input(
         "min_run_hours", min_value=1, max_value=48,
+        # flowstate.toml carries the plant rule (8 h since 2026-09-16); 4 is
+        # only the legacy absent-key default, the same one the solver uses.
         value=int(sched_cfg.get("min_run_hours", 4)), step=1,
-        help="Hard floor: any run a line gets must last at least this many "
-             "hours (each segment of a CIP-split run too). Also steers the "
-             "Scenario F greedy seed.",
+        help="Hard floor: every demand run the solver creates must last at "
+             "least this many hours (each segment of a CIP-split run too). "
+             "Plant decision 2026-09-16: 8 h. A line that cannot fit one "
+             "such run of an order (window too short, or one run over the "
+             "order's max kg) does not take it; committed MOs and trials "
+             "keep the legacy 4 h floor. Also steers the Scenario F greedy "
+             "seed and the Plant Calendar's manual edits.",
     )
 with sr2:
     w_min_run_pct = st.number_input(

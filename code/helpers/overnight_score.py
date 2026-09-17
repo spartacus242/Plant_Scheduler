@@ -1,4 +1,4 @@
-# helpers/overnight_score.py — overnight_score v2: the frozen cross-generation
+# helpers/overnight_score.py — overnight_score v3: the frozen cross-generation
 # composite for the nightly optimizer (scripts/overnight_batch.py).
 #
 # Pure functions only — no file IO, no config reads. The IO shell (staging a
@@ -16,11 +16,26 @@
 #     v1 priced an unknown pair at 0 (absence of standards read as free).
 # Leaderboards scored under v1 are not comparable with v2 ones.
 #
+# v3 (2026-09-16, partial_week_demand = "prebuild" + review fix TESTS-2) — the
+# ORDER TARGET rule changed (demand_orders):
+#   * a staged row with qty_target > 0 now scores against
+#     min(qty_target, qty_max); the (qty_min+qty_max)/2 midpoint convention
+#     applies only to rows without a target;
+#   * a blank lower_pct/upper_pct means the default (0.9 / 1.1), but a real
+#     0.0 stays 0.0 (v2 read a DNS-trimmed 0.0 as 0.9 and a blank as nan).
+# Unchanged: pct rows and netted rows whose floor stays above 0 (their
+# midpoint IS the target). Changed: netted rows whose floor clamps to 0 (v2
+# target = qty_max, v3 = qty_target: 280563-W0 on the 09-16 09:23 staging went
+# 3,062.4 -> 62.4 kg), rows whose band is not centred on the target (qty_max
+# below target, a DNS-trimmed lower_pct 0.0) and prebuild partial-week rows
+# (full target). Net demand moves with them (09-16 prebuild smoke staging:
+# 4,947,766 -> 5,512,799 kg), so v2 and v3 scores are NOT comparable.
+#
 # composite = 0.40*fill + 0.30*changeovers + 0.15*campaign + 0.15*on_time
 # (all subscores 0-100).
 #
-# Definitions (v2, exact — identical to v1 except the changeover rule noted
-# above):
+# Definitions (v3, exact — identical to v1 except the changeover rule (v2)
+# and the order target rule (v3) noted above):
 #   solver-placed block  production block whose order_id is a staged demand
 #                        order id, excluding blocks whose attrs carry the
 #                        exact token 'pinned' or any 'current_state:' token.
@@ -33,6 +48,14 @@
 #                        (scorecard_engine.weekly_breakdown / kpi.ts).
 #                        qty_min/qty_max derive from qty_target*lower_pct/
 #                        upper_pct when absent (load_demand convention).
+#                        A staged row with qty_target > 0 scores against
+#                        min(qty_target, qty_max) instead (v3, 2026-09-16):
+#                        a partial last week staged as "prebuild" keeps its
+#                        full target with a pro-rated floor, so the midpoint
+#                        would under-count it. pct rows and netted rows whose
+#                        floor stays above 0 give the same number either way;
+#                        netted rows whose floor clamps to 0, off-centre
+#                        bands and prebuild rows do not (see v3 above).
 #   fill                 sum(min(placed kg per order, target)) divided by
 #                        min(net demand kg, capacity bound kg). Net demand =
 #                        sum of targets of the STAGED post-netting demand
@@ -75,7 +98,7 @@ from typing import Any
 
 import pandas as pd
 
-OVERNIGHT_SCORE_VERSION = "v2"
+OVERNIGHT_SCORE_VERSION = "v3"
 
 COMPOSITE_WEIGHTS = {
     "fill": 0.40,
@@ -122,11 +145,18 @@ def demand_orders(demand: pd.DataFrame) -> list[dict[str, Any]]:
     """
     if demand is None or demand.empty:
         return []
+
+    def _num_or(v: Any, default: float) -> float:
+        # Blank -> default, but a real 0 stays 0: `float(x) or 0.9` read a
+        # DNS-trimmed lower_pct 0.0 as 0.9 and a blank one as nan (truthy).
+        x = pd.to_numeric(v, errors="coerce")
+        return default if pd.isna(x) else float(x)
+
     out: list[dict[str, Any]] = []
     for _, d in demand.iterrows():
-        tgt = float(pd.to_numeric(d.get("qty_target"), errors="coerce") or 0)
-        lo = float(pd.to_numeric(d.get("lower_pct"), errors="coerce") or 0.9)
-        hi = float(pd.to_numeric(d.get("upper_pct"), errors="coerce") or 1.1)
+        tgt = _num_or(d.get("qty_target"), 0.0)
+        lo = _num_or(d.get("lower_pct"), 0.9)
+        hi = _num_or(d.get("upper_pct"), 1.1)
         qmin = pd.to_numeric(d.get("qty_min"), errors="coerce")
         qmax = pd.to_numeric(d.get("qty_max"), errors="coerce")
         qmin = float(qmin) if pd.notna(qmin) else tgt * lo
@@ -136,7 +166,12 @@ def demand_orders(demand: pd.DataFrame) -> list[dict[str, Any]]:
         out.append({
             "order_id": str(d.get("order_id", "")),
             "sku": str(d.get("sku", "")),
-            "target": order_target(qmin, qmax),
+            # The staged target, capped at the band (partial_week_demand =
+            # "prebuild" keeps the full week target with a pro-rated floor,
+            # which the midpoint under-counts); the midpoint convention only
+            # when the row carries no target.
+            "target": (min(tgt, qmax) if tgt > 0
+                       else order_target(qmin, qmax)),
             "due_mid_h": (ds + de) / 2.0,
         })
     return out

@@ -256,7 +256,7 @@ METRIC_DOCS: dict[str, dict[str, Any]] = {
             "with no machine/recipe flag) is a RECIPE-ONLY change - weight "
             "co_weight_recipe_only (1.0), never 0. Applied identically by "
             "score_changeovers, its per-week rows (weekly_breakdown), the Gantt "
-            "KPI bar (kpi.ts via co_pairs/co_default) and overnight_score v2 "
+            "KPI bar (kpi.ts via co_pairs/co_default) and overnight_score (v2+) "
             "weighted_co_load / transition_cost."
         ),
         "direction": "lower",
@@ -488,15 +488,20 @@ METRIC_DOCS: dict[str, dict[str, Any]] = {
         ),
     },
     "short_run_count": {
-        "definition": "Production blocks with duration < short_run_h (default 4h).",
+        "definition": (
+            "Production blocks strictly shorter than short_run_h ([scorecard] in "
+            "flowstate.toml: 8 h since the plant decision of 2026-09-16, 4 h "
+            "before; an 8.0 h block is not short)."
+        ),
         "formula": "count(production blocks where (end_h - start_h) < short_run_h)",
         "direction": "lower",
         "cap_key": "cap_short_runs",
         "scoring": "score = clamp(100 * (1 - short_run_count / cap_short_runs), 0, 100)",
         "category": "campaigns",
         "why": (
-            "A sub-4-hour run barely clears startup and ramp. These are the runs that "
-            "quietly destroy OEE and are the first candidates to consolidate."
+            "A run shorter than short_run_h barely clears startup and ramp (the plant, "
+            "2026-09-16: \"4 hrs is too short. Make it 8 hrs\"). These are the runs "
+            "that quietly destroy OEE and are the first candidates to consolidate."
         ),
     },
     # --- service -----------------------------------------------------------
@@ -1594,6 +1599,9 @@ def score_campaigns(calendar: pd.DataFrame, cfg: dict) -> dict[str, Any]:
     same-SKU run per line, see campaign_runs) and short_campaign_count
     (campaigns shorter than short_run_h). avg_campaign_h_kgw is the
     kg-weighted mean campaign length (None when the calendar carries no kg).
+    "Short" is STRICTLY below short_run_h ([scorecard], 8.0 in flowstate.toml
+    since the plant decision of 2026-09-16; the code default 4.0 applies only
+    when the key is absent): an 8.0 h run is not short.
     """
     prod = _production(calendar)
     if prod.empty:

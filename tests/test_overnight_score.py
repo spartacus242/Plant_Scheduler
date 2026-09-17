@@ -1,11 +1,13 @@
-# tests/test_overnight_score.py — overnight_score v2 (frozen composite).
+# tests/test_overnight_score.py — overnight_score v3 (frozen composite).
 #
 # Every subscore is asserted against a HAND-COMPUTED fixture: the formula is
 # frozen per version, so these numbers must never drift. A change in
 # expectation here means a version bump, not an edit. v1 -> v2 (2026-09-03,
 # fix Q): changeover rule aligned with the scorecard - CIP-in-gap waiver and
 # a recipe-only (1.0) missing-pair default; see test_transition_cost_* and
-# tests/test_fix_Q.py.
+# tests/test_fix_Q.py. v2 -> v3 (2026-09-16): order target = min(qty_target,
+# qty_max) when the staged row has a target, blank pct -> default but 0.0
+# stays 0.0; see tests/test_integrate_0916.py.
 
 from __future__ import annotations
 

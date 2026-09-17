@@ -79,6 +79,11 @@ def gantt_calendar(
         skuDescriptions=sku_descriptions or {},
         stock=stock,
         focusBlock=focus_block,
+        # Dev fallback for a mount without config (every page passes one read
+        # from flowstate.toml, where min_run_hours is 8 since the plant
+        # decision of 2026-09-16). 4 stays the legacy absent-key default the
+        # solver, validator and pages share, so the board never refuses a run
+        # a toml-less solve could have produced.
         config=config or {
             "planning_anchor": "2026-02-15 00:00:00",
             "cip_duration_h": 6,
