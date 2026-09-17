@@ -2,7 +2,8 @@
 #
 # Finding 11 (walkthrough 2026-08-18): the adherence table under the Gantt
 # still listed past-week orders ("570560-W32 ... 0% UNDER" with today in W34).
-# Past-week misses live on the Reconcile page; the planning board plans
+# Past-week misses are history (the Reconcile page that listed them was
+# retired 2026-09-17); the planning board plans
 # current/future ISO weeks only — the same rule the holding area
 # (_holding_is_current in pages/calendar.py) and the popup demand list apply.
 # The filter is client-side (utils/layout.ts isPastDemandWeek, applied to the

@@ -518,8 +518,10 @@ def coverage_findings(
                    "— counted as misses, not plan items"),
             detail=(f"Due before the current ISO week (W{now_key % 100:02d}). "
                     "The demand coverage ledger carries the per-week history."),
-            action="Nothing to plan — review the ledger's past weeks if the misses surprise you",
-            page="pages/reconcile.py",
+            action="Nothing to plan — past-week misses are history, not plan items",
+            # no deep link: the Reconcile page that rendered the ledger was
+            # retired 2026-09-17; the Plant Calendar plans current weeks only
+            page=None,
         ))
     if under:
         worst = sorted(under, key=lambda e: -e["missing"])[:5]

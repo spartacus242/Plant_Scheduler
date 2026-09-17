@@ -47,8 +47,11 @@ pg = st.navigation(
         "1 · Connect": [
             st.Page("pages/data.py", title="Data Files", icon=":material/table:"),
         ],
+        # The Reconcile findings page was retired 2026-09-17 (user request):
+        # its stock findings live on Stock Check, coverage on the Plant
+        # Calendar's attention strip and week cards, capability gaps on
+        # Data Files. The step keeps its number; Stock Check is its screen.
         "2 · Reconcile": [
-            st.Page("pages/reconcile.py", title="Reconcile", icon=":material/checklist:"),
             st.Page("pages/stock_check.py", title="Stock Check", icon=":material/inventory:"),
         ],
         "3 · Plan": [

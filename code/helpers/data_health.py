@@ -138,15 +138,18 @@ def _vif_missing_recipes(vif_anchor: Path) -> list[str]:
 def _catalog_statuses(dd: Path) -> list[HealthStatus]:
     out: list[HealthStatus] = []
     for spec in CATALOG:
-        # cip_info has a dedicated live-feed rule (path override via Settings,
-        # freshness cadence) — the generic catalog row would duplicate it.
-        # line_rates is mode-conditional: the rate_mode semantic already
-        # judges it against use_sku_rates, so the generic MISSING row would
-        # cry wolf in per-SKU mode.
-        if spec.key in ("cip_info", "line_rates"):
+        # Entries a dedicated live-feed rule judges (manprg, cip_info, the
+        # demand baseline, the VIF exports, the PO feed, the receiving
+        # workbook) or a semantic rule covers (line_rates ↔ rate_mode: the
+        # generic MISSING row would cry wolf in per-SKU mode) carry
+        # generic_health=False — a row here would duplicate them. The Data
+        # Files page lists every file through file_statuses() below.
+        if not spec.generic_health:
             continue
         info = status(spec, dd)
         if not info["exists"]:
+            if spec.optional:
+                continue  # an absent optional reference file is not a finding
             out.append(HealthStatus(
                 key=spec.key, name=spec.name, state=MISSING,
                 detail=f"{spec.rel()} does not exist.",
@@ -177,6 +180,128 @@ def _catalog_statuses(dd: Path) -> list[HealthStatus]:
             age_h=age,
             source="catalog",
         ))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Per-file statuses — the Data Files page (2026-09-17)
+# ---------------------------------------------------------------------------
+# One row per catalog entry, on the file actually in use (the configured
+# path, else the first existing fallback), graded present → readable → fresh
+# against the SAME cadence table the feed rules above use, so the Data Files
+# page and the Command Center never disagree about what "stale" means. An
+# optional file that is absent reads NOT_APPLICABLE (grey), never MISSING.
+
+@dataclass(frozen=True)
+class FileStatus:
+    key: str
+    name: str
+    group: str
+    filename: str               # the file in use (fallback / override) or the expected name
+    path: Path
+    state: str                  # OK | STALE | MISSING | ERROR | NOT_APPLICABLE
+    detail: str                 # one-line note: fallback in use, dev fixture, stamp age …
+    rows: int | None = None
+    age_h: float | None = None
+    modified: str | None = None
+    cadence_h: float | None = None
+    size: int | None = None
+    optional: bool = False
+    source: str = ""
+    managed_by: str = "user"
+
+    @property
+    def severity(self) -> int:
+        return _SEVERITY[self.state]
+
+
+def _manprg_content_age(dd: Path, cfg: dict) -> tuple[float, float] | None:
+    """(content_age_h, file_age_h) for the manprg pair from the as-of stamp
+    when it is trusted (its sha matches the files), else None — the same
+    rule the manprg feed row applies (fix CA-1)."""
+    try:
+        from helpers.data_catalog import by_key
+        from helpers.manprg_import import read_asof_stamp
+        present = [p for p in (by_key(k).resolve(dd, cfg) for k in ("manprg", "manprg2"))
+                   if p.is_file()]
+        if not present:
+            return None
+        as_of, src, _w = read_asof_stamp(present)
+        if as_of is None or src != "stamp":
+            return None
+        content_age = (datetime.now() - as_of.to_pydatetime()).total_seconds() / 3600.0
+        file_age = min(_age_h(p) or 0.0 for p in present)
+        return content_age, file_age
+    except Exception:  # noqa: BLE001 — a detail on a row, never a crash
+        return None
+
+
+def file_statuses(data_dir: Path | None = None, cfg: dict | None = None) -> list[FileStatus]:
+    """Every catalog entry graded for the Data Files page. Never raises: a
+    resolver or reader failure becomes an ERROR row."""
+    dd = Path(data_dir) if data_dir is not None else default_data_dir()
+    cfg = cfg if cfg is not None else load_toml()
+    cadence = {**DEFAULT_CADENCE_H, **cfg.get("health", {}).get("cadence_h", {})}
+    manprg_ages = _manprg_content_age(dd, cfg)
+    out: list[FileStatus] = []
+    for spec in CATALOG:
+        common = dict(key=spec.key, name=spec.name, group=spec.group,
+                      optional=spec.optional, source=spec.source,
+                      managed_by=spec.managed_by)
+        cad = cadence.get(spec.cadence_key) if spec.cadence_key else None
+        cad = float(cad) if cad is not None else None
+        try:
+            info = status(spec, dd, cfg)
+        except Exception as exc:  # noqa: BLE001 — e.g. the VIF folder resolver
+            out.append(FileStatus(filename=spec.filename, path=Path(spec.filename),
+                                  state=ERROR, detail=f"could not resolve the file: {exc}",
+                                  cadence_h=cad, **common))
+            continue
+        p: Path = info["path"]
+        notes: list[str] = []
+        if spec.folder == "vif" and p.parent.name == "dev_vif":
+            notes.append("bundled dev fixture — not live plant data")
+        if info["configured"]:
+            notes.append(f"configured path (Settings): {p}")
+        if not info["exists"]:
+            if spec.optional:
+                state, lead = NOT_APPLICABLE, "optional file, not present"
+            else:
+                state, lead = MISSING, "missing"
+            looked = [n for n in spec.all_names() if n != p.name]
+            if looked and not info["configured"]:
+                notes.append("also looked for " + ", ".join(looked))
+            out.append(FileStatus(filename=p.name, path=p, state=state,
+                                  detail="; ".join([lead] + notes), cadence_h=cad, **common))
+            continue
+        if info["error"]:
+            out.append(FileStatus(filename=p.name, path=p, state=ERROR,
+                                  detail="; ".join([f"cannot be read: {info['error']}"] + notes),
+                                  age_h=info["age_h"], modified=info["modified"],
+                                  cadence_h=cad, size=info["size"], **common))
+            continue
+        if info["rows"] == 0 and spec.kind == "csv":
+            out.append(FileStatus(filename=p.name, path=p, state=ERROR,
+                                  detail="; ".join(["0 data rows"] + notes),
+                                  rows=0, age_h=info["age_h"], modified=info["modified"],
+                                  cadence_h=cad, size=info["size"], **common))
+            continue
+        age = info["age_h"]
+        if spec.cadence_key == "manprg" and manprg_ages is not None:
+            # CONTENT age: a file re-written with identical content is still
+            # stale telemetry (audit C01)
+            age = manprg_ages[0]
+            notes.append(f"content observed {_fmt_age(age)} ago (as-of stamp); "
+                         f"file written {_fmt_age(manprg_ages[1])} ago")
+        if info["alternate_in_use"]:
+            notes.append(f"fallback in use — {spec.filename} not present")
+        stale = cad is not None and age is not None and age > cad
+        if stale:
+            notes.insert(0, f"older than its expected refresh (≤ {cad:g} h)")
+        out.append(FileStatus(filename=p.name, path=p, state=STALE if stale else OK,
+                              detail="; ".join(notes), rows=info["rows"], age_h=age,
+                              modified=info["modified"], cadence_h=cad,
+                              size=info["size"], **common))
     return out
 
 

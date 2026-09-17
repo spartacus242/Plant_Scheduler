@@ -1,11 +1,13 @@
-# tests/test_pages_smoke.py — Stock Check + Reconcile render through the
-# persisted stock-report cache (helpers/stock_report_cache.py).
+# tests/test_pages_smoke.py — Stock Check (and Home) render through the
+# persisted stock-report cache (helpers/stock_report_cache.py); Data Files
+# and the Plant Calendar boot on empty / minimal data dirs.
 #
 # Same AppTest pattern as test_overnight_ui_smoke.py: boot the REAL
 # entrypoint so st.navigation registers every page, then switch_page onto
 # the page under test. The key behavior under test: with a saved report on
-# disk, NEITHER page recomputes on its own — the engine is patched to blow
-# up if called, and the page must still render from the saved data.
+# disk, the page does not recompute on its own — the engine is patched to
+# blow up if called, and the page must still render from the saved data.
+# (The Reconcile page these tests once covered was retired 2026-09-17.)
 
 from __future__ import annotations
 
@@ -159,11 +161,6 @@ def test_stock_check_boots_on_an_empty_dir(tmp_path):
     assert not at.exception
 
 
-def test_reconcile_boots_on_an_empty_dir(tmp_path):
-    at = _boot("pages/reconcile.py", tmp_path)
-    assert not at.exception
-
-
 def test_stock_check_serves_the_saved_report(tmp_path, monkeypatch):
     _seed_saved_report(tmp_path, monkeypatch)
     at = _boot("pages/stock_check.py", tmp_path)
@@ -229,30 +226,60 @@ def test_stock_check_renders_supply_inbound_and_quality(tmp_path,
     assert "no conversion is applied" in text
 
 
-def test_reconcile_serves_the_saved_report_and_flags_stale(tmp_path,
-                                                          monkeypatch):
-    _seed_saved_report(tmp_path, monkeypatch)
-    at = _boot("pages/reconcile.py", tmp_path)
-    assert not at.exception
-    assert "loads instantly" in _texts(at)
-    # the board moves -> the page still renders the saved report (the
-    # patched engine proves no recompute) and raises the stale banner
-    import os
-    cal = tmp_path / "calendar_blocks.csv"
-    t = cal.stat().st_mtime + 120
-    os.utime(cal, (t, t))
-    at2 = _boot("pages/reconcile.py", tmp_path)
-    assert not at2.exception
-    text2 = _texts(at2)
-    assert "Inputs changed since the saved stock report" in text2
-    assert "Press **Refresh** to recompute" in text2
-
-
 def test_home_reads_the_saved_report_for_its_counts(tmp_path, monkeypatch):
     _seed_saved_report(tmp_path, monkeypatch)
     at = _boot("pages/home.py", tmp_path)
     assert not at.exception
     assert "Reconcile" in _texts(at)
+
+
+# ---------------------------------------------------------------------------
+# Data Files — every input file, status first (2026-09-17)
+# ---------------------------------------------------------------------------
+
+def _status_by_file(at: AppTest) -> dict[str, str]:
+    """The top-level status table: {file name in use: status cell}."""
+    tables = [el.value for el in at.dataframe
+              if "What it is" in getattr(el.value, "columns", [])]
+    assert tables, "the status table must render at top level"
+    table = tables[0]
+    return dict(zip(table["File"], table["Status"]))
+
+
+def test_data_files_boots_on_an_empty_dir(tmp_path):
+    """No files at all: one status row per catalog entry — required feeds
+    MISSING, optional exports grey — and no traceback."""
+    from helpers.data_catalog import CATALOG
+    at = _boot("pages/data.py", tmp_path)
+    assert not at.exception
+    by_file = _status_by_file(at)
+    assert len(by_file) == len(CATALOG)
+    # the feeds the 2026-09-15 drop added are on the page, and judged
+    assert by_file["order_npa.csv"].endswith("MISSING")
+    assert by_file["manprg.txt"].endswith("MISSING")
+    assert by_file["ediact.csv"].endswith("MISSING")
+    assert by_file["Shipping Receiving Schedule NPA - 2024.xlsm"].endswith("MISSING")
+    assert by_file["jestkamb.csv"].endswith("optional")
+    assert by_file["rates_by_line_sku.csv"].endswith("optional")
+    text = _texts(at)
+    assert "missing / unreadable" in text or "missing" in text
+
+
+def test_data_files_follows_the_stock_checks_vif_folder(tmp_path, monkeypatch):
+    """The VIF rows resolve against the folder the Stock Check reads (its
+    saved setting here), so a present export reads present and the page
+    names the folder — the files the report is built from, not a guess."""
+    _seed_saved_report(tmp_path, monkeypatch)
+    at = _boot("pages/data.py", tmp_path)
+    assert not at.exception
+    by_file = _status_by_file(at)
+    assert by_file["ediact.csv"].endswith("OK")
+    assert by_file["jestkexp.csv"].endswith("OK")
+    assert by_file["PKG-REC.csv"].endswith("OK")
+    assert f"Folder in use: `{tmp_path / 'vif'}`" in _texts(at)
+    # the seeded board / demand / capabilities are catalog rows too
+    assert by_file["calendar_blocks.csv"].endswith("ERROR")   # header only: 0 rows
+    assert by_file["lines.csv"].endswith("MISSING")
 
 
 def test_stock_check_stale_feed_says_nothing_is_counted(tmp_path, monkeypatch):

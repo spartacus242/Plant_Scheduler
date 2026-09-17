@@ -1,4 +1,18 @@
-# pages/data.py -- Data Files: upload, edit and download every input CSV.
+# pages/data.py -- Connect · Data Files: every input the system reads, at a glance.
+#
+# Two questions for the planner (Carsten, 2026-09-17: "look at that screen and
+# quickly identify if anything is missing or stale"):
+#   1. Is anything MISSING or STALE right now?  The status strip and the table
+#      at the top — one row per input file, worst first — plus the live data
+#      sync's heartbeat and a Sync now button.
+#   2. What is this file, who feeds it, what is in it?  One expander per file
+#      below, grouped the way the data arrives (plant state, demand, component
+#      stock, inbound supply, master data, measured history): preview,
+#      download, and upload for the planner-maintained CSVs (every write backs
+#      up the old file first).
+# States come from helpers.data_health.file_statuses over the registry in
+# helpers.data_catalog, judged against the same cadences the Command Center
+# uses, so the two pages never disagree about what "stale" means.
 
 from __future__ import annotations
 
@@ -14,31 +28,151 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
+from helpers import data_health as dh
+from helpers import live_sync as ls
 from helpers.config import datasources_config, load_toml
-from helpers.data_catalog import CATALOG, CSV_ENCODING, missing_columns, read_csv, status
+from helpers.data_catalog import (
+    CATALOG,
+    CSV_ENCODING,
+    GROUP_LABEL,
+    GROUP_ORDER,
+    GROUPS,
+    DataFile,
+    missing_columns,
+    read_csv,
+    read_text_head,
+)
 from helpers.paths import data_dir, reference_dir
 from helpers.safe_io import safe_write_csv
+from helpers.theme import chip, render_chips
 
 st.header("Connect — Data Files")
 st.caption(
-    "Step 1 of the daily loop: get the inputs in and fresh. Import the demand "
-    "plan, fix capability gaps, replace any input file. Every write backs up "
-    "the old file first. (Scheduled downtime moved to the Plant Calendar's "
-    "Start-of-day strip.)"
+    "Step 1 of the daily loop: get the inputs in and fresh. The table lists "
+    "every file Flowstate reads, worst first — red is missing or unreadable, "
+    "amber is older than its expected refresh. Below it: import the demand "
+    "plan, fix capability gaps, preview or replace any file. Every write "
+    "backs up the old file first."
 )
 
 dd = data_dir()
+cfg = load_toml()
 st.caption(f"Data folder: `{dd}`  |  backups: `{dd / '_backups'}`")
 
 
 def backup(path: Path) -> Path:
-    """Copy path into data/_backups/<stem>.<timestamp>.csv. Returns the backup path."""
+    """Copy path into data/_backups/<stem>.<timestamp><suffix>. Returns the backup path."""
     bdir = dd / "_backups"
     bdir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     dest = bdir / f"{path.stem}.{stamp}{path.suffix}"
     dest.write_bytes(path.read_bytes())
     return dest
+
+
+# ── Live data sync: the feed's heartbeat + Sync now ─────────────────────────
+# scripts/fs-live-pull.py writes data/reference/live_sync.json after every
+# pass (folder mode on the planner's PC, GitHub mode on the dev PC). The
+# button runs one pass right now — the same call the calendar's "Rebuild
+# from plant state" makes first — then the page re-reads every file.
+_note = st.session_state.pop("data_sync_note", None)
+if _note:
+    (st.success if _note[0] else st.warning)(_note[1])
+
+_sync_state = ls.read_state(dd)
+_sync_configured = ls.is_configured()
+_c1, _c2 = st.columns([6, 1.4], vertical_alignment="center")
+with _c1:
+    if _sync_state is None:
+        st.caption("**Live data sync:** no sync has run on this machine — the feed "
+                   "files are whatever was copied in by hand.")
+    else:
+        try:
+            _fin = datetime.fromisoformat(str(_sync_state.get("finished")))
+            _fin_age = (datetime.now() - _fin).total_seconds() / 3600.0
+            _fin_txt = f"{_fin:%Y-%m-%d %H:%M} ({dh._fmt_age(_fin_age)} ago)"
+        except (TypeError, ValueError):
+            _fin_txt = "unknown time"
+        _mode = str(_sync_state.get("mode") or "?")
+        _srcs = [str(x) for x in (_sync_state.get("sources") or [])]
+        _where = ("folder " + "; ".join(_srcs)) if _mode == "folder" else "GitHub bridge"
+        _upd = [str(x) for x in (_sync_state.get("updated") or [])]
+        _prob = [str(x) for x in (_sync_state.get("problems") or [])]
+        _line = f"**Live data sync** ({_where}): last pass {_fin_txt}"
+        _line += ((" — updated " + ", ".join(_upd[:5]) + ("…" if len(_upd) > 5 else ""))
+                  if _upd else " — nothing new")
+        if _prob or not _sync_state.get("ok", True):
+            st.warning(_line + ". Problems: " + "; ".join(_prob[:3]))
+        else:
+            st.caption(_line + ".")
+with _c2:
+    if _sync_configured and st.button(
+            "Sync now", type="primary",
+            help="Run one live-data pull now (scripts/fs-live-pull.py --once), "
+                 "then re-read every file."):
+        with st.spinner("Syncing live data…"):
+            _out = ls.run_sync(dd)
+        st.session_state["data_sync_note"] = (_out.ok, _out.summary)
+        st.rerun()
+
+
+# ── Every input file: state, age, expected refresh — worst first ────────────
+_files = dh.file_statuses(dd, cfg)
+_fs_by_key = {f.key: f for f in _files}
+_n_bad = sum(1 for f in _files if f.state in (dh.MISSING, dh.ERROR))
+_n_stale = sum(1 for f in _files if f.state == dh.STALE)
+_n_ok = sum(1 for f in _files if f.state == dh.OK)
+_n_opt = sum(1 for f in _files if f.state == dh.NOT_APPLICABLE)
+render_chips([
+    chip(f"{_n_bad} missing / unreadable", "bad" if _n_bad else "ok",
+         icon="✕" if _n_bad else "●"),
+    chip(f"{_n_stale} stale", "warn" if _n_stale else "ok",
+         icon="▲" if _n_stale else "●"),
+    chip(f"{_n_ok} present and fresh", "ok", icon="●"),
+    chip(f"{_n_opt} optional, not present", "neutral", icon="·"),
+])
+
+_ICON = {dh.OK: "🟢 OK", dh.STALE: "🟠 STALE", dh.MISSING: "🔴 MISSING",
+         dh.ERROR: "🔴 ERROR", dh.NOT_APPLICABLE: "⚪ optional"}
+_PAGE_ORDER = {s.key: i for i, s in enumerate(CATALOG)}
+
+
+def _rank(f: dh.FileStatus) -> tuple:
+    """Worst first, optional-absent last, then the page's own order."""
+    sev = {dh.MISSING: 0, dh.ERROR: 0, dh.STALE: 1, dh.OK: 2,
+           dh.NOT_APPLICABLE: 3}.get(f.state, 2)
+    return (sev, GROUP_ORDER.get(f.group, 9), _PAGE_ORDER.get(f.key, 99))
+
+
+_rows = []
+for _f in sorted(_files, key=_rank):
+    # column order = scan order: state, which file, how old vs how old it may
+    # be, then what / where / who — the verdict reads without a scroll
+    _rows.append({
+        "Status": _ICON.get(_f.state, _f.state),
+        "File": _f.filename,
+        "Age": dh._fmt_age(_f.age_h) if _f.age_h is not None else "—",
+        "Expected refresh": f"≤ {_f.cadence_h:g} h" if _f.cadence_h else "static",
+        "What it is": _f.name,
+        "Group": GROUP_LABEL.get(_f.group, _f.group),
+        "Updated": _f.modified or "—",
+        "Rows": f"{_f.rows:,}" if _f.rows is not None else "",
+        "Source": _f.source,
+        "Note": _f.detail,
+    })
+# Top level, not inside an expander (helpers/st_compat): the grid mounts.
+# Tall enough to show every row — scanning must not need a scroll.
+st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True,
+             height=min(38 * (len(_rows) + 1) + 4, 1300))
+st.caption(
+    "🔴 missing or unreadable · 🟠 older than its expected refresh · 🟢 present "
+    "and fresh · ⚪ optional file not present. Ages are file write times; the "
+    "manprg rows use the as-of stamp (when the content was last observed). "
+    "Expected refresh per feed: helpers/data_health.py DEFAULT_CADENCE_H, "
+    "overridable in flowstate.toml under [health.cadence_h]."
+)
+
+st.divider()
 
 
 # ── Line/SKU capability check (manprg + demand plan vs capabilities) ─────
@@ -60,8 +194,7 @@ try:
         merge_fixes,
     )
     _caps_df = load_capabilities(dd / "reference" / "capabilities_rates.csv")
-    _cfg_local = load_toml()
-    _ds_cfg = _cfg_local.get("datasources", {})
+    _ds_cfg = cfg.get("datasources", {})
     _mp_paths = [p.strip() for p in str(_ds_cfg.get("manprg_files", "")).split(";")
                  if p.strip()] or [str(dd / "reference" / "manprg.txt"),
                                    str(dd / "reference" / "manprg2.txt")]
@@ -159,13 +292,13 @@ st.caption(
     "kg_tons** — no machine column, no Hours field. Importing it rebuilds "
     "`data/reference/demand_plan.csv` (the canonical demand the scorecard, "
     "calendar and solver all read) and re-anchors the planning calendar to the "
-    "Monday of the file's earliest week."
+    "Monday of the file's earliest week. In folder mode the live sync does this "
+    "on its own from the planners' AZAP workbook."
 )
 
 with st.expander("Import demand_plan_summary.csv", expanded=True):
     from helpers.demand_summary_import import import_summary as _imps
-    # Current derived demand at a glance — demand_plan.csv has no upload row
-    # below (it is rebuilt HERE), so its freshness lives here instead.
+    # Current derived demand at a glance (demand_plan.csv is rebuilt HERE).
     _dem_cur = reference_dir(dd) / "demand_plan.csv"
     if _dem_cur.exists():
         try:
@@ -180,7 +313,21 @@ with st.expander("Import demand_plan_summary.csv", expanded=True):
         _mt = datetime.fromtimestamp(_dem_cur.stat().st_mtime)
         st.caption(f"Current `demand_plan.csv`: {_prov} · file written "
                    f"{_mt:%Y-%m-%d %H:%M}")
-    _cfg_demand_path = datasources_config().get("demand_summary_csv", "").strip()
+    # Upstream of the summary in folder mode: the planners' AZAP workbook in
+    # the configured source folder(s) — named so a stale summary can be
+    # traced to the workbook that fed it.
+    try:
+        from helpers.azap_demand import find_azap_workbook
+        for _folder in ls.configured_sources(ls.load_bridge_conf()):
+            _wb = find_azap_workbook(_folder)
+            if _wb is not None:
+                _wbm = datetime.fromtimestamp(_wb.stat().st_mtime)
+                st.caption(f"Upstream AZAP workbook: `{_wb.name}` (written "
+                           f"{_wbm:%Y-%m-%d %H:%M}) in `{_folder}` — the live "
+                           "sync rebuilds demand_plan_summary.csv from it.")
+    except Exception:  # noqa: BLE001 — a hint, never a failure
+        pass
+    _cfg_demand_path = datasources_config(cfg).get("demand_summary_csv", "").strip()
     _cfg_demand_ok = bool(_cfg_demand_path) and Path(_cfg_demand_path).exists()
     if _cfg_demand_ok:
         st.caption(f"Using configured source `{_cfg_demand_path}` "
@@ -258,28 +405,45 @@ with st.expander("Import demand_plan_summary.csv", expanded=True):
 st.divider()
 
 
-def _freshness(path: Path) -> str:
-    """'updated 2026-08-14 · 4.9d ago' — scannable staleness in the header."""
-    try:
-        mtime = datetime.fromtimestamp(path.stat().st_mtime)
-    except OSError:
-        return ""
-    age_h = (datetime.now() - mtime).total_seconds() / 3600.0
-    age = f"{age_h:.1f}h ago" if age_h < 48 else f"{age_h / 24.0:.1f}d ago"
-    return f"updated {mtime:%Y-%m-%d} · {age}"
+# ── One expander per file, grouped by where the data comes from ────────────
+_DOWNLOAD_MAX = 1_000_000  # bytes; bigger files are opened from the folder
+_MIME = {".csv": "text/csv", ".txt": "text/plain", ".toml": "text/plain",
+         ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+         ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12"}
 
 
-def _render_file(spec, *, uploadable: bool) -> None:
-    info = status(spec, dd)
-    badge = "OK" if info["exists"] and not info["error"] else ("MISSING" if not info["exists"] else "ERROR")
-    rows = info["rows"] if info["rows"] is not None else "-"
-    path = spec.path(dd)
-    fresh = _freshness(path) if info["exists"] else ""
-    header = f"[{badge}] {spec.name}  --  {spec.rel()}  ({rows} rows" \
-        + (f" · {fresh}" if fresh else "") + ")"
+def _fmt_size(n: int | None) -> str:
+    if n is None:
+        return "—"
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.0f} KB"
+    return f"{n / (1024 * 1024):.1f} MB"
+
+
+def _render_file(spec: DataFile, fs: dh.FileStatus, *, uploadable: bool) -> None:
+    path = fs.path
+    exists = fs.state not in (dh.MISSING, dh.NOT_APPLICABLE)
+    meta = []
+    if fs.rows is not None:
+        meta.append(f"{fs.rows:,} " + ("rows" if spec.kind == "csv" else "lines"))
+    if fs.modified:
+        meta.append(f"updated {fs.modified}")
+    if fs.age_h is not None:
+        meta.append(f"{dh._fmt_age(fs.age_h)} ago")
+    header = f"{_ICON.get(fs.state, fs.state)} · {spec.name} — {fs.filename}" \
+        + (f"  ({' · '.join(meta)})" if meta else "")
 
     with st.expander(header):
         st.caption(spec.blurb)
+        line = f"Source: {spec.source}." if spec.source else ""
+        line += (f" Expected refresh: ≤ {fs.cadence_h:g} h." if fs.cadence_h
+                 else " Static reference — age shown, never judged stale.")
+        if fs.detail:
+            line += f" **{fs.detail}**"
+        st.caption(line)
+        st.caption(f"Path: `{path}`")
         if spec.key_columns:
             st.caption("Required columns: " + ", ".join(spec.key_columns))
         if uploadable and spec.bridge_synced:
@@ -312,66 +476,91 @@ def _render_file(spec, *, uploadable: bool) -> None:
                         # collapsed expander (helpers/st_compat).
                         st.table(new_df.head(10))
                         if st.button("Overwrite " + spec.filename, key=f"ovr_{spec.key}"):
-                            if path.exists():
-                                b = backup(path)
+                            target = spec.path(dd)  # uploads land on the PRIMARY name
+                            if target.exists():
+                                b = backup(target)
                                 st.caption(f"Backed up to `{b.name}`")
-                            safe_write_csv(new_df, path)
+                            safe_write_csv(new_df, target)
                             st.success(f"Replaced {spec.rel()}")
                             st.rerun()
 
-        if not info["exists"]:
-            if uploadable:
+        if not exists:
+            if fs.state == dh.NOT_APPLICABLE:
+                st.info("Optional file — not present. Nothing breaks without it; "
+                        "the description above says what it would add.")
+            elif uploadable:
                 st.warning("File does not exist yet -- upload one above.")
             else:
-                st.warning("File does not exist yet — it arrives with the "
-                           "live data pull / the app writes it.")
+                st.warning("File does not exist yet — it arrives with the live "
+                           "data sync (or Flowstate writes it).")
             return
-        if info["error"]:
-            st.error(f"Could not read the file: {info['error']}")
+        if fs.state == dh.ERROR:
+            st.error(f"Could not read the file: {fs.detail}")
             return
 
-        df = read_csv(spec, dd)
+        # Read-only preview + download. Planner edits happen in Excel and come
+        # back through the upload above (every write is backed up first).
+        # st.table / st.code, never st.dataframe: the grid does not mount
+        # inside an initially-collapsed expander (helpers/st_compat).
+        suffix = path.suffix.lower()
+        if suffix in (".xlsx", ".xlsm"):
+            st.caption(f"Excel workbook, {_fmt_size(fs.size)} — no in-app preview.")
+        elif spec.kind in ("text", "toml") or suffix in (".txt", ".toml"):
+            try:
+                head = read_text_head(path, 15)
+            except OSError as exc:
+                st.error(f"Could not read the file: {exc}")
+                return
+            st.code("\n".join(head), language=None)
+            if fs.rows is not None and fs.rows > 15:
+                st.caption(f"… first 15 of {fs.rows:,} lines — download to see all.")
+        else:
+            try:
+                df = read_csv(spec, dd, path=path)
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"Could not read the file: {type(exc).__name__}: {exc}")
+                return
+            st.table(df.head(20))
+            if len(df) > 20:
+                st.caption(f"… {len(df) - 20:,} more row(s) — download to see all.")
+        if fs.size is not None and fs.size <= _DOWNLOAD_MAX:
+            st.download_button(
+                "Download",
+                data=path.read_bytes(),
+                file_name=path.name,
+                mime=_MIME.get(suffix, "application/octet-stream"),
+                key=f"dl_{spec.key}",
+            )
+        else:
+            st.caption(f"Large file ({_fmt_size(fs.size)}) — open it from the "
+                       "path above.")
 
-        # Read-only preview + download. The in-browser cell editor was
-        # developer furniture — planner edits happen in Excel and come back
-        # through the upload above (every write is backed up first).
-        # st.table: st.dataframe never mounts inside an initially-collapsed
-        # expander (helpers/st_compat), and every catalog expander starts closed.
-        st.table(df.head(20))
-        if len(df) > 20:
-            st.caption(f"… {len(df) - 20:,} more row(s) — download to see all.")
-        st.download_button(
-            "Download",
-            data=path.read_bytes(),
-            file_name=spec.filename,
-            mime="text/csv",
-            key=f"dl_{spec.key}",
-        )
 
-
-# Planner inputs: files a person maintains — upload/replace is the normal
-# flow. Auto-maintained files (live-feed synced, app-written, or derived by
-# the demand import) are shown below for freshness/preview only: uploading
-# over them was a footgun (user request 2026-08-19 — initial_states.csv is
-# plant data, demand_plan.csv is rebuilt from the summary import above).
-_user_specs = [s for s in CATALOG if s.managed_by == "user"]
-_auto_specs = [s for s in CATALOG
-               if s.managed_by in ("bridge", "app") ]
-# demand_plan (managed_by="derived") is deliberately NOT listed — its whole
-# UI is the summary import section above; its freshness shows there.
-
-st.subheader("Planner input files")
+st.subheader("Every input file, by where it comes from")
 st.caption(
-    "Upload to replace (backed up first), preview, download. Cell-editing "
-    "lives in Excel — re-upload the file after edits."
+    "Open a file for its description, preview and download. Planner-maintained "
+    "tables take an upload (the old file is backed up first); feed files are "
+    "read-only here — they arrive with the live data sync."
 )
-for spec in _user_specs:
-    _render_file(spec, uploadable=True)
-
-st.subheader("Auto-maintained files (read-only)")
-st.caption(
-    "Synced by the live data pull or written by Flowstate itself — shown "
-    "here so stale feeds are visible, not for editing."
-)
-for spec in _auto_specs:
-    _render_file(spec, uploadable=False)
+for _gkey, _glabel, _gcaption in GROUPS:
+    _specs = [s for s in CATALOG if s.group == _gkey]
+    if not _specs:
+        continue
+    st.markdown(f"#### {_glabel}")
+    _cap = _gcaption
+    if _gkey == "stock":
+        # the folder the Stock Check actually reads (saved setting → bridge
+        # copies in data/reference → bundled dev fixtures)
+        try:
+            from helpers.reconcile_engine import stock_report_inputs
+            _vif, _ = stock_report_inputs(dd)
+            _cap += f" Folder in use: `{_vif}`."
+            if Path(_vif).name == "dev_vif":
+                _cap += (" ⚠ These are the bundled dev fixtures, not live plant "
+                         "data — the live VIF exports have not landed.")
+        except Exception:  # noqa: BLE001 — a caption, never a failure
+            pass
+    st.caption(_cap)
+    for _spec in _specs:
+        _render_file(_spec, _fs_by_key[_spec.key],
+                     uploadable=(_spec.managed_by == "user"))

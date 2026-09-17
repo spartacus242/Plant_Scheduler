@@ -154,7 +154,10 @@ def _step_track() -> tuple[str, str]:
 
 _STEPS = [
     ("1 · Connect", "pages/data.py", _step_connect),
-    ("2 · Reconcile", "pages/reconcile.py", _step_reconcile),
+    # The Reconcile page was retired 2026-09-17; the engine still counts the
+    # findings and Stock Check is the step's screen (coverage lives on the
+    # Plant Calendar's attention strip, capability gaps on Data Files).
+    ("2 · Reconcile", "pages/stock_check.py", _step_reconcile),
     ("3 · Plan", "pages/calendar.py", _step_plan),
     # Lock & Export moved onto the Plant Calendar (2026-08-19); step 4 is the
     # compare/promote gate, still chipped with the lock state — "locked
