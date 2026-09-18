@@ -173,6 +173,55 @@ def _supply_text(s: dict) -> str:
 _FATE_ORDER = ["used", "landed_unverifiable", "overdue", "offsite_no_transfer",
                "unjoinable", "unit_mismatch", "bad_qty", "bad_date", "landed",
                "received", "cancelled"]
+_FATE_RANK = {f: i for i, f in enumerate(_FATE_ORDER)}
+
+
+def _inbound_line_key(ln: dict):
+    f = str(ln.get("fate") or "")
+    return (_FATE_RANK.get(f, len(_FATE_RANK)), f,
+            str(ln.get("receipt_date") or "9999-12-31"))
+
+
+def _inbound_rows(inb) -> list[dict]:
+    """The Inbound tab's table, one public row per open-PO line, in fate
+    order. One builder for the tab AND the Excel export (2026-09-17) so the
+    workbook's 'Inbound POs' sheet is exactly what the planner saw."""
+    if not isinstance(inb, dict):
+        return []
+    lines = [ln for ln in (inb.get("lines") or []) if isinstance(ln, dict)]
+    rows = []
+    for ln in sorted(lines, key=_inbound_line_key):
+        rh = ln.get("ready_h")
+        rows.append({
+            "po8": ln.get("po8") or "",
+            "item": ln.get("item") or "",
+            "designation": ln.get("designation") or "",
+            "qty": ln.get("qty"),
+            # a KEA line is shown in EA with its original unit noted
+            "unit": (ln.get("unit") or "")
+                    + (f" (from {ln['unit_original']})" if ln.get("unit_original") else ""),
+            # ERP export only: the original order qty, the raw line
+            # status and its meaning (receivable / archived /
+            # deleted; legacy workbook lines leave them blank)
+            "ordered": ln.get("qty_ordered"),
+            "status": ln.get("status"),
+            "state": ln.get("status_text") or "",
+            "receipt_date": ln.get("receipt_date") or "",
+            "slip_days": ln.get("slip_days"),
+            "arrival_area": ln.get("arrival_area") or "",
+            "supplier": ln.get("supplier") or "",
+            "fate": ln.get("fate") or "",
+            "reason": ln.get("reason") or "",
+            # the ERP's per-line comments (order_npa.csv, 2026-09-17): the
+            # buyers' internal note and the supplier-facing one, cut at 50
+            # characters by the ERP; blank on legacy-workbook lines
+            "comment": ln.get("comment") or "",
+            "comment_external": ln.get("comment_external") or "",
+            "ready": (hour_to_stamp(rh, _ANCHOR)
+                      if isinstance(rh, (int, float)) else ""),
+            "tier": ln.get("tier") or "",
+        })
+    return rows
 # Per state: WHY. The consequence ("nothing is counted, gaps read NO DATA")
 # is said once, in the state line next to the 'Would count' metric.
 _FEED_STATE_HELP = {
@@ -449,7 +498,9 @@ if st.session_state.get("sc_xl_key") != _xl_key:
         summary=_summary,
         board=board_all, demand=demand_tbl, shortages=shortages,
         appointments=appts, no_bom=list(rep.get("no_bom_skus", []) or []),
-        unk=list(rep.get("unk", []) or []))
+        unk=list(rep.get("unk", []) or []),
+        # the Inbound tab's rows, buyers' PO-line comments included
+        inbound=_inbound_rows(rep.get("inbound")))
     st.session_state["sc_xl_key"] = _xl_key
 
 m1, m2, m3, m4, m5 = st.columns([1, 1, 1, 1, 1.3])
@@ -469,7 +520,8 @@ with m5:
         data=st.session_state["sc_xl_bytes"],
         file_name=f"stock_check_{cached.computed_at.replace(':', '').replace('-', '')[:15]}.xlsx",
         use_container_width=True,
-        help="Summary · Board · Demand plan · Component shortages · Receiving · Data quality",
+        help="Summary · Board · Demand plan · Component shortages · Receiving · "
+             "Inbound POs (with the buyers' line comments) · Data quality",
     )
 if has_supply:
     st.caption(f"Blocks at risk = flat status AT RISK/TIGHT ({n_flat_risk}) "
@@ -526,6 +578,21 @@ with tab_board:
                     f"{b['cases']:.0f} cases", unsafe_allow_html=True)
                 if s is not None:
                     st.markdown(f"**Supply** {_supply_chip(s)} — {_supply_text(s)}")
+                    # (2026-09-17) the specialists' PO-line comments beside
+                    # the truck the block waits for — a separate caption,
+                    # never inside the pinned verdict sentence
+                    _bnd = s.get("binding")
+                    if isinstance(_bnd, dict):
+                        _notes = []
+                        _po8 = _bnd.get("po8") or "?"
+                        if str(_bnd.get("comment") or ""):
+                            _notes.append(f'Buyer note on PO {_po8}: '
+                                          f'"{_bnd["comment"]}"')
+                        if str(_bnd.get("comment_external") or ""):
+                            _notes.append(f'Supplier note on PO {_po8}: '
+                                          f'"{_bnd["comment_external"]}"')
+                        if _notes:
+                            st.caption(" · ".join(_notes))
                 bad = [i for i in b["items"]
                        if i["status"] in ("AT_RISK", "TIGHT", "NOT_TRACKED")]
                 bad.sort(key=lambda i: (i["ratio"] is None,
@@ -726,7 +793,10 @@ with tab_inb:
             f"{inb.get('source_mtime') or '—'} · as of "
             f"{inb.get('as_of') or '—'} · latest receipt date "
             f"{inb.get('max_receipt_date') or '—'} · "
-            f"{n_rows if n_rows is not None else len(lines)} rows")
+            f"{n_rows if n_rows is not None else len(lines)} rows. "
+            "The *Buyer note* / *Supplier note* columns are the ERP's own "
+            "line comments (internal / external), cut at 50 characters by "
+            "the ERP; blank on the legacy workbook.")
         why = _FEED_STATE_HELP.get(state, "unrecognised feed state.")
         if counting:
             st.caption(f"Feed state **OK** — {why}")
@@ -741,46 +811,27 @@ with tab_inb:
             st.caption(f"Dock appointments joined to a PO: "
                        f"{aj.get('matched', 0)} of {aj.get('total', 0)}.")
         if lines:
-            _rank = {f: i for i, f in enumerate(_FATE_ORDER)}
-
-            def _line_key(ln: dict):
-                f = str(ln.get("fate") or "")
-                return (_rank.get(f, len(_rank)), f,
-                        str(ln.get("receipt_date") or "9999-12-31"))
-
-            rows = []
-            for ln in sorted(lines, key=_line_key):
-                rh = ln.get("ready_h")
-                rows.append({
-                    "po8": ln.get("po8") or "",
-                    "item": ln.get("item") or "",
-                    "designation": ln.get("designation") or "",
-                    "qty": ln.get("qty"),
-                    # a KEA line is shown in EA with its original unit noted
-                    "unit": (ln.get("unit") or "")
-                            + (f" (from {ln['unit_original']})" if ln.get("unit_original") else ""),
-                    # ERP export only: the original order qty, the raw line
-                    # status and its meaning (receivable / archived /
-                    # deleted; legacy workbook lines leave them blank)
-                    "ordered": ln.get("qty_ordered"),
-                    "status": ln.get("status"),
-                    "state": ln.get("status_text") or "",
-                    "receipt_date": ln.get("receipt_date") or "",
-                    "slip_days": ln.get("slip_days"),
-                    "arrival_area": ln.get("arrival_area") or "",
-                    "supplier": ln.get("supplier") or "",
-                    "fate": ln.get("fate") or "",
-                    "reason": ln.get("reason") or "",
-                    "ready": (hour_to_stamp(rh, _ANCHOR)
-                              if isinstance(rh, (int, float)) else ""),
-                    "tier": ln.get("tier") or "",
-                })
-            df_inb = pd.DataFrame(rows)
+            df_inb = pd.DataFrame(_inbound_rows(inb))
             # a None slip/status turns the column float ("6.0"/"NaN"): keep it whole
             for col in ("slip_days", "status"):
                 df_inb[col] = pd.to_numeric(
                     df_inb[col], errors="coerce").astype("Int64")
-            st.dataframe(df_inb, use_container_width=True, hide_index=True)
+            st.dataframe(
+                df_inb, use_container_width=True, hide_index=True,
+                # the DataFrame keeps the contract key names; only the
+                # header the planner reads is worded (2026-09-17)
+                column_config={
+                    "comment": st.column_config.TextColumn(
+                        "Buyer note", width="medium",
+                        help="The inventory specialists' internal comment on "
+                             "the PO line (ERP 'Commentaire interne de la "
+                             "ligne'), cut at 50 characters by the ERP."),
+                    "comment_external": st.column_config.TextColumn(
+                        "Supplier note", width="medium",
+                        help="The supplier-facing comment on the PO line (ERP "
+                             "'Commentaire externe de la ligne'), cut at 50 "
+                             "characters by the ERP."),
+                })
         else:
             st.caption("No PO lines in this report.")
         errs = [str(e) for e in (inb.get("errors") or [])]

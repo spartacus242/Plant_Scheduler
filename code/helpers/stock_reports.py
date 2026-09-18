@@ -357,6 +357,18 @@ def _public(rows: list[dict]) -> pd.DataFrame:
     return pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_")} for r in rows])
 
 
+def _text_only(ws) -> None:
+    """Keep every string cell a STRING. openpyxl types a str that starts
+    with '=' as a formula, and the Inbound POs sheet is the first place the
+    workbook carries text people type by hand (the buyers' PO-line
+    comments, 2026-09-17): a note like '=SEE PO 30043500' must print as
+    typed, not as #NAME?. Review finding, latent on today's export."""
+    for row in ws.iter_rows():
+        for cell in row:
+            if isinstance(cell.value, str) and cell.value.startswith("="):
+                cell.data_type = "s"
+
+
 def _autosize(ws) -> None:
     for col in ws.columns:
         width = max((len(str(c.value)) for c in col if c.value is not None), default=8)
@@ -366,10 +378,14 @@ def _autosize(ws) -> None:
 def excel_report(*, summary: list[tuple[str, Any]], board: list[dict],
                  demand: list[dict], shortages: list[dict],
                  appointments: list[dict], no_bom: list[str],
-                 unk: list[dict]) -> bytes:
+                 unk: list[dict], inbound: list[dict] | None = None) -> bytes:
     """Multi-sheet workbook: Summary · Board · Demand plan · Component
-    shortages · Receiving · Data quality. Every sheet is the same table the
-    page shows, so what the planner prints is what they saw."""
+    shortages · Receiving · Inbound POs · Data quality. Every sheet is the
+    same table the page shows, so what the planner prints is what they saw.
+    `inbound` (2026-09-17) is the Inbound tab's rows — every open-PO line
+    with its fate and the buyers' line comments — so the note a specialist
+    typed on the PO travels with the printout; None/[] on a report that
+    predates the PO feed."""
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
         pd.DataFrame(summary, columns=["Metric", "Value"]).to_excel(
@@ -382,6 +398,11 @@ def excel_report(*, summary: list[tuple[str, Any]], board: list[dict],
             df.to_excel(xw, sheet_name=name, index=False)
         recv = pd.DataFrame(appointments) if appointments else pd.DataFrame({"note": ["no receiving file"]})
         recv.to_excel(xw, sheet_name="Receiving", index=False)
+        inb = _public(list(inbound or []))
+        if inb.empty:
+            inb = pd.DataFrame({"note": ["no open-PO lines in this report"]})
+        inb.to_excel(xw, sheet_name="Inbound POs", index=False)
+        _text_only(xw.sheets["Inbound POs"])
         dq_rows = [{"kind": "NO_BOM", "sku": s, "detail": "no recipe in ediact 3"} for s in no_bom]
         dq_rows += [{"kind": "UNK", "sku": u.get("sku", ""), "detail": str({k: v for k, v in u.items() if k != "sku"})}
                     for u in unk]

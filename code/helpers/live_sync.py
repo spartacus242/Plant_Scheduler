@@ -60,6 +60,51 @@ def configured_sources(conf: dict) -> list[str]:
     return [str(p).strip() for p in raw if isinstance(p, str) and str(p).strip()]
 
 
+# ── the fs_data drop root (2026-09-17) ───────────────────────────────────────
+# The sync scripts replace a configured folder that holds fs_vif and/or
+# fs_manual by those subfolders (scripts/fs-live-pull.py expand_drop_roots);
+# the app must read the conf the same way or the Data Files page looks for
+# the AZAP workbook in the root and finds nothing. code/ cannot import the
+# scripts (they import from code/), so this is a verbatim copy pinned by
+# tests/test_live_bridge_glob.py::test_helper_copies_are_identical.
+DROP_SUBFOLDERS = ("fs_vif", "fs_manual")
+
+
+def expand_drop_roots(dirs) -> list[Path]:
+    """Replace every folder in `dirs` that holds an fs_vif and/or fs_manual
+    subfolder by those subfolders (fs_vif first, then fs_manual), keep every
+    other folder as it is, and drop duplicates keeping the first occurrence:
+    an explicit list of the two subfolders comes back unchanged, and a root
+    listed next to its own fs_vif does not list fs_vif twice. A root that
+    expands is NOT kept itself (a workbook left in the root must not get the
+    demand_plan_summary.csv rebuild). A subfolder probe that fails (OSError)
+    counts as absent, so an unreachable folder comes back unchanged and the
+    caller reports it.
+    """
+    out: list[Path] = []
+    for d in dirs:
+        d = Path(d)
+        subs: list[Path] = []
+        for name in DROP_SUBFOLDERS:
+            sub = d / name
+            try:
+                if sub.is_dir():
+                    subs.append(sub)
+            except OSError:
+                continue
+        for p in (subs or [d]):
+            if p not in out:
+                out.append(p)
+    return out
+
+
+def source_folders(conf: dict) -> list[str]:
+    """The folders the sync actually reads for this conf: the configured
+    sources with every fs_data root expanded to its subfolders (2026-09-17),
+    as strings, in the sync's order. [] in GitHub mode."""
+    return [str(p) for p in expand_drop_roots(configured_sources(conf))]
+
+
 def is_configured(root: Path | None = None) -> bool:
     """True when a sync pass makes sense on this machine: the script exists
     and the conf names a source folder or a clone that exists. On a box

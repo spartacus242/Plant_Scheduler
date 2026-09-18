@@ -10,7 +10,10 @@ ERP's own exports (fs_vif) and the files people maintain (fs_manual), so
 "source_dirs_work" in the conf lists every folder to watch, in priority order
 (see docs/vif_exports.md for the layout). A file present in more than one
 folder is taken from wherever it is newest. When the list is empty or absent
-the single "source_dir_work" (or SRC_DIR below) is watched as before.
+the single "source_dir_work" (or SRC_DIR below) is watched as before. A listed
+folder that holds fs_vif and/or fs_manual stands for those subfolders
+(2026-09-17, expand_drop_roots), so the drop ROOT fs_data is a valid single
+entry; a flat folder is watched as it is.
 
 AZAP demand (2026-09-16): when this script runs from a repo checkout, a
 watched folder holding "New Export AZAP MMDDYY.xlsx" first gets its
@@ -112,6 +115,47 @@ def resolve_entries(entries, src_dir):
         if prev is None or src.stat().st_mtime > prev.stat().st_mtime:
             picked[dest] = src
     return [(picked[d], d) for d in order]
+
+
+# ── the fs_data drop root (2026-09-17) ───────────────────────────────────────
+# The plant drop is ONE synced folder, fs_data, holding fs_vif (the ERP's own
+# exports) and fs_manual (the files people maintain). A conf that named the
+# root — install_flowstate.ps1 -FeedDir "<path>\fs_data", the intended single
+# value — synced NOTHING and still reported ok / nothing new: the file list
+# resolves direct children only. expand_drop_roots turns every listed folder
+# that holds those subfolders into the subfolders themselves; the pure conf
+# readers (source_dirs / source_dirs_work) stay free of filesystem I/O and the
+# expansion runs once, at the call site. Duplicated VERBATIM like
+# resolve_entries (a test pins the copies).
+DROP_SUBFOLDERS = ("fs_vif", "fs_manual")
+
+
+def expand_drop_roots(dirs) -> list[Path]:
+    """Replace every folder in `dirs` that holds an fs_vif and/or fs_manual
+    subfolder by those subfolders (fs_vif first, then fs_manual), keep every
+    other folder as it is, and drop duplicates keeping the first occurrence:
+    an explicit list of the two subfolders comes back unchanged, and a root
+    listed next to its own fs_vif does not list fs_vif twice. A root that
+    expands is NOT kept itself (a workbook left in the root must not get the
+    demand_plan_summary.csv rebuild). A subfolder probe that fails (OSError)
+    counts as absent, so an unreachable folder comes back unchanged and the
+    caller reports it.
+    """
+    out: list[Path] = []
+    for d in dirs:
+        d = Path(d)
+        subs: list[Path] = []
+        for name in DROP_SUBFOLDERS:
+            sub = d / name
+            try:
+                if sub.is_dir():
+                    subs.append(sub)
+            except OSError:
+                continue
+        for p in (subs or [d]):
+            if p not in out:
+                out.append(p)
+    return out
 
 
 # ── several source folders (2026-09-15) ─────────────────────────────────────
@@ -375,9 +419,10 @@ def push_once(conf: dict) -> list[str]:
 
     sync_with_remote(clone, remote, branch)
 
-    # rebuild demand_plan_summary.csv from the AZAP workbook first (best-effort,
-    # 2026-09-16) so this pass pushes the fresh csv
-    src_dirs = source_dirs_work(conf)
+    # a conf naming the fs_data root stands for its fs_vif + fs_manual (2026-09-17),
+    # then rebuild demand_plan_summary.csv from the AZAP workbook first
+    # (best-effort, 2026-09-16) so this pass pushes the fresh csv
+    src_dirs = expand_drop_roots(source_dirs_work(conf))
     rebuild_azap_summaries(conf, src_dirs)
 
     changed: list[str] = []

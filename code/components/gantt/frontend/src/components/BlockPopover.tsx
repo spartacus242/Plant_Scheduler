@@ -173,6 +173,15 @@ const SupplyItemRow: React.FC<{
             <span style={{ color: "#999" }}> ({r.tier === "appt" ? "dock appt" : "ERP date"})</span>
             {" · "}{leadTxt}
             {isBinding && <span style={{ fontWeight: 700 }}> ◀ binding</span>}
+            {/* The buyers' PO-line comments (2026-09-17): a muted sub-line,
+                never folded into the receipt sentence above. */}
+            {(r.comment || r.comment_external) && (
+              <div style={{ paddingLeft: 10, color: "#999", fontSize: 10, whiteSpace: "normal" }}>
+                {r.comment && <span>note: {r.comment}</span>}
+                {r.comment && r.comment_external && " · "}
+                {r.comment_external && <span>ext: {r.comment_external}</span>}
+              </div>
+            )}
           </div>
         );
       })}

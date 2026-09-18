@@ -423,10 +423,13 @@ def test_gate_fates_in_order():
     assert by_row[8]["fate"] == "used" and by_row[8]["item_key"] == "735009-A"
     assert set(receipts) == {"754751", "735009-A"}
     r = receipts["754751"][0]
+    # comment / comment_external (2026-09-17): the ERP's per-line notes ride
+    # on every receipt, "" when the line has none (legacy workbook lines)
     assert r == {"ready_h": 40.0, "qty": 67200.0, "po8": "30043543",
                  "tier": "erp", "receipt_date": "2026-09-02",
                  "label": "PO 30043543 · 754751 · 67,200 EA · 2026-09-02 · "
-                          "ERP date"}
+                          "ERP date",
+                 "comment": "", "comment_external": ""}
     assert feed["state"] == "ok"
     assert feed["n_used"] == 2 and feed["n_lines"] == 8
     assert feed["max_receipt_date"] == "2026-09-04"

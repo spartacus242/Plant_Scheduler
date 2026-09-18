@@ -68,9 +68,10 @@ ROWS = [
          receipt_date="29/09/2026", requested_date="04/08/2026",
          receipt_location="RB1", warehouse="SB1",
          line_comment_internal="8/18 REV QTY FROM 20,000 TO 18,000"),
-    # fully received (remaining 0), ERP status 60
+    # fully received (remaining 0), ERP status 60; a supplier-facing note
     _row(order_no="30049003", line_status="60", qty_remaining="0000000000000",
-         receipt_date="10/09/2026", requested_date="10/09/2026"),
+         receipt_date="10/09/2026", requested_date="10/09/2026",
+         line_comment_external="SHIP WITH PO 30049001"),
     # second line of the first PO: a bad date and a bad number
     _row(line_no="000002", item="754752", receipt_date="soon",
          qty_remaining="12x", requested_date=""),
@@ -290,6 +291,11 @@ def test_to_po_lines_contract_and_extras(tmp_path):
     # nothing left to receive -> received, whatever the status code says
     assert c["received"] is True and c["qty"] == 0.0 and c["status"] == 60
     assert c["row"] == 4
+    # the two ERP line comments are separate keys, "" when the field is blank
+    # (2026-09-17): internal = the buyers' note, external = supplier-facing
+    assert c["comment_external"] == "SHIP WITH PO 30049001" and c["comment"] == ""
+    assert b["comment_external"] == ""
+    assert a["comment"] == "" and a["comment_external"] == ""
     # garbage: qty 0, dates None, slip None — the reader reported the row
     assert d["qty"] == 0.0 and d["receipt_date"] is None
     assert d["initial_receipt_date"] is None and d["slip_days"] is None

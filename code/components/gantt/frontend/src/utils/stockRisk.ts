@@ -95,6 +95,10 @@ export interface Receipt {
   tier: "erp" | "appt" | string;
   receipt_date: string | null;
   label: string;
+  /** Buyers' internal / supplier-facing PO-line comments (2026-09-17);
+   *  optional on the wire, "" when the ERP line carried none. */
+  comment?: string;
+  comment_external?: string;
 }
 
 export interface Draw { key: string; a: number; e: number; qty: number }
@@ -125,6 +129,9 @@ export interface Binding {
   ready_h: number;
   receipt_date: string | null;
   label: string;
+  /** Mirrors timeline._binding_dict (2026-09-17): always emitted, "" when absent. */
+  comment?: string;
+  comment_external?: string;
 }
 
 export interface SupplyItem {
@@ -603,6 +610,9 @@ function bindingDict(r: Receipt | null): Binding | null {
   return {
     po8: String(r.po8 ?? ""), qty: Number(r.qty), ready_h: Number(r.ready_h),
     receipt_date: r.receipt_date ?? null, label: String(r.label ?? ""),
+    // the buyers' PO-line comments (2026-09-17): key set pinned against the
+    // Python binding by tests/test_stock_risk_parity.py, so always present
+    comment: String(r.comment ?? ""), comment_external: String(r.comment_external ?? ""),
   };
 }
 

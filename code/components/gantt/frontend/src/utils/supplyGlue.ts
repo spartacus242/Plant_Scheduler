@@ -526,6 +526,10 @@ export interface DetailReceipt {
   receipt_date: string | null;
   ready_h: number;
   tier: string;
+  /** The buyers' internal and supplier-facing PO-line comments (2026-09-17),
+   *  "" when the line carried none (legacy workbook, blank ERP field). */
+  comment: string;
+  comment_external: string;
   /** Hours before the lead reference (block start, or its depletion). */
   lead_h: number;
   /** Lands before this block ends — the engine counted it. */
@@ -656,6 +660,7 @@ export function supplyDetail(
         receipts.push({
           item: m, is_alt: m !== e.item, po8: String(r.po8 ?? ""), qty: num(r.qty), unit: e.unit,
           receipt_date: r.receipt_date ?? null, ready_h: rh, tier: String(r.tier ?? ""),
+          comment: String(r.comment ?? ""), comment_external: String(r.comment_external ?? ""),
           lead_h: ref - rh, counted: rh < end,
           binding: e.binding !== null && e.binding.po8 === String(r.po8 ?? "")
             && Math.abs(e.binding.ready_h - rh) < 1e-9,

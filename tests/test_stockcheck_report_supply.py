@@ -219,9 +219,11 @@ def test_new_keys_and_json_safe(dd, vif, tmp_path):
 # --------------------------------------------------------------------------
 
 def _x3_line(po, item, qty, unit, receipt, initial, *, designation="SLV 4x90",
-             area="RP1", remaining=None) -> str:
+             area="RP1", remaining=None, comment="", comment_external="") -> str:
     """One pipe-delimited Sage X3 line carrying the facts of _row() above:
-    13-digit fixed-point quantities, DD/MM/YYYY dates, zero-padded codes."""
+    13-digit fixed-point quantities, DD/MM/YYYY dates, zero-padded codes.
+    `comment` / `comment_external` (2026-09-17) fill the ERP's per-line
+    internal / external comment columns."""
     from stockcheck import x3_po_export as x3
     v = {k: "" for k in x3.KEYS}
     fx = lambda q: f"{int(round(q * 10000)):013d}"           # noqa: E731
@@ -234,7 +236,8 @@ def _x3_line(po, item, qty, unit, receipt, initial, *, designation="SLV 4x90",
              qty_remaining=fx(qty if remaining is None else remaining),
              order_unit=unit, stat_unit="KG", receipt_date=dm(receipt),
              requested_date=dm(initial), receipt_location=area,
-             currency_order="USD")
+             currency_order="USD", line_comment_internal=comment,
+             line_comment_external=comment_external)
     return "|".join(v[k] for k in x3.KEYS)
 
 
@@ -284,6 +287,34 @@ def test_erp_export_feed_matches_the_legacy_workbook(dd, vif, tmp_path):
     assert by_po["30043600"]["status"] == 20 and by_po["30043600"]["supplier_id"] == "48"
     assert by_po["30043600"]["po"] == "M2 02 1ACDE 30043600"
     json.dumps(erp, allow_nan=False)
+
+
+def test_erp_line_comments_reach_the_inbound_lines_and_the_binding(dd, vif, tmp_path):
+    """(2026-09-17) the inventory specialists' PO-line comments travel from
+    order_npa.csv through the gate onto inbound.lines, the counted receipt
+    and the DEPENDENT block's binding — as separate keys, never inside the
+    pinned label / verdict sentence. Lines without a note read ""."""
+    rows = [_x3_line("30043600", 754800, 90000, "EA", datetime(2026, 9, 1),
+                     datetime(2026, 8, 30),
+                     comment="8/18 REV QTY FROM 100,000 TO 90,000",
+                     comment_external="SHIP WITH PO 30043601")] + X3_ROWS[1:]
+    rep = _report(dd, vif, po_path=_write_x3(tmp_path / "order_npa.csv", rows))
+    assert not rep.get("error"), rep
+    inb = rep["inbound"]
+    by_po = {ln["po8"]: ln for ln in inb["lines"]}
+    assert by_po["30043600"]["comment"] == "8/18 REV QTY FROM 100,000 TO 90,000"
+    assert by_po["30043600"]["comment_external"] == "SHIP WITH PO 30043601"
+    assert by_po["30043601"]["comment"] == "" and by_po["30043601"]["comment_external"] == ""
+    r = inb["receipts"]["754800"][0]
+    assert r["comment"] == "8/18 REV QTY FROM 100,000 TO 90,000"
+    assert r["comment_external"] == "SHIP WITH PO 30043601"
+    assert "REV QTY" not in r["label"]
+    a = _by_block(rep)["cs_a"]["supply"]
+    assert a["verdict"] == "DEPENDENT" and a["binding"]["po8"] == "30043600"
+    assert a["binding"]["comment"] == "8/18 REV QTY FROM 100,000 TO 90,000"
+    assert a["binding"]["comment_external"] == "SHIP WITH PO 30043601"
+    assert "REV QTY" not in a["text"] and "REV QTY" not in a["binding"]["label"]
+    json.dumps(rep, allow_nan=False)
 
 
 def test_erp_export_resolves_from_the_bridge_name(dd, vif):

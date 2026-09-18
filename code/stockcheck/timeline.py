@@ -440,10 +440,16 @@ def balance_at(timelines: dict, item: str, t: float, *, planned: bool = True
 def _binding_dict(r: dict | None) -> dict | None:
     if r is None:
         return None
+    # (2026-09-17) the buyers' PO-line comments ride on the binding so every
+    # surface that names the truck can show the note beside it; "" when the
+    # receipt came from the legacy workbook loader (no comment columns).
+    # Never folded into `label` / verdict_text — those strings are pinned.
     return {"po8": str(r.get("po8", "")), "qty": float(r["qty"]),
             "ready_h": float(r["ready_h"]),
             "receipt_date": r.get("receipt_date"),
-            "label": str(r.get("label", ""))}
+            "label": str(r.get("label", "")),
+            "comment": str(r.get("comment") or ""),
+            "comment_external": str(r.get("comment_external") or "")}
 
 
 def _evaluate_group(block: dict, key: str, g: dict, timelines: dict, R: dict,
@@ -846,7 +852,11 @@ _EMPTY_LINE = {"po": "", "po8": "", "item": "", "designation": "", "qty": None,
                "unit": "", "receipt_date": None, "initial_receipt_date": None,
                "slip_days": None, "arrival_area": "", "supplier": "",
                "supplier_id": "", "received": False, "order_date": None,
-               "row": None, "cancelled": False, "status_text": ""}
+               "row": None, "cancelled": False, "status_text": "",
+               # ERP line comments (order_npa.csv, 2026-09-17): the buyers'
+               # internal note and the supplier-facing one, per LINE, cut at
+               # 50 characters by the ERP; blank on legacy-workbook lines
+               "comment": "", "comment_external": ""}
 
 
 def _to_date(v) -> date | None:
@@ -1361,7 +1371,9 @@ def gate_receipts(lines, *, bom_items, unit_by_item, snapshot_date, today,
                     "ready_h": ready_h, "qty": n_qty, "po8": po8, "tier": "erp",
                     "receipt_date": last.isoformat(),
                     "label": (f"PO {po8} · {key} · {n_qty:,.0f} {unit} · "
-                              f"{last.isoformat()} · receipt slip")})
+                              f"{last.isoformat()} · receipt slip"),
+                    "comment": str(line.get("comment") or ""),
+                    "comment_external": str(line.get("comment_external") or "")})
                 window_end = (ready_h if window_end is None
                               else max(window_end, ready_h))
                 feed["n_counted_by_slip"] += 1
@@ -1448,7 +1460,11 @@ def gate_receipts(lines, *, bom_items, unit_by_item, snapshot_date, today,
                    ready_h=ready_h, tier=tier)
         receipts.setdefault(key, []).append({
             "ready_h": ready_h, "qty": qty, "po8": po8, "tier": tier,
-            "receipt_date": rd.isoformat(), "label": label})
+            "receipt_date": rd.isoformat(), "label": label,
+            # the buyers' line comments travel with the receipt (2026-09-17)
+            # so the Gantt and the binding can show them; never in `label`
+            "comment": str(line.get("comment") or ""),
+            "comment_external": str(line.get("comment_external") or "")})
         window_end = ready_h if window_end is None else max(window_end, ready_h)
 
     for k in receipts:

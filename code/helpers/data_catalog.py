@@ -439,7 +439,11 @@ CATALOG: tuple = (
         "with item, remaining quantity, receipt date, arrival area and "
         "status (20 receivable / 60 archived / 70 deleted). The inbound feed "
         "of the Supply Timeline. Leaves the ERP ~19:10 daily. The legacy "
-        "open_pos.xlsx / open_pos.csv workbook stands in when it is absent.",
+        "open_pos.xlsx / open_pos.csv workbook stands in when it is absent. "
+        "Line comments from the inventory specialists (comment / "
+        "comment_external, cut at 50 characters by the ERP) show on the "
+        "Stock Check Inbound tab, the Excel export and the Gantt supply "
+        "details.",
         managed_by="bridge",
         group="supply", kind="text", source=_ERP + " (Sage X3 PO lines)",
         cadence_key="open_pos", config_key="po_report_path",

@@ -229,6 +229,213 @@ def test_script_exit_code_tells_the_scheduler_and_installer(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# the fs_data drop root (2026-09-17)
+# ---------------------------------------------------------------------------
+# The plant drop is ONE synced folder, fs_data, holding fs_vif and fs_manual.
+# -FeedDir "<path>\fs_data" used to sync nothing while the heartbeat said ok /
+# nothing new. Now a listed folder holding those subfolders stands for them,
+# and a reachable folder with none of the plant files is a problem.
+
+def _azap_fixtures():
+    """The AZAP workbook fakes live in tests/test_azap_demand.py (_workbook,
+    EXPECTED_CSV); load that module by path so the fake is built ONE way."""
+    spec = importlib.util.spec_from_file_location("azap_test_fixtures",
+                                                  ROOT / "tests" / "test_azap_demand.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _drop(tmp_path: Path, *, workbook: bool = True):
+    """A drop root: fs_vif with two manprg files, fs_manual with cip_info.csv
+    (+ the AZAP workbook), and a decoy workbook in the ROOT that must be ignored."""
+    root = tmp_path / "fs_data"
+    _write(root / "fs_vif" / "manprg.txt", "MO 1", age_s=3600)
+    _write(root / "fs_vif" / "manprg2.txt", "MO 2", age_s=1800)
+    _write(root / "fs_manual" / "cip_info.csv", "line,last_cip")
+    az = _azap_fixtures()
+    if workbook:
+        az._workbook(root / "fs_manual" / "New Export AZAP 091126.xlsx", age_s=3600)
+    az._workbook(root / "New Export AZAP 091826.xlsx", age_s=3600)     # in the root: ignored
+    return root, az
+
+
+def test_expand_drop_roots_rules(tmp_path):
+    pull = _pull()
+    root = tmp_path / "fs_data"
+    vif, manual = root / "fs_vif", root / "fs_manual"
+    flat = tmp_path / "erp_out"
+    for d in (vif, manual, flat):
+        d.mkdir(parents=True)
+    # a root holding the layout is replaced by its subfolders, fs_vif first, and is NOT kept
+    assert pull.expand_drop_roots([root]) == [vif, manual]
+    assert pull.expand_drop_roots([str(root)]) == [vif, manual]
+    # an explicit subfolder list is unchanged; a root next to its own fs_vif does not double
+    assert pull.expand_drop_roots([vif, manual]) == [vif, manual]
+    assert pull.expand_drop_roots([root, vif]) == [vif, manual]
+    assert pull.expand_drop_roots([manual, root]) == [manual, vif]
+    # a flat folder and a missing one come back as they are, in order
+    assert pull.expand_drop_roots([flat, root, tmp_path / "nope"]) == [flat, vif, manual, tmp_path / "nope"]
+    assert pull.expand_drop_roots([]) == []
+    # a root with only fs_manual expands to that one folder
+    only = tmp_path / "half"
+    (only / "fs_manual").mkdir(parents=True)
+    assert pull.expand_drop_roots([only]) == [only / "fs_manual"]
+    # the conf reader stays pure: no filesystem look-up, the root comes back as written
+    assert pull.source_dirs({"source_dirs": [str(root)]}) == [root]
+    assert pull.DROP_SUBFOLDERS == ("fs_vif", "fs_manual")
+
+
+def test_root_conf_syncs_the_subfolders_and_never_writes_the_root(tmp_path):
+    """(a) a conf listing only <root>: both subfolders' files land in
+    data/reference, the summary is rebuilt in fs_manual (never in the root,
+    whose own workbook is ignored), the result and the heartbeat name the
+    subfolders, and the root and fs_vif are left exactly as they were."""
+    pull = _pull()
+    root, az = _drop(tmp_path)
+    ref = tmp_path / "ref"
+    vif, manual = root / "fs_vif", root / "fs_manual"
+
+    def root_snapshot():   # the root's own entries: its files' bytes + mtimes, its folders' names
+        return sorted((p.name, p.is_dir(), p.stat().st_mtime_ns if p.is_file() else None,
+                       p.read_bytes() if p.is_file() else b"") for p in root.iterdir())
+
+    root_before, vif_before = root_snapshot(), _snapshot(vif)
+
+    res = pull.pull_once(_conf([root], ref))
+
+    assert res.mode == "folder" and res.ok, res.problems
+    assert res.sources == [str(vif), str(manual)]
+    assert (ref / "manprg.txt").read_text() == "MO 1" and (ref / "manprg2.txt").read_text() == "MO 2"
+    assert (ref / "cip_info.csv").read_text() == "line,last_cip"
+    assert (ref / "demand_plan_summary.csv").read_bytes() == az.EXPECTED_CSV
+    assert (manual / "demand_plan_summary.csv").read_bytes() == az.EXPECTED_CSV
+    assert (ref / "demand_plan.csv").is_file()
+    assert "demand_plan_summary.csv (built from New Export AZAP 091126.xlsx)" in res.updated
+    state = json.loads((ref / pull.SYNC_STATE_NAME).read_text(encoding="utf-8"))
+    assert state["sources"] == [str(vif), str(manual)] and state["ok"] is True
+    # the manprg as-of is the ERP's write time of the newest manprg in fs_vif
+    stamp = json.loads((ref / pull.ASOF_STAMP_NAME).read_text(encoding="utf-8"))
+    assert stamp["as_of"] == time.strftime("%Y-%m-%dT%H:%M:%S",
+                                           time.localtime((vif / "manprg2.txt").stat().st_mtime))
+    # nothing written into the root (its decoy workbook got no summary) nor into fs_vif
+    assert root_snapshot() == root_before and _snapshot(vif) == vif_before
+    assert not (root / "demand_plan_summary.csv").exists()
+    assert sorted(p.name for p in root.iterdir()) == ["New Export AZAP 091826.xlsx", "fs_manual", "fs_vif"]
+
+    res2 = pull.pull_once(_conf([root], ref))
+    assert res2.ok and res2.updated == [] and res2.skipped == []
+
+
+def test_explicit_subfolder_list_gives_the_same_result_without_duplicates(tmp_path):
+    """(b) [root/fs_vif, root/fs_manual] and [root, root/fs_vif] both read as
+    the two subfolders, once each — the pre-2026-09-17 spelling keeps working."""
+    pull = _pull()
+    root, az = _drop(tmp_path)
+    vif, manual = root / "fs_vif", root / "fs_manual"
+    for i, listed in enumerate(([vif, manual], [root, vif], [vif, root, manual])):
+        ref = tmp_path / f"ref{i}"
+        res = pull.pull_once(_conf(listed, ref))
+        assert res.ok, res.problems
+        assert res.sources == [str(vif), str(manual)]
+        assert sorted(p.name for p in ref.iterdir() if not p.name.endswith(".json")) == [
+            "cip_info.csv", "demand_plan.csv", "demand_plan_summary.csv", "manprg.txt", "manprg2.txt"]
+        assert (ref / "demand_plan_summary.csv").read_bytes() == az.EXPECTED_CSV
+        state = json.loads((ref / pull.SYNC_STATE_NAME).read_text(encoding="utf-8"))
+        assert state["sources"] == [str(vif), str(manual)]
+
+
+def test_same_file_in_both_subfolders_newest_wins_and_fs_vif_breaks_a_tie(tmp_path):
+    """(c) a file present in fs_vif AND fs_manual is taken from wherever it
+    is newest; with equal modified times fs_vif (listed first) wins."""
+    pull = _pull()
+    root, ref = tmp_path / "fs_data", tmp_path / "ref"
+    _write(root / "fs_vif" / "manprg.txt", "vif older", age_s=6000)
+    _write(root / "fs_manual" / "manprg.txt", "manual newer", age_s=600)
+    tie = time.time() - 3600
+    a = _write(root / "fs_vif" / "cip_info.csv", "cip from vif")
+    b = _write(root / "fs_manual" / "cip_info.csv", "cip from manual")
+    os.utime(a, (tie, tie))
+    os.utime(b, (tie, tie))
+    res = pull.pull_once(_conf([root], ref))
+    assert res.ok, res.problems
+    assert (ref / "manprg.txt").read_text() == "manual newer"
+    assert (ref / "cip_info.csv").read_text() == "cip from vif"
+
+
+def test_root_with_only_fs_manual_expands_to_that_folder(tmp_path):
+    """(d) half a layout is still the layout: the root stands for fs_manual alone."""
+    pull = _pull()
+    root, ref = tmp_path / "fs_data", tmp_path / "ref"
+    _write(root / "fs_manual" / "cip_info.csv", "cip")
+    res = pull.pull_once(_conf([root], ref))
+    assert res.ok, res.problems
+    assert res.sources == [str(root / "fs_manual")]
+    assert (ref / "cip_info.csv").read_text() == "cip"
+    assert not (root / "demand_plan_summary.csv").exists()
+
+
+def test_reachable_folder_without_plant_files_is_a_problem(tmp_path):
+    """(e) a folder that IS reachable but holds none of the listed files —
+    the silent-green failure — is a problem naming it: the pass is not ok,
+    the script exits 1, and Home's row reads STALE with that text (never
+    blocking). A folder whose only file is the summary the pass itself
+    rebuilt, or that holds the AZAP workbook (settling or not), counts as
+    holding plant files."""
+    pull = _pull()
+    good, empty, ref = tmp_path / "good", tmp_path / "wrong_folder", tmp_path / "ref"
+    _write(good / "manprg.txt", "MO 1")
+    empty.mkdir()
+    _write(empty / "unrelated.txt", "not on the conf list")
+    res = pull.pull_once(_conf([empty, good], ref))
+    assert (ref / "manprg.txt").is_file()                      # the good folder still synced
+    assert not res.ok
+    expect = (f"no plant files found in {empty} — expected the fs_data layout "
+              "(fs_vif, fs_manual) or the files on the conf list")
+    assert res.problems == [expect]
+    assert pull.empty_source_folders(FILES, [empty, good, tmp_path / "nope"]) == [empty]
+
+    # Home's Live data sync row: STALE with the text, warning severity only
+    dd = tmp_path / "data"
+    (dd / "reference").mkdir(parents=True)
+    _heartbeat(dd / "reference", ok=False, problems=res.problems)
+    row = dh._live_sync_status(dd, dict(dh.DEFAULT_CADENCE_H))
+    assert row.state == dh.STALE and "no plant files found" in row.detail and row.severity == 1
+
+    # the subprocess pattern: exit 1, PROBLEMS in the output, heartbeat not ok
+    base = [sys.executable, str(SCRIPTS / "fs-live-pull.py"), "--once", "--reference-dir", str(ref)]
+    bad = subprocess.run(base + ["--source-dir", str(empty)], capture_output=True, text=True,
+                         cwd=str(ROOT), timeout=120)
+    assert bad.returncode == 1, bad.stdout + bad.stderr
+    assert "PROBLEMS" in bad.stdout and "no plant files found" in bad.stdout and "wrong_folder" in bad.stdout
+    state = json.loads((ref / "live_sync.json").read_text(encoding="utf-8"))
+    assert state["ok"] is False and state["problems"] == [expect]
+    # the root spelling through --source-dir expands too, and a good root is clean
+    root, _ = _drop(tmp_path)
+    ok = subprocess.run(base + ["--source-dir", str(root)], capture_output=True, text=True,
+                        cwd=str(ROOT), timeout=120)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    assert str(root / "fs_vif") in ok.stdout and str(root / "fs_manual") in ok.stdout
+
+    # fs_manual holding ONLY the workbook: the rebuilt csv is its contribution
+    az = _azap_fixtures()
+    lone = tmp_path / "lone"
+    _write(lone / "fs_vif" / "manprg.txt", "MO 1")
+    az._workbook(lone / "fs_manual" / "New Export AZAP 091126.xlsx", age_s=3600)
+    res = pull.pull_once(_conf([lone], tmp_path / "ref_lone"))
+    assert res.ok, res.problems
+    assert (lone / "fs_manual" / "demand_plan_summary.csv").is_file()
+    # ... and while that workbook is still settling (no csv yet) it is not "no plant files" either
+    fresh = tmp_path / "fresh"
+    _write(fresh / "fs_vif" / "manprg.txt", "MO 1")
+    az._workbook(fresh / "fs_manual" / "New Export AZAP 091126.xlsx", age_s=0)
+    res = pull.pull_once(_conf([fresh], tmp_path / "ref_fresh"))
+    assert res.ok, res.problems
+    assert any("settling" in s for s in res.skipped)
+    assert not (fresh / "fs_manual" / "demand_plan_summary.csv").exists()
+
+
+# ---------------------------------------------------------------------------
 # helpers/live_sync — the app's side
 # ---------------------------------------------------------------------------
 
@@ -393,3 +600,24 @@ def test_health_row_absent_ok_stale_problems_unreadable(tmp_path):
     rows = dh._live_feed_statuses(dd, {"health": {"cadence_h": {"live_sync": 6.0}}})
     assert rows[0].key == "live_sync" and rows[0].state == dh.OK
     assert [r.key for r in rows].count("live_sync") == 1
+
+
+def test_app_source_folders_expand_the_fs_data_root(tmp_path):
+    """helpers/live_sync.source_folders reads the conf like the sync does
+    (2026-09-17): a configured fs_data root stands for its fs_vif +
+    fs_manual, an explicit list or a flat folder is unchanged, GitHub mode
+    gives []. The Data Files page looks for the AZAP workbook in these
+    folders, so a root must not hide fs_manual from it."""
+    from helpers import live_sync
+    root = tmp_path / "fs_data"
+    vif, manual = root / "fs_vif", root / "fs_manual"
+    vif.mkdir(parents=True)
+    manual.mkdir()
+    flat = tmp_path / "flat"
+    flat.mkdir()
+    assert live_sync.source_folders({"source_dirs": [str(root)]}) == [str(vif), str(manual)]
+    assert live_sync.source_folders({"source_dirs": [str(vif), str(manual)]}) == [str(vif), str(manual)]
+    assert live_sync.source_folders({"source_dir": str(flat)}) == [str(flat)]
+    assert live_sync.source_folders({"source_dirs": []}) == []
+    # is_configured keeps judging the RAW conf: a root alone is "a source"
+    assert live_sync.configured_sources({"source_dirs": [str(root)]}) == [str(root)]

@@ -66,7 +66,7 @@ with their French labels).
 | 154–158 | Item short name, external codes | |
 | 159–165 | Billing company, `requested_date`, payment terms | |
 | 166–173 | Signs | |
-| 174–175 | **Comments** | `line_comment_internal` (buyer notes: "8/18 ERV QTY FROM 118,000 TO 117,510 …"), `line_comment_external` |
+| 174–175 | **Comments** | `line_comment_internal` (buyer notes: "8/18 ERV QTY FROM 118,000 TO 117,510 …"), `line_comment_external`. Both are **per line** (not per PO) and the ERP **truncates them at 50 characters**; on the 2026-09-11 sample 216 of 983 lines (72 POs) carry an internal note, 99 an external one |
 | 176–178 | Contract amounts ×3 | |
 | 179–198 | Header criteria 1–10 | empty on the sample |
 | 199–218 | Line criteria 1–10 | `PRO` producer / `COO` country of origin on the raw-material lines (541 rows); 3–10 empty |
@@ -130,6 +130,27 @@ Extras carried on every line (blank on legacy-workbook lines):
 `price_unit`, `amount`, `currency`, `buyer`, `planner`, `delivery_terms`,
 `contract`, `producer`, `origin`, `comment`, `comment_external`. The
 Inbound tab shows `ordered` and `status` beside the remaining qty.
+
+**Line comments (2026-09-17).** `comment` (= `line_comment_internal`, the
+inventory specialists' note) and `comment_external` (= `line_comment_external`,
+supplier-facing) are per line and arrive cut at 50 characters by the ERP;
+the app never lengthens or joins them. They ride, additively, on every
+PoLine from the ERP export (`""` when the field is blank; a legacy-workbook
+PoLine has no such keys — consumers read them with `.get(..., "")`), and
+always present as `""` on every gated receipt (`inbound.receipts`), on the
+block's `supply.binding`, on the solver projection's counted receipts and
+on the Gantt's `StockArgs.receipts`. Shown as separate text — never inside the
+receipt `label` or the verdict sentence, which are pinned — on:
+
+| Surface | How |
+|---|---|
+| Stock Check → Inbound tab | columns *Buyer note* / *Supplier note* (DataFrame keys `comment` / `comment_external`) |
+| Stock Check → Board tab, block detail | caption `Buyer note on PO <po8>: "…"` (and `Supplier note …`) under the Supply line |
+| Excel export | sheet **Inbound POs** = the Inbound tab rows |
+| `reconcile_engine` supply finding (engine output — no page renders a finding's `detail` since the Reconcile page was retired 2026-09-17; Home shows counts) | detail suffix ` · note: "…"` (internal note only) |
+| Gantt block popover | muted sub-line `note: … · ext: …` under the receipt row |
+| Gantt Supply details panel | **Note** column (external note as the cell tooltip) |
+| Gantt header trucks | tooltip line ` — <comment>` after the receipt label |
 
 Everything else stays reachable through `read_x3_po_export(path)`:
 `rows` (all 219 decoded columns), `raw` (the untouched strings), `header`.

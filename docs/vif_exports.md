@@ -28,13 +28,22 @@ fs_data\
 | `fs_manual` | planners (the AZAP workbook is replaced weekly, `cip_info.csv` by hand) | read, **plus one write**: the sync rebuilds `demand_plan_summary.csv` here from the newest AZAP workbook (see *AZAP demand recipe*) |
 
 A planner's PC feeds both folders to the app with
-`install_flowstate.ps1 -FeedDir "…\fs_data\fs_vif;…\fs_data\fs_manual"`
-(folder mode, `docs/live-data-bridge-setup.md` PART 6). The work PC lists
-the same two folders under `"source_dirs_work"` in `fs-live-data.conf.json`
-and `fs-live-push.py` pushes them to the private live-data repo for the dev
-laptop. A file present in both folders is taken from wherever it is newest.
-Only the names on the conf `files` list travel; everything else in the
-folders is ignored.
+`install_flowstate.ps1 -FeedDir "…\fs_data"` — the root, one value (folder
+mode, `docs/live-data-bridge-setup.md` PART 6). Since 2026-09-17 a
+configured folder that holds `fs_vif` and/or `fs_manual` stands for those
+subfolders at every pass (`fs_vif` first); the root's own files are ignored
+once a subfolder exists, and a subfolder created later is picked up without
+a re-install. The explicit list
+`-FeedDir "…\fs_data\fs_vif;…\fs_data\fs_manual"` still works and gives the
+same result; a flat folder holding the files themselves is read as it is.
+The work PC lists the same drop under `"source_dirs_work"` in
+`fs-live-data.conf.json` (the root, or the two subfolders) and
+`fs-live-push.py` pushes it to the private live-data repo for the dev laptop.
+A file present in both folders is taken from wherever it is newest (equal
+modified times: `fs_vif`). Only the names on the conf `files` list travel;
+everything else in the folders is ignored — and a reachable folder holding
+none of them is reported as `no plant files found` instead of a quiet
+"nothing new".
 
 ## Conventions shared by the VIF exports (`fs_vif`)
 

@@ -196,10 +196,12 @@ drop with two folders, and the sync watches both:
 Every file, its format and what the app does with it is in
 `docs/vif_exports.md`.
 
-**Set it up** (the installer does all of this):
+**Set it up** (the installer does all of this). Point `-FeedDir` at the
+drop **root**, `fs_data` — the one synced folder — and nothing else
+(2026-09-17):
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\install_flowstate.ps1 -FeedDir "C:\Users\<planner>\Flowstate\fs_data\fs_vif;C:\Users\<planner>\Flowstate\fs_data\fs_manual"
+powershell -ExecutionPolicy Bypass -File .\scripts\install_flowstate.ps1 -FeedDir "C:\Users\<planner>\Flowstate\fs_data"
 ```
 
 which writes the git-ignored `scripts\fs-live-data.local.json`:
@@ -207,16 +209,39 @@ which writes the git-ignored `scripts\fs-live-data.local.json`:
 ```json
 {
   "data_reference_dir": "C:\\Users\\<planner>\\Flowstate\\Plant_Scheduler\\data\\reference",
-  "source_dirs": ["C:\\Users\\<planner>\\Flowstate\\fs_data\\fs_vif", "C:\\Users\\<planner>\\Flowstate\\fs_data\\fs_manual"]
+  "source_dirs": ["C:\\Users\\<planner>\\Flowstate\\fs_data"]
 }
 ```
 
 runs one first sync and registers the Task Scheduler entry **Flowstate Live
-Data Pull** (every 5 min). Folders are separated with `;` and listed in
+Data Pull** (every 5 min). The installer prints `source folder : …\fs_data
+(fs_data root: fs_vif, fs_manual)` when it sees the layout, and warns when a
+folder has neither the subfolders nor any well-known plant file
+(`manprg.txt`, `ediact.csv`, `order_npa.csv`, `cip_info.csv`).
+
+**How the root is read.** `source_dirs` keeps the path as given; at every
+pass the sync replaces a listed folder that holds `fs_vif` and/or
+`fs_manual` by those subfolders (`fs_vif` first), so a subfolder created
+later is picked up without a re-install, and the heartbeat's `sources` name
+the subfolders. The root's **own** files are ignored once a subfolder exists
+(a workbook left in the root is never turned into a summary). The two older
+spellings still work unchanged: the explicit subfolder list
+`-FeedDir "…\fs_data\fs_vif;…\fs_data\fs_manual"` (the same result, no
+duplicates — a root listed next to its own `fs_vif` does not double it) and a
+flat folder holding the files themselves (`-FeedDir "\\server\share\erp_out"`),
+which is read as it is. Folders are separated with `;` and listed in
 priority order — a file present in more than one is taken from wherever it
-is newest. A single folder (`-FeedDir "\\server\share\erp_out"`) still
-works. Use UNC paths for a share: a mapped drive letter is per-logon and the
-scheduled task may not see it.
+is newest (equal modified times: the first listed, so `fs_vif`). Use UNC
+paths for a share: a mapped drive letter is per-logon and the scheduled task
+may not see it.
+
+Before 2026-09-17 a `-FeedDir "…\fs_data"` synced nothing and the pass still
+said ok / nothing new. A reachable folder holding **none** of the listed
+files is now a problem — `no plant files found in <folder> — expected the
+fs_data layout (fs_vif, fs_manual) or the files on the conf list` — so the
+pass exits 1 and Home's **Live data sync** row goes STALE with that text (a
+folder whose only file is the `demand_plan_summary.csv` the pass itself
+rebuilt, or that holds the AZAP workbook, counts as holding plant files).
 
 **What the sync does to the folders — and does not:**
 
@@ -349,6 +374,7 @@ result first.
 | Task result `(0x2)` | Wrong path to the script. Check **Start in** matches the `scripts/` folder. |
 | Nothing ever pushes | `source_dirs_work` (or `source_dir_work` / `SRC_DIR`) doesn't match where the plant actually drops files. Confirm a file from the `files` list exists there; an unreachable folder is printed as "Source folder not reachable, skipped". |
 | Home says **Live data sync** reported `source folder not reachable` | The share is down, the UNC path has a typo, or the account lacks read permission. Open the path in Explorer as that user; then run `.venv\Scripts\python.exe scripts\fs-live-pull.py --once`. |
+| Home says **Live data sync** reported `no plant files found in <folder>` | The folder is reachable but holds neither `fs_vif` / `fs_manual` nor any file on the conf `files` list — `-FeedDir` points one level too deep or at the wrong folder. Re-run the installer with the `fs_data` root (or edit `source_dirs` in `fs-live-data.local.json`). |
 | A file keeps being "left for next pass (settling)" | Its mtime is always within `settle_seconds` of now — the exporter rewrites it continuously, or the file server's clock is off. Lower `settle_seconds` in `fs-live-data.local.json` (0 disables the wait). |
 | Task Scheduler "Last Run Result" is `0x1` | A pass reported problems; read `data\reference\live_sync.json` or the Home row. |
 | Token expired | Regenerate a PAT (PART 2c), update the credential manager. |
@@ -362,8 +388,8 @@ result first.
 | `scripts/fs-live-data.conf.json` | Shared config (repo URL, file list, paths; `source_dirs_work` = the folders the work PC watches) |
 | `scripts/fs-live-push.py` | Work-side watcher → push (run on work computer); watches every folder in `source_dirs_work` |
 | `scripts/fs-live-pull.py` | Sync → copy into `data/reference` (GitHub clone or shared folders; laptop AND planner's PC) |
-| `scripts/fs-live-data.local.json` | Per-machine override (git-ignored): `data_reference_dir`, `source_dirs` or `clone_dir_personal`; written by the installer |
-| `scripts/install_flowstate.ps1` | One-command install / update; `-FeedDir` (folder mode, `;`-separated folders) or `-LiveData` (GitHub mode) |
+| `scripts/fs-live-data.local.json` | Per-machine override (git-ignored): `data_reference_dir`, `source_dirs` (the `fs_data` root, expanded to `fs_vif` + `fs_manual` at run time) or `clone_dir_personal`; written by the installer |
+| `scripts/install_flowstate.ps1` | One-command install / update; `-FeedDir` (folder mode: the `fs_data` root, or `;`-separated folders) or `-LiveData` (GitHub mode) |
 | `scripts/azap_demand_summary.py` | AZAP workbook (`fs_manual\New Export AZAP MMDDYY.xlsx`) → `demand_plan_summary.csv` by hand (`--folder`, else the conf's `source_dirs`); the folder-mode sync and a repo-checkout push script run the same rebuild |
 | `docs/vif_exports.md` | Reference for every file in the `fs_data` drop: format, row counts, what the app does with it, the ignored files and the AZAP recipe |
 | `data/reference/live_sync.json` | Heartbeat of the last pass (git-ignored); read by Home's **Live data sync** row and the calendar's rebuild |

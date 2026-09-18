@@ -67,7 +67,11 @@ def _supply_report() -> dict:
            "covered_frac": 0.6, "depletion_h": 160.0, "lead_h": 30.0,
            "safe_from_h": 166.0,
            "binding": {"po8": "30043537", "qty": 67200.0, "ready_h": 70.0,
-                       "receipt_date": "2026-09-02", "label": "PO 30043537"},
+                       "receipt_date": "2026-09-02", "label": "PO 30043537",
+                       # the buyers' PO-line comments (2026-09-17) ride on
+                       # the binding: the Board tab shows them as a caption
+                       "comment": "8/18 REV QTY FROM 70,000 TO 67,200",
+                       "comment_external": "SHIP WITH PO 30043500"},
            "text": "🚚 754751: on hand covers 60%"}
     minor = {**dep, "key": "b3@200.00", "minor": True}
 
@@ -87,10 +91,16 @@ def _supply_report() -> dict:
             "slip_days": 6, "arrival_area": "RP1", "supplier": "GPI",
             "supplier_id": "48", "received": False, "order_date": "2026-07-24",
             "row": 12, "fate": "used", "reason": "", "ready_h": 70.0,
-            "tier": "erp", "item_key": "754751"}
+            "tier": "erp", "item_key": "754751",
+            # ERP line comments (order_npa.csv, 2026-09-17)
+            "comment": "8/18 REV QTY FROM 70,000 TO 67,200",
+            "comment_external": "SHIP WITH PO 30043500"}
     lines = [
         line,
-        {**line, "po8": "30043500", "receipt_date": "2026-08-20",
+        # a legacy-workbook line carries no comment keys at all
+        {**{k: v for k, v in line.items()
+            if k not in ("comment", "comment_external")},
+         "po8": "30043500", "receipt_date": "2026-08-20",
          "slip_days": None, "fate": "overdue", "ready_h": None, "tier": None,
          "reason": "receipt date before the stock snapshot"},
         {**line, "po8": "30043501", "item": "999", "fate": "unjoinable",
@@ -212,13 +222,29 @@ def test_stock_check_renders_supply_inbound_and_quality(tmp_path,
     df = tables[0]
     # 'ordered' / 'status' come from the ERP export (order_npa.csv,
     # 2026-09-14); the legacy workbook leaves them blank (<NA>)
+    # 'comment' / 'comment_external' (2026-09-17) are the ERP's per-line
+    # buyer / supplier notes, headed "Buyer note" / "Supplier note" on the
+    # page; a legacy line without the keys reads blank, never NaN/None
     assert list(df.columns) == ["po8", "item", "designation", "qty", "unit",
                                 "ordered", "status", "state", "receipt_date", "slip_days",
                                 "arrival_area", "supplier", "fate", "reason",
+                                "comment", "comment_external",
                                 "ready", "tier"]
     assert list(df["fate"]) == ["used", "overdue", "unjoinable"]
     assert df["status"].isna().all() and df["ordered"].isna().all()
     assert df["ready"].iloc[0] and not df["ready"].iloc[1]  # None -> blank
+    assert list(df["comment"]) == ["8/18 REV QTY FROM 70,000 TO 67,200", "",
+                                   "8/18 REV QTY FROM 70,000 TO 67,200"]
+    assert list(df["comment_external"]) == ["SHIP WITH PO 30043500", "",
+                                            "SHIP WITH PO 30043500"]
+    assert "cut at 50 characters by the ERP" in text
+    # Board tab: the binding's comments under the (unchanged) Supply line
+    assert ('Buyer note on PO 30043537: "8/18 REV QTY FROM 70,000 TO 67,200"'
+            in text)
+    assert 'Supplier note on PO 30043537: "SHIP WITH PO 30043500"' in text
+    assert "8/18 REV QTY" not in "\n".join(
+        str(getattr(el, "value", "")) for el in at.markdown
+        if "**Supply**" in str(getattr(el, "value", "")))
     # Data quality tab: the three quality lists with fix hints
     assert "Unjoinable PO items (1)" in text
     assert "Unit mismatch (PO vs BOM) (1)" in text

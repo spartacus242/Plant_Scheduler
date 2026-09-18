@@ -168,8 +168,11 @@ export const TimeAxisSvg: React.FC<SvgProps> = ({
         if (!rs || rs.length === 0) return null;
         const x = hourToX(t.hour, viewStart, hourWidth);
         const colW = hourToX(t.hour + 24, viewStart, hourWidth) - x;
+        // The buyers' PO-line comment (2026-09-17) trails the pinned label
+        // text after an em dash; the label itself is never changed.
         const title = `${rs.length} receipt${rs.length === 1 ? "" : "s"} ${t.label}\n`
-          + rs.map((r) => r.label || `PO ${r.po8} · ${r.qty} · ${r.tier}`).join("\n");
+          + rs.map((r) => (r.label || `PO ${r.po8} · ${r.qty} · ${r.tier}`)
+                          + (r.comment ? ` — ${r.comment}` : "")).join("\n");
         return (
           <g key={`rcpt_${t.hour}`} data-testid="receipt-day" style={{ cursor: "help" }}>
             <title>{title}</title>

@@ -61,6 +61,9 @@ PoLine dict (all keys always present):
 "unit": "EA", "receipt_date": "2026-09-02", "initial_receipt_date": "2026-08-27", "slip_days": 6,
 "arrival_area": "RP1", "supplier": "GRAPHIC PACKAGING", "supplier_id": "48", "received": false,
 "order_date": "2026-07-24", "row": 12}` — strings stripped; `received = Receipt number non-blank`; dates ISO or None.
+Optional since 2026-09-17: `"comment": str, "comment_external": str` — the ERP's per-LINE internal (buyers') and
+external (supplier-facing) comments, cut at 50 characters by the ERP; emitted by `x3_po_export.to_po_lines`, absent
+on legacy-workbook lines, so every consumer reads them with `.get(..., "")`.
 
 Parsing rules (verified on the sample): header row 1; openpyxl `read_only=True, data_only=True`; the sheet may end
 with a sentinel row (`Ordered item` None or `?`) → skipped; five columns are literally named `U` → take the FIRST
@@ -90,7 +93,9 @@ Opening = {item: qty}            # toggle-honouring on-hand (coverage.available_
 Tracked = set[str]               # items with any stock row; untracked items are listed, never gate
 InHouse = set[str]               # coverage.IN_HOUSE_ITEMS — never gate
 Receipts = {item: [{"ready_h": float, "qty": float, "po8": str, "tier": "erp"|"appt", "receipt_date": "YYYY-MM-DD",
-                    "label": str}]}      # ALREADY gated (see §4); sorted by ready_h
+                    "label": str,
+                    "comment": str, "comment_external": str}]}   # ALREADY gated (see §4); sorted by ready_h
+# comment / comment_external (2026-09-17): the PO line's ERP comments, "" when absent; never folded into `label`.
 SnapshotH = {item: float}        # hour of the stock export the item's on-hand came from (rm vs pkg frame)
 ```
 
@@ -140,6 +145,8 @@ Extra fields:
 - `binding`: walk counted receipts (those with `ready_h < end_b`) latest-first, tentatively dropping each while
   `minP` stays ≥ 0; the first that cannot be dropped is binding → `{"po8","qty","ready_h","receipt_date","label"}`
   or None (SHORT/NO_DATA may still report the latest counted receipt as `binding` for text).
+  Since 2026-09-17 the binding also carries `"comment"` and `"comment_external"` (the receipt's PO-line comments,
+  `""` when absent) — Python `_binding_dict`, TS `bindingDict` and the golden fixture change together.
 - `lead_h = ref_b − binding.ready_h` (may be negative = mid-run), `mid_run = binding.ready_h > start_b`,
   `safe_from_h = binding.ready_h + L` (None when no binding).
 - `dependent_frac = clamp(−minH / need_bg, 0, 1)` where `need_bg` = the block's draw of g inside `W_b`;
@@ -223,6 +230,9 @@ Flat statuses, `demand_view`, `item_reverse` UNCHANGED. New top-level keys:
 - `"inbound"`: `{"state", "source_path", "source_mtime", "as_of", "max_receipt_date", "n_rows", "errors",
   "lines": [line_fates], "receipts": Receipts, "join": {"used","received","overdue","landed","unjoinable",
   "unit_mismatch","offsite_no_transfer"}, "appt_join": {"matched": n, "total": n}}`.
+  A `lines[i]` fate row carries `"comment"` / `"comment_external"` when its PoLine did (the X3 loader always
+  emits them, `""` when blank; a legacy-workbook fate row has no such keys — since 2026-09-17), and
+  `_EMPTY_LINE` (a bad row) carries `""` for both; read them with `.get(..., "")`.
 - `"quality"`: `{"unjoinable_items": [...], "unit_mismatch": [...], "landed_unverifiable": [...]}`.
 - each `schedule_view[i]` gains `"key"` and `"supply"` (Supply dict).
 
@@ -259,12 +269,15 @@ export interface StockArgs {
   designations: Record<string, string>;
   snapshot_h: Record<string, number>;
   receipts: Record<string, { ready_h: number; qty: number; po8: string; tier: "erp" | "appt";
-                              receipt_date: string; label: string }[]>;
+                              receipt_date: string; label: string;
+                              comment?: string; comment_external?: string }[]>;   // 2026-09-17: PO-line comments, "" when absent
   sku_needs: Record<string, { kg_per_case: number;
                               items: { item: string; per_case: number; unit: string; alts: string[] }[] }>;
   cases_left: Record<string, number>;      // order_id -> cases_left for running MOs (from manprg), may be {}
 }
 ```
+`build_stock_payload` re-copies receipts through a whitelist: `comment` / `comment_external` are passed through
+explicitly (2026-09-17), otherwise the Gantt never sees them.
 `SandboxArgs.stock?: StockArgs | null; SandboxArgs.focusBlock?: string | null;`
 `gantt_calendar(..., stock=None, focus_block=None)` → kwargs `stock`, `focusBlock`.
 
@@ -299,6 +312,9 @@ Unknown verdict values are ignored (forward-compatible).
 - `pages/stock_check.py`: tab **Inbound** (every `inbound.lines` row: po8, item, designation, qty+unit, receipt date,
   slip, area, supplier, fate, reason, ready stamp, tier; metrics from `inbound.join`; source stamp; errors) and a
   **Supply** column on the schedule tab (`supply.verdict` + `supply.text`), plus `quality` on Data quality.
+  2026-09-17: the Inbound table gains `comment` / `comment_external` right after `reason` (headed *Buyer note* /
+  *Supplier note*); the Board tab prints the binding's comments as a caption under the Supply line; the Excel export
+  gains an **Inbound POs** sheet built from the same rows.
 - `pages/calendar.py`: `load_cached(dd)` (never recompute) → `build_stock_payload` → `gantt_calendar(stock=...,
   focus_block=st.query_params.get("focus"))`; caption "Supply: N short · M dependent · stock 9/1 14:46 · POs 9/1 06:10"
   computed server-side with `evaluate_board` on the pushed working board on each rerun (<50 ms) — same numbers the
@@ -337,6 +353,10 @@ Unknown verdict values are ignored (forward-compatible).
   duration from the card's kg and mean rate); note "after due window" when `safe_from_h > due_end_hour`.
 - `SkuPickerPopover` + `HoldingPlacePopover` rows: same pill + "safe from" stamp.
 - `TimeAxis`: one 🚚 glyph per day that has ≥1 receipt, tooltip lists `label` lines.
+- PO-line comments (2026-09-17): `BlockPopover` receipt rows get a muted `note: … · ext: …` sub-line,
+  `SupplyDetailPanel`'s PO table a **Note** column (external note as tooltip), the `TimeAxis` truck tooltip
+  appends ` — <comment>` after each label; `stockRisk.Receipt/Binding` and `supplyGlue.DetailReceipt` carry the
+  two fields, `bindingDict` always emits them (`?? ""`). Label / verdict strings unchanged.
 - `focusBlock`: on mount, if set and a block with that id exists → set `highlightSku` to its sku and scroll it into view.
 - Rebuild: `cd code/components/gantt/frontend && npm run build`; commit `dist/`; grep `stockRisk`/`supply` symbols in
   `dist/index.js` before declaring done.

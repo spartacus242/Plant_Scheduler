@@ -315,10 +315,12 @@ with st.expander("Import demand_plan_summary.csv", expanded=True):
                    f"{_mt:%Y-%m-%d %H:%M}")
     # Upstream of the summary in folder mode: the planners' AZAP workbook in
     # the configured source folder(s) — named so a stale summary can be
-    # traced to the workbook that fed it.
+    # traced to the workbook that fed it. source_folders expands a configured
+    # fs_data root to fs_vif + fs_manual exactly as the sync does (2026-09-17),
+    # so the workbook in fs_manual is found when the conf names the root.
     try:
         from helpers.azap_demand import find_azap_workbook
-        for _folder in ls.configured_sources(ls.load_bridge_conf()):
+        for _folder in ls.source_folders(ls.load_bridge_conf()):
             _wb = find_azap_workbook(_folder)
             if _wb is not None:
                 _wbm = datetime.fromtimestamp(_wb.stat().st_mtime)

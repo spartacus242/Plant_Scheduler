@@ -151,6 +151,10 @@ const ItemSection: React.FC<{
                 <th style={TH}>Tier</th>
                 <th style={TH}>Lead vs this block</th>
                 <th style={TH}></th>
+                {/* The buyers' PO-line note (2026-09-17); the supplier-facing
+                    one rides as the cell's tooltip, or shows muted when it
+                    is the only note. */}
+                <th style={TH}>Note</th>
               </tr>
             </thead>
             <tbody>
@@ -170,6 +174,13 @@ const ItemSection: React.FC<{
                     <td style={TD}>
                       {r.counted && <span style={{ color: "#2e7d32" }}>counted</span>}
                       {r.binding && <span style={{ fontWeight: 700 }}> ◀ binding</span>}
+                    </td>
+                    <td style={{ ...TD, whiteSpace: "normal", maxWidth: 260, color: "#555" }}
+                        title={r.comment_external ? `Supplier note: ${r.comment_external}` : undefined}>
+                      {r.comment}
+                      {!r.comment && r.comment_external && (
+                        <span style={{ color: "#999" }}>ext: {r.comment_external}</span>
+                      )}
                     </td>
                   </tr>
                 );

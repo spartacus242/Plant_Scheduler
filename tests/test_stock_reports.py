@@ -123,11 +123,49 @@ def test_excel_report_has_every_sheet():
         demand=sr.demand_rows(rep, None, week_label=lambda w: f"WW{w:02d}"),
         shortages=sr.component_shortages(rep),
         appointments=[{"po": "30042199", "date": "2026-09-12", "time": "08:00", "category": "CAPS"}],
-        no_bom=rep["no_bom_skus"], unk=rep["unk"])
+        no_bom=rep["no_bom_skus"], unk=rep["unk"],
+        # the Inbound tab's rows (2026-09-17): the buyers' PO-line comments
+        # travel with the printout
+        inbound=[{"po8": "30043537", "item": "754751", "qty": 67200.0,
+                  "fate": "used", "reason": "",
+                  "comment": "8/18 REV QTY FROM 70,000 TO 67,200",
+                  "comment_external": "", "_hidden": "never"},
+                 # a note typed with a leading '=' must stay TEXT (openpyxl
+                 # would type it as a formula -> #NAME? in Excel; review
+                 # finding 2026-09-17, latent on today's export)
+                 {"po8": "30043500", "item": "754751", "qty": 1.0,
+                  "fate": "used", "reason": "",
+                  "comment": "=SEE PO 30043537 SAME TRUCK",
+                  "comment_external": "=2+2"}])
     wb = openpyxl.load_workbook(BytesIO(xl))
     assert wb.sheetnames == ["Summary", "Board", "Demand plan", "Component shortages",
-                             "Receiving", "Data quality"]
+                             "Receiving", "Inbound POs", "Data quality"]
     ws = wb["Component shortages"]
     header = [c.value for c in ws[1]]
     assert "Item" in header and "Board coverage" in header and "_status" not in header
     assert ws.freeze_panes == "A2"
+    inb = wb["Inbound POs"]
+    inb_header = [c.value for c in inb[1]]
+    assert "comment" in inb_header and "comment_external" in inb_header
+    assert "_hidden" not in inb_header
+    row = dict(zip(inb_header, [c.value for c in inb[2]]))
+    assert row["po8"] == "30043537"
+    assert row["comment"] == "8/18 REV QTY FROM 70,000 TO 67,200"
+    assert inb.freeze_panes == "A2"
+    row2 = {h: c for h, c in zip(inb_header, inb[3])}
+    assert row2["comment"].value == "=SEE PO 30043537 SAME TRUCK"
+    assert row2["comment"].data_type == "s"          # a string, not a formula
+    assert row2["comment_external"].data_type == "s"
+
+
+def test_excel_report_inbound_sheet_without_a_feed():
+    """A report that predates the PO feed (or an empty one) still writes the
+    sheet, with a note instead of a table."""
+    import openpyxl
+    for inbound in (None, []):
+        xl = sr.excel_report(summary=[("Blocks", 0)], board=[], demand=[],
+                             shortages=[], appointments=[], no_bom=[], unk=[],
+                             inbound=inbound)
+        wb = openpyxl.load_workbook(BytesIO(xl))
+        assert "Inbound POs" in wb.sheetnames
+        assert wb["Inbound POs"]["A2"].value == "no open-PO lines in this report"

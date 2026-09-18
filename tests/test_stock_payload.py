@@ -154,6 +154,28 @@ def test_payload_shifts_hours_into_the_page_frame():
         gen.SNAPSHOT_H
 
 
+def test_payload_receipt_comments_survive_the_whitelist():
+    """(2026-09-17) the buyers' PO-line comments ride on the report's
+    receipts; the payload's receipt re-copy is a whitelist, so without an
+    explicit pass-through the Gantt would never see them. Absent keys (a
+    legacy-workbook receipt) read "" — never None, never missing."""
+    inputs = gen.base_inputs()
+    rep = make_report(inputs)
+    noted = dict(gen.R40, comment="8/18 REV QTY FROM 70,000 TO 67,200",
+                 comment_external="SHIP WITH PO 30043500")
+    bare = {k: v for k, v in gen.R112.items()
+            if k not in ("comment", "comment_external")}
+    rep["inbound"]["receipts"] = {ITEM: [noted, bare]}
+    pay = build_stock_payload(rep, {}, REPORT_ANCHOR)
+    r40, r112 = pay["receipts"][ITEM]
+    assert r40["po8"] == "30043543" and r40["ready_h"] == 40.0
+    assert r40["comment"] == "8/18 REV QTY FROM 70,000 TO 67,200"
+    assert r40["comment_external"] == "SHIP WITH PO 30043500"
+    assert r40["label"] == gen.R40["label"]          # the pinned text is untouched
+    assert r112["comment"] == "" and r112["comment_external"] == ""
+    assert set(r112) == set(r40)
+
+
 def test_payload_rules_come_from_stock_config():
     cfg = {"stock": {"min_days_after_delivery": 2, "hard_block": True,
                      "lead_measured_from": "depletion"}}

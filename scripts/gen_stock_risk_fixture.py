@@ -50,10 +50,14 @@ def block(key, block_id, sku, line, start, end, cases, *, locked=False,
 
 
 def receipt(ready_h, qty, po8, receipt_date, tier="erp") -> dict:
+    # comment / comment_external (2026-09-17): the ERP's per-line buyer and
+    # supplier notes ride on every gated receipt and on the binding; the
+    # fixture carries them blank so the TS bindingDict's key set is pinned.
     return {"ready_h": ready_h, "qty": qty, "po8": po8, "tier": tier,
             "receipt_date": receipt_date,
             "label": f"PO {po8} · {ITEM} · {qty:,.0f} EA · {receipt_date} · "
-                     f"{'appt' if tier == 'appt' else 'ERP date'}"}
+                     f"{'appt' if tier == 'appt' else 'ERP date'}",
+            "comment": "", "comment_external": ""}
 
 
 def needs(sku, item, per_case=1.0, unit="EA", alts=(), kg_per_case=2.16) -> dict:

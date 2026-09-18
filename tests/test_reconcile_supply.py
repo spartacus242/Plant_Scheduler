@@ -169,6 +169,39 @@ def test_locked_block_action_says_chase_the_po():
     assert "Move or shrink" in by["m1"].action
 
 
+def test_binding_comment_lands_in_the_detail_not_the_title():
+    """(2026-09-17) the buyers' PO-line comment on the binding is appended
+    to the finding's detail as ' · note: "..."'; the title stays the pinned
+    verdict sentence. No comment (or the legacy loader's missing key) adds
+    nothing."""
+    noted = _supply("DEPENDENT")
+    noted["binding"]["comment"] = "8/18 REV QTY FROM 5,000 TO 4,500"
+    noted["binding"]["comment_external"] = "SHIP WITH PO 30043500"
+    noted["text"] = verdict_text(noted)
+    blk = _blocks(supply_findings(_report([_block(supply=noted)]), ANCHOR,
+                                  today=TODAY))
+    assert len(blk) == 1
+    x = blk[0]
+    assert x.detail.endswith(' · note: "8/18 REV QTY FROM 5,000 TO 4,500"')
+    assert "280351 on P09" in x.detail and "movable" in x.detail
+    assert "SHIP WITH PO" not in x.detail            # external note stays off
+    assert x.title == verdict_text(noted, ANCHOR) and "note:" not in x.title
+    # SHORT with a commented binding: same suffix, still blocking
+    short = _supply("SHORT")
+    short["binding"]["comment"] = "EXPEDITED 9/2"
+    y = _blocks(supply_findings(_report([_block(supply=short)]), ANCHOR,
+                                today=TODAY))[0]
+    assert y.severity == BLOCKING and y.detail.endswith(' · note: "EXPEDITED 9/2"')
+    # missing key (BINDING above, the legacy loader), blank comment, or no
+    # binding at all: nothing appended
+    blank = _supply("DEPENDENT")
+    blank["binding"]["comment"] = ""
+    for sup in (_supply("SHORT"), blank, _supply("SHORT", binding=False)):
+        z = _blocks(supply_findings(_report([_block(supply=sup)]), ANCHOR,
+                                    today=TODAY))[0]
+        assert " · note:" not in z.detail
+
+
 def test_short_without_binding_still_reads():
     sup = _supply("SHORT", binding=False)
     blk = _blocks(supply_findings(_report([_block(supply=sup)]), ANCHOR,

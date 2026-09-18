@@ -107,11 +107,20 @@ def test_shipped_conf_carries_the_open_pos_entries():
 
 
 def test_helper_copies_are_identical():
-    """Guard against the two scripts drifting: the helper source must match."""
+    """Guard against the two scripts drifting: the helper source must match.
+    Since 2026-09-17 the same goes for the fs_data root expansion
+    (expand_drop_roots + DROP_SUBFOLDERS), which scripts/azap_demand_summary.py
+    carries as a third copy (it reaches the conf the same way, by copy) and
+    helpers/live_sync.py as a fourth (the app reads the conf for the Data
+    Files page and must expand a root exactly like the sync)."""
     import inspect
-    a = inspect.getsource(_load("fs-live-pull.py").resolve_entries)
-    b = inspect.getsource(_load("fs-live-push.py").resolve_entries)
-    assert a == b
+    pull, push = _load("fs-live-pull.py"), _load("fs-live-push.py")
+    assert inspect.getsource(pull.resolve_entries) == inspect.getsource(push.resolve_entries)
+    cli = _load("azap_demand_summary.py")
+    from helpers import live_sync  # the app's copy (Data Files page), 2026-09-17
+    for mod in (push, cli, live_sync):
+        assert inspect.getsource(pull.expand_drop_roots) == inspect.getsource(mod.expand_drop_roots)
+        assert pull.DROP_SUBFOLDERS == mod.DROP_SUBFOLDERS == ("fs_vif", "fs_manual")
 
 
 def test_bad_entries_cost_only_themselves(tmp_path, resolve_entries):

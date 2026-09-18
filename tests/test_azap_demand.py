@@ -945,6 +945,52 @@ def test_push_once_rebuilds_before_resolving_the_file_list(tmp_path, monkeypatch
     assert seen == [True]
 
 
+def test_push_once_expands_the_fs_data_root_to_its_subfolders(tmp_path, monkeypatch):
+    """Rule of 2026-09-17: source_dirs_work naming the drop ROOT hands
+    [root/fs_vif, root/fs_manual] on to the rebuild and the file list; the
+    summary is rebuilt in fs_manual, never in the root (whose own workbook
+    is ignored)."""
+    push = _push()
+    root = tmp_path / "fs_data"
+    _write(root / "fs_vif" / "manprg.txt", "MO 1")
+    _workbook(root / "fs_manual" / "New Export AZAP 091126.xlsx", age_s=3600)
+    _workbook(root / "New Export AZAP 091826.xlsx", age_s=3600)      # in the root: ignored
+    handed: list[list[Path]] = []
+    monkeypatch.setattr(push, "ensure_clone", lambda conf: tmp_path / "clone")
+    monkeypatch.setattr(push, "sync_with_remote", lambda *a: None)
+    monkeypatch.setattr(push, "commits_ahead", lambda *a: 0)
+    monkeypatch.setattr(push, "resolve_entries_multi",
+                        lambda entries, dirs: handed.append([Path(d) for d in dirs]) or [])
+    conf = {"remote": "origin", "branch": "main", "files": FILES,
+            "source_dirs_work": [str(root)], "settle_seconds": 60}
+    assert push.push_once(conf) == []
+    assert handed == [[root / "fs_vif", root / "fs_manual"]]
+    assert (root / "fs_manual" / "demand_plan_summary.csv").read_bytes() == EXPECTED_CSV
+    assert not (root / "demand_plan_summary.csv").exists()
+    # the conf reader itself stays pure: the root as written
+    assert push.source_dirs_work(conf) == [root]
+
+
+def test_cli_default_folder_expands_the_fs_data_root(tmp_path, monkeypatch, capsys):
+    """Rule of 2026-09-17: a conf whose source_dirs name the drop ROOT reads
+    as its fs_vif + fs_manual, so the CLI finds the workbook in fs_manual."""
+    cli = _cli_module()
+    root = tmp_path / "fs_data"
+    (root / "fs_vif").mkdir(parents=True)
+    _workbook(root / "fs_manual" / "New Export AZAP 091126.xlsx")
+    conf, local = tmp_path / "fs-live-data.conf.json", tmp_path / "fs-live-data.local.json"
+    conf.write_text(json.dumps({"source_dirs": [str(root)], "files": []}), encoding="utf-8")
+    monkeypatch.setattr(cli, "CONF", conf)
+    monkeypatch.setattr(cli, "LOCAL_CONF", local)
+    assert cli.main(["--dry-run"]) == 0
+    assert f"folder: {root / 'fs_manual'}" in capsys.readouterr().out
+    # a root with no workbook anywhere: the subfolders are what was checked
+    (root / "fs_manual" / "New Export AZAP 091126.xlsx").unlink()
+    assert cli.main(["--dry-run"]) == 1
+    err = capsys.readouterr().err
+    assert str(root / "fs_vif") in err and str(root / "fs_manual") in err
+
+
 # ---------------------------------------------------------------------------
 # the importer's ISO week -> year rule (self-anchoring)
 # ---------------------------------------------------------------------------

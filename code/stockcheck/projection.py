@@ -160,7 +160,11 @@ def _counted_receipts(led: _Ledger, groups: list, floor_h, L: float) -> list:
                             "qty": float(r["qty"]),
                             "remaining": max(0.0, rem),
                             "receipt_date": r.get("receipt_date"),
-                            "label": r.get("label", "")})
+                            "label": r.get("label", ""),
+                            # buyers' PO-line comments (2026-09-17), "" when
+                            # the receipt came without them
+                            "comment": str(r.get("comment") or ""),
+                            "comment_external": str(r.get("comment_external") or "")})
     out.sort(key=lambda x: (x["ready_h"], x["po8"], x["item"]))
     return out
 

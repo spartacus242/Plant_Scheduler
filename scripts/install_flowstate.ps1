@@ -3,7 +3,10 @@
 #
 #   git clone --branch main https://github.com/spartacus242/Plant_Scheduler.git "$env:USERPROFILE\Flowstate\Plant_Scheduler"
 #   cd "$env:USERPROFILE\Flowstate\Plant_Scheduler"
-#   # planner's PC on the work network: live data straight from the ERP's drop folder
+#   # planner's PC on the work network: live data straight from the plant drop
+#   # (the synced fs_data folder, which holds fs_vif and fs_manual) - the recommended value
+#   powershell -ExecutionPolicy Bypass -File .\scripts\install_flowstate.ps1 -FeedDir "C:\Users\<planner>\Flowstate\fs_data"
+#   # ... or the subfolders / a flat share spelled out, separated with ';'
 #   powershell -ExecutionPolicy Bypass -File .\scripts\install_flowstate.ps1 -FeedDir "\\server\share\erp_out"
 #   # a PC off the work network (dev laptop): live data through the private GitHub repo
 #   powershell -ExecutionPolicy Bypass -File .\scripts\install_flowstate.ps1 -LiveData
@@ -16,7 +19,12 @@
 #   4. Live data for THIS machine, one of:
 #      -FeedDir   folder mode: scripts\fs-live-pull.py copies the plant files
 #                 from the given folder(s) (several: separate with ';') into
-#                 data\reference. Read-only towards the folder - no lock,
+#                 data\reference. Give it the plant drop ROOT, fs_data: a
+#                 folder holding fs_vif and/or fs_manual stands for those
+#                 subfolders at every pass (2026-09-17; a subfolder created
+#                 later is picked up, the root's own files are ignored). A
+#                 flat folder holding the files themselves works as before.
+#                 Read-only towards the folder - no lock,
 #                 marker, rename or delete - so the ERP and other people keep
 #                 using it untouched. Needs read permission there; no GitHub
 #                 login at all (the code repo is public). A UNC path, or a
@@ -127,9 +135,22 @@ if ($LiveData -or $FeedDir) {
         $Mode = "folder"
         $dirs = @($FeedDir -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
         if ($dirs.Count -eq 0) { throw "-FeedDir is empty." }
+        # the fs_data layout (2026-09-17): a folder holding these subfolders is the
+        # drop root and the sync reads the subfolders (fs-live-pull.py expand_drop_roots);
+        # a flat folder should hold at least one well-known plant file
+        $DropSubfolders = @("fs_vif", "fs_manual")
+        $KnownFiles = @("manprg.txt", "ediact.csv", "order_npa.csv", "cip_info.csv")
         foreach ($d in $dirs) {
             if (Test-Path -LiteralPath $d -PathType Container) {
-                Write-Host "  source folder : $d"
+                $subs = @($DropSubfolders | Where-Object { Test-Path -LiteralPath (Join-Path $d $_) -PathType Container })
+                $known = @($KnownFiles | Where-Object { Test-Path -LiteralPath (Join-Path $d $_) -PathType Leaf })
+                if ($subs.Count -gt 0) {
+                    Write-Host "  source folder : $d  (fs_data root: $($subs -join ', '))"
+                } elseif ($known.Count -gt 0) {
+                    Write-Host "  source folder : $d"
+                } else {
+                    Write-Warning "no fs_vif / fs_manual subfolder and none of $($KnownFiles -join ', ') in $d  (expected the fs_data root or a folder holding the plant files - check the path; the first sync below tells you what it found)"
+                }
             } else {
                 Write-Warning "source folder not reachable right now: $d  (the sync keeps retrying; check the path and read permission)"
             }

@@ -11,6 +11,12 @@ live_sync.json heartbeat the app's health page reads):
                from the folder(s) the ERP drops its exports into — set
                "source_dirs" in the git-ignored fs-live-data.local.json
                (install_flowstate.ps1 -FeedDir writes it) or pass --source-dir.
+               The recommended value is the plant drop ROOT, fs_data
+               (2026-09-17): a listed folder holding fs_vif and/or fs_manual
+               stands for those subfolders (expand_drop_roots); an explicit
+               subfolder list and a flat folder work as before. A reachable
+               folder holding none of the listed files is a problem, not a
+               quiet "nothing new".
                The folders are only ever READ: no lock, marker, rename or
                delete, so other people and the ERP keep using them untouched.
                ONE exception (2026-09-15): the folder that holds the planners'
@@ -29,6 +35,7 @@ Usage:
     python fs-live-pull.py --once                 # one pass, conf decides the mode
     python fs-live-pull.py --watch 900            # loop every 15 min
     python fs-live-pull.py --once --source-dir "\\\\server\\share\\erp_out"   # folder mode, ad hoc
+    python fs-live-pull.py --once --source-dir "C:\\Users\\<planner>\\Flowstate\\fs_data"   # the drop root
 """
 import argparse
 import hashlib
@@ -127,6 +134,47 @@ def resolve_entries(entries, src_dir):
     return [(picked[d], d) for d in order]
 
 
+# ── the fs_data drop root (2026-09-17) ───────────────────────────────────────
+# The plant drop is ONE synced folder, fs_data, holding fs_vif (the ERP's own
+# exports) and fs_manual (the files people maintain). A conf that named the
+# root — install_flowstate.ps1 -FeedDir "<path>\fs_data", the intended single
+# value — synced NOTHING and still reported ok / nothing new: the file list
+# resolves direct children only. expand_drop_roots turns every listed folder
+# that holds those subfolders into the subfolders themselves; the pure conf
+# readers (source_dirs / source_dirs_work) stay free of filesystem I/O and the
+# expansion runs once, at the call site. Duplicated VERBATIM like
+# resolve_entries (a test pins the copies).
+DROP_SUBFOLDERS = ("fs_vif", "fs_manual")
+
+
+def expand_drop_roots(dirs) -> list[Path]:
+    """Replace every folder in `dirs` that holds an fs_vif and/or fs_manual
+    subfolder by those subfolders (fs_vif first, then fs_manual), keep every
+    other folder as it is, and drop duplicates keeping the first occurrence:
+    an explicit list of the two subfolders comes back unchanged, and a root
+    listed next to its own fs_vif does not list fs_vif twice. A root that
+    expands is NOT kept itself (a workbook left in the root must not get the
+    demand_plan_summary.csv rebuild). A subfolder probe that fails (OSError)
+    counts as absent, so an unreachable folder comes back unchanged and the
+    caller reports it.
+    """
+    out: list[Path] = []
+    for d in dirs:
+        d = Path(d)
+        subs: list[Path] = []
+        for name in DROP_SUBFOLDERS:
+            sub = d / name
+            try:
+                if sub.is_dir():
+                    subs.append(sub)
+            except OSError:
+                continue
+        for p in (subs or [d]):
+            if p not in out:
+                out.append(p)
+    return out
+
+
 def _entry_dest(entry) -> str | None:
     """Destination name a conf entry copies under (None for a bad entry)."""
     if not isinstance(entry, str):
@@ -163,6 +211,34 @@ def resolve_entries_multi(entries, src_dirs) -> list[tuple[Path, str]]:
         if dest in picked and dest not in order:
             order.append(dest)
     return [(picked[d], d) for d in order]
+
+
+# The silent-green failure (2026-09-17): a conf pointing at a folder that
+# holds none of the plant files synced nothing and the pass still said ok /
+# nothing new, so Home's row stayed green. Such a folder is a problem now.
+NO_PLANT_FILES_MSG = ("no plant files found in {folder} — expected the fs_data layout "
+                      "(fs_vif, fs_manual) or the files on the conf list")
+
+
+def empty_source_folders(entries, src_dirs, holding_workbook=()) -> list[Path]:
+    """Folders in `src_dirs` that ARE reachable yet hold NONE of the files on
+    the conf list, in conf order. A folder in `holding_workbook` (the ones
+    refresh_demand_summaries found an AZAP workbook in) counts as holding
+    plant files even while its demand_plan_summary.csv is not there yet: a
+    settling or refused build is reported on its own. An unreachable folder
+    is not listed (the caller already reports it), and neither is one whose
+    probe fails mid-way (OSError): no proof, no problem."""
+    held = [Path(h) for h in holding_workbook]
+    out: list[Path] = []
+    for d in src_dirs:
+        d = Path(d)
+        try:
+            if not d.is_dir() or d in held or resolve_entries(entries, d):
+                continue
+        except OSError:
+            continue
+        out.append(d)
+    return out
 
 
 def git(repo: Path, *args: str) -> subprocess.CompletedProcess:
@@ -387,7 +463,7 @@ def derive_demand_plan(ref_dir: Path) -> None:
 
 
 def refresh_demand_summaries(src_dirs, res: SyncResult, *,
-                             settle_seconds: float = 0.0) -> None:
+                             settle_seconds: float = 0.0) -> list[Path]:
     """Folder mode (2026-09-15): the planners drop the weekly AZAP workbook
     ("New Export AZAP MMDDYY.xlsx", ~14 MB) into fs_manual instead of cutting
     demand_plan_summary.csv from it by hand. For every source folder that
@@ -398,6 +474,8 @@ def refresh_demand_summaries(src_dirs, res: SyncResult, *,
     into a source folder. A workbook modified less than settle_seconds ago
     may still be being copied in: it waits a pass, like any source file.
     Never raises: a failure is a problem entry, the rest of the pass runs.
+    Returns the folders a workbook was found in (2026-09-17: they count as
+    holding plant files for empty_source_folders, whatever the build did).
 
     2026-09-16: a build the helper refuses to write (0 rows, or under half
     the rows of the csv it would replace) raises ValueError, so it lands in
@@ -415,17 +493,19 @@ def refresh_demand_summaries(src_dirs, res: SyncResult, *,
     code_dir = Path(__file__).resolve().parent.parent / "code"
     if str(code_dir) not in sys.path:
         sys.path.insert(0, str(code_dir))
+    holders: list[Path] = []
     try:
         from helpers.azap_demand import (export_date_warning, find_azap_workbook,
                                          passed_over_workbooks, refresh_demand_summary,
                                          workbook_date_warning)
     except Exception as exc:  # noqa: BLE001 — a missing helper/openpyxl must not end the pass
         res.problems.append(f"demand_plan_summary.csv from AZAP workbook: helper unavailable ({exc})")
-        return
+        return holders
     for d in src_dirs:
         wb = find_azap_workbook(d)
         if wb is None:
             continue
+        holders.append(Path(d))
         for item in passed_over_workbooks(d, wb, settle_seconds=settle_seconds):
             if item["problem"]:
                 print(f"[warn] {item['message']}", file=sys.stderr)
@@ -457,6 +537,7 @@ def refresh_demand_summaries(src_dirs, res: SyncResult, *,
             if warning:
                 res.updated.append(f"demand_plan_summary.csv (unchanged, from {wb.name}; "
                                    f"WARNING: {warning})")
+    return holders
 
 
 def write_sync_state(ref_dir: Path, result: SyncResult | None, *,
@@ -494,7 +575,10 @@ def pull_once(conf: dict) -> SyncResult:
     writes the live_sync.json heartbeat."""
     ref_dir = Path(conf["data_reference_dir"])
     ref_dir.mkdir(parents=True, exist_ok=True)
-    dirs = source_dirs(conf)
+    # a conf naming the fs_data root stands for its fs_vif + fs_manual (2026-09-17):
+    # the heartbeat, the reachability check, the AZAP rebuild, the copy and the
+    # manprg as-of all see the subfolders
+    dirs = expand_drop_roots(source_dirs(conf))
     if dirs:
         res = SyncResult(mode="folder", sources=[str(d) for d in dirs])
         for d in dirs:
@@ -511,9 +595,13 @@ def pull_once(conf: dict) -> SyncResult:
             settle = float(SETTLE_SECONDS_DEFAULT)
         # the AZAP workbook -> demand_plan_summary.csv in its own folder,
         # before the copy so this pass picks the rebuilt csv up
-        refresh_demand_summaries(dirs, res, settle_seconds=settle)
+        holders = refresh_demand_summaries(dirs, res, settle_seconds=settle)
         pairs = resolve_entries_multi(conf["files"], dirs)
         upd, skp, prb = copy_into_reference(pairs, ref_dir, settle_seconds=settle)
+        # a reachable folder with none of the plant files is a problem, not a
+        # quiet "nothing new" (the pass exits 1, Home's sync row goes STALE)
+        for d in empty_source_folders(conf["files"], dirs, holders):
+            res.problems.append(NO_PLANT_FILES_MSG.format(folder=d))
         as_of, stamp_head = manprg_source_asof(dirs), None
     else:
         clone = ensure_clone(conf)

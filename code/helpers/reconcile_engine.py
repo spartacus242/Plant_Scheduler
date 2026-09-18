@@ -240,6 +240,11 @@ def _supply_block_finding(b: dict, sup: dict, verdict: str, sev: int, frame,
     start_h = _hour(b.get("start_h"))
     binding = sup.get("binding")
     po = str(binding.get("po8") or "") if isinstance(binding, dict) else ""
+    # (2026-09-17) the buyers' internal PO-line comment, when the ERP export
+    # carried one: shown in the detail, never in the title (verdict_text is
+    # pinned byte-for-byte by the parity tests)
+    note = (str(binding.get("comment") or "")
+            if isinstance(binding, dict) else "")
     chase = sup.get("action") == "chase_po"
     who = f"PO {po}" if po else "the inbound"
     if verdict == _SUPPLY_SHORT:
@@ -258,7 +263,8 @@ def _supply_block_finding(b: dict, sup: dict, verdict: str, sev: int, frame,
         title=_supply_title(sup, verdict, frame),
         detail=(f"{sku} on {line}, starts {hour_to_stamp(start_h, frame)}"
                 f"{_kg_txt(b.get('qty_kg'))} — "
-                f"{'locked/running' if chase else 'movable'}"),
+                f"{'locked/running' if chase else 'movable'}"
+                + (f' · note: "{note}"' if note else "")),
         action=action,
         page="pages/calendar.py",
         # "line" is the contract key (§6); "line_name" mirrors stock_findings

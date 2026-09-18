@@ -11,8 +11,10 @@ Folder (2026-09-16): --folder, else the first of the live-data sync's source
 folders ("source_dirs", or the single "source_dir", from
 scripts/fs-live-data.conf.json merged with the machine's
 fs-live-data.local.json that the installer writes) that holds an AZAP
-workbook. No folder is hard-coded: a machine without a folder-mode conf
-(the dev laptop, the work PC) passes --folder.
+workbook; a configured fs_data root stands for its fs_vif + fs_manual
+(2026-09-17), exactly as the sync reads it. No folder is hard-coded: a
+machine without a folder-mode conf (the dev laptop, the work PC) passes
+--folder.
 
 Write guards (helpers/azap_demand.write_refusal): a build with 0 rows is never
 written, and one with fewer than half the rows of the csv it would replace
@@ -88,11 +90,53 @@ def configured_source_dirs(conf: dict) -> list[Path]:
     return [Path(p.strip()) for p in raw if isinstance(p, str) and p.strip()]
 
 
+# ── the fs_data drop root (2026-09-17) ───────────────────────────────────────
+# The plant drop is ONE synced folder, fs_data, holding fs_vif (the ERP's own
+# exports) and fs_manual (the files people maintain). A conf that named the
+# root — install_flowstate.ps1 -FeedDir "<path>\fs_data", the intended single
+# value — synced NOTHING and still reported ok / nothing new: the file list
+# resolves direct children only. expand_drop_roots turns every listed folder
+# that holds those subfolders into the subfolders themselves; the pure conf
+# readers (source_dirs / source_dirs_work) stay free of filesystem I/O and the
+# expansion runs once, at the call site. Duplicated VERBATIM like
+# resolve_entries (a test pins the copies).
+DROP_SUBFOLDERS = ("fs_vif", "fs_manual")
+
+
+def expand_drop_roots(dirs) -> list[Path]:
+    """Replace every folder in `dirs` that holds an fs_vif and/or fs_manual
+    subfolder by those subfolders (fs_vif first, then fs_manual), keep every
+    other folder as it is, and drop duplicates keeping the first occurrence:
+    an explicit list of the two subfolders comes back unchanged, and a root
+    listed next to its own fs_vif does not list fs_vif twice. A root that
+    expands is NOT kept itself (a workbook left in the root must not get the
+    demand_plan_summary.csv rebuild). A subfolder probe that fails (OSError)
+    counts as absent, so an unreachable folder comes back unchanged and the
+    caller reports it.
+    """
+    out: list[Path] = []
+    for d in dirs:
+        d = Path(d)
+        subs: list[Path] = []
+        for name in DROP_SUBFOLDERS:
+            sub = d / name
+            try:
+                if sub.is_dir():
+                    subs.append(sub)
+            except OSError:
+                continue
+        for p in (subs or [d]):
+            if p not in out:
+                out.append(p)
+    return out
+
+
 def default_folder(find_workbook) -> tuple[Path | None, str]:
     """(first configured source folder holding an AZAP workbook, detail for
-    the error message when there is none)."""
+    the error message when there is none). A configured fs_data root stands
+    for its fs_vif + fs_manual (2026-09-17), as in the sync."""
     conf, problems = load_conf()
-    dirs = configured_source_dirs(conf)
+    dirs = expand_drop_roots(configured_source_dirs(conf))
     for d in dirs:
         if find_workbook(d) is not None:
             return d, ""

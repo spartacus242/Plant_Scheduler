@@ -823,7 +823,13 @@ def build_stock_payload(report, cfg, page_anchor, *, cases_left=None
                             "po8": str(r.get("po8") or ""),
                             "tier": str(r.get("tier") or "erp"),
                             "receipt_date": str(r.get("receipt_date") or ""),
-                            "label": str(r.get("label") or "")})
+                            "label": str(r.get("label") or ""),
+                            # (2026-09-17) the buyers' PO-line comments: this
+                            # whitelist is the only road to the Gantt, so
+                            # without these two lines the popover, the supply
+                            # panel and the axis trucks never see a note
+                            "comment": str(r.get("comment") or ""),
+                            "comment_external": str(r.get("comment_external") or "")})
         shifted.sort(key=lambda r: (r["ready_h"], r["po8"]))
         receipts[str(item)] = shifted
 

@@ -141,7 +141,10 @@ export interface StockArgs {
   designations: Record<string, string>;
   snapshot_h: Record<string, number>;
   receipts: Record<string, { ready_h: number; qty: number; po8: string; tier: "erp" | "appt";
-                              receipt_date: string; label: string }[]>;
+                              receipt_date: string; label: string;
+                              /** The ERP's per-line buyer / supplier notes (2026-09-17),
+                               *  cut at 50 characters by the ERP; "" or absent when none. */
+                              comment?: string; comment_external?: string }[]>;
   sku_needs: Record<string, { kg_per_case: number;
                               items: { item: string; per_case: number; unit: string; alts: string[] }[] }>;
   cases_left: Record<string, number>;      // order_id -> cases_left for running MOs (from manprg), may be {}
