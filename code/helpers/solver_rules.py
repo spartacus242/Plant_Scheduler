@@ -537,7 +537,8 @@ _RULES: list[dict[str, Any]] = [
         id="availability_gate", group=GROUP_FIXED, ui="don't expose",
         name="Line availability gate",
         value="hard at every relax level",
-        where="model_builder.py availability floor; initial_states.csv",
+        where="model_builder.py availability floor; staged initial_states.csv "
+              "(available_from_hour from manprg, synthesized at staging)",
         planner="Nothing may be scheduled on a line before its "
                 "available_from hour (the end of the MO it is running "
                 "now). This is plant fact, not preference.",
@@ -608,18 +609,18 @@ _RULES: list[dict[str, Any]] = [
     ),
     dict(
         id="initial_sku_co", group=GROUP_FIXED, ui="don't expose",
-        name="First-run changeover + long-shutdown extra",
-        value="from initial SKU; +4h default after long shutdown",
-        where="model_builder.py first_flags; initial_states.csv "
-              "long_shutdown_extra_setup_hours",
+        name="First-run changeover from the held SKU",
+        value="from initial SKU (staged from manprg / the committed tail)",
+        where="model_builder.py first_flags; staged initial_states.csv",
         planner="The first order on a line pays the changeover from the "
                 "SKU the line is holding now (unless CLEAN) — its setup "
                 "TIME and, since 2026-09-03, its weighted COST too (same "
                 "formula and CIP waivers as any other switch; before, the "
                 "opening format change was free and the solver spent it on "
-                "the most expensive switch of the line). Plus extra setup "
-                "hours if the line is coming back from a flagged long "
-                "shutdown.",
+                "the most expensive switch of the line). The legacy "
+                "long-shutdown extra (flag / extra hours) is staged as 0 for "
+                "every line since 2026-09-18 — no plant feed sets it; the "
+                "model hook stays for a future plant-fed restart rule.",
     ),
     dict(
         id="min_co_multipliers", group=GROUP_FIXED, ui="don't expose",
@@ -902,11 +903,13 @@ _RULES: list[dict[str, Any]] = [
     dict(
         id="inert_params", group=GROUP_FIXED, ui="don't expose",
         name="Inert parameters (honesty note)",
-        value="changeover_penalty, stale_threshold_days, stale_setup_extra_h",
-        where="data_loader.py Params",
-        planner="These exist in the config dataclass but are never read by "
-                "the model — changing them does nothing. Kept only so old "
-                "configs load.",
+        value="changeover_penalty, stale_threshold_days, stale_setup_extra_h; "
+              "long_shutdown_flag / long_shutdown_extra_setup_hours / "
+              "long_shutdown_default_h (staged 0 for every line since 2026-09-18)",
+        where="data_loader.py Params; staged initial_states.csv",
+        planner="These exist in the config dataclass / start-state file but "
+                "never move a live solve — changing them does nothing. Kept "
+                "only so old configs and files load.",
     ),
     dict(
         id="scorecard_co_fallbacks", group=GROUP_FIXED, ui="don't expose",

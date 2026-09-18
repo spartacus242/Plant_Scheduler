@@ -120,10 +120,10 @@ class DataFile:
     # folder == "drop": the file is found by this glob in the drop folders
     # (newest by export date — helpers.azap_demand.find_azap_workbook).
     glob: Optional[str] = None
-    # False: a mechanical file the app keeps and the Command Center still
-    # monitors, but the Data Files page does not show planners
-    # (initial_states.csv, 2026-09-18: the solver's base start-state file,
-    # rewritten per solve from manprg / cip_info, not a planner input).
+    # False: a file planners never act on, kept off the Data Files page
+    # (initial_states.csv, 2026-09-18: a legacy start-state file for direct
+    # CLI solves; Flowstate's staging synthesizes its own work copy from
+    # lines.csv + manprg / cip_info and never reads this one).
     planner_visible: bool = True
 
     # ── paths ────────────────────────────────────────────────────────────
@@ -241,19 +241,22 @@ CATALOG: tuple = (
     ),
     DataFile(
         key="initial_states",
-        name="Solver start-state base file (initial_states)",
+        name="Legacy solver start-state file (initial_states)",
         subdir="reference",
         filename="initial_states.csv",
-        blurb="The solver's base start-state file: one row per line. At every "
-        "solve the staging copies it and rewrites the live fields from "
-        "manprg / cip_info (running MO, availability, CIP carryover), so its "
-        "content is mechanical, not a planner input; no feed delivers it. It "
-        "must exist for the solver to run (14 line rows). Kept off the Data "
-        "Files page since 2026-09-18; the Command Center still flags it when "
-        "missing.",
+        blurb="A legacy hand file for running the CP-SAT solver directly on a "
+        "raw data folder. Flowstate's own staging has NOT read it since "
+        "2026-09-18: the work copy is synthesized from lines.csv and the live "
+        "fields come from manprg / cip_info (running MO, availability, CIP "
+        "carryover), so nothing in this file reaches a solve. May be absent. "
+        "Kept off the Data Files page.",
         key_columns=("line_id", "initial_sku", "available_from_hour"),
         managed_by="app",
-        group="plant", source="Flowstate solver base file (rewritten per solve; not delivered by any feed)",
+        group="plant", source="Legacy file — not read by Flowstate's staging since 2026-09-18",
+        optional=True,
+        # not graded on the Command Center either: nothing reads it, so a
+        # broken copy must never turn the board red with "Restore …"
+        generic_health=False,
         planner_visible=False,
     ),
     DataFile(

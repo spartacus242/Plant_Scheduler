@@ -165,8 +165,9 @@ def test_file_statuses_one_row_per_entry_on_an_empty_dir(tmp_path):
     rows = dh.file_statuses(tmp_path, _cfg(), drop_folders=[])
     assert [r.key for r in rows] == [s.key for s in dc.CATALOG]
     by = _by_key(rows)
-    # the hidden solver base file is still graded (the Command Center shows it)
-    assert by["initial_states"].state == dh.MISSING
+    # the hidden legacy start-state file is optional since 2026-09-18 (the
+    # staging synthesizes its own): absent -> not applicable, never MISSING
+    assert by["initial_states"].state == dh.NOT_APPLICABLE and by["initial_states"].severity == 0
     # the AZAP workbook: no drop folder here -> not applicable, never MISSING
     assert by["azap_workbook"].state == dh.NOT_APPLICABLE and by["azap_workbook"].severity == 0
     assert "GitHub mode" in by["azap_workbook"].detail
@@ -390,12 +391,14 @@ def test_file_statuses_azap_workbook_and_the_demand_chain(tmp_path):
 
 
 def test_initial_states_is_not_delivered_by_the_bridge_any_more():
-    """It is the solver's own base file (rewritten per solve); the conf no
-    longer pretends the sync delivers it, and the catalog row stays so the
-    Command Center flags it when missing."""
+    """A legacy file for direct CLI solves: the conf does not pretend the sync
+    delivers it, the catalog row is hidden and OPTIONAL (2026-09-18: the
+    staging synthesizes the work copy from lines.csv and never reads it)."""
     conf = json.loads((ROOT / "scripts" / "fs-live-data.conf.json").read_text(encoding="utf-8"))
     assert "initial_states.csv" not in conf["files"]
     assert all("initial_states.csv" not in names for names in conf["drop_layout"].values())
     spec = dc.by_key("initial_states")
-    assert spec is not None and spec.generic_health and not spec.planner_visible
-    assert spec.managed_by == "app"
+    assert spec is not None and not spec.planner_visible
+    assert not spec.generic_health          # the Command Center does not grade a file nothing reads
+    assert spec.managed_by == "app" and spec.optional
+    assert "not read" in spec.source.lower() or "legacy" in spec.source.lower()

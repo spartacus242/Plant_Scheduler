@@ -259,8 +259,11 @@ def test_gates_are_the_committed_tails(staged):
     """P09 tail 37 (queued MO end); P10 12 (trial end -- the line-down is not
     committed work, gates read committed blocks only); P12 23 (queued MO
     [3,23]). initial_sku = last committed SKU (P09 111, P12 222); P10 has no
-    committed PRODUCTION -> CLEAN with the fixture's long-shutdown fields
-    zeroed (staging-4). Carry-over 0 everywhere (layer-1 CIPs rule)."""
+    committed PRODUCTION -> CLEAN (staging-4). The reference fixture flags
+    EVERY line long-shutdown 1 / extra 2 / carry 50 and none of it reaches
+    the work copy (2026-09-18: the file is synthesized from lines.csv, the
+    long-shutdown fields are 0 for every line, carry-over 0 everywhere
+    because the layer-1 projected CIPs rule)."""
     work = staged["work"]
     init = pd.read_csv(work / "initial_states.csv", dtype={"initial_sku": str}).set_index("line_name")
     assert int(init.loc["P09", "available_from_hour"]) == 37
@@ -269,9 +272,11 @@ def test_gates_are_the_committed_tails(staged):
     assert init.loc["P09", "initial_sku"] == "111"
     assert init.loc["P12", "initial_sku"] == "222"
     assert init.loc["P10", "initial_sku"] == "CLEAN"
-    assert int(init.loc["P10", "long_shutdown_flag"]) == 0
-    assert int(init.loc["P10", "long_shutdown_extra_setup_hours"]) == 0
+    assert (init["long_shutdown_flag"] == 0).all()
+    assert (init["long_shutdown_extra_setup_hours"] == 0).all()
     assert (init["carryover_run_hours_since_last_cip_at_t0"] == 0).all()
+    assert not (init["initial_sku"] == "999").any()          # the fixture's SKU
+    assert set(init.index) == {"P09", "P10", "P12"}          # the lines.csv set
     gates = json.loads((work / "fill_gates.json").read_text(encoding="utf-8"))["gates"]
     assert gates == {"P09": 37.0, "P10": 12.0, "P12": 23.0}
 
@@ -280,6 +285,27 @@ def test_solver_cip_generation_stands_down_in_f(staged):
     ch = pd.read_csv(staged["work"] / "line_cip_hrs.csv")
     assert (ch["max_cip_hrs"] == 100000).all()
     assert "stood down" in staged["log"]
+
+
+def test_f_stages_the_boards_grid_for_a_line_without_cip_history(tmp_path, frozen_clock):
+    """The user's Scenario F symptom (2026-09-18): P10 has no cip_info
+    PreviousCIP. The board phases its 144 h grid from the first committed
+    start (the trial Tue 08:00 = h8): cleans at h152, h296, h440. The
+    reference fixture says carry 50 for P10 — had F still handed it to
+    project_cips (the old `initial_states=` argument) the grid would have
+    been phased from h-50 (first clean h94). The planner cip block is removed
+    first because C41 drops the projected grid on a line that carries one."""
+    dd = make_sandbox(tmp_path)
+    board = pd.read_csv(dd / "calendar_blocks.csv")
+    board[board["block_id"] != "cip_planner"].to_csv(dd / "calendar_blocks.csv", index=False)
+    work = dd / "_scenario_work" / "F"
+    sr._prepare_work_dir(dd, work)
+    sr._overlay_fill(work, dd)
+    cips = [(s, e) for s, e, r in _spans(pd.read_csv(work / "downtimes.csv"), "P10")
+            if r == "Committed CIP"]
+    assert cips == [(152, 158), (296, 302), (440, 446)]
+    init = pd.read_csv(work / "initial_states.csv").set_index("line_name")
+    assert int(init.loc["P10", "carryover_run_hours_since_last_cip_at_t0"]) == 0   # fixed windows rule
 
 
 def test_c41_solver_drawn_clean_does_not_delete_the_projected_grid(staged):

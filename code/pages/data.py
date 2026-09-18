@@ -119,8 +119,8 @@ with _c2:
 
 # ── Every input file: state, age, expected refresh — worst first ────────────
 _SPEC = {s.key: s for s in CATALOG}
-# planner-facing rows only: a mechanical file the solver keeps for itself
-# (initial_states.csv) stays monitored on the Command Center, not shown here
+# planner-facing rows only: the legacy start-state file (initial_states.csv)
+# is not shown — the staging synthesizes its own work copy and never reads it
 _VISIBLE = [s for s in CATALOG if s.planner_visible]
 _files = [f for f in dh.file_statuses(dd, cfg) if _SPEC[f.key].planner_visible]
 _fs_by_key = {f.key: f for f in _files}

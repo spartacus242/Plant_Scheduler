@@ -461,8 +461,10 @@ def _prepare_work_dir(data_dir: Path, work: Path) -> None:
     """Copy the solver's data inputs into a work directory.
 
     De-legacy (2026-08-10): the solver reads ONLY from its work dir, and the
-    work dir is sourced exclusively from data/reference/ — no more copies out
-    of Flowstate-legacy/data. All solver inputs are already in reference/.
+    work dir is sourced from data/reference/ — no more copies out of
+    Flowstate-legacy/data. One exception since 2026-09-18: initial_states.csv
+    is not copied but SYNTHESIZED from data/lines.csv (all fields reset; see
+    _synthesize_initial_states), and the overlays fill its live fields.
     """
     if work.exists():
         # Warm start (item 10): the previous run's schedule is the best
@@ -516,7 +518,9 @@ def _prepare_work_dir(data_dir: Path, work: Path) -> None:
         "line_cip_hrs.csv": "line_cip_hrs.csv",
         "line_rates.csv": "line_rates.csv",
         "sku_info.csv": "sku_info.csv",
-        "initial_states.csv": "initial_states.csv",
+        # initial_states.csv is NOT copied (2026-09-18): the work copy is
+        # synthesized below from lines.csv and the overlays fill the live
+        # fields, so no value of the reference fixture reaches a solve
     }
     missing: list[str] = []
     for src_name, dst_name in mapping.items():
@@ -548,6 +552,10 @@ def _prepare_work_dir(data_dir: Path, work: Path) -> None:
     if root_toml.exists():
         shutil.copy2(root_toml, work / "flowstate.toml")
 
+    # the solver's start-state file, one clean row per line (the overlays
+    # write the live fields into it next)
+    _synthesize_initial_states(work, data_dir)
+
     if missing:
         # The solver's data_loader raises on missing files; the caller turns
         # that into a visible "solver failed" — but be loud about it here too.
@@ -571,6 +579,134 @@ def _work_cfg_path(data_dir: Path) -> Path | None:
     passed), or None to let load_toml fall back to its default."""
     p = Path(data_dir).resolve().parent / "flowstate.toml"
     return p if p.exists() else None
+
+
+# The solver's start-state file (2026-09-18). data/reference/initial_states.csv
+# was a hand fixture from 2026-08-07 copied byte-for-byte into every work dir;
+# the overlays rewrote only SOME fields under SOME conditions, so its stale
+# values leaked into live solves: P10 (running MO) kept long_shutdown_flag=1
+# / extra 2 h and paid a phantom 2 h setup on every first block; P11/P13/P15
+# (no cip_info PreviousCIP) kept 6-week-old CIP carryovers in Scenarios E and
+# A-D; Scenario F handed the fixture's carryover to the CIP projection and
+# staged P13/P15's first clean at 117/120 h while the board drew 48 h. Now the
+# work copy is SYNTHESIZED: one row per lines.csv line with every mechanical
+# field reset, and the overlays fill the live fields from manprg / cip_info.
+INIT_STATE_COLUMNS = (
+    "line_id", "line_name", "initial_sku", "available_from_hour",
+    "long_shutdown_flag", "long_shutdown_extra_setup_hours",
+    "carryover_run_hours_since_last_cip_at_t0", "last_cip_end_datetime", "comment",
+)
+
+
+def _synthesize_initial_states(work: Path, dd: Path) -> list[str]:
+    """Write <work>/initial_states.csv from the line set, every field reset:
+    initial_sku CLEAN, available_from_hour 0, long_shutdown_flag / extra 0,
+    carryover 0, last_cip_end_datetime blank. Row source, in order: the data
+    dir's lines.csv; else an existing reference initial_states.csv (row set
+    only — its fields are reset); else the distinct lines of the staged
+    capabilities_rates.csv. A source is used only when it yields at least
+    one well-formed row (numeric line_id + a line_name); malformed rows are
+    skipped and reported, never truncating the file (a bad third row must
+    not lose lines four to fourteen). Inactive lines keep a row (the solver
+    wants one per capabilities line); a duplicate line_id keeps the first.
+    Returns human-readable notes; writes nothing (and says so) when no
+    source names a line — data_loader then raises as it always did. The
+    long-shutdown fields are 0 for EVERY line: no plant feed sets them (a
+    restart allowance, if ever wanted, belongs on the downtime window, not
+    on a per-line flag). Idempotent: the overlays call it on every staging
+    so no earlier work copy — any older path, any hand edit — survives."""
+    import pandas as _pd
+
+    work, dd = Path(work), Path(dd)
+    notes: list[str] = []
+
+    def _rows_from(df) -> tuple[list[tuple[int, str]], list[str]]:
+        cand: list[tuple[int, str]] = []
+        bad: list[str] = []
+        if df is None or not len(df) or not {"line_id", "line_name"} <= set(df.columns):
+            return cand, bad
+        for i, r in df.iterrows():
+            lid = _pd.to_numeric(r["line_id"], errors="coerce")
+            raw_name = r["line_name"]
+            name = "" if _pd.isna(raw_name) else str(raw_name).strip().upper()
+            if _pd.isna(lid) or not name or name in ("NAN", "NONE"):
+                bad.append(f"row {int(i) + 2}: line_id={r['line_id']!r} line_name={raw_name!r}")
+                continue
+            cand.append((int(lid), name))
+        return cand, bad
+
+    rows: list[tuple[int, str]] = []
+    source = ""
+    for label, path, kind in (
+            ("lines.csv", dd / "lines.csv", "lines"),
+            ("the reference initial_states.csv row set (fields reset)",
+             dd / "reference" / "initial_states.csv", "csv"),
+            ("the staged capabilities_rates.csv line set",
+             work / "capabilities_rates.csv", "caps")):
+        if not path.is_file():
+            continue
+        try:
+            if kind == "lines":
+                from helpers.calendar_io import load_lines as _ll
+                df = _ll(path)
+            elif kind == "caps":
+                df = _pd.read_csv(path, usecols=["line_id", "line_name"]).drop_duplicates()
+            else:
+                df = _pd.read_csv(path)
+        except Exception as exc:  # noqa: BLE001 — fall through to the next source
+            notes.append(f"{path.name} unreadable for the start-state rows: {exc}")
+            continue
+        cand, bad = _rows_from(df)
+        if bad:
+            notes.append(f"{path.name}: {len(bad)} malformed row(s) skipped for the "
+                         "start-state (need a numeric line_id and a line_name): "
+                         + "; ".join(bad[:5]))
+        if cand:
+            rows, source = cand, label
+            break
+    if not rows or not source:
+        notes.append("initial_states.csv NOT synthesized: no lines.csv, reference file "
+                     "or capabilities to name the lines")
+        return notes
+    seen: set[int] = set()
+    kept: list[tuple[int, str]] = []
+    dups: list[str] = []
+    for lid, name in rows:                      # source order: the first row wins
+        if lid in seen:
+            dups.append(f"{name} (line_id {lid})")
+            continue
+        seen.add(lid)
+        kept.append((lid, name))
+    if dups:
+        notes.append(f"{len(dups)} duplicate line_id row(s) dropped from the start-state "
+                     f"(first wins): {', '.join(dups)}")
+    # a capabilities line the row source does not know would fall to model
+    # defaults silently — say so
+    try:
+        caps_p = work / "capabilities_rates.csv"
+        if caps_p.is_file():
+            cdf = _pd.read_csv(caps_p, usecols=["line_id", "line_name"]).drop_duplicates()
+            known = {n for _, n in kept}
+            extra = sorted({str(n).strip().upper() for n in cdf["line_name"]
+                            if not _pd.isna(n) and str(n).strip().upper() not in known})
+            if extra:
+                notes.append("capabilities line(s) not in the start-state row set (model "
+                             f"defaults apply): {', '.join(extra)}")
+    except Exception:  # noqa: BLE001
+        pass
+    out = [{
+        "line_id": lid, "line_name": name, "initial_sku": "CLEAN",
+        "available_from_hour": 0, "long_shutdown_flag": 0,
+        "long_shutdown_extra_setup_hours": 0,
+        "carryover_run_hours_since_last_cip_at_t0": 0,
+        "last_cip_end_datetime": "",
+        "comment": f"synthesized from {source} at staging; live fields from manprg / cip_info",
+    } for lid, name in sorted(kept)]
+    _pd.DataFrame(out, columns=list(INIT_STATE_COLUMNS)).to_csv(
+        work / "initial_states.csv", index=False)
+    notes.append(f"initial_states.csv synthesized from {source} ({len(out)} lines); "
+                 "the reference fixture is not read")
+    return notes
 
 
 def _known_lines(dd: Path) -> set[str]:
@@ -777,7 +913,12 @@ def _overlay_current_state(
       * `initial_sku`         <- the SKU actually running (so the changeover
         matrix charges the real changeover, not a CLEAN start);
       * `carryover_run_hours_since_last_cip_at_t0` <- hours since the line's
-        last CIP, so the first CIP is due at the right time.
+        last CIP (cip_info PreviousCIP; negative when it was cleaned after
+        hour 0), else set from the board's first performable projected clean
+        so the solver's first CIP falls where the Plant Calendar draws it;
+      * the long-shutdown fields and last_cip_end_datetime are reset for
+        EVERY line — the work copy is re-synthesized from lines.csv on every
+        staging (2026-09-18), so no value of an older file survives.
 
     `lock_current_mo` (default: from config `scheduler.use_current_mo`) decides
     whether the running+queued manprg MOs are ALSO emitted as locked solver
@@ -788,9 +929,11 @@ def _overlay_current_state(
     the demand plan double-counts the tonnage and makes the solve INFEASIBLE.
 
     Returns a list of human-readable notes. Best-effort: if the live feeds are
-    missing the initial_states file is left alone, but the reason is REPORTED
-    rather than silently swallowed (a bare `except ImportError` here previously
-    made the whole overlay a no-op because of a wrong import path).
+    missing the (synthesized, all-reset) initial_states file is left alone,
+    but the reason is REPORTED rather than silently swallowed (a bare
+    `except ImportError` here previously made the whole overlay a no-op
+    because of a wrong import path). Since 2026-09-18 the work copy is never
+    the reference fixture: see _synthesize_initial_states.
     """
     notes: list[str] = []
     import pandas as _pd
@@ -816,6 +959,11 @@ def _overlay_current_state(
     cip_path = str(ds.get("cip_info_csv", "")).strip() or str(
         dd / "reference" / "cip_info.csv")
     notes.extend(_stage_time_frame(work, dd, hz))
+    # the start-state file is always ours (2026-09-18): re-synthesized on
+    # every staging (idempotent, all fields reset) so no work copy from an
+    # older path or a hand edit survives, and its notes reach the log
+    init_path = Path(work) / "initial_states.csv"
+    notes.extend(_synthesize_initial_states(work, dd))
     try:
         # One clock for the whole staging (fix CA-1 / C03, INTEGRATE): the
         # horizon's `now`; `as_of` defaults to the manprg content stamp.
@@ -840,12 +988,12 @@ def _overlay_current_state(
             cs.queued = [r for r in cs.queued
                          if str(r.get("line", "")).strip().upper() in _known]
 
-    init_path = Path(work) / "initial_states.csv"
     if not init_path.exists():
-        return ["current-state overlay skipped: no initial_states.csv in work dir"]
+        return notes + ["current-state overlay skipped: no initial_states.csv in work "
+                        "dir and no line source to synthesize one"]
     init = _pd.read_csv(init_path, dtype={"initial_sku": str})
     if init.empty:
-        return ["current-state overlay skipped: initial_states.csv is empty"]
+        return notes + ["current-state overlay skipped: initial_states.csv is empty"]
 
     # The line is busy until the RUNNING MO finishes — that is the starting
     # position. (line_free_h is the end of the running MO PLUS every queued MO
@@ -866,56 +1014,169 @@ def _overlay_current_state(
     # hours since the last CIP -> the first CIP is due MaxHoursBetweenCIP later
     from helpers.cip_import import read_cip_info as _rci
     carry_map: dict[str, int] = {}
+    _future_prev: list[str] = []
     for line, info in _rci(cip_path).by_line.items():
         if info.previous_cip is not None:
-            hrs = (hz.anchor - info.previous_cip.to_pydatetime()).total_seconds() / 3600.0
-            if hrs > 0:
-                # A carryover >= the line's max CIP interval says "a CIP was
-                # already overdue before hour 0", which the CIP constraints
-                # cannot satisfy and turns the whole solve INFEASIBLE. Clamp
-                # just below the limit so the solver schedules the CIP
-                # immediately instead of failing. phase2_scheduler does the
-                # same (min(carryover, 119)) when it writes week-1 states.
-                limit = int(info.max_hours_between or 120)
-                carry_map[line.upper()] = int(min(hrs, max(0, limit - 1)))
+            prev = info.previous_cip.to_pydatetime()
+            if prev > hz.now:
+                # a clean dated after the wall clock is a data error: the
+                # board-derived rule below decides, and the note names it
+                _future_prev.append(f"{line.upper()} (PreviousCIP {prev:%Y-%m-%d %H:%M} is after now)")
+                continue
+            hrs = (hz.anchor - prev).total_seconds() / 3600.0
+            # A carryover >= the line's max CIP interval says "a CIP was
+            # already overdue before hour 0", which the CIP constraints
+            # cannot satisfy and turns the whole solve INFEASIBLE. Clamp
+            # just below the limit so the solver schedules the CIP
+            # immediately instead of failing. phase2_scheduler does the
+            # same (min(carryover, 119)) when it writes week-1 states.
+            # NEGATIVE hours (2026-09-18) = the line was cleaned between
+            # hour 0 and now; the solver chain reads a negative carry as
+            # "the clean is that many hours ahead of the clock" (deadline =
+            # interval - carry), exactly as phase2_scheduler writes week-1
+            # states — before, such a line was dropped into the no-history
+            # bucket.
+            limit = int(info.max_hours_between or 120)
+            carry_map[line.upper()] = int(min(hrs, max(0, limit - 1)))
+
+    # A line WITHOUT a usable cip_info PreviousCIP (2026-09-18): the solver's
+    # first CIP deadline (interval - carryover) must land where the Plant
+    # Calendar draws the first clean the solver can actually perform. Source:
+    # the MERGED board's CIP blocks (cs.blocks, hours from hz.anchor) — not
+    # cs.cips, which keeps windows the production merge dropped. Candidates
+    # start at or after the line's gate (running-MO end / now floor) and
+    # outside every staged downtime window: a clean the board draws inside a
+    # line-down or the running MO is one the solver cannot place, so the next
+    # board clean is the first it can. carry = interval - first_h with the
+    # SOLVER's interval (the staged line_cip_hrs.csv; the board's interval_h
+    # when it is missing), clamped only from above (interval - 1: a catch-up
+    # clean at now never says "overdue before hour 0"); it goes NEGATIVE when
+    # the first performable clean lies beyond one interval, which the solver
+    # chain reads as "the clean is that far ahead" (deadline = first_h).
+    # Before, the fixture's 6-week-old carryover survived here.
+    _dt_windows: dict[str, list[tuple[float, float]]] = {}
+    try:
+        _dtf = _pd.read_csv(Path(work) / "downtimes.csv")
+        for _, r in _dtf.iterrows():
+            _dt_windows.setdefault(str(r["line_name"]).strip().upper(), []).append(
+                (float(r["start_hour"]), float(r["end_hour"])))
+    except Exception:  # noqa: BLE001 — no staged downtimes: nothing to avoid
+        pass
+    _limits: dict[str, float] = {}
+    try:
+        _lim = _pd.read_csv(Path(work) / "line_cip_hrs.csv")
+        for _, r in _lim.iterrows():
+            v = _pd.to_numeric(r.get("max_cip_hrs"), errors="coerce")
+            if not _pd.isna(v) and float(v) > 0:
+                _limits[str(r["line_name"]).strip().upper()] = float(v)
+    except Exception:  # noqa: BLE001
+        pass
+    _board_iv: dict[str, float] = {}
+    for c in list(getattr(cs, "cips", []) or []):
+        ln_c = str(c.get("line", "")).strip().upper()
+        if ln_c and c.get("interval_h"):
+            _board_iv.setdefault(ln_c, float(c["interval_h"]))
+    _default_iv = float((cfg.get("cip") or {}).get("interval_h", 120) or 120)
+    derived_carry: dict[str, tuple[int, float, str]] = {}   # line -> (carry, first_h, detail)
+    _no_perf: dict[str, str] = {}
+    _blocks = getattr(cs, "blocks", None)
+    if (_blocks is not None and len(_blocks)
+            and {"block_type", "line_name", "start_h"} <= set(_blocks.columns)):
+        _cip_rows = _blocks[_blocks["block_type"].astype(str) == "cip"]
+        for ln_c, grp in _cip_rows.groupby(
+                _cip_rows["line_name"].astype(str).str.strip().str.upper()):
+            if ln_c in carry_map:
+                continue
+            gate_h = float(running_free_map.get(ln_c, 0))
+            wins = _dt_windows.get(ln_c, [])
+            starts = sorted(float(v) for v in _pd.to_numeric(grp["start_h"], errors="coerce").dropna())
+            usable = [v for v in starts
+                      if v >= gate_h and not any(a <= v < b for a, b in wins)]
+            if not usable:
+                if starts:
+                    _no_perf[ln_c] = ("board clean(s) at h" + ", h".join(f"{v:.0f}" for v in starts[:3])
+                                      + " all before the gate / inside a line-down")
+                continue
+            first_h = usable[0]
+            interval = _limits.get(ln_c) or _board_iv.get(ln_c) or _default_iv
+            raw = int(round(interval - first_h))
+            carry = int(min(raw, max(0, int(interval) - 1)))
+            detail = ""
+            if ln_c in _board_iv and ln_c in _limits and abs(_board_iv[ln_c] - _limits[ln_c]) > 0.5:
+                detail += (f" [board interval {_board_iv[ln_c]:g} h vs line_cip_hrs "
+                           f"{_limits[ln_c]:g} h — the solver's number is used]")
+            if first_h != starts[0]:
+                detail += (f" (the board's earlier clean at h{starts[0]:.0f} is before the "
+                           "gate / inside a line-down: skipped)")
+            if carry != raw:
+                detail += " (clamped)"
+            derived_carry[ln_c] = (carry, first_h, detail)
 
     changed = 0
     # The line is busy until the RUNNING MO finishes — that is the starting
     # position the planner described. queued MOs are re-placed from the demand
     # plan, so they must NOT widen the gate (that would double-block).
     gate_map = running_free_map
-    # Lines with no RUNNING MO must not inherit the fixture's initial_sku /
-    # long-shutdown fields (fix staging-4: reference initial_states.csv was
-    # last hand-edited 2026-08-13). Use the last COMPLETED manprg SKU on the
-    # line when known, else CLEAN, and zero the long-shutdown fields.
+    # initial_sku: the running SKU, else the last COMPLETED manprg SKU on the
+    # line, else CLEAN (fix staging-4). The long-shutdown fields are 0 for
+    # EVERY line (2026-09-18): no plant feed sets them, and the old rule
+    # zeroed only idle lines — the one place a shutdown could be true — while
+    # a running line (P10) kept the fixture's flag and paid a phantom 2 h.
     _last_done = _last_completed_sku(cs)
-    _from_fixture: list[str] = []
+    _from_last: list[str] = []
+    _carry_notes: list[str] = []
+    for _col in ("long_shutdown_flag", "long_shutdown_extra_setup_hours"):
+        if _col in init.columns:
+            init[_col] = 0
+    if "last_cip_end_datetime" in init.columns:
+        init["last_cip_end_datetime"] = ""
+    n_run = 0
     for idx, row in init.iterrows():
         ln = str(row.get("line_name", "")).strip().upper()
-        if ln in gate_map and gate_map[ln] > 0:
-            init.at[idx, "available_from_hour"] = gate_map[ln]
+        gate = int(gate_map.get(ln, 0) or 0)
+        init.at[idx, "available_from_hour"] = max(0, gate)      # written for EVERY row
+        if gate > 0:
             changed += 1
+            if ln in sku_map and sku_map[ln]:
+                n_run += 1
         if ln in sku_map and sku_map[ln]:
             init.at[idx, "initial_sku"] = sku_map[ln]
         else:
             init.at[idx, "initial_sku"] = _last_done.get(ln, "CLEAN")
-            for _col, _val in (("long_shutdown_flag", 0),
-                               ("long_shutdown_extra_setup_hours", 0)):
-                if _col in init.columns:
-                    init.at[idx, _col] = _val
-            _from_fixture.append(f"{ln}->{_last_done.get(ln, 'CLEAN')}")
-        if ln in carry_map and "carryover_run_hours_since_last_cip_at_t0" in init.columns:
-            init.at[idx, "carryover_run_hours_since_last_cip_at_t0"] = carry_map[ln]
+            _from_last.append(f"{ln}->{_last_done.get(ln, 'CLEAN')}")
+        if "carryover_run_hours_since_last_cip_at_t0" in init.columns:
+            if ln in carry_map:
+                init.at[idx, "carryover_run_hours_since_last_cip_at_t0"] = carry_map[ln]
+            elif ln in derived_carry:
+                carry, first_h, detail = derived_carry[ln]
+                init.at[idx, "carryover_run_hours_since_last_cip_at_t0"] = carry
+                _carry_notes.append(f"{ln}: {carry} h from the board's first performable "
+                                    f"clean at h{first_h:.0f}{detail}")
+            else:
+                init.at[idx, "carryover_run_hours_since_last_cip_at_t0"] = 0
+                _carry_notes.append(
+                    f"{ln}: 0 h (no performable clean projected inside the horizon"
+                    + (f": {_no_perf[ln]}" if ln in _no_perf else "") + ")")
 
     init.to_csv(init_path, index=False)
     notes.append(
-        f"current state overlaid: {changed} line(s) gated to running-MO end, "
-        f"{len(sku_map)} initial SKU(s), {len(carry_map)} CIP carryover(s)")
-    if _from_fixture:
+        f"current state overlaid: {n_run} line(s) gated to their running-MO end, "
+        f"{changed - n_run} floored at now, {len(sku_map)} initial SKU(s), "
+        f"{len(carry_map)} CIP carryover(s) from cip_info; long-shutdown fields "
+        "zeroed for every line (no plant source)")
+    if _from_last:
         notes.append(
-            f"{len(_from_fixture)} line(s) without a running MO staged from "
-            "their last completed manprg SKU or CLEAN (fixture initial_sku / "
-            f"long-shutdown ignored): {', '.join(_from_fixture)}")
+            f"{len(_from_last)} line(s) without a running MO staged from "
+            f"their last completed manprg SKU or CLEAN: {', '.join(_from_last)}")
+    if _carry_notes:
+        notes.append(
+            f"{len(_carry_notes)} line(s) without a usable PreviousCIP in cip_info: CIP "
+            "carryover set from the board's projected grid so the solver's first clean "
+            f"is the board's: {'; '.join(_carry_notes)}")
+    if _future_prev:
+        notes.append(
+            f"{len(_future_prev)} cip_info PreviousCIP value(s) dated after now ignored "
+            f"(data error): {', '.join(_future_prev)}")
 
     # ── current_mo.csv: running + queued MOs as solver input ─────────────
     # Each row is an MO locked to its manprg line; the solver may split /
@@ -1127,20 +1388,19 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
     cip_path = str(ds.get("cip_info_csv", "")).strip() or str(
         dd / "reference" / "cip_info.csv")
     notes.extend(_stage_time_frame(work, dd, hz))
+    # the start-state file is always ours (2026-09-18): re-synthesized on
+    # every staging (idempotent, all fields reset), notes into the log
+    notes.extend(_synthesize_initial_states(work, dd))
     # One clock for the whole staging (fix CA-1 / C03, INTEGRATE): the
-    # horizon's `now`; `as_of` defaults to the manprg content stamp; the
-    # no-history CIP grid is phased from initial_states' carryover (CA-8).
-    _init_path = dd / "reference" / "initial_states.csv"
-    _init_df = None
-    if _init_path.exists():
-        try:
-            _init_df = _pd.read_csv(_init_path)
-        except Exception:  # noqa: BLE001 — optional input
-            _init_df = None
+    # horizon's `now`; `as_of` defaults to the manprg content stamp. The
+    # no-history CIP grid is phased exactly as the Plant Calendar phases it
+    # (2026-09-18: no initial_states passed — the reference fixture's stale
+    # carryover used to put P13/P15's first clean at 117/120 h while the
+    # board drew 48 h; one rule for both surfaces, see project_cips CA-8).
     cs = _bcs(hz, manprg_paths=mp_paths, cip_path=cip_path,
               lines=_ll(dd / "lines.csv"), cfg=cfg,
               caps_path=dd / "reference" / "capabilities_rates.csv",
-              now=hz.now, initial_states=_init_df)
+              now=hz.now)
     blocks = cs.blocks
     # Unknown manprg lines are reported and skipped (fix adversarial-11),
     # never staged under the invented line_id current_state gives them.
@@ -1259,35 +1519,35 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
                      "may start in the past")
     free = line_free_from(blocks, H)
     last_sku = last_sku_per_line(blocks)
-    # Lines with NO committed production (fix staging-4): never inherit
-    # the fixture's initial_sku / long-shutdown fields — use the last
-    # completed manprg SKU on the line when known, else CLEAN, zero the
-    # long-shutdown fields, and say so.
+    # initial_sku: the last committed SKU on the line, else the last completed
+    # manprg SKU, else CLEAN (fix staging-4). Long-shutdown fields 0 for EVERY
+    # line and carryover 0 for every line (2026-09-18: the projected cleans
+    # are staged as fixed line-time, the solver's own CIP clock stands down;
+    # before, a line with committed production kept the fixture's flag).
     _last_done = _last_completed_sku(cs)
-    _from_fixture: list[str] = []
+    _from_last: list[str] = []
     init_path = work / "initial_states.csv"
     if init_path.exists():
         init = _pd.read_csv(init_path, dtype={"initial_sku": str})
+        for _col in ("long_shutdown_flag", "long_shutdown_extra_setup_hours",
+                     "carryover_run_hours_since_last_cip_at_t0"):
+            if _col in init.columns:
+                init[_col] = 0
+        if "last_cip_end_datetime" in init.columns:
+            init["last_cip_end_datetime"] = ""
         n_gated = 0
         gates: dict[str, float] = {}
         for idx, row in init.iterrows():
             ln = str(row.get("line_name", "")).strip().upper()
             gates[ln] = float(_math.ceil(max(free.get(ln, 0.0), now_floor)))
+            init.at[idx, "available_from_hour"] = int(gates[ln])     # written for EVERY row
             if ln in free or now_floor:
-                gate = max(free.get(ln, 0.0), now_floor)
-                init.at[idx, "available_from_hour"] = int(_math.ceil(gate))
                 n_gated += 1
             if ln in last_sku:
                 init.at[idx, "initial_sku"] = last_sku[ln]
             else:
                 init.at[idx, "initial_sku"] = _last_done.get(ln, "CLEAN")
-                for _col, _val in (("long_shutdown_flag", 0),
-                                   ("long_shutdown_extra_setup_hours", 0)):
-                    if _col in init.columns:
-                        init.at[idx, _col] = _val
-                _from_fixture.append(f"{ln}->{_last_done.get(ln, 'CLEAN')}")
-            if "carryover_run_hours_since_last_cip_at_t0" in init.columns:
-                init.at[idx, "carryover_run_hours_since_last_cip_at_t0"] = 0
+                _from_last.append(f"{ln}->{_last_done.get(ln, 'CLEAN')}")
         init.to_csv(init_path, index=False)
         # The per-line fill boundary, persisted for fill-window scoring:
         # the scorecard needs the SAME gates the solver was staged with to
@@ -1296,13 +1556,13 @@ def _overlay_fill(work: Path, data_dir: Path) -> list[str]:
         (work / "fill_gates.json").write_text(
             _json.dumps({"gates": gates}, indent=1), encoding="utf-8")
         notes.append(f"{n_gated} line(s) gated to their committed tail; "
-                     f"{len(last_sku)} changeover base SKU(s) set")
-        if _from_fixture:
+                     f"{len(last_sku)} changeover base SKU(s) set; long-shutdown "
+                     "fields zeroed for every line (no plant source)")
+        if _from_last:
             notes.append(
-                f"{len(_from_fixture)} line(s) without committed production "
-                "staged from their last completed manprg SKU or CLEAN "
-                f"(fixture initial_sku / long-shutdown ignored): "
-                f"{', '.join(_from_fixture)}")
+                f"{len(_from_last)} line(s) without committed production "
+                "staged from their last completed manprg SKU or CLEAN: "
+                f"{', '.join(_from_last)}")
         # A line gated at/near the horizon has no fill capacity at all
         # (fix staging-10): say so loudly and name the block responsible.
         from helpers.plan_fill import gate_warnings as _gw
@@ -2325,7 +2585,7 @@ def run_scenario(
     # blocked line-time (fill mode); every other scenario uses the classic
     # overlay (gates + optional locked current-MO orders). Best-effort, but
     # ALWAYS reported — a silent no-op here means the solver quietly plans
-    # from the stale fixture.
+    # from the all-reset synthesized start state (CLEAN, gate 0, carry 0).
     try:
         if fill_mode:
             _cs_notes = _overlay_fill(work, data_dir)

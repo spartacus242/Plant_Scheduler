@@ -144,7 +144,9 @@ def _order_in_week(o: dict, week: int) -> bool:
 def run_blockages_diagnostic(P: Params, data: Data, data_dir: Path, two_phase: bool = False) -> None:
     """
     Identify overloaded (line, week) and suggest concrete changes to
-    Capabilities & Rates, DemandPlan, or InitialStates to achieve feasibility.
+    Capabilities & Rates or DemandPlan to achieve feasibility (the start-state
+    file is staged from plant facts — running MO, cip_info — and is not a
+    planner input, so nothing is suggested for it).
     Writes diag_blockages.csv and diag_blockages.txt.
     When two_phase=True, uses per-week (168h) available hours instead of full horizon.
     """
@@ -157,7 +159,6 @@ def run_blockages_diagnostic(P: Params, data: Data, data_dir: Path, two_phase: b
         carry = int(data.init_map.get(l, {}).get("carryover_run_hours", 0))
         init = data.init_map.get(l, {})
         available_from = int(init.get("available_from", 0))
-        long_shutdown = int(init.get("long_shutdown_flag", 0))
 
         for week in (0, 1):
             # Required run hours on this line in this week. This is NOT the sum
@@ -223,14 +224,12 @@ def run_blockages_diagnostic(P: Params, data: Data, data_dir: Path, two_phase: b
                 demand_suggestions.append(
                     f"demand_plan.csv: relax order {order_id} (SKU {sku}, qty_min={qty_min}) e.g. lower lower_pct from 0.9 to 0.85–0.88 so more demand can move to Week-1 or other lines."
                 )
-            if available_from > 0:
-                init_suggestions.append(
-                    f"initial_states.csv: line_id={l} ({line_names.get(l, str(l))}) has available_from_hour={available_from}; reducing it may free capacity if the line is blocked late."
-                )
-            if long_shutdown == 1:
-                init_suggestions.append(
-                    f"initial_states.csv: line_id={l} has long_shutdown_flag=1 (extra setup); consider 0 if no longer in long shutdown."
-                )
+            # (2026-09-18) initial_states.csv is synthesized at staging from
+            # manprg / cip_info and is not a planner file: the gate
+            # (available_from h{available_from}) is the running MO's end, a
+            # plant fact, and the long-shutdown fields are always 0 — nothing
+            # here is for a planner to edit, so no suggestion is emitted (the
+            # column suggestion_initial_states stays, empty, for the contract).
 
             blockages.append({
                 "line_id": l,

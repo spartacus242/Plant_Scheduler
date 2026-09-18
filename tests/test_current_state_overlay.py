@@ -32,21 +32,69 @@ def test_overlay_imports_resolve():
     from helpers.horizon import resolve  # noqa: F401
 
 
-def test_overlay_reports_instead_of_silently_skipping(tmp_path):
+def test_overlay_synthesizes_the_start_state_and_reports(tmp_path):
+    """A bare work dir gets its initial_states.csv SYNTHESIZED from lines.csv
+    (2026-09-18: the reference fixture is never copied — its stale P10
+    long-shutdown flag / 6-week-old carryovers used to leak into live
+    solves), and the overlay always reports what it did or why it stopped."""
     notes = sr._overlay_current_state(tmp_path, ROOT / "data")
     assert notes, "overlay must always report what it did or why it didn't"
-    assert "skipped" in notes[0]
+    assert any("synthesized from lines.csv" in n for n in notes), notes
+    if LIVE:
+        assert any("overlaid" in n for n in notes), notes
+    else:
+        assert any("skipped" in n for n in notes), notes
+    out = pd.read_csv(tmp_path / "initial_states.csv")
+    lines = pd.read_csv(ROOT / "data" / "lines.csv")
+    assert len(out) == len(lines), "one start-state row per lines.csv line"
+    assert set(out["line_name"]) == {str(x).strip().upper() for x in lines["line_name"]}
+    assert (out["long_shutdown_flag"] == 0).all()
+    assert (out["long_shutdown_extra_setup_hours"] == 0).all()
+    assert out["last_cip_end_datetime"].isna().all()
+
+
+@pytest.mark.skipif(not LIVE, reason="live manprg/cip_info exports not present")
+def test_no_fixture_value_survives_the_overlay(tmp_path):
+    """Poison every mechanical field of a pre-existing work copy; the
+    overlay must overwrite all of them for EVERY line (the old rule zeroed
+    the long-shutdown fields only for idle lines, so a running line kept
+    the fixture's flag and paid a phantom 2 h setup)."""
+    lines = pd.read_csv(ROOT / "data" / "lines.csv")
+    poison = pd.DataFrame({
+        "line_id": lines["line_id"], "line_name": lines["line_name"],
+        "initial_sku": "POISON", "available_from_hour": 4141,
+        "long_shutdown_flag": 1, "long_shutdown_extra_setup_hours": 2,
+        "carryover_run_hours_since_last_cip_at_t0": 7777,     # no clamp can produce it
+        "last_cip_end_datetime": "2026-01-01 00:00",
+    })
+    (tmp_path / "initial_states.csv").write_text(poison.to_csv(index=False), encoding="utf-8")
+    notes = sr._overlay_current_state(tmp_path, ROOT / "data")
+    assert any("overlaid" in n for n in notes), notes
+    out = pd.read_csv(tmp_path / "initial_states.csv", dtype={"initial_sku": str})
+    assert not (out["initial_sku"] == "POISON").any()
+    assert not (out["available_from_hour"] == 4141).any()
+    assert (out["long_shutdown_flag"] == 0).all()
+    assert (out["long_shutdown_extra_setup_hours"] == 0).all()
+    assert out["last_cip_end_datetime"].isna().all()
+    # every line's carryover was written by the overlay: from cip_info's
+    # PreviousCIP, set from the board's first performable clean, or 0 —
+    # always below the line's max CIP interval (negative = cleaned after
+    # hour 0 / the first performable clean lies beyond one interval)
+    from helpers.cip_import import read_cip_info
+    info = read_cip_info(REF / "cip_info.csv").by_line
+    for _, row in out.iterrows():
+        ln = str(row["line_name"]).strip().upper()
+        i = info.get(ln) or info.get(ln.lower())
+        limit = int((i.max_hours_between if i else 0) or 120)
+        carry = float(row["carryover_run_hours_since_last_cip_at_t0"])
+        assert carry < limit and carry != 7777, (ln, carry, limit)
 
 
 @pytest.mark.skipif(not LIVE, reason="live manprg/cip_info exports not present")
 def test_overlay_actually_gates_lines_from_the_running_mo(tmp_path):
-    src = REF / "initial_states.csv"
-    init = pd.read_csv(src)
-    init["available_from_hour"] = 0
-    init["initial_sku"] = "CLEAN"
-    (tmp_path / "initial_states.csv").write_text(
-        init.to_csv(index=False), encoding="utf-8")
-
+    # the overlay synthesizes the work copy itself (2026-09-18) — the
+    # reference fixture is legacy and may be absent
+    init = pd.read_csv(ROOT / "data" / "lines.csv")
     notes = sr._overlay_current_state(tmp_path, ROOT / "data")
     out = pd.read_csv(tmp_path / "initial_states.csv")
 
@@ -67,10 +115,7 @@ def test_cip_carryover_never_exceeds_the_lines_max_interval(tmp_path):
     back INFEASIBLE at every relax level. It must be clamped below the limit."""
     from helpers.cip_import import read_cip_info
 
-    src = REF / "initial_states.csv"
-    (tmp_path / "initial_states.csv").write_text(
-        pd.read_csv(src).to_csv(index=False), encoding="utf-8")
-    sr._overlay_current_state(tmp_path, ROOT / "data")
+    sr._overlay_current_state(tmp_path, ROOT / "data")     # synthesizes the work copy itself
     out = pd.read_csv(tmp_path / "initial_states.csv")
 
     limits = {k.upper(): v.max_hours_between
@@ -85,6 +130,20 @@ def test_cip_carryover_never_exceeds_the_lines_max_interval(tmp_path):
         assert carry < limit, f"{ln}: carryover {carry} >= max interval {limit}"
         checked += 1
     assert checked > 0, "no line had a CIP limit to check"
+
+
+def test_overlay_reports_when_nothing_can_name_the_lines(tmp_path):
+    """No lines.csv, no reference file, no capabilities: nothing is written
+    and the notes say why, on both the synth and the overlay level."""
+    dd = tmp_path / "plant"
+    work = tmp_path / "work"
+    dd.mkdir()
+    work.mkdir()
+    notes = sr._overlay_current_state(work, dd)
+    joined = "\n".join(notes)
+    assert "NOT synthesized" in joined, notes
+    assert any("skipped" in n for n in notes), notes
+    assert not (work / "initial_states.csv").exists()
 
 
 def test_split_mo_qty_prorated_across_cip_pieces():

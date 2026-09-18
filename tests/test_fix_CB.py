@@ -681,8 +681,11 @@ def _make_sandbox(tmp_path: Path, *, with_trial: bool = False) -> Path:
                   {"line_id": 4, "line_name": "P13", "max_cip_hrs": 120}]
                  ).to_csv(ref / "line_cip_hrs.csv", index=False)
     pd.DataFrame([
+        # P09 is the RUNNING line: flagged on purpose (2026-09-18 pin) — the
+        # old rule zeroed the long-shutdown fields for idle lines only, so a
+        # running line kept the fixture's flag and paid a phantom +2 h setup
         {"line_id": 0, "line_name": "P09", "initial_sku": "999", "available_from_hour": 0,
-         "long_shutdown_flag": 0, "long_shutdown_extra_setup_hours": 0,
+         "long_shutdown_flag": 1, "long_shutdown_extra_setup_hours": 2,
          "carryover_run_hours_since_last_cip_at_t0": 50},
         {"line_id": 1, "line_name": "P10", "initial_sku": "999", "available_from_hour": 0,
          "long_shutdown_flag": 1, "long_shutdown_extra_setup_hours": 2,
@@ -778,6 +781,11 @@ def test_overlay_fill_end_to_end(tmp_path, frozen_clock):
     # at 3 + 300 + 2 x 6 = 315
     assert init.loc["P13", "initial_sku"] == "888" and init.loc["P13", "available_from_hour"] == 315
     assert (init["carryover_run_hours_since_last_cip_at_t0"] == 0).all()
+    # 2026-09-18: the fixture's long-shutdown flag on P10 (and every other
+    # field of it) never reaches the work copy — for ANY line
+    assert (init["long_shutdown_flag"] == 0).all()
+    assert (init["long_shutdown_extra_setup_hours"] == 0).all()
+    assert not (init["initial_sku"] == "999").any()
     assert "P10->CLEAN" in joined
     assert "GATE CHECK" in joined and "line P13: fill gate 315h blocks 62%" in joined  # 315/504
     gates = json.loads((work / "fill_gates.json").read_text(encoding="utf-8"))["gates"]
@@ -821,6 +829,26 @@ def test_overlay_current_state_end_to_end(tmp_path, frozen_clock):
     assert init.loc["P10", "long_shutdown_flag"] == 0
     assert init.loc["P12", "initial_sku"] == "CLEAN"
     assert "P10->CLEAN" in joined
+    # 2026-09-18: long-shutdown 0 for EVERY line (the fixture flags P10 and
+    # the old rule zeroed idle lines only), the fixture's SKU / carry never
+    # staged; carryover = hours since cip_info's PreviousCIP at the staging
+    # anchor Tue 03-02 00:00 (P09 Sun 02-28 -> 48, P12/P13 Mon 03-01 -> 24)
+    assert (init["long_shutdown_flag"] == 0).all()
+    assert (init["long_shutdown_extra_setup_hours"] == 0).all()
+    assert not (init["initial_sku"] == "999").any()
+    assert init.loc["P09", "carryover_run_hours_since_last_cip_at_t0"] == 48   # fixture said 50
+    assert init.loc["P12", "carryover_run_hours_since_last_cip_at_t0"] == 24
+    assert init.loc["P13", "carryover_run_hours_since_last_cip_at_t0"] == 24
+    # P10 has no PreviousCIP: the board phases its 144 h grid from the first
+    # committed start (the trial at h8 -> first clean h152, beyond one
+    # interval), so the carry goes NEGATIVE — 144 - 152 = -8, "the clean is
+    # 8 h ahead of the clock" — and the solver's first CIP is due exactly at
+    # the board's h152 (model_builder: deadline = interval - carry)
+    assert init.loc["P10", "carryover_run_hours_since_last_cip_at_t0"] == -8
+    assert "P10: -8 h from the board's first performable clean at h152" in joined
+    # the running line P09 (fixture flag 1 / +2 h) is clean too
+    assert init.loc["P09", "long_shutdown_flag"] == 0
+    assert init.loc["P09", "long_shutdown_extra_setup_hours"] == 0
     # C64: the running MO is the gate ONLY — not a locked current_mo order
     cmo = pd.read_csv(work / "current_mo.csv", dtype={"mo": str, "sku": str})
     assert "30001" not in set(cmo["mo"])
@@ -836,6 +864,40 @@ def test_overlay_current_state_end_to_end(tmp_path, frozen_clock):
     import tomllib
     cfg = tomllib.loads((work / "flowstate.toml").read_text(encoding="utf-8"))
     assert cfg["scheduler"]["planning_start_date"] == "2027-03-02 00:00:00"
+
+
+def test_overlay_current_state_derives_carry_from_the_boards_first_clean(tmp_path, frozen_clock):
+    """A line WITHOUT a cip_info PreviousCIP (P10, 144 h) and without committed
+    production: the board phases its grid from the anchor week's Monday
+    (03-01 00:00 = h-24 -> cleans at h120, h264, ...), so the solver's first
+    CIP must be due at h120 too: carryover = 144 - 120 = 24. Before
+    2026-09-18 the reference fixture's value (here 0, on the live plant a
+    6-week-old number) was staged instead."""
+    dd = _make_sandbox(tmp_path)                        # no trial on P10
+    work = dd / "_scenario_work" / "E"
+    sr._prepare_work_dir(dd, work)
+    notes = sr._overlay_current_state(work, dd, lock_current_mo=True)
+    joined = "\n".join(notes)
+    init = pd.read_csv(work / "initial_states.csv", dtype={"initial_sku": str}).set_index("line_name")
+    assert init.loc["P10", "carryover_run_hours_since_last_cip_at_t0"] == 24
+    assert "P10: 24 h from the board's first performable clean at h120" in joined
+    assert "without a usable PreviousCIP in cip_info" in joined
+    # and the same grid the Plant Calendar draws: the first projected clean
+    # on P10 sits at h120 in the staging frame
+    from helpers.current_state import build_current_state
+    from helpers.calendar_io import load_lines
+    from helpers.config import load_toml
+    from helpers import horizon as hzmod
+    cfg = load_toml(dd.parent / "flowstate.toml")
+    hz = hzmod.resolve(cfg)
+    cs = build_current_state(hz, manprg_paths=[str(dd / "reference" / "manprg.txt")],
+                             cip_path=str(dd / "reference" / "cip_info.csv"),
+                             lines=load_lines(dd / "lines.csv"), cfg=cfg,
+                             caps_path=dd / "reference" / "capabilities_rates.csv",
+                             now=hz.now)
+    p10 = sorted((pd.Timestamp(c["start"]) - hz.anchor).total_seconds() / 3600
+                 for c in cs.cips if str(c["line"]).upper() == "P10")
+    assert p10 and p10[0] == 120.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════

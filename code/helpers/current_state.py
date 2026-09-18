@@ -540,8 +540,10 @@ def project_cips(line: str, info, hz: Horizon, dur: float,
     grid and REPLACE cip_info's ScheduledCIP (a disagreement >1 h is warned).
 
     Phase when nothing is known (fix CA-8 / audits C12, C91, adversarial-6):
-    `carry_h` hours since the last clean at `carry_anchor` (initial_states
-    carryover), else `fallback_phase` (a stable committed production start),
+    `carry_h` hours since the last clean at `carry_anchor` (a caller-supplied
+    carryover — tests only since 2026-09-18; production passes none so the
+    board and the solver staging share one rule), else `fallback_phase` (a
+    stable committed production start),
     else the anchor's ISO Monday — never today's midnight, which slid the grid
     24 h per run day. A line already past its interval at `now` with no clean
     committed gets a catch-up clean AT NOW plus a warning.
@@ -660,8 +662,11 @@ def build_current_state(
     `now` is the render clock (default hz.now); `as_of` is the manprg CONTENT
     observation time (default: the ManprgResult's stamp/mtime, else `now`).
     Board, netting and staging should pass the SAME pair so they agree (audit
-    C03). `initial_states` (reference/initial_states.csv) supplies the CIP
-    carryover used to phase the grid of a line without any CIP history.
+    C03). `initial_states` (a frame with line_name + carryover columns) can
+    phase the grid of a line without any CIP history from its carryover —
+    kept for tests; since 2026-09-18 no production caller passes it (the
+    solver staging derives its carry FROM this projection instead, so the
+    Plant Calendar and Scenario F/E agree on the first clean).
     """
     n = pd.Timestamp(now or hz.now).to_pydatetime()
     if manprg is None:
