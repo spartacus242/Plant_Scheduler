@@ -623,3 +623,59 @@ def test_app_source_folders_expand_the_fs_data_root(tmp_path):
     assert live_sync.source_folders({"source_dirs": []}) == []
     # is_configured keeps judging the RAW conf: a root alone is "a source"
     assert live_sync.configured_sources({"source_dirs": [str(root)]}) == [str(root)]
+
+
+def test_missing_derived_plan_is_rebuilt_on_a_quiet_pass(tmp_path):
+    """The Data Files page lost its manual 'write demand_plan.csv' button
+    (2026-09-18): a pass that finds a summary but no derived plan (or no
+    provenance stamp) derives it even when nothing else changed."""
+    pull = _pull()
+    src, ref = tmp_path / "src", tmp_path / "ref"
+    _write(src / "demand_plan_summary.csv", "Week,Product,Tons" + NL + "38,120437,39.003" + NL)
+    res = pull.pull_once(_conf([src], ref))
+    assert res.ok and (ref / "demand_plan.csv").is_file() and (ref / "demand_plan.source.json").is_file()
+    res2 = pull.pull_once(_conf([src], ref))
+    assert res2.ok and res2.updated == []                 # quiet pass: nothing to derive
+    (ref / "demand_plan.csv").unlink()
+    res3 = pull.pull_once(_conf([src], ref))
+    assert res3.ok and (ref / "demand_plan.csv").is_file()
+    # the qualifier stays inside the parentheses: helpers/live_sync tells a
+    # note from a copied file by the trailing ")"
+    assert res3.updated == ["demand_plan.csv (derived — was missing)"]
+    assert live_sync.run_sync.__doc__  # (sanity: the helper this protects exists)
+    (ref / "demand_plan.source.json").unlink()
+    res4 = pull.pull_once(_conf([src], ref))
+    assert res4.ok and (ref / "demand_plan.source.json").is_file()
+    assert res4.updated == ["demand_plan.csv (derived — was missing)"]
+    # a truncated / wrong-shaped stamp counts as missing
+    (ref / "demand_plan.source.json").write_text("{not json", encoding="utf-8")
+    res5 = pull.pull_once(_conf([src], ref))
+    assert res5.ok and res5.updated == ["demand_plan.csv (derived — was missing)"]
+    assert json.loads((ref / "demand_plan.source.json").read_text(encoding="utf-8"))["rows"] == 1
+
+
+def test_app_local_conf_env_override_branches(tmp_path, monkeypatch):
+    """helpers/live_sync.load_bridge_conf: FS_LIVE_DATA_LOCAL_CONF replaces
+    the machine's local conf when no root is given — "" merges none, a path
+    merges that file — and an explicit root reads that root's own local conf
+    regardless (the fake-repo tests)."""
+    root = tmp_path / "repo"
+    (root / "scripts").mkdir(parents=True)
+    (root / "scripts" / "fs-live-data.conf.json").write_text(
+        json.dumps({"files": ["manprg.txt"], "source_dirs": []}), encoding="utf-8")
+    (root / "scripts" / "fs-live-data.local.json").write_text(
+        json.dumps({"source_dirs": [str(tmp_path / "machine_drop")]}), encoding="utf-8")
+    monkeypatch.setattr(live_sync, "repo_root", lambda: root)
+    monkeypatch.delenv(live_sync.LOCAL_CONF_ENV, raising=False)
+    assert live_sync.load_bridge_conf()["source_dirs"] == [str(tmp_path / "machine_drop")]
+    monkeypatch.setenv(live_sync.LOCAL_CONF_ENV, "")
+    assert live_sync.load_bridge_conf()["source_dirs"] == []           # no local conf merged
+    assert live_sync.drop_folders() == []
+    other = tmp_path / "other.json"
+    other.write_text(json.dumps({"source_dirs": [str(tmp_path / "other_drop")]}), encoding="utf-8")
+    monkeypatch.setenv(live_sync.LOCAL_CONF_ENV, str(other))
+    assert live_sync.load_bridge_conf()["source_dirs"] == [str(tmp_path / "other_drop")]
+    # an explicit root: the env is ignored, that root's local conf is read
+    assert live_sync.load_bridge_conf(root)["source_dirs"] == [str(tmp_path / "machine_drop")]
+    monkeypatch.setenv(live_sync.LOCAL_CONF_ENV, "")
+    assert live_sync.load_bridge_conf(root)["source_dirs"] == [str(tmp_path / "machine_drop")]

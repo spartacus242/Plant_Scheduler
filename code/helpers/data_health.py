@@ -153,7 +153,11 @@ def _catalog_statuses(dd: Path) -> list[HealthStatus]:
             out.append(HealthStatus(
                 key=spec.key, name=spec.name, state=MISSING,
                 detail=f"{spec.rel()} does not exist.",
-                actions=(f"Upload {spec.filename} on the Data Files page",),
+                # only planner-maintained CSVs have an upload; the rest are
+                # written by Flowstate or delivered by a feed (2026-09-18)
+                actions=((f"Upload {spec.filename} on the Data Files page",)
+                         if spec.managed_by == "user" else
+                         (f"Restore {spec.rel()} — {spec.source}",)),
                 source="catalog",
             ))
             continue
@@ -161,7 +165,9 @@ def _catalog_statuses(dd: Path) -> list[HealthStatus]:
             out.append(HealthStatus(
                 key=spec.key, name=spec.name, state=ERROR,
                 detail=f"{spec.rel()} cannot be read: {info['error']}",
-                actions=("Fix or re-upload the file on the Data Files page",),
+                actions=(("Fix or re-upload the file on the Data Files page",)
+                         if spec.managed_by == "user" else
+                         (f"Restore {spec.rel()} — {spec.source}",)),
                 source="catalog",
             ))
             continue
@@ -169,7 +175,9 @@ def _catalog_statuses(dd: Path) -> list[HealthStatus]:
             out.append(HealthStatus(
                 key=spec.key, name=spec.name, state=ERROR,
                 detail=f"{spec.rel()} has 0 data rows.",
-                actions=("Add rows or re-upload the file",),
+                actions=(("Add rows or re-upload the file",)
+                         if spec.managed_by == "user" else
+                         (f"Restore {spec.rel()} — {spec.source}",)),
                 source="catalog",
             ))
             continue
@@ -236,13 +244,108 @@ def _manprg_content_age(dd: Path, cfg: dict) -> tuple[float, float] | None:
         return None
 
 
-def file_statuses(data_dir: Path | None = None, cfg: dict | None = None) -> list[FileStatus]:
+def demand_provenance(dd: Path, cfg: dict, drop_folders) -> dict:
+    """The demand chain as the Data Files page states it (2026-09-18).
+
+    The workbook verdict is judged on the DROP folder's own
+    demand_plan_summary.csv — the file refresh_demand_summary rebuilds or
+    keeps; data/reference only receives a copy of it — from the folder whose
+    workbook ranks newest (as the sync's copy takes the newest summary).
+    The derived plan is judged against data/reference's summary, the file
+    derive_demand_plan reads. Keys: workbook (azap_demand.summary_provenance
+    dict or None), folders (searched), summary_path (data/reference's copy),
+    reference_matches_drop (None when unknown, else whether that copy has the
+    drop csv's bytes), source (demand_plan.source.json as a dict, None when
+    absent or unusable), source_unreadable (the stamp exists but is not a
+    dict), summary_newer_than_plan. Never raises."""
+    folders = [str(f) for f in (drop_folders or [])]
+    out: dict = {"workbook": None, "folders": folders, "summary_path": None,
+                 "reference_matches_drop": None, "source": None,
+                 "source_unreadable": False, "summary_newer_than_plan": False}
+    try:
+        ref_summary = reference_dir(dd) / "demand_plan_summary.csv"
+        out["summary_path"] = ref_summary
+        try:
+            from helpers.azap_demand import CSV_NAME, rank_date, summary_provenance
+            best, best_key = None, None
+            for f in folders:
+                prov = summary_provenance(f, Path(f) / CSV_NAME)
+                if prov is None:
+                    continue
+                key = (rank_date(prov["workbook"], prov["workbook_mtime"]), prov["workbook_mtime"])
+                if best_key is None or key > best_key:
+                    best, best_key = prov, key
+            out["workbook"] = best
+            if best is not None and best["csv_exists"] and ref_summary.is_file():
+                drop_csv = Path(best["folder"]) / CSV_NAME
+                out["reference_matches_drop"] = drop_csv.read_bytes() == ref_summary.read_bytes()
+        except Exception:  # noqa: BLE001 — the chain is a caption, never a crash
+            pass
+        meta_p = reference_dir(dd) / "demand_plan.source.json"
+        if meta_p.is_file():
+            try:
+                parsed = json.loads(meta_p.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                parsed = None
+            if isinstance(parsed, dict):
+                out["source"] = parsed
+            else:
+                out["source_unreadable"] = True
+        if out["source"] and ref_summary.is_file():
+            try:
+                imported = datetime.fromisoformat(str(out["source"].get("imported", ""))[:19])
+                out["summary_newer_than_plan"] = (
+                    datetime.fromtimestamp(ref_summary.stat().st_mtime) > imported + timedelta(minutes=1))
+            except (ValueError, OSError, TypeError):
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def _drop_folders_here() -> list[str]:
+    """This machine's drop folders, [] in GitHub mode or on any failure."""
+    try:
+        from helpers.live_sync import drop_folders
+        return drop_folders()
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _demand_refresh_action(drop_folders) -> str:
+    """What a planner does about a missing / stale demand baseline: with a
+    drop on this machine, drop a new workbook; without one (GitHub mode),
+    the summary arrives already built from the planner PC that owns the
+    drop (2026-09-18)."""
+    if drop_folders:
+        return ("Drop a new 'New Export AZAP MMDDYY.xlsx' in the drop's fs_manual "
+                "and press Sync now on the Data Files page (the sync builds "
+                "demand_plan_summary.csv from it)")
+    return ("Wait for the live data sync (GitHub bridge): demand_plan_summary.csv "
+            "arrives already built — a new AZAP workbook goes into fs_manual on "
+            "the planner PC that owns the drop")
+
+
+def file_statuses(data_dir: Path | None = None, cfg: dict | None = None,
+                  drop_folders=None) -> list[FileStatus]:
     """Every catalog entry graded for the Data Files page. Never raises: a
-    resolver or reader failure becomes an ERROR row."""
+    resolver or reader failure becomes an ERROR row. `drop_folders` are the
+    live sync's source folders (the AZAP workbook lives only there); None =
+    this machine's conf (helpers.live_sync.drop_folders), [] = none (GitHub
+    mode) — tests pass it explicitly so they never read the machine's conf."""
     dd = Path(data_dir) if data_dir is not None else default_data_dir()
     cfg = cfg if cfg is not None else load_toml()
     cadence = {**DEFAULT_CADENCE_H, **cfg.get("health", {}).get("cadence_h", {})}
     manprg_ages = _manprg_content_age(dd, cfg)
+    if drop_folders is None:
+        try:
+            from helpers.live_sync import drop_folders as _drop_folders
+            drop_folders = _drop_folders()
+        except Exception:  # noqa: BLE001
+            drop_folders = []
+    drop_folders = [str(f) for f in drop_folders]
+    demand = demand_provenance(dd, cfg, drop_folders)
+    prov = demand["workbook"]
     out: list[FileStatus] = []
     for spec in CATALOG:
         common = dict(key=spec.key, name=spec.name, group=spec.group,
@@ -251,7 +354,7 @@ def file_statuses(data_dir: Path | None = None, cfg: dict | None = None) -> list
         cad = cadence.get(spec.cadence_key) if spec.cadence_key else None
         cad = float(cad) if cad is not None else None
         try:
-            info = status(spec, dd, cfg)
+            info = status(spec, dd, cfg, drop_folders=drop_folders)
         except Exception as exc:  # noqa: BLE001 — e.g. the VIF folder resolver
             out.append(FileStatus(filename=spec.filename, path=Path(spec.filename),
                                   state=ERROR, detail=f"could not resolve the file: {exc}",
@@ -259,6 +362,76 @@ def file_statuses(data_dir: Path | None = None, cfg: dict | None = None) -> list
             continue
         p: Path = info["path"]
         notes: list[str] = []
+        if spec.folder == "drop" and not info["exists"]:
+            # the AZAP workbook (2026-09-18): no drop folder on this machine
+            # is not a finding (GitHub mode delivers the summary ready-made);
+            # a configured drop without a workbook is
+            if not drop_folders:
+                out.append(FileStatus(filename=spec.filename, path=p, state=NOT_APPLICABLE,
+                                      detail="no drop folder is configured on this machine "
+                                             "(GitHub mode) — demand_plan_summary.csv arrives "
+                                             "already built", cadence_h=cad, **common))
+            else:
+                out.append(FileStatus(filename=spec.filename, path=p, state=MISSING,
+                                      detail="no 'New Export AZAP MMDDYY.xlsx' in "
+                                             + " or ".join(drop_folders)
+                                             + " — drop the planners' weekly export into fs_manual "
+                                             "(a folder the sync cannot reach reads the same way: "
+                                             "see the Live data sync line)",
+                                      cadence_h=cad, **common))
+            continue
+        if spec.key == "azap_workbook" and prov is not None:
+            src_txt = ("from its name" if prov["export_date_source"] == "name"
+                       else "from its save date — no MMDDYY in the name")
+            wk = prov["weeks"]
+            notes.append(f"export date {prov['export_date']:%Y-%m-%d} ({src_txt}) · window "
+                         f"W{wk[0]}–W{wk[-1]}")
+            # the verdict is about the DROP folder's own summary csv — the
+            # file the sync rebuilds or keeps
+            if prov["built_from"]:
+                notes.append("the drop's demand_plan_summary.csv IS built from it")
+            elif prov["hand_edit"]:
+                notes.append("the drop's demand_plan_summary.csv is a hand edit newer than every workbook (kept)")
+            elif prov["csv_exists"]:
+                notes.append("the drop's demand_plan_summary.csv is NOT built from it — the next sync pass rebuilds it")
+            else:
+                notes.append("the drop's demand_plan_summary.csv not built yet — the next sync pass builds it")
+            if prov["doubt"]:
+                notes.append(prov["doubt"])
+            for item in prov["passed_over"] or []:
+                if isinstance(item, dict) and item.get("message"):
+                    notes.append(str(item["message"]))
+        if spec.key == "demand_summary" and info["exists"]:
+            if info["configured"]:
+                notes.append("a Settings path — status only; the sync builds and derives from "
+                             "data/reference/demand_plan_summary.csv")
+            elif prov is not None:
+                if prov["built_from"]:
+                    notes.append(f"built from {prov['workbook_name']} (export "
+                                 f"{prov['export_date']:%Y-%m-%d})")
+                elif prov["hand_edit"]:
+                    notes.append("hand edit newer than every workbook in the drop (the sync keeps it)")
+                elif prov["csv_exists"]:
+                    notes.append(f"NOT built from the newest workbook {prov['workbook_name']} — "
+                                 "the next sync pass rebuilds it")
+                if demand["reference_matches_drop"] is False:
+                    notes.append("this data/reference copy differs from the drop's summary — "
+                                 "the next sync pass copies it")
+            elif not drop_folders:
+                notes.append("built elsewhere (no drop folder on this machine — provenance not checkable here)")
+        if spec.key == "demand_plan" and info["exists"]:
+            src = demand["source"]
+            if src:
+                weeks = src.get("weeks")
+                weeks = list(weeks) if isinstance(weeks, (list, tuple)) else []
+                notes.append(f"derived from demand_plan_summary.csv, imported "
+                             f"{str(src.get('imported', ''))[:16].replace('T', ' ')}, anchor "
+                             f"W{src.get('anchor_iso_week')}, {len(weeks)} week(s), "
+                             f"{src.get('rows')} orders")
+            elif demand["source_unreadable"]:
+                notes.append("provenance stamp demand_plan.source.json is unreadable — press Sync now")
+            if demand["summary_newer_than_plan"]:
+                notes.append("demand_plan_summary.csv is NEWER than this derived plan — press Sync now")
         if spec.folder == "vif" and p.parent.name == "dev_vif":
             notes.append("bundled dev fixture — not live plant data")
         if info["configured"]:
@@ -298,6 +471,14 @@ def file_statuses(data_dir: Path | None = None, cfg: dict | None = None) -> list
         stale = cad is not None and age is not None and age > cad
         if stale:
             notes.insert(0, f"older than its expected refresh (≤ {cad:g} h)")
+        # the demand chain's own staleness (2026-09-18): a summary the next
+        # sync pass will rebuild, or a derived plan behind its summary
+        if spec.key == "demand_summary" and not info["configured"] and prov is not None \
+                and (prov["needs_rebuild"] or demand["reference_matches_drop"] is False):
+            stale = True
+        if spec.key == "demand_plan" and (demand["summary_newer_than_plan"]
+                                          or demand["source_unreadable"]):
+            stale = True
         out.append(FileStatus(filename=p.name, path=p, state=STALE if stale else OK,
                               detail="; ".join(notes), rows=info["rows"], age_h=age,
                               modified=info["modified"], cadence_h=cad,
@@ -444,8 +625,7 @@ def _live_feed_statuses(dd: Path, cfg: dict) -> list[HealthStatus]:
         out.append(HealthStatus(
             key="demand_summary", name="Demand plan summary (baseline)", state=MISSING,
             detail="demand_plan_summary.csv not found.",
-            actions=("Drop demand_plan_summary.csv in data/reference/, set the "
-                     "path in Settings, or upload it on the Data Files page",),
+            actions=(_demand_refresh_action(_drop_folders_here()),),
             source="live_feed",
         ))
     else:
@@ -456,7 +636,7 @@ def _live_feed_statuses(dd: Path, cfg: dict) -> list[HealthStatus]:
             detail=(f"demand_plan_summary.csv last refreshed {_fmt_age(age)} ago."
                     if age is not None else "demand_plan_summary.csv present (age unknown).")
             + (f" Expected refresh ≤ {cadence.get('demand_summary', 168.0):g} h." if stale else ""),
-            actions=("Import a fresh demand_plan_summary.csv on the Data Files page",) if stale else (),
+            actions=(_demand_refresh_action(_drop_folders_here()),) if stale else (),
             cadence_h=cadence.get("demand_summary"), age_h=age,
             source="live_feed",
         ))
@@ -630,8 +810,7 @@ def _demand_week_semantics(dd: Path, cfg: dict) -> list[HealthStatus]:
                     f"(today is ISO week {iso_now}).")
             + ("" if not stale else " Refresh demand_plan_summary.csv — the "
                "pull script derives demand_plan.csv from it automatically."),
-            actions=("Run scripts/fs-live-pull.py (or re-upload "
-                     "demand_plan_summary.csv on the Data Files page)",)
+            actions=(_demand_refresh_action(_drop_folders_here()),)
             if stale else (),
             source="semantic",
         ))

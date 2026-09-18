@@ -21,7 +21,6 @@
     "line_rates.csv",
     "sku_info.csv",
     "line_cip_hrs.csv",
-    "initial_states.csv",
     "changeovers.csv",
     "ediact.csv",
     "ediact 3.csv",
@@ -65,7 +64,6 @@
       "line_rates.csv",
       "sku_info.csv",
       "line_cip_hrs.csv",
-      "initial_states.csv",
       "changeovers.csv",
       "Shipping Receiving Schedule NPA - 2024.xlsm",
       "open_pos.xlsx"

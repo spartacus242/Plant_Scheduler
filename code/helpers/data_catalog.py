@@ -36,8 +36,12 @@ GROUPS: tuple[tuple[str, str, str], ...] = (
      "What the plant is doing right now and the schedule of record built on "
      "it. The manprg exports and cip_info arrive with the live data sync."),
     ("demand", "Demand",
-     "The corporate demand plan: the weekly AZAP baseline and the derived "
-     "order file every planning surface reads."),
+     "The corporate demand plan, one chain: the planners' weekly export "
+     "'New Export AZAP MMDDYY.xlsx' (dropped into fs_manual) → "
+     "demand_plan_summary.csv (Week, Product, Tons — rebuilt from that "
+     "workbook by the live sync, never hand-cut) → demand_plan.csv (the "
+     "per-week orders every planning surface reads, derived by the sync). "
+     "Nothing is uploaded here; Sync now runs every step."),
     ("stock", "Component stock (VIF exports)",
      "The ERP's stock, BOM and receipt exports the Stock Check and the "
      "Supply Timeline read. Refreshed by the ERP every evening (~19:10)."),
@@ -54,7 +58,10 @@ GROUP_LABEL: dict[str, str] = {g[0]: g[1] for g in GROUPS}
 GROUP_ORDER: dict[str, int] = {g[0]: i for i, g in enumerate(GROUPS)}
 
 KINDS = ("csv", "text", "excel", "toml")
-FOLDERS = ("data", "vif")
+# "data": under the data folder; "vif": the folder the stock check reads;
+# "drop": the live sync's source folders (fs_vif / fs_manual) — files read in
+# place, never copied into data/reference (the AZAP workbook, 2026-09-18).
+FOLDERS = ("data", "vif", "drop")
 
 
 @dataclass(frozen=True)
@@ -110,10 +117,22 @@ class DataFile:
     # semantic rule (line_rates ↔ rate_mode) judges it on the Command
     # Center, so the generic catalog loop must not add a second row.
     generic_health: bool = True
+    # folder == "drop": the file is found by this glob in the drop folders
+    # (newest by export date — helpers.azap_demand.find_azap_workbook).
+    glob: Optional[str] = None
+    # False: a mechanical file the app keeps and the Command Center still
+    # monitors, but the Data Files page does not show planners
+    # (initial_states.csv, 2026-09-18: the solver's base start-state file,
+    # rewritten per solve from manprg / cip_info, not a planner input).
+    planner_visible: bool = True
 
     # ── paths ────────────────────────────────────────────────────────────
     def base_dir(self, dd: Optional[Path] = None) -> Path:
         base = data_dir() if dd is None else Path(dd)
+        if self.folder == "drop":
+            # resolved by status(..., drop_folders=...) through the sync's
+            # source folders; the data dir never holds this file
+            raise ValueError(f"{self.key}: a drop-folder file has no path under the data dir")
         if self.folder == "vif":
             # lazy: reconcile_engine is a heavy module and only the VIF
             # entries need the resolver
@@ -162,6 +181,8 @@ class DataFile:
     def rel(self) -> str:
         if self.folder == "vif":
             return f"<VIF folder>/{self.filename}"
+        if self.folder == "drop":
+            return f"<drop>/fs_manual/{self.filename}"
         return f"data/{self.subdir}/{self.filename}" if self.subdir else f"data/{self.filename}"
 
     def all_names(self) -> tuple[str, ...]:
@@ -220,15 +241,20 @@ CATALOG: tuple = (
     ),
     DataFile(
         key="initial_states",
-        name="Initial line states",
+        name="Solver start-state base file (initial_states)",
         subdir="reference",
         filename="initial_states.csv",
-        blurb="Where each line starts: current SKU, available-from hour, CIP "
-        "carryover. Legacy start-state input (the current-state MOs come "
-        "from manprg since Scenario E); auto-synced, not a planner input.",
+        blurb="The solver's base start-state file: one row per line. At every "
+        "solve the staging copies it and rewrites the live fields from "
+        "manprg / cip_info (running MO, availability, CIP carryover), so its "
+        "content is mechanical, not a planner input; no feed delivers it. It "
+        "must exist for the solver to run (14 line rows). Kept off the Data "
+        "Files page since 2026-09-18; the Command Center still flags it when "
+        "missing.",
         key_columns=("line_id", "initial_sku", "available_from_hour"),
-        managed_by="bridge",
-        group="plant", source="Plant data, delivered by the live data sync",
+        managed_by="app",
+        group="plant", source="Flowstate solver base file (rewritten per solve; not delivered by any feed)",
+        planner_visible=False,
     ),
     DataFile(
         key="downtimes",
@@ -258,33 +284,54 @@ CATALOG: tuple = (
     ),
     # ── Demand ───────────────────────────────────────────────────────────
     DataFile(
+        key="azap_workbook",
+        name="AZAP demand export (the planners' weekly workbook)",
+        subdir="",
+        filename="New Export AZAP MMDDYY.xlsx",
+        blurb="THE demand source of truth: the planners' weekly AZAP export, "
+        "dropped into the drop's fs_manual folder as 'New Export AZAP "
+        "MMDDYY.xlsx' (the six digits are the export date). The live sync "
+        "reads it in place — it is never copied into data/reference — and "
+        "rebuilds demand_plan_summary.csv from its 'pdp export AZAP n20' "
+        "sheet (Factory NPA, Trial rows dropped, tons summed per ISO week × "
+        "product, 7 weeks from the first Monday after the export date) "
+        "whenever the summary is not that workbook's build; demand_plan.csv "
+        "is then derived. Replaced every week by the planners.",
+        managed_by="bridge",
+        group="demand", kind="excel",
+        source="Planners' weekly export in the drop's fs_manual — read in place by the live sync, never copied",
+        cadence_key="demand_summary", folder="drop", glob="New Export AZAP*.xls[xm]",
+        generic_health=False,
+    ),
+    DataFile(
         key="demand_summary",
-        name="Demand plan summary (AZAP baseline)",
+        name="Demand plan summary (built from the AZAP workbook)",
         subdir="reference",
         filename="demand_plan_summary.csv",
-        blurb="The weekly AZAP demand baseline: Week (ISO), Product (SKU), "
-        "Tons. In folder mode the live sync rebuilds it from the planners' "
-        "newest 'New Export AZAP MMDDYY.xlsx' workbook, then derives "
-        "demand_plan.csv from it. Upload a different summary in the import "
-        "section above.",
+        blurb="The weekly demand baseline as Week (ISO), Product (SKU), Tons — "
+        "REBUILT by the live sync from the newest 'New Export AZAP "
+        "MMDDYY.xlsx' in the drop (the csv carries that workbook's modified "
+        "time as its stamp; a hand edit newer than every workbook is kept). "
+        "Never hand-cut; the sync derives demand_plan.csv from it.",
         key_columns=("Week", "Product"),
         managed_by="bridge",
-        group="demand", source=_PLANNER_FEED + " (rebuilt from the AZAP workbook)",
+        group="demand", source="Built by the live sync from the AZAP workbook (fs_manual), copied into data/reference",
         cadence_key="demand_summary", config_key="demand_summary_csv",
         generic_health=False,
     ),
     DataFile(
         key="demand_plan",
-        name="Demand plan (AZAP, derived)",
+        name="Demand plan (per-week orders, derived)",
         subdir="reference",
         filename="demand_plan.csv",
-        blurb="AZAP demand the scorecard/calendar/solver read — REBUILT from "
-        "demand_plan_summary.csv by the import (never hand-edited): which SKU, "
-        "how many kg, which week. It does not assign lines. Provenance in "
+        blurb="The demand every planning surface reads — scorecard, calendar, "
+        "solver — DERIVED by the live sync from demand_plan_summary.csv "
+        "whenever the summary changes (never hand-edited): which SKU, how "
+        "many kg, which week. It does not assign lines. Provenance in "
         "demand_plan.source.json.",
         key_columns=("order_id", "sku", "qty_target"),
         managed_by="derived",
-        group="demand", source="Derived from demand_plan_summary.csv (import / sync)",
+        group="demand", source="Derived from demand_plan_summary.csv by the live sync",
         cadence_key="demand_plan",
     ),
     # ── Component stock: the VIF exports (folder = what the stock check reads)
@@ -623,20 +670,63 @@ def _count_lines(path: Path) -> int:
     return n
 
 
+def resolve_in_drop(spec: DataFile, drop_folders) -> tuple[Optional[Path], list[str]]:
+    """(the newest matching file across the drop folders, the folders
+    searched): each folder's own pick (helpers.azap_demand.find_azap_workbook)
+    ranked the way the sync ranks — latest export date, then mtime — so a
+    workbook left in two folders is judged by the newer one, as the sync's
+    copy step takes the newest summary. (None, folders) when no folder holds
+    a match; (None, []) when no drop folder is configured (GitHub mode)."""
+    folders = [str(f) for f in (drop_folders or [])]
+    if not folders:
+        return None, []
+    from helpers.azap_demand import find_azap_workbook, rank_date
+    best: Optional[Path] = None
+    best_key = None
+    for f in folders:
+        hit = find_azap_workbook(f)
+        if hit is None:
+            continue
+        try:
+            mt = Path(hit).stat().st_mtime
+        except OSError:
+            continue
+        key = (rank_date(hit, mt), mt)
+        if best_key is None or key > best_key:
+            best, best_key = Path(hit), key
+    return best, folders
+
+
+def drop_placeholder(spec: DataFile, searched: list[str]) -> Path:
+    """Where a missing drop file is EXPECTED: the fs_manual folder when one
+    is among the folders searched (the planners' folder), else the last."""
+    for f in searched:
+        if Path(f).name == "fs_manual":
+            return Path(f) / spec.filename
+    return Path(searched[-1]) / spec.filename
+
+
 def status(spec: DataFile, dd: Optional[Path] = None,
-           cfg: Optional[dict] = None) -> dict:
+           cfg: Optional[dict] = None, drop_folders=None) -> dict:
     """Existence / size / row-count summary for one catalog entry, on the
-    file actually in use (configured override or first existing fallback).
-    Never raises."""
-    p = spec.resolve(dd, cfg)
+    file actually in use (configured override or first existing fallback;
+    for a drop-folder file, the sync's pick in `drop_folders`). Never raises."""
+    searched: list[str] = []
+    if spec.folder == "drop":
+        hit, searched = resolve_in_drop(spec, drop_folders)
+        p = hit if hit is not None else (
+            drop_placeholder(spec, searched) if searched else Path(spec.filename))
+    else:
+        p = spec.resolve(dd, cfg)
     info = {
         "key": spec.key,
         "name": spec.name,
         "rel": spec.rel(),
         "path": p,
         "filename": p.name,
-        "alternate_in_use": p.name != spec.filename,
+        "alternate_in_use": spec.folder != "drop" and p.name != spec.filename,
         "configured": spec.configured_path(cfg) is not None,
+        "drop_folders": searched,
         "exists": p.is_file(),
         "rows": None,
         "modified": None,

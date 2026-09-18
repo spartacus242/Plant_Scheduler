@@ -30,7 +30,7 @@ if str(BASE_DIR) not in sys.path:
 
 from helpers import data_health as dh
 from helpers import live_sync as ls
-from helpers.config import datasources_config, load_toml
+from helpers.config import load_toml
 from helpers.data_catalog import (
     CATALOG,
     CSV_ENCODING,
@@ -42,7 +42,7 @@ from helpers.data_catalog import (
     read_csv,
     read_text_head,
 )
-from helpers.paths import data_dir, reference_dir
+from helpers.paths import data_dir
 from helpers.safe_io import safe_write_csv
 from helpers.theme import chip, render_chips
 
@@ -50,9 +50,10 @@ st.header("Connect — Data Files")
 st.caption(
     "Step 1 of the daily loop: get the inputs in and fresh. The table lists "
     "every file Flowstate reads, worst first — red is missing or unreadable, "
-    "amber is older than its expected refresh. Below it: import the demand "
-    "plan, fix capability gaps, preview or replace any file. Every write "
-    "backs up the old file first."
+    "amber is older than its expected refresh, grey is not applicable here. "
+    "Below it: fix capability gaps, then preview or replace any file. The "
+    "demand plan is not uploaded: the live sync builds it from the planners' "
+    "AZAP workbook. Every write backs up the old file first."
 )
 
 dd = data_dir()
@@ -117,7 +118,11 @@ with _c2:
 
 
 # ── Every input file: state, age, expected refresh — worst first ────────────
-_files = dh.file_statuses(dd, cfg)
+_SPEC = {s.key: s for s in CATALOG}
+# planner-facing rows only: a mechanical file the solver keeps for itself
+# (initial_states.csv) stays monitored on the Command Center, not shown here
+_VISIBLE = [s for s in CATALOG if s.planner_visible]
+_files = [f for f in dh.file_statuses(dd, cfg) if _SPEC[f.key].planner_visible]
 _fs_by_key = {f.key: f for f in _files}
 _n_bad = sum(1 for f in _files if f.state in (dh.MISSING, dh.ERROR))
 _n_stale = sum(1 for f in _files if f.state == dh.STALE)
@@ -129,11 +134,22 @@ render_chips([
     chip(f"{_n_stale} stale", "warn" if _n_stale else "ok",
          icon="▲" if _n_stale else "●"),
     chip(f"{_n_ok} present and fresh", "ok", icon="●"),
-    chip(f"{_n_opt} optional, not present", "neutral", icon="·"),
+    chip(f"{_n_opt} optional or not applicable here", "neutral", icon="·"),
 ])
 
 _ICON = {dh.OK: "🟢 OK", dh.STALE: "🟠 STALE", dh.MISSING: "🔴 MISSING",
-         dh.ERROR: "🔴 ERROR", dh.NOT_APPLICABLE: "⚪ optional"}
+         dh.ERROR: "🔴 ERROR"}
+
+
+def _icon(f: dh.FileStatus) -> str:
+    """The status cell. NOT_APPLICABLE reads 'optional' for an optional file
+    and 'n/a here' for a required one this machine has no source for (the
+    AZAP workbook in GitHub mode) — never 'optional' for the demand source."""
+    if f.state == dh.NOT_APPLICABLE:
+        return "⚪ optional" if _SPEC[f.key].optional else "⚪ n/a here"
+    return _ICON.get(f.state, f.state)
+
+
 _PAGE_ORDER = {s.key: i for i, s in enumerate(CATALOG)}
 
 
@@ -149,7 +165,7 @@ for _f in sorted(_files, key=_rank):
     # column order = scan order: state, which file, how old vs how old it may
     # be, then what / where / who — the verdict reads without a scroll
     _rows.append({
-        "Status": _ICON.get(_f.state, _f.state),
+        "Status": _icon(_f),
         "File": _f.filename,
         "Age": dh._fmt_age(_f.age_h) if _f.age_h is not None else "—",
         "Expected refresh": f"≤ {_f.cadence_h:g} h" if _f.cadence_h else "static",
@@ -165,8 +181,9 @@ for _f in sorted(_files, key=_rank):
 st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True,
              height=min(38 * (len(_rows) + 1) + 4, 1300))
 st.caption(
-    "🔴 missing or unreadable · 🟠 older than its expected refresh · 🟢 present "
-    "and fresh · ⚪ optional file not present. Ages are file write times; the "
+    "🔴 missing or unreadable · 🟠 older than its expected refresh (or, for the "
+    "demand chain, behind its source) · 🟢 present and fresh · ⚪ optional file "
+    "not present, or not applicable on this machine. Ages are file write times; the "
     "manprg rows use the as-of stamp (when the content was last observed). "
     "Expected refresh per feed: helpers/data_health.py DEFAULT_CADENCE_H, "
     "overridable in flowstate.toml under [health.cadence_h]."
@@ -286,125 +303,6 @@ except Exception as _cap_exc:  # noqa: BLE001
 
 
 st.divider()
-st.subheader("Import the demand plan (demand_plan_summary.csv)")
-st.caption(
-    "The demand source of truth is the planner's summary file: **Week, Product, "
-    "kg_tons** — no machine column, no Hours field. Importing it rebuilds "
-    "`data/reference/demand_plan.csv` (the canonical demand the scorecard, "
-    "calendar and solver all read) and re-anchors the planning calendar to the "
-    "Monday of the file's earliest week. In folder mode the live sync does this "
-    "on its own from the planners' AZAP workbook."
-)
-
-with st.expander("Import demand_plan_summary.csv", expanded=True):
-    from helpers.demand_summary_import import import_summary as _imps
-    # Current derived demand at a glance (demand_plan.csv is rebuilt HERE).
-    _dem_cur = reference_dir(dd) / "demand_plan.csv"
-    if _dem_cur.exists():
-        try:
-            import json as _dpj
-            _src = _dpj.loads(
-                (reference_dir(dd) / "demand_plan.source.json").read_text(
-                    encoding="utf-8"))
-            _prov = (f"imported {str(_src.get('imported', ''))[:16]} · weeks "
-                     f"{_src.get('weeks')} · anchor W{_src.get('anchor_iso_week')}")
-        except Exception:  # noqa: BLE001 — provenance is best-effort
-            _prov = "no source.json — provenance unknown"
-        _mt = datetime.fromtimestamp(_dem_cur.stat().st_mtime)
-        st.caption(f"Current `demand_plan.csv`: {_prov} · file written "
-                   f"{_mt:%Y-%m-%d %H:%M}")
-    # Upstream of the summary in folder mode: the planners' AZAP workbook in
-    # the configured source folder(s) — named so a stale summary can be
-    # traced to the workbook that fed it. source_folders expands a configured
-    # fs_data root to fs_vif + fs_manual exactly as the sync does (2026-09-17),
-    # so the workbook in fs_manual is found when the conf names the root.
-    try:
-        from helpers.azap_demand import find_azap_workbook
-        for _folder in ls.source_folders(ls.load_bridge_conf()):
-            _wb = find_azap_workbook(_folder)
-            if _wb is not None:
-                _wbm = datetime.fromtimestamp(_wb.stat().st_mtime)
-                st.caption(f"Upstream AZAP workbook: `{_wb.name}` (written "
-                           f"{_wbm:%Y-%m-%d %H:%M}) in `{_folder}` — the live "
-                           "sync rebuilds demand_plan_summary.csv from it.")
-    except Exception:  # noqa: BLE001 — a hint, never a failure
-        pass
-    _cfg_demand_path = datasources_config(cfg).get("demand_summary_csv", "").strip()
-    _cfg_demand_ok = bool(_cfg_demand_path) and Path(_cfg_demand_path).exists()
-    if _cfg_demand_ok:
-        st.caption(f"Using configured source `{_cfg_demand_path}` "
-                   "(Settings → Demand plan summary CSV). Upload a file "
-                   "below to import a different one instead.")
-    sum_up = st.file_uploader("demand_plan_summary.csv", type=["csv"],
-                              key="summary_csv_upload",
-                              help="Columns: Week (ISO), Product (SKU), kg_tons")
-    _tmp = None
-    if sum_up is not None:
-        _payload = sum_up.getvalue()
-        # Write to a temp path; the importer reads a path
-        import tempfile as _tf
-        with _tf.NamedTemporaryFile(delete=False, suffix=".csv") as _t:
-            _t.write(_payload)
-            _tmp = _t.name
-    elif _cfg_demand_ok:
-        _tmp = _cfg_demand_path
-    if _tmp is not None:
-        try:
-            dem, meta = _imps(_tmp)
-        except Exception as exc:
-            st.error(f"Not a readable summary: {type(exc).__name__}: {exc}")
-        else:
-            st.caption(f"{meta.rows} orders, {len(meta.skus)} SKUs, "
-                       f"weeks {meta.weeks}, {meta.warnings or 'no warnings'}")
-            st.dataframe(dem.head(8), use_container_width=True, hide_index=True)
-            if meta.warnings:
-                for w in meta.warnings:
-                    st.warning(w)
-            if meta.anchor is not None:
-                st.warning(
-                    "Re-anchoring moves `planning_start_date` to "
-                    f"**{meta.anchor.strftime('%Y-%m-%d %H:%M:%S')}** "
-                    f"(Monday of ISO week {meta.anchor_iso_week}). Saved "
-                    "schedules/scorecards under the old anchor become stale. "
-                    "The current `demand_plan.csv` will be backed up before overwrite."
-                )
-            if st.button("Write to demand_plan.csv + re-anchor", key="write_summary",
-                         type="primary", disabled=not len(dem)):
-                ref_dir = reference_dir(dd)
-                dem_path = ref_dir / "demand_plan.csv"
-                if dem_path.exists():
-                    b = backup(dem_path)
-                    st.caption(f"Backed up old demand plan to `{b.name}`")
-
-                def _set_anchor(s: str) -> None:
-                    from helpers.paths import toml_path
-                    tp = toml_path()
-                    txt = tp.read_text(encoding="utf-8")
-                    import re as _re
-                    txt2 = _re.sub(r'planning_start_date\s*=\s*"[^"]*"',
-                                   f'planning_start_date = "{s}"', txt)
-                    tp.write_text(txt2, encoding="utf-8")
-
-                dem2, meta2 = _imps(_tmp, update_anchor=_set_anchor)
-                dem2.to_csv(dem_path, index=False)
-                import json as _json
-                (ref_dir / "demand_plan.source.json").write_text(
-                    _json.dumps({
-                        "source": "demand_plan_summary.csv",
-                        "imported": pd.Timestamp.now().isoformat(),
-                        "rows": meta2.rows,
-                        "weeks": [int(w) for w in meta2.weeks],
-                        "skus": len(meta2.skus),
-                        "anchor": meta2.anchor.strftime("%Y-%m-%d %H:%M:%S") if meta2.anchor else None,
-                        "anchor_iso_week": meta2.anchor_iso_week,
-                    }, indent=2),
-                    encoding="utf-8")
-                st.success(f"Wrote {meta2.rows} orders to demand_plan.csv "
-                           f"(weeks {[int(w) for w in meta2.weeks]}), "
-                           f"anchor {meta2.anchor.strftime('%Y-%m-%d') if meta2.anchor else '—'}.")
-                st.rerun()
-
-st.divider()
 
 
 # ── One expander per file, grouped by where the data comes from ────────────
@@ -434,7 +332,7 @@ def _render_file(spec: DataFile, fs: dh.FileStatus, *, uploadable: bool) -> None
         meta.append(f"updated {fs.modified}")
     if fs.age_h is not None:
         meta.append(f"{dh._fmt_age(fs.age_h)} ago")
-    header = f"{_ICON.get(fs.state, fs.state)} · {spec.name} — {fs.filename}" \
+    header = f"{_icon(fs)} · {spec.name} — {fs.filename}" \
         + (f"  ({' · '.join(meta)})" if meta else "")
 
     with st.expander(header):
@@ -487,9 +385,16 @@ def _render_file(spec: DataFile, fs: dh.FileStatus, *, uploadable: bool) -> None
                             st.rerun()
 
         if not exists:
-            if fs.state == dh.NOT_APPLICABLE:
+            if fs.state == dh.NOT_APPLICABLE and spec.optional:
                 st.info("Optional file — not present. Nothing breaks without it; "
                         "the description above says what it would add.")
+            elif fs.state == dh.NOT_APPLICABLE:
+                st.info(f"Not applicable on this machine — {fs.detail}")
+            elif spec.folder == "drop":
+                st.warning("Not in the drop: the planners drop their weekly export "
+                           "'New Export AZAP MMDDYY.xlsx' into the fs_manual folder "
+                           "named above (the sync reads it in place, it is never "
+                           "delivered), then press Sync now.")
             elif uploadable:
                 st.warning("File does not exist yet -- upload one above.")
             else:
@@ -545,11 +450,38 @@ st.caption(
     "read-only here — they arrive with the live data sync."
 )
 for _gkey, _glabel, _gcaption in GROUPS:
-    _specs = [s for s in CATALOG if s.group == _gkey]
+    _specs = [s for s in _VISIBLE if s.group == _gkey]
     if not _specs:
         continue
     st.markdown(f"#### {_glabel}")
     _cap = _gcaption
+    if _gkey == "demand":
+        # the live chain in one line (2026-09-18): which workbook, its export
+        # date, whether the summary is its build, when the plan was derived
+        try:
+            _dp = dh.demand_provenance(dd, cfg, ls.drop_folders())
+            _wb = _dp["workbook"]
+            _parts = []
+            if _wb is not None:
+                _parts.append(f"Workbook in use: `{_wb['workbook_name']}` (export "
+                              f"{_wb['export_date']:%Y-%m-%d}, weeks W{_wb['weeks'][0]}–W{_wb['weeks'][-1]}) "
+                              f"in `{_wb['folder']}`")
+                _parts.append("summary built from it: **yes**" if _wb["built_from"] else
+                              ("summary: **hand edit newer than every workbook** (kept)" if _wb["hand_edit"]
+                               else "summary built from it: **no — the next sync pass rebuilds it**"))
+            elif _dp["folders"]:
+                _parts.append("**No AZAP workbook** in " + " or ".join(f"`{f}`" for f in _dp["folders"]))
+            else:
+                _parts.append("No drop folder on this machine (GitHub mode): the summary arrives already built")
+            _src = _dp["source"]
+            if _src:
+                _parts.append(f"demand_plan.csv derived {str(_src.get('imported', ''))[:16].replace('T', ' ')}, "
+                              f"anchor W{_src.get('anchor_iso_week')}, {_src.get('rows')} orders"
+                              + (" — **summary newer, press Sync now**" if _dp["summary_newer_than_plan"] else ""))
+            if _parts:
+                _cap += " " + " · ".join(_parts) + "."
+        except Exception:  # noqa: BLE001 — a caption, never a failure
+            pass
     if _gkey == "stock":
         # the folder the Stock Check actually reads (saved setting → bridge
         # copies in data/reference → bundled dev fixtures)

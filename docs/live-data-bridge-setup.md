@@ -354,7 +354,9 @@ rebuilt, or that holds the AZAP workbook, counts as holding plant files).
   by it); the manprg as-of stamp is the ERP's write time of the newest
   manprg file.
 - `demand_plan.csv` is re-derived whenever the summary changed, exactly as
-  in GitHub mode.
+  in GitHub mode — and on any pass that finds a summary with no derived plan
+  or no readable `demand_plan.source.json` beside it (listed as
+  `demand_plan.csv (derived — was missing)`, 2026-09-18).
 
 **Heartbeat.** Every pass — including a failed one — writes
 `data\reference\live_sync.json` (mode, sources, finished, updated, skipped,

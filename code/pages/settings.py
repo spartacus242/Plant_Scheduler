@@ -39,9 +39,11 @@ cip = st.text_input("CIP info CSV", value=ds["cip_info_csv"])
 demand_summary = st.text_input(
     "Demand plan summary CSV (weekly AZAP baseline)",
     value=ds["demand_summary_csv"],
-    help="The planner's Week/Product/kg_tons file. When set and the file "
-         "exists, the Data page's demand import uses it as the source "
-         "instead of requiring a manual upload.")
+    help="Where the Week/Product/Tons summary lives when it is NOT "
+         "data/reference/demand_plan_summary.csv. Status only: the Home row "
+         "and the Data Files table judge this file; the live sync itself "
+         "builds the summary from the AZAP workbook in the drop's fs_manual "
+         "and derives demand_plan.csv from data/reference (2026-09-18).")
 po_report = st.text_input(
     "Open PO feed (ERP export order_npa.csv, or IT's legacy 'NPA Open POs' xlsx/csv)",
     value=ds["po_report_path"],

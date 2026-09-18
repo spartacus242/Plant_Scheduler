@@ -586,6 +586,15 @@ def copy_into_reference(pairs, ref_dir: Path, *, settle_seconds: float = 0.0,
     return updated, skipped, problems
 
 
+def _readable_stamp(path: Path) -> bool:
+    """demand_plan.source.json present AND a JSON object — a truncated or
+    hand-damaged stamp counts as missing so the next pass rewrites it."""
+    try:
+        return isinstance(json.loads(path.read_text(encoding="utf-8")), dict)
+    except (OSError, ValueError):
+        return False
+
+
 def derive_demand_plan(ref_dir: Path) -> None:
     """demand_plan.csv is DERIVED, never copied: it is the summary exploded
     into per-week orders with due windows in the file's own anchor frame
@@ -803,10 +812,21 @@ def pull_once(conf: dict) -> SyncResult:
     res.skipped.extend(skp)
     res.problems.extend(prb)
 
-    if "demand_plan_summary.csv" in res.updated:
+    # derive when the summary landed — or when the derived plan (or its
+    # provenance stamp) is missing beside a present summary (2026-09-18: the
+    # Data Files page lost its manual "write demand_plan.csv" button, so the
+    # sync is the only writer and must also be the recovery path)
+    summary_here = (ref_dir / "demand_plan_summary.csv").is_file()
+    plan_missing = summary_here and not ((ref_dir / "demand_plan.csv").is_file()
+                                         and _readable_stamp(ref_dir / "demand_plan.source.json"))
+    if "demand_plan_summary.csv" in res.updated or plan_missing:
         try:
             derive_demand_plan(ref_dir)
-            res.updated.append("demand_plan.csv (derived)")
+            # the qualifier stays INSIDE the parentheses: helpers/live_sync
+            # tells notes from copied files by a trailing ")"
+            res.updated.append("demand_plan.csv (derived — was missing)"
+                               if plan_missing and "demand_plan_summary.csv" not in res.updated
+                               else "demand_plan.csv (derived)")
         except Exception as exc:  # noqa: BLE001 — the pass must not die on this
             print(f"[warn] demand_plan derive failed: {exc}", file=sys.stderr)
             res.problems.append(f"demand_plan derive failed: {exc}")

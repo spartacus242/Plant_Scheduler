@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -29,6 +30,10 @@ STATE_NAME = "live_sync.json"
 SCRIPT_REL = ("scripts", "fs-live-pull.py")
 CONF_REL = ("scripts", "fs-live-data.conf.json")
 LOCAL_CONF_REL = ("scripts", "fs-live-data.local.json")
+# FS_LIVE_DATA_LOCAL_CONF (2026-09-18, same contract as scripts/fs-live-pull.py):
+# another per-machine conf to merge, or "" for none — so a test that boots a
+# page never reads THIS machine's drop folders.
+LOCAL_CONF_ENV = "FS_LIVE_DATA_LOCAL_CONF"
 
 
 def script_path(root: Path | None = None) -> Path:
@@ -37,17 +42,36 @@ def script_path(root: Path | None = None) -> Path:
 
 def load_bridge_conf(root: Path | None = None) -> dict:
     """Tracked conf with the git-ignored per-machine override merged over it
-    (the same merge the script does). {} when neither file exists."""
+    (the same merge the script does). {} when neither file exists.
+    FS_LIVE_DATA_LOCAL_CONF (2026-09-18) replaces the machine's own local
+    conf (path, or "" for none) when no `root` is given."""
+    root_arg = root
     root = Path(root or repo_root())
     conf: dict = {}
     tracked = root.joinpath(*CONF_REL)
     if tracked.is_file():
         conf.update(json.loads(tracked.read_text(encoding="utf-8")))
-    local = root.joinpath(*LOCAL_CONF_REL)
-    if local.is_file():
+    local: Path | None = root.joinpath(*LOCAL_CONF_REL)
+    # the env override speaks for THIS machine's repo only: a caller that
+    # names another root (tests with a fake repo) gets that root's local conf
+    if root_arg is None and LOCAL_CONF_ENV in os.environ:
+        override = os.environ[LOCAL_CONF_ENV].strip()
+        local = Path(override) if override else None
+    if local is not None and local.is_file():
         # utf-8-sig: PowerShell 5.1 writes a BOM with -Encoding utf8
         conf.update(json.loads(local.read_text(encoding="utf-8-sig")))
     return conf
+
+
+def drop_folders(root: Path | None = None) -> list[str]:
+    """The drop folders this machine syncs from (fs_vif / fs_manual after
+    root expansion), [] in GitHub mode or when the conf cannot be read. The
+    Data Files page resolves the AZAP workbook — which lives only in the
+    drop, never in data/reference — through this."""
+    try:
+        return source_folders(load_bridge_conf(root))
+    except (OSError, ValueError):
+        return []
 
 
 def configured_sources(conf: dict) -> list[str]:

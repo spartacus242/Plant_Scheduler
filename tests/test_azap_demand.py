@@ -1133,3 +1133,67 @@ def test_real_drop_reproduces_the_hand_made_csv():
     assert off == {}
     # and the text form is the same too (formatting pinned, order aside)
     assert sorted(az.summary_csv_text(df).split("\r\n")) == sorted(lines + [""])
+
+
+# ---------------------------------------------------------------------------
+# summary_provenance — the read-only twin of refresh_demand_summary (2026-09-18)
+# ---------------------------------------------------------------------------
+
+def test_summary_provenance_reports_the_build_relation_without_writing(tmp_path):
+    from datetime import date, datetime as _dt
+    folder = tmp_path / "fs_manual"
+    csv = folder / az.CSV_NAME
+    assert az.summary_provenance(folder, csv) is None            # no folder / no workbook
+    folder.mkdir()
+    assert az.summary_provenance(folder, csv) is None
+    wb = _workbook(folder / "New Export AZAP 091126.xlsx")
+    when = _dt(2026, 9, 11, 12, 0, 0).timestamp()                 # saved on its export day
+    _set_mtime(wb, when)
+    prov = az.summary_provenance(folder, csv)
+    assert prov["workbook_name"] == "New Export AZAP 091126.xlsx"
+    assert prov["export_date"] == date(2026, 9, 11) and prov["export_date_source"] == "name"
+    assert prov["weeks"] == [38, 39, 40, 41, 42, 43, 44]
+    assert prov["csv_exists"] is False and prov["built_from"] is False
+    assert prov["hand_edit"] is False and prov["needs_rebuild"] is False
+    assert prov["doubt"] is None and prov["passed_over"] == [] and prov["warning"] is None
+    assert not csv.exists()                                         # read-only
+    # the csv stamped with the workbook's time is its build
+    text = "Week,Product,Tons\n38,120437,39.003\n"
+    csv.write_text(text, encoding="utf-8")
+    _set_mtime(csv, when)
+    prov = az.summary_provenance(folder, csv)
+    assert prov["built_from"] and not prov["needs_rebuild"] and prov["csv_rows"] == 1
+    assert csv.read_text(encoding="utf-8") == text and csv.stat().st_mtime == when   # untouched
+    # older than the workbook: the sync would rebuild it
+    _set_mtime(csv, when - 600)
+    prov = az.summary_provenance(folder, csv)
+    assert prov["needs_rebuild"] and not prov["built_from"] and not prov["hand_edit"]
+    assert csv.read_text(encoding="utf-8") == text and csv.stat().st_mtime == when - 600
+    # a whole second newer than every workbook: a hand edit the sync keeps
+    _set_mtime(csv, when + 2)
+    prov = az.summary_provenance(folder, csv)
+    assert prov["hand_edit"] and not prov["needs_rebuild"]
+    assert csv.read_text(encoding="utf-8") == text and csv.stat().st_mtime == when + 2
+
+
+def test_summary_provenance_window_follows_the_name_even_when_doubtful(tmp_path):
+    """The build (build_demand_summary) takes the window from the name's
+    MMDDYY whenever there is one; a name date after the save date is still
+    what the sync will build with, so the provenance says so and flags it."""
+    from datetime import date, datetime as _dt
+    folder = tmp_path / "fs_manual"
+    wb = _workbook(folder / "New Export AZAP 091827.xlsx")
+    _set_mtime(wb, _dt(2026, 9, 18, 19, 0, 0).timestamp())
+    prov = az.summary_provenance(folder, folder / az.CSV_NAME)
+    assert prov["export_date"] == date(2027, 9, 18) and prov["export_date_source"] == "name"
+    assert prov["weeks"] == [38, 39, 40, 41, 42, 43, 44]
+    assert prov["doubt"] and "after the file was saved" in prov["doubt"]
+    assert prov["warning"] is None
+
+
+def test_summary_provenance_undated_name_falls_back_to_the_save_date(tmp_path):
+    folder = tmp_path / "fs_manual"
+    wb = _workbook(folder / "New Export AZAP.xlsx", age_s=3600)
+    prov = az.summary_provenance(folder, folder / az.CSV_NAME)
+    assert prov["export_date_source"] == "mtime"
+    assert prov["warning"] and "no MMDDYY" in prov["warning"]

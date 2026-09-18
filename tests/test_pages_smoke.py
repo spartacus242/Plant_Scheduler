@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
@@ -272,14 +273,26 @@ def _status_by_file(at: AppTest) -> dict[str, str]:
     return dict(zip(table["File"], table["Status"]))
 
 
-def test_data_files_boots_on_an_empty_dir(tmp_path):
-    """No files at all: one status row per catalog entry — required feeds
-    MISSING, optional exports grey — and no traceback."""
+def test_data_files_boots_on_an_empty_dir(tmp_path, monkeypatch):
+    """No files at all: one status row per planner-visible catalog entry —
+    required feeds MISSING, optional exports grey — and no traceback. The
+    machine's own live-data conf is never read (env override)."""
     from helpers.data_catalog import CATALOG
+    monkeypatch.setenv("FS_LIVE_DATA_LOCAL_CONF", "")
     at = _boot("pages/data.py", tmp_path)
     assert not at.exception
     by_file = _status_by_file(at)
-    assert len(by_file) == len(CATALOG)
+    assert len(by_file) == sum(1 for s in CATALOG if s.planner_visible)
+    # the solver's base file is monitored on Home, not shown to planners (2026-09-18)
+    assert "initial_states.csv" not in by_file
+    # the AZAP workbook row: no drop folder on this machine -> n/a, not "optional"
+    assert by_file["New Export AZAP MMDDYY.xlsx"].endswith("n/a here")
+    text = _texts(at)
+    # the manual demand import is gone; the chain is stated instead
+    assert "Import the demand plan" not in text
+    assert not [el for el in at.button if "re-anchor" in str(el.label)]
+    assert "New Export AZAP MMDDYY.xlsx" in text and "demand_plan_summary.csv" in text
+    assert "No drop folder on this machine" in text
     # the feeds the 2026-09-15 drop added are on the page, and judged
     assert by_file["order_npa.csv"].endswith("MISSING")
     assert by_file["manprg.txt"].endswith("MISSING")
@@ -306,6 +319,44 @@ def test_data_files_follows_the_stock_checks_vif_folder(tmp_path, monkeypatch):
     # the seeded board / demand / capabilities are catalog rows too
     assert by_file["calendar_blocks.csv"].endswith("ERROR")   # header only: 0 rows
     assert by_file["lines.csv"].endswith("MISSING")
+
+
+def test_data_files_names_the_azap_workbook_and_the_demand_chain(tmp_path, monkeypatch):
+    """A machine with a drop folder: the workbook row reads OK with its export
+    date, and the Demand caption states workbook -> summary -> plan with the
+    build verdict — the page's answer to 'where does demand come from'."""
+    import os
+    drop = tmp_path / "fs_data"
+    manual = drop / "fs_manual"
+    (drop / "fs_vif").mkdir(parents=True)
+    manual.mkdir()
+    wb = manual / "New Export AZAP 091126.xlsx"
+    wb.write_bytes(b"x")
+    when = time.time() - 30 * 3600
+    os.utime(wb, (when, when))
+    ref = tmp_path / "reference"
+    ref.mkdir()
+    # the drop's own summary is the workbook's build; data/reference holds its copy
+    for csv in (manual / "demand_plan_summary.csv", ref / "demand_plan_summary.csv"):
+        csv.write_text("Week,Product,Tons\n38,120437,39.003\n", encoding="utf-8")
+        os.utime(csv, (when, when))
+    (ref / "demand_plan.csv").write_text("order_id,sku,qty_target\na,1,1\n", encoding="utf-8")
+    (ref / "demand_plan.source.json").write_text(json.dumps({
+        "source": "demand_plan_summary.csv", "imported": "2026-09-18T09:56:36", "rows": 238,
+        "weeks": [0, 1, 2, 3, 4, 5, 6], "skus": 82, "anchor": "2026-09-14 00:00:00",
+        "anchor_iso_week": 38}), encoding="utf-8")
+    local = tmp_path / "local.json"
+    local.write_text(json.dumps({"source_dirs": [str(drop)]}), encoding="utf-8")
+    monkeypatch.setenv("FS_LIVE_DATA_LOCAL_CONF", str(local))
+    at = _boot("pages/data.py", tmp_path)
+    assert not at.exception
+    by_file = _status_by_file(at)
+    assert by_file["New Export AZAP 091126.xlsx"].endswith("OK")
+    assert by_file["demand_plan_summary.csv"].endswith("OK")
+    text = _texts(at)
+    assert "Workbook in use: `New Export AZAP 091126.xlsx` (export 2026-09-11, weeks W38–W44)" in text
+    assert "summary built from it: **yes**" in text
+    assert "demand_plan.csv derived 2026-09-18 09:56, anchor W38, 238 orders" in text
 
 
 def test_stock_check_stale_feed_says_nothing_is_counted(tmp_path, monkeypatch):

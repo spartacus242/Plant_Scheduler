@@ -637,6 +637,79 @@ def refresh_demand_summary(
             "csv": str(out), "rows": int(len(df)), "meta": meta, "from_workbook": True}
 
 
+def summary_provenance(folder: str | Path, csv_path: str | Path, *,
+                       weeks: int = DEFAULT_WEEKS,
+                       settle_seconds: float = 0.0) -> dict | None:
+    """READ-ONLY twin of refresh_demand_summary's decision (2026-09-18), for
+    the Data Files page and the health rows: which workbook the sync would
+    use, when it was exported, the ISO weeks it covers, and whether the
+    summary csv is that workbook's build. Never writes, never opens the
+    14 MB sheet. None when `folder` holds no AZAP workbook (or is not
+    reachable — find_azap_workbook cannot tell the two apart).
+
+    `csv_path` should be the folder's own summary (folder / CSV_NAME): that is
+    the file refresh_demand_summary judges and rebuilds; data/reference only
+    receives a copy of it.
+
+    Keys: folder, workbook (path), workbook_name, workbook_mtime (epoch),
+    export_date (date, as build_demand_summary computes it: the name's
+    MMDDYY else the save date), export_date_source ("name" | "mtime"), weeks
+    (ISO week numbers of the DEFAULT_WEEKS window), csv_exists, csv_rows,
+    built_from (the csv carries this workbook's stamp), hand_edit (the csv
+    is newer than every workbook by a whole second: a hand edit the sync
+    keeps), needs_rebuild (neither: the next sync pass rebuilds it), doubt
+    (name_date_doubt), passed_over (passed_over_workbooks entries), warning
+    (workbook_date_warning)."""
+    folder = Path(folder)
+    csv = Path(csv_path)
+    wb = find_azap_workbook(folder)
+    if wb is None:
+        return None
+    try:
+        st = wb.stat()
+    except OSError:
+        return None
+    # the window exactly as build_demand_summary computes it: the name's
+    # MMDDYY when there is one, else the save date (rank_date is only how
+    # find_azap_workbook ORDERS candidates; a doubtful name date still drives
+    # the build — name_date_doubt says so in `doubt`)
+    named = export_date_from_name(wb)
+    export_date = named if named is not None else date.fromtimestamp(st.st_mtime)
+    fm = first_monday_after(export_date)
+    week_nums = [(fm + timedelta(weeks=i)).isocalendar()[1] for i in range(max(int(weeks), 1))]
+    csv_ns: int | None
+    try:
+        csv_ns = csv.stat().st_mtime_ns if csv.is_file() else None
+    except OSError:
+        csv_ns = None
+    built_from = csv_ns is not None and _same_stamp(csv_ns, st.st_mtime_ns)
+    try:
+        newest_ns = max([s_.st_mtime_ns for _, s_ in _workbook_candidates(folder)]
+                        + [st.st_mtime_ns])
+    except OSError:
+        newest_ns = st.st_mtime_ns
+    hand_edit = (csv_ns is not None and not built_from
+                 and csv_ns - newest_ns >= STAMP_ROUNDING_NS)
+    try:
+        passed = passed_over_workbooks(folder, wb, settle_seconds=settle_seconds)
+    except OSError:
+        passed = []
+    return {
+        "folder": str(folder), "workbook": str(wb), "workbook_name": wb.name,
+        "workbook_mtime": st.st_mtime,
+        "export_date": export_date,
+        "export_date_source": "name" if named is not None else "mtime",
+        "weeks": week_nums,
+        "csv_exists": csv_ns is not None,
+        "csv_rows": existing_csv_rows(csv) if csv_ns is not None else None,
+        "built_from": built_from, "hand_edit": hand_edit,
+        "needs_rebuild": csv_ns is not None and not (built_from or hand_edit),
+        "doubt": name_date_doubt(wb, st.st_mtime),
+        "passed_over": passed,
+        "warning": workbook_date_warning(wb, weeks=weeks),
+    }
+
+
 def export_date_warning(meta: dict | None) -> str | None:
     """One-line warning when the window came from the file's mtime because
     the name carries no MMDDYY (2026-09-16): the window may be off by a week
