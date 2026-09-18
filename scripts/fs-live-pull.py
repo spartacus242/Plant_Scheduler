@@ -63,15 +63,24 @@ CONF = Path(__file__).resolve().parent / "fs-live-data.conf.json"
 # on a planner's PC, written by scripts/install_flowstate.ps1 -LiveData. The
 # tracked conf keeps the shared keys (repo, branch, file list).
 LOCAL_CONF = CONF.with_name("fs-live-data.local.json")
+# FS_LIVE_DATA_LOCAL_CONF (2026-09-18): another per-machine conf to merge, or
+# "" for none. Tests that run this script as a subprocess set it to "" so the
+# box's own local conf (its drop mirror!) never reaches a test pass — one such
+# run re-timed the real drop's manprg files while the suite ran.
+LOCAL_CONF_ENV = "FS_LIVE_DATA_LOCAL_CONF"
 GIT_BIN = shutil.which("git") or r"C:\Program Files\Git\bin\git.exe"
 
 
 def load_conf():
     with open(CONF, encoding="utf-8") as f:
         conf = json.load(f)
-    if LOCAL_CONF.is_file():
+    local = LOCAL_CONF
+    if LOCAL_CONF_ENV in os.environ:
+        override = os.environ[LOCAL_CONF_ENV].strip()
+        local = Path(override) if override else None
+    if local is not None and local.is_file():
         # utf-8-sig: PowerShell 5.1 writes a BOM with -Encoding utf8
-        with open(LOCAL_CONF, encoding="utf-8-sig") as f:
+        with open(local, encoding="utf-8-sig") as f:
             conf.update(json.load(f))
     return conf
 
@@ -284,25 +293,48 @@ def layout_folder(dest: str, layout: dict) -> str | None:
 
 
 def clone_asof(clone: Path, name: str) -> float | None:
-    """Author time (epoch seconds) of the last commit touching `name` in the
-    clone — the work PC commits right after the export, so it is the closest
-    thing to the plant's write time. None when git cannot tell."""
-    r = git(clone, "log", "-1", "--format=%at", "--", name)
+    """Epoch seconds at which the clone's CURRENT content of `name` FIRST
+    appeared in the repo: the author time of the earliest commit that
+    introduced today's blob for that path (git log --find-object). The work
+    PC commits right after the export, so for a fresh export that is the
+    last commit's time; for a file the work PC pushed BACK to an older export
+    (2026-09-18 10:08: manprg.txt returned to the 09-15 blob eight minutes
+    after a fresh one) it is when that content was really first seen, so a
+    revert never masquerades as a fresh observation and never outranks a
+    fresher file already in the drop. Falls back to the last commit's time
+    when the blob cannot be resolved; None when git cannot tell at all."""
+    last = git(clone, "log", "-1", "--format=%at", "--", name)
     try:
-        return float(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
+        last_at = float(last.stdout.strip()) if last.returncode == 0 and last.stdout.strip() else None
     except ValueError:
-        return None
+        last_at = None
+    head = git(clone, "rev-parse", f"HEAD:{name}")
+    blob = head.stdout.strip() if head.returncode == 0 else ""
+    if not blob:
+        return last_at
+    r = git(clone, "log", "--format=%at", f"--find-object={blob}", "--", name)
+    if r.returncode != 0:
+        return last_at
+    times = []
+    for tok in r.stdout.split():
+        try:
+            times.append(float(tok))
+        except ValueError:
+            continue
+    return min(times) if times else last_at
 
 
 def mirror_clone_into_drop(clone: Path, drop_root: Path, entries, layout: dict,
                            asof=None) -> tuple[list[str], list[str], list[str]]:
     """Drop the clone's conf files into drop_root/<fs_vif|fs_manual> by
     `layout`. Returns (mirrored, kept, problems): `mirrored` the names
-    written, `kept` the names left alone because the copy in the drop is
-    newer than GitHub's (with the reason), `problems` files the layout does
-    not route or that could not be written. `asof(name) -> epoch | None` is
-    the clone's observation time per file (default: the last commit's author
-    time; the clone file's mtime when git cannot tell). A file lands under
+    written (or re-timed: an identical copy whose time was later than the
+    content's first appearance), `kept` the names left alone because the
+    copy in the drop is newer than GitHub's (with the reason), `problems`
+    files the layout does not route or that could not be written.
+    `asof(name) -> epoch | None` is the clone's observation time per file
+    (default clone_asof: when the current content FIRST appeared in the
+    repo; the clone file's mtime when git cannot tell). A file lands under
     its own name (the dated "NPA Open POs*.xlsx" keeps its date; folder
     mode's glob renames it as it does on a planner PC)."""
     clone, drop_root = Path(clone), Path(drop_root)
@@ -320,11 +352,20 @@ def mirror_clone_into_drop(clone: Path, drop_root: Path, entries, layout: dict,
             target_dir.mkdir(parents=True, exist_ok=True)
             target = target_dir / src.name
             data = src.read_bytes()
-            if target.exists() and target.read_bytes() == data:
-                continue                                  # same bytes: nothing to do
             when = asof(src.name)
             if when is None:
                 when = src.stat().st_mtime
+            if target.exists() and target.read_bytes() == data:
+                # same bytes: nothing to write — but a copy this mirror stamped
+                # with a LATER time than the content's first appearance (a
+                # re-push of old content carried a fresh commit time before
+                # 2026-09-18) is put back to that time, so the drop never
+                # shows a fresh date on old data
+                if target.stat().st_mtime > when + 1.0:
+                    os.utime(target, (when, when))
+                    mirrored.append(f"{sub}/{src.name} (time set to "
+                                    f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(when))})")
+                continue
             if target.exists():
                 have = target.stat().st_mtime
                 if have > when + 1.0:
@@ -494,6 +535,7 @@ def _replace_with_retry(tmp: Path, dst: Path, attempts: int = 5, pause_s: float 
 
 
 def copy_into_reference(pairs, ref_dir: Path, *, settle_seconds: float = 0.0,
+                        settle_exempt=(),
                         ) -> tuple[list[str], list[str], list[str]]:
     """Copy each (src, dest_name) into ref_dir when its bytes differ.
 
@@ -504,8 +546,13 @@ def copy_into_reference(pairs, ref_dir: Path, *, settle_seconds: float = 0.0,
     file whose size or mtime moves while it is read. The local copy is
     written to a temp name and swapped in, so the app never reads a half
     copied file; the source mtime is kept because the health page ages
-    files by it."""
+    files by it. `settle_exempt` (2026-09-18) names source paths the drop
+    mirror wrote whole this very pass: their mtime is a commit time, not a
+    write in progress, so the settle rule must not hold them back a pass
+    (the fresh 10:00 manprg of 2026-09-18 waited exactly that way and was
+    overwritten by a stale re-push before the next pass came)."""
     ref_dir = Path(ref_dir)
+    exempt = {Path(x).resolve() for x in settle_exempt}
     updated: list[str] = []
     skipped: list[str] = []
     problems: list[str] = []
@@ -514,7 +561,7 @@ def copy_into_reference(pairs, ref_dir: Path, *, settle_seconds: float = 0.0,
         try:
             st0 = src.stat()
             age = time.time() - st0.st_mtime
-            if settle_seconds and abs(age) < settle_seconds:
+            if settle_seconds and abs(age) < settle_seconds and src.resolve() not in exempt:
                 skipped.append(f"{fname} (modified {age:.0f}s ago, settling)")
                 continue
             data = src.read_bytes()
@@ -685,6 +732,7 @@ def pull_once(conf: dict) -> SyncResult:
     mirror_to = str(conf.get(MIRROR_KEY) or "").strip()
     mirror_info: dict | None = None
     mirror_problems: list[str] = []
+    mirror_paths: list[Path] = []               # what the mirror wrote this pass
     if mirror_to:
         drop_root = Path(mirror_to)
         if not source_dirs(conf):
@@ -698,6 +746,7 @@ def pull_once(conf: dict) -> SyncResult:
             mirrored, kept, mprb = mirror_clone_into_drop(
                 clone, drop_root, conf["files"], conf.get(LAYOUT_KEY) or {})
             mirror_problems.extend(mprb)
+            mirror_paths = [drop_root / m.split(" (", 1)[0] for m in mirrored]
             mirror_info = {"from": str(conf.get("repo_url", "")), "clone": str(clone),
                            "to": str(drop_root),
                            "head": after[:7] if after and after != before else None,
@@ -729,7 +778,8 @@ def pull_once(conf: dict) -> SyncResult:
         # before the copy so this pass picks the rebuilt csv up
         holders = refresh_demand_summaries(dirs, res, settle_seconds=settle)
         pairs = resolve_entries_multi(conf["files"], dirs)
-        upd, skp, prb = copy_into_reference(pairs, ref_dir, settle_seconds=settle)
+        upd, skp, prb = copy_into_reference(pairs, ref_dir, settle_seconds=settle,
+                                            settle_exempt=mirror_paths)
         # a reachable folder with none of the plant files is a problem, not a
         # quiet "nothing new" (the pass exits 1, Home's sync row goes STALE)
         for d in empty_source_folders(conf["files"], dirs, holders):
@@ -816,6 +866,10 @@ def main() -> int:
         conf[MIRROR_KEY] = args.mirror_github_to
     if args.source_dir:
         conf["source_dirs"] = list(args.source_dir)
+        # an ad-hoc source folder means "sync from THAT" — the machine's own
+        # drop mirror stays out of it unless asked on the same command line
+        if not args.mirror_github_to:
+            conf.pop(MIRROR_KEY, None)
     if args.reference_dir:
         conf["data_reference_dir"] = args.reference_dir
 

@@ -42,8 +42,9 @@ The work PC lists the same drop under `"source_dirs_work"` in
 The dev laptop rebuilds the drop from that repo (2026-09-18, the *drop
 mirror*): `fs-live-pull.py` drops the clone's files into its own local
 `fs_data` by the conf's `drop_layout` (ERP exports → `fs_vif`, people-maintained
-files → `fs_manual`; only when GitHub's copy is newer than the file there;
-nothing deleted) and then runs folder mode from that root, so the dev PC and a
+files → `fs_manual`; a file's time is when its content first appeared in the
+repo, and it lands only when that is newer than the file there; nothing
+deleted) and then runs folder mode from that root, so the dev PC and a
 planner's PC read the plant data the same way (bridge doc PART 5b).
 A file present in both folders is taken from wherever it is newest (equal
 modified times: `fs_vif`). Only the names on the conf `files` list travel;

@@ -216,11 +216,12 @@ def test_script_exit_code_tells_the_scheduler_and_installer(tmp_path):
     good, ref = tmp_path / "good", tmp_path / "ref"
     _write(good / "manprg.txt", "MO 1")
     base = [sys.executable, str(SCRIPTS / "fs-live-pull.py"), "--once", "--reference-dir", str(ref)]
-    ok = subprocess.run(base + ["--source-dir", str(good)], capture_output=True, text=True,
+    env = {**os.environ, "FS_LIVE_DATA_LOCAL_CONF": ""}   # never this box's own conf (its drop mirror)
+    ok = subprocess.run(base + ["--source-dir", str(good)], capture_output=True, text=True, env=env,
                         cwd=str(ROOT), timeout=120)
     assert ok.returncode == 0, ok.stdout + ok.stderr
     assert "synced from" in ok.stdout and "manprg.txt" in ok.stdout
-    bad = subprocess.run(base + ["--source-dir", str(tmp_path / "nope")], capture_output=True,
+    bad = subprocess.run(base + ["--source-dir", str(tmp_path / "nope")], capture_output=True, env=env,
                          text=True, cwd=str(ROOT), timeout=120)
     assert bad.returncode == 1, bad.stdout + bad.stderr
     assert "PROBLEMS" in bad.stdout and "not reachable" in bad.stdout
@@ -404,7 +405,8 @@ def test_reachable_folder_without_plant_files_is_a_problem(tmp_path):
 
     # the subprocess pattern: exit 1, PROBLEMS in the output, heartbeat not ok
     base = [sys.executable, str(SCRIPTS / "fs-live-pull.py"), "--once", "--reference-dir", str(ref)]
-    bad = subprocess.run(base + ["--source-dir", str(empty)], capture_output=True, text=True,
+    env = {**os.environ, "FS_LIVE_DATA_LOCAL_CONF": ""}   # never this box's own conf (its drop mirror)
+    bad = subprocess.run(base + ["--source-dir", str(empty)], capture_output=True, text=True, env=env,
                          cwd=str(ROOT), timeout=120)
     assert bad.returncode == 1, bad.stdout + bad.stderr
     assert "PROBLEMS" in bad.stdout and "no plant files found" in bad.stdout and "wrong_folder" in bad.stdout
@@ -412,7 +414,7 @@ def test_reachable_folder_without_plant_files_is_a_problem(tmp_path):
     assert state["ok"] is False and state["problems"] == [expect]
     # the root spelling through --source-dir expands too, and a good root is clean
     root, _ = _drop(tmp_path)
-    ok = subprocess.run(base + ["--source-dir", str(root)], capture_output=True, text=True,
+    ok = subprocess.run(base + ["--source-dir", str(root)], capture_output=True, text=True, env=env,
                         cwd=str(ROOT), timeout=120)
     assert ok.returncode == 0, ok.stdout + ok.stderr
     assert str(root / "fs_vif") in ok.stdout and str(root / "fs_manual") in ok.stdout

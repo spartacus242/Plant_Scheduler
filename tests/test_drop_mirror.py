@@ -160,10 +160,15 @@ class _Git:
 
 
 def _fake_git(calls, *, log_epoch: float):
+    """git for the pull_once tests: HEAD never moves, every file has ONE commit
+    at `log_epoch` carrying today's blob (git log answers that epoch for -1 and
+    for --find-object alike; rev-parse '<rev>:<path>' the blob)."""
     def fake(repo, *args):
         calls.append(args)
         if args and args[0] == "log":
-            return _Git(str(int(log_epoch)))
+            return _Git(f"{int(log_epoch)}\n")       # -1 and --find-object alike
+        if args and args[0] == "rev-parse" and ":" in args[-1]:
+            return _Git("b10b0001\n")                  # the blob at HEAD:<path>
         return _Git("abc1234\n")          # rev-parse before == after: HEAD unchanged
     return fake
 
@@ -249,3 +254,129 @@ def test_cli_mirror_switch_sets_the_conf_key(monkeypatch, tmp_path):
     monkeypatch.setattr("sys.argv", ["fs-live-pull.py", "--once", "--mirror-github-to", str(tmp_path / "fs_data")])
     assert pull.main() == 0
     assert seen[pull.MIRROR_KEY] == str(tmp_path / "fs_data")
+
+
+# ---------------------------------------------------------------------------
+# second cut, the lesson of 2026-09-18 10:08: the work PC pushed a fresh
+# manprg at 10:00 and re-pushed the 09-15 export at 10:08; the first cut
+# stamped that old content with the fresh commit time (the drop looked new),
+# and the settle rule had held the fresh 10:00 file a pass, long enough to
+# be overwritten. Pinned here: the as-of is when the CONTENT first appeared,
+# a revert never outranks a fresher drop copy, an identical copy with a
+# later time is put back, and what the mirror wrote this pass never settles.
+# ---------------------------------------------------------------------------
+
+def _git_commit(repo: Path, name: str, text: str, when: str) -> None:
+    import subprocess
+    (repo / name).write_text(text, encoding="utf-8")
+    env = {**os.environ, "GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when,
+           "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x.invalid",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x.invalid"}
+    subprocess.run(["git", "-C", str(repo), "add", "--", name], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", f"update {name}"],
+                   check=True, capture_output=True, env=env)
+
+
+def test_clone_asof_is_when_the_current_content_first_appeared(tmp_path):
+    import subprocess
+    from datetime import datetime, timezone
+    pull = _pull()
+    repo = tmp_path / "clone"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "config", "core.autocrlf", "false"], check=True, capture_output=True)
+    _git_commit(repo, "manprg.txt", "old export", "2026-09-15T11:38:16-06:00")
+    _git_commit(repo, "manprg.txt", "fresh export", "2026-09-18T10:00:20-06:00")
+    _git_commit(repo, "manprg.txt", "old export", "2026-09-18T10:08:18-06:00")    # the revert
+    got = pull.clone_asof(repo, "manprg.txt")
+    assert datetime.fromtimestamp(got, tz=timezone.utc) == datetime(2026, 9, 15, 17, 38, 16, tzinfo=timezone.utc)
+    # genuinely new content: its own commit time
+    _git_commit(repo, "manprg.txt", "newer export", "2026-09-18T10:30:00-06:00")
+    got2 = pull.clone_asof(repo, "manprg.txt")
+    assert datetime.fromtimestamp(got2, tz=timezone.utc) == datetime(2026, 9, 18, 16, 30, 0, tzinfo=timezone.utc)
+    assert pull.clone_asof(repo, "never_committed.csv") is None
+
+
+def test_mirror_revert_never_clobbers_a_fresher_drop_copy_and_retimes_identical_files(tmp_path):
+    pull = _pull()
+    clone, drop = tmp_path / "clone", tmp_path / "fs_data"
+    _write(clone / "manprg.txt", "old export", age_s=60)                 # checked out just now
+    _write(drop / "fs_vif" / "manprg.txt", "fresh export", age_s=16 * 60)  # the 10:00 export
+    content_first_seen = time.time() - 3 * 86400                          # the 09-15 blob
+    mirrored, kept, problems = pull.mirror_clone_into_drop(
+        clone, drop, FILES, LAYOUT, asof=lambda n: content_first_seen)
+    assert mirrored == [] and problems == []
+    assert kept and kept[0].startswith("manprg.txt (drop copy newer")
+    assert (drop / "fs_vif" / "manprg.txt").read_text(encoding="utf-8") == "fresh export"
+    # an identical copy stamped with the revert's fresh commit time is put back
+    # to the content's first appearance, and reported
+    _write(clone / "manprg2.txt", "old export 2", age_s=60)
+    _write(drop / "fs_vif" / "manprg2.txt", "old export 2", age_s=30 * 60)
+    mirrored, kept, problems = pull.mirror_clone_into_drop(
+        clone, drop, FILES, LAYOUT, asof=lambda n: content_first_seen)
+    assert problems == [] and kept                                        # manprg.txt still kept
+    assert len(mirrored) == 1 and mirrored[0].startswith("fs_vif/manprg2.txt (time set to ")
+    assert abs((drop / "fs_vif" / "manprg2.txt").stat().st_mtime - content_first_seen) < 1
+    assert (drop / "fs_vif" / "manprg2.txt").read_text(encoding="utf-8") == "old export 2"
+    # already at the content's time: quiet
+    assert pull.mirror_clone_into_drop(clone, drop, FILES, LAYOUT, asof=lambda n: content_first_seen)[0] == []
+
+
+def test_pull_once_syncs_what_the_mirror_just_wrote_despite_the_settle_rule(tmp_path, monkeypatch):
+    pull = _pull()
+    clone, drop, ref = tmp_path / "clone", tmp_path / "fs_data", tmp_path / "reference"
+    _write(clone / "manprg.txt", "fresh export", age_s=5)
+    calls: list = []
+    monkeypatch.setattr(pull, "ensure_clone", lambda conf: clone)
+    monkeypatch.setattr(pull, "git", _fake_git(calls, log_epoch=time.time() - 9))   # committed 9 s ago
+    conf = {"files": FILES, "data_reference_dir": str(ref), "settle_seconds": 60,
+            "drop_layout": LAYOUT, "mirror_github_to": str(drop),
+            "repo_url": "https://example.invalid/x.git", "remote": "origin", "branch": "main"}
+    res = pull.pull_once(conf)
+    assert res.ok, res.problems
+    assert res.mirror["mirrored"] == ["fs_vif/manprg.txt"]
+    assert "manprg.txt" in res.updated and res.skipped == []
+    assert (ref / "manprg.txt").read_text(encoding="utf-8") == "fresh export"
+    # a file the drop got from ELSEWHERE seconds ago still settles a pass
+    _write(drop / "fs_vif" / "manprg2.txt", "being written", age_s=5)
+    res2 = pull.pull_once(conf)
+    assert any(s.startswith("manprg2.txt (modified") for s in res2.skipped)
+    assert not (ref / "manprg2.txt").exists()
+
+
+def test_adhoc_source_dir_never_mirrors_unless_asked(monkeypatch, tmp_path):
+    """--source-dir means "sync from that folder": the machine's own drop
+    mirror (local conf) stays out of it — a test or an ad-hoc run must never
+    write into this box's fs_data. Asked for on the same command line, it
+    still works."""
+    pull = _pull()
+    seen: dict = {}
+
+    def fake_pull_once(conf):
+        seen.clear()
+        seen.update(conf)
+        return pull.SyncResult(mode="folder", sources=[])
+
+    monkeypatch.setattr(pull, "pull_once", fake_pull_once)
+    monkeypatch.setattr(pull, "load_conf", lambda: {"files": FILES, "data_reference_dir": str(tmp_path),
+                                                    pull.MIRROR_KEY: str(tmp_path / "machine_drop")})
+    monkeypatch.setattr("sys.argv", ["fs-live-pull.py", "--once", "--source-dir", str(tmp_path / "adhoc")])
+    assert pull.main() == 0
+    assert pull.MIRROR_KEY not in seen and seen["source_dirs"] == [str(tmp_path / "adhoc")]
+    monkeypatch.setattr("sys.argv", ["fs-live-pull.py", "--once", "--source-dir", str(tmp_path / "adhoc"),
+                                     "--mirror-github-to", str(tmp_path / "adhoc")])
+    assert pull.main() == 0
+    assert seen[pull.MIRROR_KEY] == str(tmp_path / "adhoc")
+
+
+def test_local_conf_env_override_picks_or_skips_the_machine_conf(monkeypatch, tmp_path):
+    pull = _pull()
+    other = tmp_path / "other.local.json"
+    other.write_text(json.dumps({"settle_seconds": 7, pull.MIRROR_KEY: str(tmp_path / "d")}), encoding="utf-8")
+    monkeypatch.setenv(pull.LOCAL_CONF_ENV, str(other))
+    conf = pull.load_conf()
+    assert conf["settle_seconds"] == 7 and conf[pull.MIRROR_KEY] == str(tmp_path / "d")
+    monkeypatch.setenv(pull.LOCAL_CONF_ENV, "")
+    conf = pull.load_conf()
+    assert pull.MIRROR_KEY not in conf and conf.get("source_dirs", []) == []   # the tracked conf alone
+

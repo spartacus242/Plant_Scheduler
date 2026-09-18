@@ -199,14 +199,29 @@ or, by hand, in the git-ignored `scripts\fs-live-data.local.json`:
 (`python fs-live-pull.py --once --mirror-github-to <fs_data>` does the same for
 one pass.) What keeps it an honest stand-in for the sync:
 
-- GitHub's copy lands only when it is **newer** than the file already in the
-  drop — the commit's author time against the file's modified time — so the
-  `demand_plan_summary.csv` the pass itself rebuilds from the AZAP workbook, or
-  an export the ERP wrote after the last push, is never clobbered and the two
-  never ping-pong; the pass lists such files as *kept (drop copy newer)*.
-- The landed file's modified time becomes the commit time (OneDrive keeps the
+- A file's GitHub time is **when its current content first appeared in the
+  repo** (the earliest commit that introduced today's blob), not the last
+  commit's time. Lesson of 2026-09-18 10:08: the work PC pushed a fresh manprg
+  at 10:00 and eight minutes later pushed the 15 September export again; with
+  the last commit's time that old content looked freshly written.
+- GitHub's copy lands only when that time is **newer** than the file already in
+  the drop, so the `demand_plan_summary.csv` the pass itself rebuilds from the
+  AZAP workbook, an export the ERP wrote after the last push, or a fresher file
+  a stale re-push would revert, is never clobbered and nothing ping-pongs; the
+  pass lists such files as *kept (drop copy newer)*. An identical copy that
+  carries a later time than its content deserves is put back to that time and
+  listed as *time set to …*.
+- The landed file's modified time becomes that content time (OneDrive keeps the
   SharePoint modified time the same way), so folder mode's manprg as-of and the
-  Data Files page age the files honestly.
+  Data Files page age the files honestly. A file the mirror wrote this pass is
+  complete, so the folder-mode settle rule (a file modified seconds ago waits a
+  pass) does not hold it back.
+- `--source-dir <folder>` on the command line means *sync from that folder*:
+  the machine's own drop mirror stays out of such a run unless
+  `--mirror-github-to` is given too. `FS_LIVE_DATA_LOCAL_CONF=<path>` merges
+  another per-machine conf instead of `fs-live-data.local.json`, and an empty
+  value merges none — the test suite runs the script that way so a test pass
+  can never touch this machine's drop.
 - Nothing is ever deleted from the drop; a file the layout does not route is a
   problem, not a guess.
 - Home's **Live data sync** row reads *folder …\fs_vif; …\fs_manual, fed from
