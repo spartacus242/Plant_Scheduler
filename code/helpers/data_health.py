@@ -336,6 +336,13 @@ def _live_sync_status(dd: Path, cadence: dict) -> HealthStatus:
     mode = str(meta.get("mode") or "?")
     sources = [str(x) for x in (meta.get("sources") or [])]
     where = ("folder " + "; ".join(sources)) if mode == "folder" else "GitHub bridge"
+    # the drop mirror (2026-09-18): this machine's fs_data is fed from the
+    # GitHub clone before every folder-mode pass (the dev PC's stand-in for
+    # the synced SharePoint library) — say so, the sources stay the folders
+    mirror = meta.get("mirror")
+    if mode == "folder" and isinstance(mirror, dict):
+        n = len(mirror.get("mirrored") or [])
+        where += f", fed from GitHub ({n} file(s) dropped this pass)"
     problems = [str(x) for x in (meta.get("problems") or [])]
     updated = [str(x) for x in (meta.get("updated") or [])]
     limit = float(cadence.get("live_sync", 1.0))

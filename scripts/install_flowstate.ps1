@@ -10,6 +10,10 @@
 #   powershell -ExecutionPolicy Bypass -File .\scripts\install_flowstate.ps1 -FeedDir "\\server\share\erp_out"
 #   # a PC off the work network (dev laptop): live data through the private GitHub repo
 #   powershell -ExecutionPolicy Bypass -File .\scripts\install_flowstate.ps1 -LiveData
+#   # the dev PC set up EXACTLY like a planner's PC (2026-09-18): the GitHub clone is
+#   # dropped into a local fs_data (fs_vif / fs_manual) as OneDrive would sync the
+#   # SharePoint library, and the app reads that folder in folder mode
+#   powershell -ExecutionPolicy Bypass -File .\scripts\install_flowstate.ps1 -FeedDir "$env:USERPROFILE\Flowstate\fs_data" -MirrorGitHub
 #
 # What it does (every step skips what is already in place, so re-running the
 # same command later is the update path):
@@ -33,6 +37,12 @@
 #                 tick "Always keep on this device" first).
 #      -LiveData  GitHub mode: pull the private flowstate-live-data repo into
 #                 -LiveClone (a sign-in window may open) and copy from there.
+#      -MirrorGitHub  with -FeedDir (2026-09-18): pull the private repo into
+#                 -LiveClone as well and drop its files into the -FeedDir
+#                 root's fs_vif / fs_manual before every folder-mode pass
+#                 (conf "drop_layout" routes them; GitHub's copy lands only
+#                 when newer than the file already there; nothing is deleted).
+#                 The dev PC's stand-in for the synced SharePoint folder.
 #      Both write the git-ignored scripts\fs-live-data.local.json, run one
 #      first sync and register the Task Scheduler entry "Flowstate Live Data
 #      Pull" every -PullEveryMinutes (default: 5 in folder mode, 30 in GitHub
@@ -45,6 +55,7 @@ param(
     [string]$Branch = "main",
     [string]$FeedDir = "",
     [switch]$LiveData,
+    [switch]$MirrorGitHub,
     [string]$LiveClone = (Join-Path $env:USERPROFILE "FlowstateLive"),
     [int]$PullEveryMinutes = 0,
     [switch]$NoShortcut,
@@ -59,6 +70,9 @@ function Step($msg) { Write-Host ""; Write-Host "== $msg" -ForegroundColor Cyan 
 
 if ($LiveData -and $FeedDir) {
     throw "Use either -FeedDir (shared folder) or -LiveData (GitHub bridge), not both."
+}
+if ($MirrorGitHub -and -not $FeedDir) {
+    throw "-MirrorGitHub needs -FeedDir <fs_data root>: the GitHub clone is dropped into that folder."
 }
 
 # ---------------------------------------------------------------- 0. prerequisites
@@ -164,6 +178,13 @@ if ($LiveData -or $FeedDir) {
             }
         }
         $override.source_dirs = $dirs
+        if ($MirrorGitHub) {
+            # the dev PC (2026-09-18): GitHub stands in for the SharePoint sync -
+            # the pull drops the clone into the FIRST folder's fs_vif / fs_manual
+            $override.mirror_github_to = $dirs[0]
+            $override.clone_dir_personal = $LiveClone
+            Write-Host "  drop mirror   : GitHub clone $LiveClone -> $($dirs[0]) (fs_vif / fs_manual)"
+        }
         if ($PullEveryMinutes -le 0) { $PullEveryMinutes = 5 }
     } else {
         $Mode = "github"
@@ -176,6 +197,8 @@ if ($LiveData -or $FeedDir) {
     $PullScript = Join-Path $RepoRoot "scripts\fs-live-pull.py"
     if ($Mode -eq "github") {
         Write-Host "  first pull (a GitHub sign-in window may open: the live-data repo is private) ..."
+    } elseif ($MirrorGitHub) {
+        Write-Host "  first pass: GitHub clone -> $($dirs[0]) (a sign-in window may open), then sync from the folder ..."
     } else {
         Write-Host "  first sync from the folder ..."
     }
@@ -192,7 +215,9 @@ if ($LiveData -or $FeedDir) {
         -RepetitionDuration ([TimeSpan]::MaxValue)
     $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
         -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 20)
-    if ($Mode -eq "folder") {
+    if ($Mode -eq "folder" -and $MirrorGitHub) {
+        $What = "the GitHub clone (dropped into $($dirs[0]) as fs_vif / fs_manual) and that folder"
+    } elseif ($Mode -eq "folder") {
         $What = "the shared folder(s) $($dirs -join '; ')"
     } else {
         $What = "the flowstate-live-data GitHub repo"

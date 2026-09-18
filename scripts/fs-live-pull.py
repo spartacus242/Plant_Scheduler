@@ -19,6 +19,15 @@ live_sync.json heartbeat the app's health page reads):
                quiet "nothing new".
                The folders are only ever READ: no lock, marker, rename or
                delete, so other people and the ERP keep using them untouched.
+  drop mirror  (2026-09-18, the dev PC) "mirror_github_to": "<path>\\fs_data" in
+               the local conf makes the pass FIRST pull the GitHub clone and
+               drop its files into that folder's fs_vif / fs_manual (routing:
+               "drop_layout" in the conf), the way OneDrive would sync the
+               SharePoint library on a planner's PC, then run folder mode
+               from it. GitHub's copy lands only when it is NEWER than what
+               sits there (commit time vs file time; the file time becomes
+               the commit time), nothing is ever deleted, so the dev PC runs
+               the planner's exact setup while the work PC still pushes.
                ONE exception (2026-09-15): the folder that holds the planners'
                weekly "New Export AZAP MMDDYY.xlsx" (fs_manual) gets ONE file
                written into it — demand_plan_summary.csv, rebuilt from that
@@ -246,6 +255,98 @@ def git(repo: Path, *args: str) -> subprocess.CompletedProcess:
                           capture_output=True, text=True)
 
 
+# ── the drop mirror (2026-09-18): GitHub clone -> a local fs_data ───────────
+# A planner's PC reads the SharePoint library that OneDrive syncs into
+# fs_data\fs_vif + fs_data\fs_manual. The dev PC has no SharePoint; it has the
+# private GitHub repo the work PC pushes the same files to. To run the dev PC
+# EXACTLY like a planner's PC, the pass first drops the clone's files into a
+# local fs_data by the conf's "drop_layout" (dest name -> fs_vif | fs_manual),
+# then folder mode takes over from that root as on any planner PC. Rules that
+# keep it an honest stand-in for the sync: GitHub's copy lands only when it
+# is newer than the file already there (the commit's author time against the
+# file's mtime — so a csv the pass itself rebuilt from the AZAP workbook, or a
+# hand-dropped newer export, is never clobbered and the two never ping-pong),
+# the landed file's mtime becomes that commit time (OneDrive keeps the
+# SharePoint modified time the same way, and folder mode's manprg as-of reads
+# it), and nothing is ever deleted.
+MIRROR_KEY = "mirror_github_to"
+LAYOUT_KEY = "drop_layout"
+
+
+def layout_folder(dest: str, layout: dict) -> str | None:
+    """The drop subfolder a conf file (by its DESTINATION name) lands in."""
+    if not isinstance(layout, dict):
+        return None
+    for sub, names in layout.items():
+        if isinstance(names, (list, tuple)) and dest in names:
+            return str(sub)
+    return None
+
+
+def clone_asof(clone: Path, name: str) -> float | None:
+    """Author time (epoch seconds) of the last commit touching `name` in the
+    clone — the work PC commits right after the export, so it is the closest
+    thing to the plant's write time. None when git cannot tell."""
+    r = git(clone, "log", "-1", "--format=%at", "--", name)
+    try:
+        return float(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
+    except ValueError:
+        return None
+
+
+def mirror_clone_into_drop(clone: Path, drop_root: Path, entries, layout: dict,
+                           asof=None) -> tuple[list[str], list[str], list[str]]:
+    """Drop the clone's conf files into drop_root/<fs_vif|fs_manual> by
+    `layout`. Returns (mirrored, kept, problems): `mirrored` the names
+    written, `kept` the names left alone because the copy in the drop is
+    newer than GitHub's (with the reason), `problems` files the layout does
+    not route or that could not be written. `asof(name) -> epoch | None` is
+    the clone's observation time per file (default: the last commit's author
+    time; the clone file's mtime when git cannot tell). A file lands under
+    its own name (the dated "NPA Open POs*.xlsx" keeps its date; folder
+    mode's glob renames it as it does on a planner PC)."""
+    clone, drop_root = Path(clone), Path(drop_root)
+    asof = asof or (lambda name: clone_asof(clone, name))
+    mirrored: list[str] = []
+    kept: list[str] = []
+    problems: list[str] = []
+    for src, dest in resolve_entries(entries, clone):
+        sub = layout_folder(dest, layout)
+        if sub is None:
+            problems.append(f"{dest}: no {LAYOUT_KEY} entry (fs_vif or fs_manual?) — not mirrored")
+            continue
+        try:
+            target_dir = drop_root / sub
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target = target_dir / src.name
+            data = src.read_bytes()
+            if target.exists() and target.read_bytes() == data:
+                continue                                  # same bytes: nothing to do
+            when = asof(src.name)
+            if when is None:
+                when = src.stat().st_mtime
+            if target.exists():
+                have = target.stat().st_mtime
+                if have > when + 1.0:
+                    kept.append(f"{src.name} (drop copy newer: "
+                                f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(have))} vs GitHub "
+                                f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(when))})")
+                    continue
+            tmp = target.with_name(target.name + ".tmp")
+            tmp.write_bytes(data)
+            os.utime(tmp, (when, when))
+            if target.exists():
+                try:
+                    os.chmod(target, stat.S_IWRITE | stat.S_IREAD)
+                except OSError:
+                    pass
+            _replace_with_retry(tmp, target)
+            mirrored.append(f"{sub}/{src.name}")
+        except OSError as exc:
+            problems.append(f"{dest}: mirror into {sub} failed: {exc}")
+    return mirrored, kept, problems
+
+
 # ── manprg as-of stamp (audit C01, 2026-09-03) ───────────────────────────────
 # manprg.txt carries no observation timestamp and its counters are batch-
 # posted, so the app must know WHEN the content it reads was observed. The
@@ -371,6 +472,7 @@ class SyncResult:
     skipped: list[str] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
     head: str | None = None                     # github mode: new HEAD when it advanced
+    mirror: dict | None = None                  # drop mirror (2026-09-18): where GitHub landed
 
     @property
     def ok(self) -> bool:
@@ -560,6 +662,9 @@ def write_sync_state(ref_dir: Path, result: SyncResult | None, *,
         "skipped": list(result.skipped) if result else [],
         "problems": problems,
         "head": result.head if result else None,
+        # the drop mirror (2026-09-18): {"from", "clone", "to", "head", "mirrored",
+        # "kept"} when this machine feeds its own fs_data from the GitHub clone
+        "mirror": result.mirror if result else None,
     }
     out = ref_dir / SYNC_STATE_NAME
     tmp = out.with_name(out.name + ".tmp")
@@ -575,12 +680,39 @@ def pull_once(conf: dict) -> SyncResult:
     writes the live_sync.json heartbeat."""
     ref_dir = Path(conf["data_reference_dir"])
     ref_dir.mkdir(parents=True, exist_ok=True)
+    # the drop mirror (2026-09-18): GitHub -> this machine's fs_data first, so the
+    # folder-mode pass below reads exactly what a planner's PC would
+    mirror_to = str(conf.get(MIRROR_KEY) or "").strip()
+    mirror_info: dict | None = None
+    mirror_problems: list[str] = []
+    if mirror_to:
+        drop_root = Path(mirror_to)
+        if not source_dirs(conf):
+            conf = {**conf, "source_dirs": [str(drop_root)]}
+        try:
+            clone = ensure_clone(conf)
+            git(clone, "fetch", conf["remote"], conf["branch"])
+            before = git(clone, "rev-parse", "HEAD").stdout.strip()
+            git(clone, "pull", "--ff-only", conf["remote"], conf["branch"])
+            after = git(clone, "rev-parse", "HEAD").stdout.strip()
+            mirrored, kept, mprb = mirror_clone_into_drop(
+                clone, drop_root, conf["files"], conf.get(LAYOUT_KEY) or {})
+            mirror_problems.extend(mprb)
+            mirror_info = {"from": str(conf.get("repo_url", "")), "clone": str(clone),
+                           "to": str(drop_root),
+                           "head": after[:7] if after and after != before else None,
+                           "mirrored": mirrored, "kept": kept}
+        except Exception as exc:  # noqa: BLE001 — the drop keeps serving what it has
+            mirror_problems.append(f"drop mirror from GitHub failed: {exc}")
+            mirror_info = {"from": str(conf.get("repo_url", "")), "to": str(drop_root),
+                           "head": None, "mirrored": [], "kept": []}
     # a conf naming the fs_data root stands for its fs_vif + fs_manual (2026-09-17):
     # the heartbeat, the reachability check, the AZAP rebuild, the copy and the
     # manprg as-of all see the subfolders
     dirs = expand_drop_roots(source_dirs(conf))
     if dirs:
-        res = SyncResult(mode="folder", sources=[str(d) for d in dirs])
+        res = SyncResult(mode="folder", sources=[str(d) for d in dirs], mirror=mirror_info)
+        res.problems.extend(mirror_problems)
         for d in dirs:
             try:
                 reachable = d.is_dir()
@@ -645,6 +777,13 @@ def pull_once(conf: dict) -> SyncResult:
 def _describe(res: SyncResult) -> str:
     if res.mode == "folder":
         where = "synced from " + "; ".join(res.sources)
+        if res.mirror:
+            m = res.mirror
+            n = len(m.get("mirrored") or [])
+            where = (f"GitHub -> {m.get('to')}: {n} file(s) dropped"
+                     + (f" (pulled -> {m['head']})" if m.get("head") else "")
+                     + (f", {len(m['kept'])} kept (drop copy newer)" if m.get("kept") else "")
+                     + "; " + where)
     else:
         where = f"pulled -> {res.head}" if res.head else "github up to date"
     what = f"updated {', '.join(res.updated)}" if res.updated else "nothing new"
@@ -668,7 +807,13 @@ def main() -> int:
                     help="folder mode: copy from this folder (repeatable; overrides the conf)")
     ap.add_argument("--reference-dir", default=None, metavar="FOLDER",
                     help="where to copy to (default: data_reference_dir from the conf)")
+    ap.add_argument("--mirror-github-to", default=None, metavar="FS_DATA",
+                    help="drop mirror: pull the GitHub clone and drop its files into this "
+                         "fs_data root's fs_vif / fs_manual first, then sync from it "
+                         "(the dev PC's stand-in for the synced SharePoint folder)")
     args = ap.parse_args()
+    if args.mirror_github_to:
+        conf[MIRROR_KEY] = args.mirror_github_to
     if args.source_dir:
         conf["source_dirs"] = list(args.source_dir)
     if args.reference_dir:

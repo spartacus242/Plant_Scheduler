@@ -4,7 +4,10 @@
   "branch": "main",
   "clone_dir_work": "C:\\FlowstateLive\\repo",
   "source_dir_work": "C:\\Users\\B70048652\\GROUPE BEL\\NPA_ContinuousImprovement - Documents\\VIF Extracts",
-  "source_dirs_work": ["C:\\Users\\jbdil\\Flowstate\\fs_data\\fs_vif", "C:\\Users\\jbdil\\Flowstate\\fs_data\\fs_manual"],
+  "source_dirs_work": [
+    "C:\\Users\\jbdil\\Flowstate\\fs_data\\fs_vif",
+    "C:\\Users\\jbdil\\Flowstate\\fs_data\\fs_manual"
+  ],
   "clone_dir_personal": "C:\\Users\\jbdil\\FlowstateLive",
   "data_reference_dir": "C:\\Users\\jbdil\\Flowstate\\Plant_Scheduler\\data\\reference",
   "source_dirs": [],
@@ -36,5 +39,36 @@
     "order_npa.csv",
     "open_pos.xlsx",
     "NPA Open POs*.xlsx -> open_pos.xlsx"
-  ]
+  ],
+  "drop_layout": {
+    "fs_vif": [
+      "manprg.txt",
+      "manprg2.txt",
+      "ediact.csv",
+      "ediact 3.csv",
+      "ediact 4.csv",
+      "jestkexp.csv",
+      "jestkexp2.csv",
+      "jestkamb.csv",
+      "jestkexq.csv",
+      "jestksav.csv",
+      "jestkexp5.csv",
+      "PKG-REC.csv",
+      "azapart.csv",
+      "rmpkitems.csv",
+      "order_npa.csv"
+    ],
+    "fs_manual": [
+      "cip_info.csv",
+      "demand_plan_summary.csv",
+      "capabilities_rates.csv",
+      "line_rates.csv",
+      "sku_info.csv",
+      "line_cip_hrs.csv",
+      "initial_states.csv",
+      "changeovers.csv",
+      "Shipping Receiving Schedule NPA - 2024.xlsm",
+      "open_pos.xlsx"
+    ]
+  }
 }

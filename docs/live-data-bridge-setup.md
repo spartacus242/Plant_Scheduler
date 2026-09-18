@@ -170,6 +170,50 @@ The config file already points at the standard location:
 python fs-live-pull.py --once
 ```
 
+### 5b. Run the dev PC exactly like a planner's PC (the drop mirror, 2026-09-18)
+
+A planner's PC reads the SharePoint library that OneDrive syncs into
+`fs_data\fs_vif` + `fs_data\fs_manual` (PART 6). The dev PC has no SharePoint,
+it has the GitHub clone the work PC pushes the same files to. The **drop
+mirror** makes the dev PC run the planner's exact setup: before every pass the
+pull fetches the clone and drops its files into a local `fs_data` by the conf's
+`drop_layout` (`fs-live-data.conf.json`: which destination name belongs in
+`fs_vif` — the ERP's exports — and which in `fs_manual` — the files people
+maintain), then folder mode runs from that root as on any planner PC.
+
+```
+powershell -ExecutionPolicy Bypass -File .\scripts\install_flowstate.ps1 -FeedDir "$env:USERPROFILE\Flowstate\fs_data" -MirrorGitHub
+```
+
+or, by hand, in the git-ignored `scripts\fs-live-data.local.json`:
+
+```json
+{
+  "data_reference_dir": "C:/Users/<you>/Flowstate/Plant_Scheduler/data/reference",
+  "source_dirs": ["C:/Users/<you>/Flowstate/fs_data"],
+  "mirror_github_to": "C:/Users/<you>/Flowstate/fs_data",
+  "clone_dir_personal": "C:/Users/<you>/FlowstateLive"
+}
+```
+
+(`python fs-live-pull.py --once --mirror-github-to <fs_data>` does the same for
+one pass.) What keeps it an honest stand-in for the sync:
+
+- GitHub's copy lands only when it is **newer** than the file already in the
+  drop — the commit's author time against the file's modified time — so the
+  `demand_plan_summary.csv` the pass itself rebuilds from the AZAP workbook, or
+  an export the ERP wrote after the last push, is never clobbered and the two
+  never ping-pong; the pass lists such files as *kept (drop copy newer)*.
+- The landed file's modified time becomes the commit time (OneDrive keeps the
+  SharePoint modified time the same way), so folder mode's manprg as-of and the
+  Data Files page age the files honestly.
+- Nothing is ever deleted from the drop; a file the layout does not route is a
+  problem, not a guess.
+- Home's **Live data sync** row reads *folder …\fs_vif; …\fs_manual, fed from
+  GitHub (N file(s) dropped this pass)*; the heartbeat carries a `mirror` block
+  (`from`, `clone`, `to`, `head`, `mirrored`, `kept`). A GitHub failure is a
+  problem on the row while the pass still syncs whatever the drop holds.
+
 ---
 
 ## PART 6 — Planner's PC on the work network: folder mode (no GitHub)
@@ -385,10 +429,10 @@ result first.
 
 | File | Role |
 |---|---|
-| `scripts/fs-live-data.conf.json` | Shared config (repo URL, file list, paths; `source_dirs_work` = the folders the work PC watches) |
+| `scripts/fs-live-data.conf.json` | Shared config (repo URL, file list, paths; `source_dirs_work` = the folders the work PC watches; `drop_layout` = which file belongs in `fs_vif` / `fs_manual`, used by the drop mirror) |
 | `scripts/fs-live-push.py` | Work-side watcher → push (run on work computer); watches every folder in `source_dirs_work` |
 | `scripts/fs-live-pull.py` | Sync → copy into `data/reference` (GitHub clone or shared folders; laptop AND planner's PC) |
-| `scripts/fs-live-data.local.json` | Per-machine override (git-ignored): `data_reference_dir`, `source_dirs` (the `fs_data` root, expanded to `fs_vif` + `fs_manual` at run time) or `clone_dir_personal`; written by the installer |
+| `scripts/fs-live-data.local.json` | Per-machine override (git-ignored): `data_reference_dir`, `source_dirs` (the `fs_data` root, expanded to `fs_vif` + `fs_manual` at run time), `mirror_github_to` (the dev PC's drop mirror, PART 5b) or `clone_dir_personal`; written by the installer |
 | `scripts/install_flowstate.ps1` | One-command install / update; `-FeedDir` (folder mode: the `fs_data` root, or `;`-separated folders) or `-LiveData` (GitHub mode) |
 | `scripts/azap_demand_summary.py` | AZAP workbook (`fs_manual\New Export AZAP MMDDYY.xlsx`) → `demand_plan_summary.csv` by hand (`--folder`, else the conf's `source_dirs`); the folder-mode sync and a repo-checkout push script run the same rebuild |
 | `docs/vif_exports.md` | Reference for every file in the `fs_data` drop: format, row counts, what the app does with it, the ignored files and the AZAP recipe |
